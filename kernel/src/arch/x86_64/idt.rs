@@ -89,6 +89,56 @@ pub const IDT_INTERRUPT_GATE: u8 = 0x8e;
 /// Attribute byte for a present ring-0 trap gate.
 pub const IDT_TRAP_GATE: u8 = 0x8f;
 
+/// Addresses of the first 32 exception handler entry points.
+///
+/// This structure is intentionally host-testable: it carries raw handler offsets so the IDT
+/// construction logic can be validated without linking the assembly stubs.
+pub struct HandlerAddresses {
+    /// Handler offset for each vector 0–31.
+    pub handlers: [u64; 32],
+}
+
+impl HandlerAddresses {
+    /// Create a new handler-address table initialized to zero.
+    #[must_use]
+    pub const fn new() -> HandlerAddresses {
+        HandlerAddresses { handlers: [0; 32] }
+    }
+}
+
+/// Build the early exception IDT from a table of handler addresses.
+///
+/// The returned table has entries for vectors 0–31 configured as present ring-0 gates. Vector 3
+/// uses a trap gate so it can be used as a resumable breakpoint; vector 8 (double fault) uses
+/// IST index 1; all other early vectors use IST index 0.
+#[must_use]
+pub fn build_exception_idt(addresses: &HandlerAddresses) -> [IdtEntry; IDT_ENTRIES] {
+    let mut idt = [IdtEntry::empty(); IDT_ENTRIES];
+    for vector in 0..32 {
+        let ist = if vector == 8 { 1 } else { 0 };
+        let gate_type = if vector == 3 {
+            IDT_TRAP_GATE
+        } else {
+            IDT_INTERRUPT_GATE
+        };
+        idt[vector].set(addresses.handlers[vector], ist, gate_type | 0x80);
+    }
+    idt
+}
+
+/// Copy a built IDT into the runtime static IDT storage.
+///
+/// # Safety
+///
+/// Must be called once on the BSP before `load`. The source IDT must be valid.
+#[allow(unsafe_code)]
+pub unsafe fn install(idt: [IdtEntry; IDT_ENTRIES]) {
+    // SAFETY: `IDT` is a static array accessed only during single-core init.
+    unsafe {
+        IDT = idt;
+    }
+}
+
 /// Install a handler into the IDT.
 ///
 /// # Safety
@@ -146,7 +196,7 @@ pub unsafe fn load() {
         core::arch::asm! {
             "lidt [rdi]",
             in("rdi") &pointer,
-            options(nomem, nostack, preserves_flags)
+            options(nostack, preserves_flags)
         };
     }
 }
@@ -185,5 +235,46 @@ mod tests {
         assert_eq!(entry.ist(), 1);
         entry.set(0x1234, 0, IDT_INTERRUPT_GATE);
         assert_eq!(entry.ist(), 0);
+    }
+
+    #[test]
+    fn build_exception_idt_sets_double_fault_ist_one() {
+        let mut addresses = HandlerAddresses::new();
+        addresses.handlers[8] = 0x1234_5678_9abc_def0;
+        let idt = build_exception_idt(&addresses);
+        assert_eq!(idt[8].offset(), 0x1234_5678_9abc_def0);
+        assert_eq!(idt[8].ist(), 1);
+        assert_eq!(idt[8].type_attr(), IDT_INTERRUPT_GATE | 0x80);
+    }
+
+    #[test]
+    fn build_exception_idt_uses_kernel_code_selector() {
+        let addresses = HandlerAddresses::new();
+        let idt = build_exception_idt(&addresses);
+        for vector in 0..32 {
+            // The selector field is stored as a u16; reconstruct it from the packed entry.
+            let selector = (idt[vector].selector as u16) & 0xfff8;
+            assert_eq!(selector, KERNEL_CODE_SELECTOR);
+        }
+    }
+
+    #[test]
+    fn build_exception_idt_ordinary_vectors_use_ist_zero() {
+        let addresses = HandlerAddresses::new();
+        let idt = build_exception_idt(&addresses);
+        for vector in 0..32 {
+            if vector == 8 {
+                continue;
+            }
+            assert_eq!(idt[vector].ist(), 0, "vector {} should not use IST", vector);
+        }
+    }
+
+    #[test]
+    fn build_exception_idt_breakpoint_is_trap_gate() {
+        let mut addresses = HandlerAddresses::new();
+        addresses.handlers[3] = 0xdead_beef;
+        let idt = build_exception_idt(&addresses);
+        assert_eq!(idt[3].type_attr(), IDT_TRAP_GATE | 0x80);
     }
 }

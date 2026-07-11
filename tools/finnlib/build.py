@@ -18,10 +18,14 @@ def build_boot(root: Path, test: bool = False, exceptions: bool = False) -> tupl
         kernel_features = "kernel-bin,qemu-test-exit"
     else:
         kernel_features = "kernel-bin"
-    cargo(root, ["build", "-p", "finn-kernel", "--bin", "finn-kernel-x86_64", "--features", kernel_features, "--target", "x86_64-unknown-none"])
+    # Use a feature-specific target directory so Cargo does not reuse a binary built with
+    # different feature flags. This is essential for the exception-test binary, which is the
+    # only one compiled with `qemu-test-exceptions`.
+    target_dir = root / "target" / ("x86_64-unknown-none-exceptions" if exceptions else "x86_64-unknown-none-test" if test else "x86_64-unknown-none-normal")
+    cargo(root, ["build", "-p", "finn-kernel", "--bin", "finn-kernel-x86_64", "--features", kernel_features, "--target", "x86_64-unknown-none", "--target-dir", str(target_dir)])
     cargo(root, ["build", "-p", "finn-boot-uefi", "--bin", "finn-boot-x86_64", "--features", "uefi-app", "--target", "x86_64-unknown-uefi"])
     profile = "debug"
-    kernel = root / "target" / "x86_64-unknown-none" / profile / "finn-kernel-x86_64"
+    kernel = target_dir / "x86_64-unknown-none" / profile / "finn-kernel-x86_64"
     boot = root / "target" / "x86_64-unknown-uefi" / profile / "finn-boot-x86_64.efi"
     if not boot.exists(): boot = root / "target" / "x86_64-unknown-uefi" / profile / "finn-boot-x86_64"
     if not kernel.is_file() or not boot.is_file(): raise RuntimeError("expected boot artifacts were not produced")

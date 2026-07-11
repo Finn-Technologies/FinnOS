@@ -118,7 +118,7 @@ pub unsafe fn init(tss: &TSS) {
         core::arch::asm! {
             "lgdt [rdi]",
             in("rdi") &pointer,
-            options(nomem, nostack, preserves_flags)
+            options(nostack, preserves_flags)
         };
     }
 }
@@ -146,7 +146,9 @@ pub unsafe fn reload_segments() {
     }
 
     // SAFETY: The GDT contains a valid kernel code descriptor at selector 0x08.
-    // A far return is used to reload CS with the new code selector.
+    // A far return is used to reload CS with the new code selector. This sequence
+    // pushes a return address and selector onto the stack, so no `nomem` or `nostack`
+    // option is declared.
     unsafe {
         core::arch::asm! {
             "push {code_selector}",
@@ -156,7 +158,6 @@ pub unsafe fn reload_segments() {
             "2:",
             code_selector = const KERNEL_CODE_SELECTOR as u64,
             out("rax") _,
-            options(nomem, nostack)
         };
     }
 }

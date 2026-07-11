@@ -19,7 +19,79 @@ pub const VECTOR_GENERAL_PROTECTION: u8 = 13;
 pub const VECTOR_PAGE_FAULT: u8 = 14;
 
 /// Vectors that carry a hardware error code.
-pub const ERROR_CODE_VECTORS: &[u8] = &[8, 10, 11, 12, 13, 14, 17, 30];
+///
+/// These are the x86-64 architecturally-defined error-code vectors in the 0–31 range. Some
+/// vectors depend on processor feature support (e.g., `21` and `29`), but their frame format
+/// must still be encoded correctly when they occur.
+pub const ERROR_CODE_VECTORS: &[u8] = &[8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
+
+/// Decoded x86-64 page-fault error-code bits.
+///
+/// See Intel SDM Vol. 3A, "Page-Fault Exception (#PF)".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageFaultErrorCode(u64);
+
+impl PageFaultErrorCode {
+    /// Create a decoder from the raw error code.
+    #[must_use]
+    pub const fn new(code: u64) -> PageFaultErrorCode {
+        PageFaultErrorCode(code)
+    }
+
+    /// Return the raw error code.
+    #[must_use]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Page was present (protection violation) vs. not present.
+    #[must_use]
+    pub const fn present(self) -> bool {
+        self.0 & 0x1 != 0
+    }
+
+    /// Access was a write.
+    #[must_use]
+    pub const fn write(self) -> bool {
+        self.0 & 0x2 != 0
+    }
+
+    /// Access originated in user mode.
+    #[must_use]
+    pub const fn user(self) -> bool {
+        self.0 & 0x4 != 0
+    }
+
+    /// A reserved bit was set in a page-table entry.
+    #[must_use]
+    pub const fn reserved_violation(self) -> bool {
+        self.0 & 0x8 != 0
+    }
+
+    /// Fault occurred during instruction fetch.
+    #[must_use]
+    pub const fn instruction_fetch(self) -> bool {
+        self.0 & 0x10 != 0
+    }
+
+    /// Protection-key violation.
+    #[must_use]
+    pub const fn protection_key(self) -> bool {
+        self.0 & 0x20 != 0
+    }
+
+    /// Shadow-stack access.
+    #[must_use]
+    pub const fn shadow_stack(self) -> bool {
+        self.0 & 0x40 != 0
+    }
+
+    /// SGX-related page fault.
+    #[must_use]
+    pub const fn sgx(self) -> bool {
+        self.0 & 0x8000 != 0
+    }
+}
 
 /// Atomic test state for the controlled exception test feature.
 static TEST_STATE: AtomicU8 = AtomicU8::new(TestState::Idle as u8);
@@ -32,10 +104,12 @@ static mut EXCEPTION_TSS: TSS = TSS::new();
 enum TestState {
     /// No exception test is in progress.
     Idle = 0,
-    /// A breakpoint test is in progress.
-    Breakpoint = 1,
-    /// An invalid-opcode test is in progress.
-    InvalidOpcode = 2,
+    /// A breakpoint exception is expected next.
+    BreakpointExpected = 1,
+    /// The breakpoint exception has been handled.
+    BreakpointHandled = 2,
+    /// An invalid-opcode exception is expected next.
+    InvalidOpcodeExpected = 3,
 }
 
 /// Normalized exception frame built by the assembly entry stubs.
@@ -44,9 +118,18 @@ enum TestState {
 /// vector, then a synthetic or hardware error code, followed by the CPU-pushed `rip`, `cs`, and
 /// `rflags`. This layout must exactly match the assembly push order.
 ///
-/// Note: because the kernel currently runs only in ring 0, the CPU does not push `rsp` and `ss`
-/// for these exceptions. The assembly stubs and this structure are valid only for ring-0
-/// exceptions; a future ring-3 path will need to account for the additional hardware frame.
+/// Three hardware frame variants exist on x86-64:
+///
+/// 1. Ring-0 exception without an IST or privilege transition: the CPU pushes `rip`, `cs`, and
+///    `rflags`. Error-code exceptions also push an error code. This is the current FinnOS case.
+///
+/// 2. Exception using an IST stack (including double fault): the CPU switches to the IST stack
+///    and pushes the same frame as case 1, but on the new stack. The `ExceptionFrame` describes
+///    the normalized common prefix; the previous stack state is not modeled here.
+///
+/// 3. Ring-3 to ring-0 transition: the hardware frame additionally includes the previous `rsp`
+///    and `ss`. The current `ExceptionFrame` does not include those optional fields and must not
+///    access them unless the frame type or entry metadata proves they exist.
 #[repr(C)]
 #[allow(missing_docs)]
 pub struct ExceptionFrame {
@@ -127,6 +210,12 @@ core::arch::global_asm!(
         pop r15
     .endm
 
+    // Stack layout on entry to exception_no_error (top of stack is lowest address):
+    //   [vector]          <- pushed by the per-vector stub
+    //   [synthetic 0]      <- pushed by the per-vector stub to keep frame layout uniform
+    //   [rip] [cs] [rflags] <- pushed by the CPU
+    // After RESTORE_REGS, RSP points at [vector]. Remove both vector and synthetic zero so
+    // iretq sees the CPU-pushed frame starting at [rip].
     .align 16
     .globl exception_no_error
     exception_no_error:
@@ -137,6 +226,12 @@ core::arch::global_asm!(
         add rsp, 16
         iretq
 
+    // Stack layout on entry to exception_error (top of stack is lowest address):
+    //   [vector]          <- pushed by the per-vector stub
+    //   [error_code]      <- pushed by the CPU for error-code vectors
+    //   [rip] [cs] [rflags] <- pushed by the CPU
+    // After RESTORE_REGS, RSP points at [vector]. Remove both vector and error_code so
+    // iretq sees the CPU-pushed frame starting at [rip].
     .align 16
     .globl exception_error
     exception_error:
@@ -144,7 +239,7 @@ core::arch::global_asm!(
         mov rdi, rsp
         call rust_exception_dispatch
         RESTORE_REGS
-        add rsp, 8
+        add rsp, 16
         iretq
 
     .align 16
@@ -269,9 +364,8 @@ core::arch::global_asm!(
     .align 16
     .globl vector_21
     vector_21:
-        push 0
         push 21
-        jmp exception_no_error
+        jmp exception_error
     .align 16
     .globl vector_22
     vector_22:
@@ -317,9 +411,8 @@ core::arch::global_asm!(
     .align 16
     .globl vector_29
     vector_29:
-        push 0
         push 29
-        jmp exception_no_error
+        jmp exception_error
     .align 16
     .globl vector_30
     vector_30:
@@ -369,6 +462,47 @@ unsafe extern "C" {
     fn vector_31();
 }
 
+/// Collect the addresses of the early exception handler entry points.
+///
+/// This is a separate helper so host tests can build an IDT without linking the assembly stubs.
+#[allow(unsafe_code)]
+fn handler_addresses() -> idt::HandlerAddresses {
+    let mut addresses = idt::HandlerAddresses::new();
+    addresses.handlers[0] = vector_0 as *const () as u64;
+    addresses.handlers[1] = vector_1 as *const () as u64;
+    addresses.handlers[2] = vector_2 as *const () as u64;
+    addresses.handlers[3] = vector_3 as *const () as u64;
+    addresses.handlers[4] = vector_4 as *const () as u64;
+    addresses.handlers[5] = vector_5 as *const () as u64;
+    addresses.handlers[6] = vector_6 as *const () as u64;
+    addresses.handlers[7] = vector_7 as *const () as u64;
+    addresses.handlers[8] = vector_8 as *const () as u64;
+    addresses.handlers[9] = vector_9 as *const () as u64;
+    addresses.handlers[10] = vector_10 as *const () as u64;
+    addresses.handlers[11] = vector_11 as *const () as u64;
+    addresses.handlers[12] = vector_12 as *const () as u64;
+    addresses.handlers[13] = vector_13 as *const () as u64;
+    addresses.handlers[14] = vector_14 as *const () as u64;
+    addresses.handlers[15] = vector_15 as *const () as u64;
+    addresses.handlers[16] = vector_16 as *const () as u64;
+    addresses.handlers[17] = vector_17 as *const () as u64;
+    addresses.handlers[18] = vector_18 as *const () as u64;
+    addresses.handlers[19] = vector_19 as *const () as u64;
+    addresses.handlers[20] = vector_20 as *const () as u64;
+    addresses.handlers[21] = vector_21 as *const () as u64;
+    addresses.handlers[22] = vector_22 as *const () as u64;
+    addresses.handlers[23] = vector_23 as *const () as u64;
+    addresses.handlers[24] = vector_24 as *const () as u64;
+    addresses.handlers[25] = vector_25 as *const () as u64;
+    addresses.handlers[26] = vector_26 as *const () as u64;
+    addresses.handlers[27] = vector_27 as *const () as u64;
+    addresses.handlers[28] = vector_28 as *const () as u64;
+    addresses.handlers[29] = vector_29 as *const () as u64;
+    addresses.handlers[30] = vector_30 as *const () as u64;
+    addresses.handlers[31] = vector_31 as *const () as u64;
+    addresses
+}
+
 /// Initialize the IDT with the early exception handlers.
 ///
 /// # Safety
@@ -376,40 +510,11 @@ unsafe extern "C" {
 /// Must be called once on the BSP after the GDT is loaded.
 #[allow(unsafe_code)]
 pub unsafe fn init() {
-    // SAFETY: `idt::set_handler` writes only within the static IDT array.
+    let addresses = handler_addresses();
+    let idt = idt::build_exception_idt(&addresses);
+    // SAFETY: `idt::install` copies the built IDT into the static IDT storage.
     unsafe {
-        idt::set_handler(0, vector_0 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(1, vector_1 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(2, vector_2 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(3, vector_3 as *const () as u64, 0, IDT_TRAP_GATE);
-        idt::set_handler(4, vector_4 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(5, vector_5 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(6, vector_6 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(7, vector_7 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(8, vector_8 as *const () as u64, 1, IDT_INTERRUPT_GATE);
-        idt::set_handler(9, vector_9 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(10, vector_10 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(11, vector_11 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(12, vector_12 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(13, vector_13 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(14, vector_14 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(15, vector_15 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(16, vector_16 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(17, vector_17 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(18, vector_18 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(19, vector_19 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(20, vector_20 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(21, vector_21 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(22, vector_22 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(23, vector_23 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(24, vector_24 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(25, vector_25 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(26, vector_26 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(27, vector_27 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(28, vector_28 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(29, vector_29 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(30, vector_30 as *const () as u64, 0, IDT_INTERRUPT_GATE);
-        idt::set_handler(31, vector_31 as *const () as u64, 0, IDT_INTERRUPT_GATE);
+        idt::install(idt);
     }
 }
 
@@ -433,21 +538,42 @@ extern "C" fn rust_exception_dispatch(frame: *const ExceptionFrame) {
     }
 }
 
-fn handle_breakpoint(_frame: &ExceptionFrame) {
+/// Attempt to accept a controlled breakpoint exception.
+///
+/// Returns `true` if the breakpoint was expected and the state machine transitioned to
+/// `BreakpointHandled`. Returns `false` if the breakpoint was unexpected.
+#[cfg(feature = "qemu-test-exceptions")]
+fn accept_breakpoint() -> bool {
+    let previous = TEST_STATE.load(Ordering::SeqCst);
+    if previous != TestState::BreakpointExpected as u8 {
+        return false;
+    }
+    TEST_STATE.store(TestState::BreakpointHandled as u8, Ordering::SeqCst);
+    true
+}
+
+fn handle_breakpoint(frame: &ExceptionFrame) {
     serial::log(format_args!("FINNOS:EXCEPTION:BREAKPOINT\n"));
     #[cfg(feature = "qemu-test-exceptions")]
     {
-        TEST_STATE.store(TestState::Breakpoint as u8, Ordering::SeqCst);
+        if !accept_breakpoint() {
+            fatal(frame, "UNEXPECTED_BREAKPOINT");
+        }
     }
     // Breakpoint is resumable; the assembly stub will perform iretq.
+}
+
+/// Return true if an invalid-opcode exception is currently expected by the test state machine.
+#[cfg(feature = "qemu-test-exceptions")]
+fn invalid_opcode_expected() -> bool {
+    TEST_STATE.load(Ordering::SeqCst) == TestState::InvalidOpcodeExpected as u8
 }
 
 fn handle_invalid_opcode(frame: &ExceptionFrame) {
     serial::log(format_args!("FINNOS:EXCEPTION:INVALID_OPCODE\n"));
     #[cfg(feature = "qemu-test-exceptions")]
     {
-        let state = TEST_STATE.load(Ordering::SeqCst);
-        if state == TestState::InvalidOpcode as u8 {
+        if invalid_opcode_expected() {
             serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:PASS\n"));
             qemu::exit(0x10);
         }
@@ -472,9 +598,19 @@ fn handle_page_fault(frame: &ExceptionFrame) {
     unsafe {
         core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
     }
+    let error = PageFaultErrorCode::new(frame.error_code);
     serial::log(format_args!(
-        "CR2={:#018x} ERROR={:#018x}\n",
-        cr2, frame.error_code
+        "CR2={:#018x} ERROR={:#018x} PRESENT={} WRITE={} USER={} RESERVED={} IFETCH={} PK={} SHADOW={} SGX={}\n",
+        cr2,
+        frame.error_code,
+        error.present(),
+        error.write(),
+        error.user(),
+        error.reserved_violation(),
+        error.instruction_fetch(),
+        error.protection_key(),
+        error.shadow_stack(),
+        error.sgx(),
     ));
     fatal(frame, "PAGE_FAULT");
 }
@@ -544,18 +680,22 @@ pub unsafe fn run_exception_tests() {
     serial::log(format_args!("FINNOS:TEST:EXCEPTIONS:BEGIN\n"));
 
     serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
-    TEST_STATE.store(TestState::Breakpoint as u8, Ordering::SeqCst);
-    // SAFETY: `int3` is a controlled breakpoint in the test feature.
+    TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
+    // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an
+    // exception that pushes a frame and runs a handler; no memory or stack behavior
+    // is declared for the instruction itself.
     unsafe {
-        core::arch::asm!("int3", options(nomem, nostack));
+        core::arch::asm!("int3");
     }
     serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
 
     serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
-    TEST_STATE.store(TestState::InvalidOpcode as u8, Ordering::SeqCst);
-    // SAFETY: `ud2` is a controlled invalid-opcode in the test feature.
+    TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
+    // SAFETY: `ud2` is a controlled invalid-opcode in the test feature. It intentionally
+    // does not return through the ordinary path; the CPU raises #UD and the handler exits.
+    // No memory or stack behavior is declared for the instruction itself.
     unsafe {
-        core::arch::asm!("ud2", options(nomem, nostack));
+        core::arch::asm!("ud2");
     }
     // `ud2` should not return; if it does, the test failed.
     fatal(
@@ -627,5 +767,90 @@ mod tests {
     fn breakpoint_and_invalid_opcode_have_synthetic_zero_error_code() {
         assert!(!ERROR_CODE_VECTORS.contains(&VECTOR_BREAKPOINT));
         assert!(!ERROR_CODE_VECTORS.contains(&VECTOR_INVALID_OPCODE));
+    }
+
+    #[test]
+    fn error_code_vector_set_is_exact() {
+        let expected = [8u8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
+        assert_eq!(ERROR_CODE_VECTORS, &expected[..]);
+    }
+
+    #[test]
+    fn page_fault_error_code_decodes_zero() {
+        let err = PageFaultErrorCode::new(0);
+        assert!(!err.present());
+        assert!(!err.write());
+        assert!(!err.user());
+        assert!(!err.reserved_violation());
+        assert!(!err.instruction_fetch());
+        assert!(!err.protection_key());
+        assert!(!err.shadow_stack());
+        assert!(!err.sgx());
+    }
+
+    #[test]
+    fn page_fault_error_code_decodes_write_protection_violation() {
+        let err = PageFaultErrorCode::new(0b011);
+        assert!(err.present());
+        assert!(err.write());
+        assert!(!err.user());
+    }
+
+    #[test]
+    fn page_fault_error_code_decodes_user_instruction_fetch() {
+        let err = PageFaultErrorCode::new(0b1_0111);
+        assert!(err.present());
+        assert!(!err.write());
+        assert!(err.user());
+        assert!(err.instruction_fetch());
+    }
+
+    #[test]
+    fn page_fault_error_code_decodes_reserved_bit_violation() {
+        let err = PageFaultErrorCode::new(0b1001);
+        assert!(err.present());
+        assert!(err.reserved_violation());
+    }
+
+    #[test]
+    fn page_fault_error_code_decodes_combined_flags() {
+        let err = PageFaultErrorCode::new(0b1101_0111);
+        assert!(err.present());
+        assert!(err.write());
+        assert!(err.user());
+        assert!(err.reserved_violation());
+        assert!(err.instruction_fetch());
+        assert!(!err.protection_key());
+        assert!(!err.shadow_stack());
+        assert!(!err.sgx());
+    }
+
+    #[cfg(feature = "qemu-test-exceptions")]
+    #[test]
+    fn breakpoint_transition_is_accepted_when_expected() {
+        TEST_STATE.store(TestState::Idle as u8, Ordering::SeqCst);
+        TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
+        assert!(accept_breakpoint());
+        assert_eq!(
+            TEST_STATE.load(Ordering::SeqCst),
+            TestState::BreakpointHandled as u8
+        );
+    }
+
+    #[cfg(feature = "qemu-test-exceptions")]
+    #[test]
+    fn breakpoint_transition_is_rejected_when_not_expected() {
+        TEST_STATE.store(TestState::Idle as u8, Ordering::SeqCst);
+        assert!(!accept_breakpoint());
+        assert_eq!(TEST_STATE.load(Ordering::SeqCst), TestState::Idle as u8);
+    }
+
+    #[cfg(feature = "qemu-test-exceptions")]
+    #[test]
+    fn invalid_opcode_is_expected_only_in_expected_state() {
+        TEST_STATE.store(TestState::Idle as u8, Ordering::SeqCst);
+        assert!(!invalid_opcode_expected());
+        TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
+        assert!(invalid_opcode_expected());
     }
 }

@@ -174,4 +174,28 @@ mod tests {
     fn double_fault_stack_alignment_is_page() {
         assert_eq!(double_fault_stack_align(), 4096);
     }
+
+    #[test]
+    fn tss_layout_matches_architecture() {
+        use core::mem::{offset_of, size_of};
+        assert_eq!(size_of::<TSS>(), 104);
+        assert_eq!(offset_of!(TSS, rsp0_low), 4);
+        assert_eq!(offset_of!(TSS, ist), 36);
+        assert_eq!(offset_of!(TSS, io_map_base), 102);
+    }
+
+    #[test]
+    fn tss_ist1_matches_double_fault_stack_top() {
+        let mut tss = TSS::new();
+        unsafe {
+            init(&mut tss, 0);
+        }
+        let ist1 = (tss.ist[0].high as u64) << 32 | (tss.ist[0].low as u64);
+        assert_eq!(ist1, double_fault_stack_top());
+    }
+
+    #[test]
+    fn tss_limit_matches_size_minus_one() {
+        assert_eq!(core::mem::size_of::<TSS>() - 1, 103);
+    }
 }
