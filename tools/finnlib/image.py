@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -20,6 +21,29 @@ def stage_esp(root: Path, boot_manager: Path, kernel: Path) -> Path:
 
 def make_image(esp: Path, output: Path) -> Path:
     output.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        return _make_image_darwin(esp, output)
+    return _make_image_linux(esp, output)
+
+def _make_image_linux(esp: Path, output: Path) -> Path:
+    mkfs = shutil.which("mkfs.vfat")
+    mcopy = shutil.which("mcopy")
+    if not mkfs or not mcopy:
+        raise RuntimeError("real FAT image creation requires mkfs.vfat and mcopy (dosfstools, mtools)")
+    with tempfile.TemporaryDirectory(prefix="finnos-image-") as temporary:
+        image = Path(temporary) / "esp.img"
+        # Create a 64 MB FAT32 image.
+        subprocess.run(["dd", "if=/dev/zero", f"of={image}", "bs=1M", "count=64"], check=True, capture_output=True)
+        subprocess.run([mkfs, "-F", "32", str(image)], check=True, capture_output=True)
+        # Copy the ESP tree into the image using mcopy.
+        for src in esp.rglob("*"):
+            if src.is_file():
+                rel = src.relative_to(esp).as_posix()
+                subprocess.run([mcopy, "-i", str(image), str(src), f"::{rel}"], check=True, capture_output=True)
+        shutil.copyfile(image, output)
+    return output
+
+def _make_image_darwin(esp: Path, output: Path) -> Path:
     hdiutil = shutil.which("hdiutil")
     qemu_img = find_tool("qemu-img")
     if not hdiutil or not qemu_img:
