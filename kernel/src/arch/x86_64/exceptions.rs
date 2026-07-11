@@ -605,6 +605,7 @@ fn handle_page_fault(frame: &ExceptionFrame) {
     serial::log(format_args!("FINNOS:EXCEPTION:PAGE_FAULT\n"));
     // SAFETY: Reading CR2 is safe in ring 0 and returns the faulting address.
     let cr2: u64;
+    #[allow(unsafe_code)]
     unsafe {
         core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
     }
