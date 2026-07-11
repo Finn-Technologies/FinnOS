@@ -1,6 +1,6 @@
 # Panic policy
 
 > Status: Preliminary policy
-> Implementation: Not implemented
+> Implementation: Kernel fatal exceptions halt or exit QEMU
 
-Recoverable user-process failure, restartable service failure, restartable driver failure, session failure, and unrecoverable kernel panic should have distinct diagnostics and recovery behavior. Exact policies and telemetry are unresolved.
+Unexpected kernel exceptions (invalid opcode, double fault, general-protection fault, page fault, and unhandled vectors) currently print deterministic diagnostics and halt or exit QEMU via the debug-exit device. Recoverable user-process failure, restartable service failure, restartable driver failure, and session failure are not yet implemented. Exact policies and telemetry remain unresolved.

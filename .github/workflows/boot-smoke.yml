@@ -23,3 +23,5 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf mtools dosfstools
       - name: Run first-boot smoke test
         run: ./tools/finn test-boot
+      - name: Run exception foundation test
+        run: ./tools/finn test-exceptions

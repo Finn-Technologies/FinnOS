@@ -9,10 +9,15 @@ from pathlib import Path
 def cargo(root: Path, args: list[str]) -> None:
     subprocess.run(["cargo", *args], cwd=root, check=True)
 
-def build_boot(root: Path, test: bool = False) -> tuple[Path, Path]:
-    output = root / "build" / "out" / ("x86_64-qemu-test" if test else "x86_64-qemu")
+def build_boot(root: Path, test: bool = False, exceptions: bool = False) -> tuple[Path, Path]:
+    output = root / "build" / "out" / ("x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
     output.mkdir(parents=True, exist_ok=True)
-    kernel_features = "kernel-bin,qemu-test-exit" if test else "kernel-bin"
+    if exceptions:
+        kernel_features = "kernel-bin,qemu-test-exit,qemu-test-exceptions"
+    elif test:
+        kernel_features = "kernel-bin,qemu-test-exit"
+    else:
+        kernel_features = "kernel-bin"
     cargo(root, ["build", "-p", "finn-kernel", "--bin", "finn-kernel-x86_64", "--features", kernel_features, "--target", "x86_64-unknown-none"])
     cargo(root, ["build", "-p", "finn-boot-uefi", "--bin", "finn-boot-x86_64", "--features", "uefi-app", "--target", "x86_64-unknown-uefi"])
     profile = "debug"
