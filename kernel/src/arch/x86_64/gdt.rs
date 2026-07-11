@@ -222,7 +222,7 @@ mod tests {
     fn tss_high_carries_upper_base() {
         let base = 0x0000_1234_5678_9abc_u64;
         let high = tss_descriptor_high(base);
-        assert_eq!(high, 0);
+        assert_eq!(high, 0x0000_1234);
 
         let base2 = 0xffff_ffff_0000_0000_u64;
         let high2 = tss_descriptor_high(base2);
