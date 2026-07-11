@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn page_fault_error_code_decodes_user_instruction_fetch() {
-        let err = PageFaultErrorCode::new(0b1_0111);
+        let err = PageFaultErrorCode::new(0b1_0101);
         assert!(err.present());
         assert!(!err.write());
         assert!(err.user());
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn page_fault_error_code_decodes_combined_flags() {
-        let err = PageFaultErrorCode::new(0b1101_0111);
+        let err = PageFaultErrorCode::new(0b0001_1111);
         assert!(err.present());
         assert!(err.write());
         assert!(err.user());
