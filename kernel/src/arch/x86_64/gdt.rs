@@ -72,7 +72,7 @@ pub const fn tss_descriptor_low(tss_base: u64, tss_limit: u32) -> u64 {
     descriptor |= ((base & 0x00ff_ffff) as u64) << 16;
     descriptor |= TSS_ACCESS << 40;
     descriptor |= (((limit >> 16) & 0xf) as u64) << 48;
-    descriptor |= (((base >> 24) & 0xff) as u64) << 56;
+    descriptor |= ((base >> 24) as u64) << 56;
     descriptor
 }
 
@@ -193,6 +193,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn kernel_code_has_expected_access_and_flags() {
         let descriptor = kernel_code_descriptor();
         let access = (descriptor >> 40) as u8;
@@ -202,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn kernel_data_has_expected_access() {
         let descriptor = kernel_data_descriptor();
         let access = (descriptor >> 40) as u8;
@@ -209,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn tss_low_access_byte_is_available_tss() {
         let descriptor = tss_descriptor_low(0x1234_5678_9abc_def0, 0x1_ffff);
         let access = (descriptor >> 40) as u8;

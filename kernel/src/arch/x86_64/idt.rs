@@ -52,9 +52,9 @@ impl IdtEntry {
     /// Encode an IDT entry from a handler address, IST index, and type attributes.
     #[allow(clippy::cast_possible_truncation)]
     pub const fn set(&mut self, handler: u64, ist: u8, type_attr: u8) {
-        self.offset_low = (handler & 0xffff) as u16;
-        self.offset_mid = ((handler >> 16) & 0xffff) as u16;
-        self.offset_high = ((handler >> 32) & 0xffff_ffff) as u32;
+        self.offset_low = handler as u16;
+        self.offset_mid = (handler >> 16) as u16;
+        self.offset_high = (handler >> 32) as u32;
         self.selector = KERNEL_CODE_SELECTOR;
         self.ist = ist & 0x7;
         self.type_attr = type_attr;
