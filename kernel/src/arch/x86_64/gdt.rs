@@ -103,10 +103,11 @@ pub unsafe fn init(tss: &TSS) {
         (*gdt)[2] = kernel_data_descriptor();
     }
     let tss_base = core::ptr::from_ref(tss) as usize as u64;
-    #[allow(clippy::cast_possible_truncation)]
     let tss_limit = core::mem::size_of::<TSS>() as u64 - 1;
     unsafe {
-        (*gdt)[3] = tss_descriptor_low(tss_base, tss_limit as u32);
+        #[allow(clippy::cast_possible_truncation)]
+        let tss_limit_u32 = tss_limit as u32;
+        (*gdt)[3] = tss_descriptor_low(tss_base, tss_limit_u32);
         (*gdt)[4] = tss_descriptor_high(tss_base);
     }
 

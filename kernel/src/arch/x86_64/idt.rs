@@ -51,7 +51,7 @@ impl IdtEntry {
 
     /// Encode an IDT entry from a handler address, IST index, and type attributes.
     #[allow(clippy::cast_possible_truncation)]
-    pub fn set(&mut self, handler: u64, ist: u8, type_attr: u8) {
+    pub const fn set(&mut self, handler: u64, ist: u8, type_attr: u8) {
         self.offset_low = (handler & 0xffff) as u16;
         self.offset_mid = ((handler >> 16) & 0xffff) as u16;
         self.offset_high = ((handler >> 32) & 0xffff_ffff) as u32;
@@ -62,7 +62,8 @@ impl IdtEntry {
 
     /// Return the reconstructed 64-bit handler offset.
     #[must_use]
-    pub fn offset(&self) -> u64 {
+    #[allow(clippy::cast_lossless)]
+    pub const fn offset(&self) -> u64 {
         let low = self.offset_low as u64;
         let mid = (self.offset_mid as u64) << 16;
         let high = (self.offset_high as u64) << 32;
@@ -71,13 +72,13 @@ impl IdtEntry {
 
     /// Return the IST index.
     #[must_use]
-    pub fn ist(&self) -> u8 {
+    pub const fn ist(&self) -> u8 {
         self.ist & 0x7
     }
 
     /// Return the type and attribute byte.
     #[must_use]
-    pub fn type_attr(&self) -> u8 {
+    pub const fn type_attr(&self) -> u8 {
         self.type_attr
     }
 }
@@ -127,7 +128,7 @@ impl HandlerAddresses {
 pub fn build_exception_idt(addresses: &HandlerAddresses) -> [IdtEntry; IDT_ENTRIES] {
     let mut idt = [IdtEntry::empty(); IDT_ENTRIES];
     for (vector, &handler) in addresses.handlers.iter().enumerate() {
-        let ist = if vector == 8 { 1 } else { 0 };
+        let ist = u8::from(vector == 8);
         let gate_type = if vector == 3 {
             IDT_TRAP_GATE
         } else {

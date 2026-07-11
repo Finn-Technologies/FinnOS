@@ -79,13 +79,15 @@ impl TSS {
     }
 
     /// Set the RSP0 field to a 64-bit stack top.
-    pub fn set_rsp0(&mut self, value: u64) {
+    #[allow(clippy::cast_possible_truncation)]
+    pub const fn set_rsp0(&mut self, value: u64) {
         self.rsp0_low = (value & 0xffff_ffff) as u32;
         self.rsp0_high = (value >> 32) as u32;
     }
 
     /// Set an IST entry to a 64-bit stack top.
-    pub fn set_ist(&mut self, index: usize, value: u64) {
+    #[allow(clippy::cast_possible_truncation)]
+    pub const fn set_ist(&mut self, index: usize, value: u64) {
         self.ist[index].low = (value & 0xffff_ffff) as u32;
         self.ist[index].high = (value >> 32) as u32;
     }
