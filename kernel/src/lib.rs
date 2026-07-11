@@ -4,8 +4,9 @@
 
 //! Foundational types and metadata for the `FinnOS` kernel.
 //!
-//! This crate is an initial repository scaffold. It does not yet contain a
-//! bootable kernel implementation.
+//! The crate contains the safe early-kernel foundations used by the bootable
+//! x86-64 path, including memory-map classification and physical page
+//! allocation.
 
 pub mod arch;
 pub mod boot_validation;

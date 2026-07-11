@@ -45,6 +45,9 @@ test-exceptions:
 test-memory-map:
 	./tools/finn test-memory-map
 
+test-page-allocator:
+	./tools/finn test-page-allocator
+
 check-all:
 	./tools/finn check-all
 
