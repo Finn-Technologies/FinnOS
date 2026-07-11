@@ -1,0 +1,37 @@
+# Experimental preview of the future FinnOS build description.
+schema_version = 1
+
+[project]
+name = "FinnOS"
+status = "foundation"
+default_target = "x86_64-qemu"
+
+[targets.x86_64-qemu]
+architecture = "x86_64"
+platform = "qemu"
+firmware = "uefi"
+configuration = "build/targets/x86_64-qemu.toml"
+status = "first-boot"
+bootable = true
+boot_manager = "build/out/x86_64-qemu/esp/EFI/BOOT/BOOTX64.EFI"
+kernel = "build/out/x86_64-qemu/esp/EFI/FINNOS/KERNEL.ELF"
+esp = "build/out/x86_64-qemu/esp"
+image = "build/out/x86_64-qemu/finnos-x86_64-uefi.img"
+
+[targets.arm64-qemu]
+architecture = "arm64"
+platform = "qemu"
+firmware = "uefi"
+configuration = "build/targets/arm64-qemu.toml"
+bootable = false
+status = "planned"
+
+[profiles.development]
+optimization = 0
+debug_symbols = true
+assertions = true
+
+[profiles.release]
+optimization = 3
+debug_symbols = true
+assertions = false

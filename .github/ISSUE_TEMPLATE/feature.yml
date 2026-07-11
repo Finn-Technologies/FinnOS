@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a feature or architectural direction
+title: "feature: "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Problem being solved }
+    validations: { required: true }
+  - type: textarea
+    id: behavior
+    attributes: { label: Proposed behavior }
+  - type: textarea
+    id: alternatives
+    attributes: { label: Alternatives }
+  - type: input
+    id: subsystem
+    attributes: { label: Affected subsystem }
+  - type: textarea
+    id: security
+    attributes: { label: Security impact }
+  - type: textarea
+    id: compatibility
+    attributes: { label: Compatibility impact }
+  - type: markdown
+    attributes:
+      value: Architectural changes may need an RFC.

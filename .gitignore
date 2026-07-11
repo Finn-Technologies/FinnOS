@@ -1,0 +1,13 @@
+/target/
+/build/out/
+/images/out/
+/build/out/
+*.log
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example

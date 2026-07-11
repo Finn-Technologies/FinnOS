@@ -1,0 +1,7 @@
+name = "x86_64-qemu"
+architecture = "x86_64"
+platform = "qemu"
+firmware = "uefi"
+status = "first-boot"
+bootable = true
+note = "Eventually expected to include serial console, virtual block storage, basic input, and virtual display."

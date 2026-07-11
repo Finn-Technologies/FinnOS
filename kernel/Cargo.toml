@@ -1,0 +1,32 @@
+[package]
+name = "finn-kernel"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The core kernel crate for FinnOS."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+finn-boot-protocol = { path = "../boot/protocol" }
+
+[features]
+default = []
+kernel-bin = []
+qemu-test-exit = []
+qemu-test-panic = []
+
+[[bin]]
+name = "finn-kernel-x86_64"
+path = "src/bin/x86_64.rs"
+required-features = ["kernel-bin"]
+test = false
+bench = false
+
+[build-dependencies]
+finn-boot-protocol = { path = "../boot/protocol" }
+
+[lints]
+workspace = true

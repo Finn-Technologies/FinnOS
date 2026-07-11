@@ -1,0 +1,4 @@
+# Host builds remain the default. Freestanding target flags belong to the
+# kernel package's binary-specific build script.
+[build]
+incremental = true

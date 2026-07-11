@@ -1,0 +1,8 @@
+# Planned ownership areas. Maintainers are currently unassigned.
+# Architecture: /architecture/ /docs/architecture/ /docs/proposals/
+# Kernel: /kernel/
+# Boot: /boot/
+# Platform and drivers: /build/ /architecture/
+# Peony: /docs/architecture/peony.md
+# Documentation: /docs/ *.md
+# Build and infrastructure: /.github/ /tools/ /Cargo.toml /Makefile

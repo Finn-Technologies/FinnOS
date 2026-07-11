@@ -1,0 +1,7 @@
+name = "arm64-qemu"
+architecture = "arm64"
+platform = "qemu"
+firmware = "uefi"
+status = "planned"
+bootable = false
+note = "Eventually expected to include serial console, virtual block storage, basic input, and virtual display."

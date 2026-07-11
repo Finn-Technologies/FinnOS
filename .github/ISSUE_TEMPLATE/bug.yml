@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem
+title: "bug: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: Do not include undisclosed security vulnerabilities; follow SECURITY.md instead.
+  - type: input
+    id: summary
+    attributes: { label: Summary, description: What happened? }
+    validations: { required: true }
+  - type: input
+    id: component
+    attributes: { label: Affected component }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected behavior }
+  - type: textarea
+    id: actual
+    attributes: { label: Actual behavior }
+  - type: textarea
+    id: reproduction
+    attributes: { label: Reproduction steps }
+    validations: { required: true }
+  - type: input
+    id: host
+    attributes: { label: Host platform }
+  - type: input
+    id: rust
+    attributes: { label: Rust version }
+  - type: input
+    id: revision
+    attributes: { label: Commit or branch }
+  - type: textarea
+    id: logs
+    attributes: { label: Logs }
+  - type: textarea
+    id: context
+    attributes: { label: Additional context }
