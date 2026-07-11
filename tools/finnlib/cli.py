@@ -15,6 +15,7 @@ from .qemu import (
     MARKERS,
     qemu_command,
     validate_exceptions,
+    validate_memory_map,
     validate_smoke,
 )
 from .toolchain import find_command, find_ovmf, find_tool, rust_target_installed
@@ -40,7 +41,7 @@ def doctor() -> int:
 def command(name: str) -> int:
     if name == "help":
         print("FinnOS developer wrapper for the x86-64 UEFI First Boot milestone.")
-        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions check-all clean")
+        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map check-all clean")
         return 0
     if name == "doctor": return doctor()
     if name == "build": cargo(ROOT, ["build", "--workspace"]); return 0
@@ -55,18 +56,21 @@ def command(name: str) -> int:
         boot, kernel = build_boot(ROOT); stage_esp(ROOT / "build" / "out" / "x86_64-qemu", boot, kernel); return 0
     if name == "image":
         out = ROOT / "build" / "out" / "x86_64-qemu"; boot, kernel = build_boot(ROOT); esp = stage_esp(out, boot, kernel); make_image(esp, out / "finnos-x86_64-uefi.img"); return 0
-    if name in ("run", "run-headless", "test-boot", "test-exceptions"):
+    if name in ("run", "run-headless", "test-boot", "test-exceptions", "test-memory-map"):
         test = name == "test-boot"
         exceptions = name == "test-exceptions"
-        out = ROOT / "build" / "out" / ("x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
-        boot, kernel = build_boot(ROOT, test=test, exceptions=exceptions); esp = stage_esp(out, boot, kernel); image = make_image(esp, out / "finnos-x86_64-uefi.img"); firmware = find_ovmf(); qemu = find_tool("qemu-system-x86_64")
+        memory_map = name == "test-memory-map"
+        out = ROOT / "build" / "out" / ("x86_64-qemu-memory-map" if memory_map else "x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
+        boot, kernel = build_boot(ROOT, test=test, exceptions=exceptions, memory_map=memory_map); esp = stage_esp(out, boot, kernel); image = make_image(esp, out / "finnos-x86_64-uefi.img"); firmware = find_ovmf(); qemu = find_tool("qemu-system-x86_64")
         if not firmware or not qemu: raise RuntimeError("QEMU and OVMF are required")
-        args = qemu_command(qemu, str(firmware), image, headless=name != "run", test_exit=test or exceptions); print("$ " + " ".join(args), flush=True)
-        if test or exceptions:
+        args = qemu_command(qemu, str(firmware), image, headless=name != "run", test_exit=test or exceptions or memory_map); print("$ " + " ".join(args), flush=True)
+        if test or exceptions or memory_map:
             result = subprocess.run(args, capture_output=True, text=True, timeout=float(os.environ.get("FINNOS_BOOT_TIMEOUT_SECONDS", "45")), check=False); output = result.stdout + result.stderr; print(output)
             print(f"qemu status: {result.returncode}")
             if exceptions:
                 errors = validate_exceptions(result.returncode, output)
+            elif memory_map:
+                errors = validate_memory_map(result.returncode, output)
             else:
                 errors = validate_smoke(result.returncode, output)
             if errors:
@@ -75,7 +79,7 @@ def command(name: str) -> int:
         subprocess.run(args, check=True); return 0
     if name == "test-python": subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools/tests", "-p", "test_*.py"], cwd=ROOT, check=True); return 0
     if name == "check-all":
-        for step in ("doctor", "check", "image", "test-boot", "test-exceptions"): command(step)
+        for step in ("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map"): command(step)
         return 0
     if name == "clean":
         for path in (ROOT / "target", ROOT / "build" / "out"):

@@ -9,10 +9,12 @@ from pathlib import Path
 def cargo(root: Path, args: list[str]) -> None:
     subprocess.run(["cargo", *args], cwd=root, check=True)
 
-def build_boot(root: Path, test: bool = False, exceptions: bool = False) -> tuple[Path, Path]:
-    output = root / "build" / "out" / ("x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
+def build_boot(root: Path, test: bool = False, exceptions: bool = False, memory_map: bool = False) -> tuple[Path, Path]:
+    output = root / "build" / "out" / ("x86_64-qemu-memory-map" if memory_map else "x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
     output.mkdir(parents=True, exist_ok=True)
-    if exceptions:
+    if memory_map:
+        kernel_features = "kernel-bin,qemu-test-exit,qemu-test-memory-map"
+    elif exceptions:
         kernel_features = "kernel-bin,qemu-test-exit,qemu-test-exceptions"
     elif test:
         kernel_features = "kernel-bin,qemu-test-exit"
@@ -21,7 +23,7 @@ def build_boot(root: Path, test: bool = False, exceptions: bool = False) -> tupl
     # Use a feature-specific target directory so Cargo does not reuse a binary built with
     # different feature flags. This is essential for the exception-test binary, which is the
     # only one compiled with `qemu-test-exceptions`.
-    target_dir = root / "target" / ("x86_64-unknown-none-exceptions" if exceptions else "x86_64-unknown-none-test" if test else "x86_64-unknown-none-normal")
+    target_dir = root / "target" / ("x86_64-unknown-none-memory-map" if memory_map else "x86_64-unknown-none-exceptions" if exceptions else "x86_64-unknown-none-test" if test else "x86_64-unknown-none-normal")
     cargo(root, ["build", "-p", "finn-kernel", "--bin", "finn-kernel-x86_64", "--features", kernel_features, "--target", "x86_64-unknown-none", "--target-dir", str(target_dir)])
     cargo(root, ["build", "-p", "finn-boot-uefi", "--bin", "finn-boot-x86_64", "--features", "uefi-app", "--target", "x86_64-unknown-uefi"])
     profile = "debug"

@@ -73,6 +73,8 @@ fn main() -> Status {
         Ok(page) => page,
         Err(_) => return fail("BOOTINFO_ALLOCATION_FAILED"),
     };
+    let boot_info_start = boot_info.as_ptr() as u64;
+    let boot_info_len = size_of::<BootInfo>() as u64;
     let info_ptr = boot_info.as_ptr().cast::<BootInfo>();
     // SAFETY: The page was allocated by UEFI as loader data and is retained for kernel entry.
     unsafe {
@@ -86,6 +88,10 @@ fn main() -> Status {
                 memory_map: MemoryMapInfo::default(),
                 framebuffer,
                 kernel_image: loaded,
+                boot_info_storage: PhysicalRange {
+                    start: boot_info_start,
+                    byte_len: boot_info_len,
+                },
                 rsdp_address: rsdp,
             },
         )

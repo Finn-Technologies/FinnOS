@@ -14,3 +14,4 @@ An ADR records a decision and its tradeoffs. Statuses are Proposed, Accepted, Re
 - [UEFI-first boot](0006-uefi-first-boot.md)
 - [Peony native platform](0007-peony-native-platform.md)
 - [Stable assembly exception entry](0008-stable-assembly-exception-entry.md)
+- [Boot protocol version 2 for memory map](0009-memory-map-protocol-v2.md)

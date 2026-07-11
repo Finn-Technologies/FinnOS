@@ -10,6 +10,7 @@
 pub mod arch;
 pub mod boot_validation;
 pub mod framebuffer;
+pub mod memory;
 
 /// The human-readable name of the `FinnOS` kernel.
 pub const KERNEL_NAME: &str = "Finn Kernel";

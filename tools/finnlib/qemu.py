@@ -22,6 +22,22 @@ FORBIDDEN_EXCEPTION_MARKERS = (
     "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:UNHANDLED", "FINNOS:KERNEL:PANIC",
 )
 
+MEMORY_MAP_MARKERS = (
+    "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED",
+    "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED",
+    "FINNOS:MEMORY:DESCRIPTORS=",
+    "FINNOS:MEMORY:REGIONS=",
+    "FINNOS:MEMORY:USABLE_BYTES=",
+    "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+)
+
+MEMORY_MAP_FORBIDDEN_MARKERS = (
+    "FINNOS:KERNEL:MEMORY_MAP_ERROR",
+    "FINNOS:EXCEPTION:FATAL",
+    "FINNOS:KERNEL:PANIC",
+)
+
 def validate_smoke(status: int, output: str) -> list[str]:
     errors: list[str] = []
     if status != 33: errors.append(f"expected QEMU status 33, got {status}")
@@ -30,6 +46,23 @@ def validate_smoke(status: int, output: str) -> list[str]:
     if positions != sorted(position for position in positions if position >= 0): errors.append("boot markers are out of order")
     if "FINNOS:BOOTLOADER:ERROR:" in output: errors.append("bootloader error marker found")
     if "FINNOS:KERNEL:PANIC" in output: errors.append("kernel panic marker found")
+    return errors
+
+def validate_memory_map(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in MEMORY_MAP_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing marker(s): " + ", ".join(marker for marker, position in zip(MEMORY_MAP_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0): errors.append("memory-map markers are out of order")
+    for marker in MEMORY_MAP_FORBIDDEN_MARKERS:
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
+    if "FINNOS:BOOTLOADER:ERROR:" in output: errors.append("bootloader error marker found")
+    # Require positive counts and sizes.
+    if "FINNOS:MEMORY:USABLE_BYTES=0" in output: errors.append("expected positive usable bytes")
+    if "FINNOS:MEMORY:KERNEL_BYTES=0" in output: errors.append("expected positive kernel bytes")
+    if "FINNOS:MEMORY:FRAMEBUFFER_BYTES=0" in output: errors.append("expected positive framebuffer bytes")
+    if "FINNOS:MEMORY:DESCRIPTORS=0" in output: errors.append("expected positive descriptor count")
+    if "FINNOS:MEMORY:REGIONS=0" in output: errors.append("expected positive region count")
     return errors
 
 def validate_exceptions(status: int, output: str) -> list[str]:
