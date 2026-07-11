@@ -5,6 +5,19 @@
 //! kernel binary to touch identity-mapped table pages and the CPU registers.
 #![allow(missing_docs)]
 #![allow(dead_code)]
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::len_without_is_empty,
+    clippy::manual_range_contains,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::missing_safety_doc,
+    clippy::must_use_candidate,
+    clippy::semicolon_if_nothing_returned,
+    clippy::struct_excessive_bools
+)]
 
 use crate::memory::{EarlyPhysicalPageAllocator, PAGE_SIZE, PageAllocationError, PhysicalPage};
 
