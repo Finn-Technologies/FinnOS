@@ -5,7 +5,7 @@
 
 ## Overview
 
-FinnOS receives a raw UEFI memory map from the boot manager. The kernel parses this map, classifies each region by intended use, applies protected-range exclusions, normalizes the result, and emits deterministic summary diagnostics. This milestone is about *understanding* memory, not yet *owning* or *allocating* it.
+FinnOS receives a raw UEFI memory map from the boot manager. The kernel parses this map, classifies each region by intended use, applies protected-range exclusions, normalizes the result, and emits deterministic summary diagnostics. The early physical page allocator consumes the resulting `Usable` regions; this map layer still does not reclaim firmware memory or create mappings.
 
 ## Raw UEFI descriptor handoff
 
@@ -79,11 +79,11 @@ If the final map would exceed `MAX_MEMORY_REGIONS`, the parser returns a structu
 
 - Memory is classified but not allocated.
 - Boot-services memory is not yet reclaimed.
-- There is no physical page allocator.
+- The physical page allocator uses only `Usable` regions and does not reclaim boot-services or runtime-services memory.
 - There are no FinnOS-owned page tables.
 - There is no kernel heap.
 - x86-64 UEFI QEMU only.
 
 ## Next step
 
-The next Kernel Core issue is expected to be the physical page allocator, which will consume the classified memory map produced by this milestone.
+The next Kernel Core step is FinnOS-owned x86-64 page tables, which can consume physical addresses returned by the allocator.

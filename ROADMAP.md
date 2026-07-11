@@ -23,6 +23,10 @@ Objective: install a FinnOS-owned GDT, TSS, IDT, and deterministic exception han
 
 Objective: parse and classify the UEFI memory map into validated FinnOS memory regions. Non-goal: allocating pages, reclaiming runtime-service memory, creating virtual mappings.
 
+### 3.3 Early physical page allocation — Complete for x86-64 QEMU
+
+Objective: allocate and release aligned physical pages from classified usable memory using fixed-capacity metadata. Non-goal: page tables, mappings, heaps, or reclamation of firmware memory.
+
 ## 4. First User Space — Planned
 
 Objective: start isolated services and a minimal runtime. Completion requires service startup and failure diagnostics. Non-goal: desktop applications.

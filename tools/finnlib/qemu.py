@@ -6,6 +6,7 @@ MARKERS = (
     "FINNOS:BOOTLOADER:KERNEL_LOADED", "FINNOS:BOOTLOADER:FRAMEBUFFER_READY", "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
     "FINNOS:KERNEL:ENTRY", "FINNOS:KERNEL:GDT_OK", "FINNOS:KERNEL:TSS_OK", "FINNOS:KERNEL:IDT_OK",
     "FINNOS:KERNEL:EXCEPTIONS_READY", "FINNOS:KERNEL:BOOTINFO_OK", "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED", "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED", "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
     "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
 )
 
@@ -29,7 +30,20 @@ MEMORY_MAP_MARKERS = (
     "FINNOS:MEMORY:DESCRIPTORS=",
     "FINNOS:MEMORY:REGIONS=",
     "FINNOS:MEMORY:USABLE_BYTES=",
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
     "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+)
+
+PAGE_ALLOCATOR_MARKERS = (
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:TEST:PAGE_ALLOCATOR:BEGIN",
+    "FINNOS:TEST:PAGE_ALLOCATOR:SINGLE_ALLOC_OK",
+    "FINNOS:TEST:PAGE_ALLOCATOR:CONTIGUOUS_ALLOC_OK",
+    "FINNOS:TEST:PAGE_ALLOCATOR:REUSE_OK",
+    "FINNOS:TEST:PAGE_ALLOCATOR:FREE_OK",
+    "FINNOS:TEST:PAGE_ALLOCATOR:DOUBLE_FREE_REJECTED",
+    "FINNOS:TEST:PAGE_ALLOCATOR:INVARIANTS_OK",
+    "FINNOS:TEST:PAGE_ALLOCATOR:PASS",
 )
 
 MEMORY_MAP_FORBIDDEN_MARKERS = (
@@ -74,6 +88,16 @@ def validate_exceptions(status: int, output: str) -> list[str]:
     for marker in FORBIDDEN_EXCEPTION_MARKERS:
         if marker in output: errors.append(f"forbidden marker found: {marker}")
     if "FINNOS:BOOTLOADER:ERROR:" in output: errors.append("bootloader error marker found")
+    return errors
+
+def validate_page_allocator(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in PAGE_ALLOCATOR_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing marker(s): " + ", ".join(marker for marker, position in zip(PAGE_ALLOCATOR_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0): errors.append("page-allocator markers are out of order")
+    for marker in ("FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR", "FINNOS:EXCEPTION:FATAL", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:KERNEL:PANIC"):
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
     return errors
 
 def qemu_command(qemu: str, firmware: str, image: Path, headless: bool = False, test_exit: bool = False) -> list[str]:

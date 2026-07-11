@@ -4,6 +4,7 @@
 //! manager and converts it into architecture-neutral, classified memory
 //! regions. It does not allocate memory; all tables use fixed-capacity arrays.
 
+pub mod allocator;
 pub mod map;
 pub mod region;
 pub mod uefi;
@@ -11,6 +12,10 @@ pub mod uefi;
 #[cfg(test)]
 mod tests;
 
+pub use allocator::{
+    EarlyPhysicalPageAllocator, MAX_FREE_EXTENTS, MAX_MANAGED_EXTENTS, PAGE_SIZE,
+    PageAllocationError, PageRange, PhysicalPage,
+};
 pub use map::{MemoryMapSummary, RegionTable, parse_and_classify, validate_table};
 pub use region::{
     MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionKind, MemoryRegionSource, UefiMemoryType,

@@ -9,7 +9,7 @@ use finn_kernel::{
     arch::x86_64::qemu,
     boot_validation::validate_pointer,
     framebuffer::{encode_pixel, pixel_offset},
-    memory::parse_and_classify,
+    memory::{EarlyPhysicalPageAllocator, parse_and_classify},
 };
 
 core::arch::global_asm!(
@@ -95,7 +95,38 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                         failure();
                     }
                 }
-                let _ = table;
+                #[allow(unused_mut)]
+                let mut allocator = match EarlyPhysicalPageAllocator::from_memory_regions(&table) {
+                    Ok(allocator) => allocator,
+                    Err(error) => {
+                        finn_kernel::serial_log!(
+                            "FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR:{:?}\n",
+                            error
+                        );
+                        failure();
+                    }
+                };
+                if allocator.check_invariants().is_err() || allocator.free_pages() == 0 {
+                    finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR:INVALID_STATE\n");
+                    failure();
+                }
+                finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_ALLOCATOR_READY\n");
+                finn_kernel::serial_log!("FINNOS:MEMORY:TOTAL_PAGES={}\n", allocator.total_pages());
+                finn_kernel::serial_log!("FINNOS:MEMORY:FREE_PAGES={}\n", allocator.free_pages());
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:ALLOCATED_PAGES={}\n",
+                    allocator.allocated_pages()
+                );
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:MANAGED_EXTENTS={}\n",
+                    allocator.managed_extent_count()
+                );
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:FREE_EXTENTS={}\n",
+                    allocator.free_extent_count()
+                );
+                #[cfg(feature = "qemu-test-page-allocator")]
+                run_page_allocator_test(&mut allocator);
             }
             Err(error) => {
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:{:?}\n", error);
@@ -129,6 +160,63 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
     }
 
     qemu::exit(0x10)
+}
+
+#[cfg(feature = "qemu-test-page-allocator")]
+fn run_page_allocator_test(allocator: &mut EarlyPhysicalPageAllocator) -> ! {
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:BEGIN\n");
+    let initial = allocator.free_pages();
+    let first = allocator
+        .allocate_page()
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    assert!(
+        first
+            .start_address()
+            .is_multiple_of(finn_kernel::memory::PAGE_SIZE)
+    );
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:SINGLE_ALLOC_OK\n");
+    let contiguous = allocator
+        .allocate_contiguous(4)
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    assert!(contiguous.start_address() != first.start_address());
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:CONTIGUOUS_ALLOC_OK\n");
+    allocator
+        .deallocate(page_range_from_page(first))
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    let reused = allocator
+        .allocate_page()
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    assert_eq!(reused, first);
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:REUSE_OK\n");
+    allocator
+        .deallocate(page_range_from_page(reused))
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    allocator
+        .deallocate(contiguous)
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    assert_eq!(allocator.free_pages(), initial);
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:FREE_OK\n");
+    if allocator.deallocate(page_range_from_page(reused)).is_ok() {
+        page_allocator_failure(finn_kernel::memory::PageAllocationError::CorruptAllocatorState);
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:DOUBLE_FREE_REJECTED\n");
+    allocator
+        .check_invariants()
+        .unwrap_or_else(|error| page_allocator_failure(error));
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:INVARIANTS_OK\n");
+    finn_kernel::serial_log!("FINNOS:TEST:PAGE_ALLOCATOR:PASS\n");
+    qemu::exit(0x10)
+}
+
+#[cfg(feature = "qemu-test-page-allocator")]
+fn page_allocator_failure(error: finn_kernel::memory::PageAllocationError) -> ! {
+    finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR:{:?}\n", error);
+    failure()
+}
+
+#[cfg(feature = "qemu-test-page-allocator")]
+fn page_range_from_page(page: finn_kernel::memory::PhysicalPage) -> finn_kernel::memory::PageRange {
+    finn_kernel::memory::PageRange::new(page.start_address(), 1).expect("validated page")
 }
 
 fn draw(info: &BootInfo) {
