@@ -3,14 +3,18 @@
 /// Size of the dedicated double-fault IST stack.
 const DOUBLE_FAULT_STACK_SIZE: usize = 64 * 1024;
 
-/// Alignment for the double-fault IST stack.
+/// Alignment for the dedicated double-fault IST stack.
 const DOUBLE_FAULT_STACK_ALIGN: usize = 4096;
 
 /// x86-64 Task State Segment.
 ///
 /// Only the fields used by the early kernel are represented. Reserved fields are explicitly
 /// zero-initialized.
-#[repr(C, packed)]
+///
+/// The layout matches the x86-64 architectural TSS. The original `u64` reserved fields at offsets
+/// 28 and 92 are represented as pairs of `u32` so the struct remains naturally aligned without
+/// needing `#[repr(C, packed)]`.
+#[repr(C)]
 pub struct TSS {
     _reserved0: u32,
     /// Privilege level 0 stack pointer (low half).
@@ -25,17 +29,19 @@ pub struct TSS {
     pub rsp2_low: u32,
     /// Privilege level 2 stack pointer (high half).
     pub rsp2_high: u32,
-    _reserved1: u64,
+    _reserved1_low: u32,
+    _reserved1_high: u32,
     /// Interrupt stack table entries.
     pub ist: [ISTEntry; 7],
-    _reserved2: u64,
+    _reserved2_low: u32,
+    _reserved2_high: u32,
     _reserved3: u16,
     /// I/O map base address. Set to the size of the TSS so no bitmap is exposed.
     pub io_map_base: u16,
 }
 
 /// A single Interrupt Stack Table entry, split into low and high halves.
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ISTEntry {
     /// Low 32 bits of the stack pointer.
@@ -63,9 +69,11 @@ impl TSS {
             rsp1_high: 0,
             rsp2_low: 0,
             rsp2_high: 0,
-            _reserved1: 0,
+            _reserved1_low: 0,
+            _reserved1_high: 0,
             ist: [ISTEntry { low: 0, high: 0 }; 7],
-            _reserved2: 0,
+            _reserved2_low: 0,
+            _reserved2_high: 0,
             _reserved3: 0,
             io_map_base: 0,
         }
@@ -79,12 +87,8 @@ impl TSS {
 
     /// Set an IST entry to a 64-bit stack top.
     pub fn set_ist(&mut self, index: usize, value: u64) {
-        // SAFETY: `ISTEntry` is packed; use a raw pointer to avoid unaligned references.
-        let entry = &mut self.ist[index] as *mut ISTEntry;
-        unsafe {
-            (*entry).low = (value & 0xffff_ffff) as u32;
-            (*entry).high = (value >> 32) as u32;
-        }
+        self.ist[index].low = (value & 0xffff_ffff) as u32;
+        self.ist[index].high = (value >> 32) as u32;
     }
 
     /// Return the I/O map base value.
@@ -197,7 +201,7 @@ mod tests {
         unsafe {
             init(&mut tss, 0);
         }
-        let ist1 = (tss.ist[0].high as u64) << 32 | (tss.ist[0].low as u64);
+        let ist1 = (u64::from(tss.ist[0].high) << 32) | u64::from(tss.ist[0].low);
         assert_eq!(ist1, double_fault_stack_top());
     }
 

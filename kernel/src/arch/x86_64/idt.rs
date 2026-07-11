@@ -9,7 +9,7 @@ const IDT_ENTRIES: usize = 256;
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::empty(); IDT_ENTRIES];
 
 /// x86-64 IDT gate descriptor.
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IdtEntry {
     /// Low 16 bits of the handler offset.
