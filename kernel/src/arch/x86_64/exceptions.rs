@@ -747,50 +747,53 @@ pub unsafe fn run_exception_tests() {
         qemu::exit(0x10);
     }
 
-    serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
-    TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
-    // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an
-    // exception that pushes a frame and runs a handler; no memory or stack behavior
-    // is declared for the instruction itself.
-    unsafe {
-        core::arch::asm!("int3");
-    }
-    serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
+    #[cfg(not(feature = "qemu-test-exceptions"))]
+    {
+        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
+        TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
+        // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an
+        // exception that pushes a frame and runs a handler; no memory or stack behavior
+        // is declared for the instruction itself.
+        unsafe {
+            core::arch::asm!("int3");
+        }
+        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
 
-    serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
-    TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
-    // SAFETY: `ud2` is a controlled invalid-opcode in the test feature. It intentionally
-    // does not return through the ordinary path; the CPU raises #UD and the handler exits.
-    // No memory or stack behavior is declared for the instruction itself.
-    unsafe {
-        core::arch::asm!("ud2");
+        serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
+        TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
+        // SAFETY: `ud2` is a controlled invalid-opcode in the test feature. It intentionally
+        // does not return through the ordinary path; the CPU raises #UD and the handler exits.
+        // No memory or stack behavior is declared for the instruction itself.
+        unsafe {
+            core::arch::asm!("ud2");
+        }
+        // `ud2` should not return; if it does, the test failed.
+        fatal(
+            &ExceptionFrame {
+                rax: 0,
+                rbx: 0,
+                rcx: 0,
+                rdx: 0,
+                rsi: 0,
+                rdi: 0,
+                rbp: 0,
+                r8: 0,
+                r9: 0,
+                r10: 0,
+                r11: 0,
+                r12: 0,
+                r13: 0,
+                r14: 0,
+                r15: 0,
+                vector: 0,
+                error_code: 0,
+                rip: 0,
+                cs: 0,
+                rflags: 0,
+            },
+            "INVALID_OPCODE_DID_NOT_FAULT",
+        );
     }
-    // `ud2` should not return; if it does, the test failed.
-    fatal(
-        &ExceptionFrame {
-            rax: 0,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp: 0,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-            vector: 0,
-            error_code: 0,
-            rip: 0,
-            cs: 0,
-            rflags: 0,
-        },
-        "INVALID_OPCODE_DID_NOT_FAULT",
-    );
 }
 
 #[cfg(test)]
