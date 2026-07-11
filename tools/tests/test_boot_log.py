@@ -1,6 +1,6 @@
 import unittest
 
-from tools.finnlib.qemu import MARKERS, PAGE_ALLOCATOR_MARKERS, validate_page_allocator, validate_smoke
+from tools.finnlib.qemu import MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, validate_page_allocator, validate_page_tables, validate_smoke
 
 class BootLogTests(unittest.TestCase):
     def test_markers_in_order(self):
@@ -19,5 +19,16 @@ class BootLogTests(unittest.TestCase):
         self.assertTrue(validate_page_allocator(35, "\n".join(PAGE_ALLOCATOR_MARKERS)))
         self.assertTrue(validate_page_allocator(33, "\n".join(PAGE_ALLOCATOR_MARKERS[:-1])))
         self.assertTrue(validate_page_allocator(33, "\n".join(PAGE_ALLOCATOR_MARKERS) + "\nFINNOS:KERNEL:PAGE_ALLOCATOR_ERROR"))
+
+    def test_page_table_markers_and_status(self):
+        self.assertEqual(validate_page_tables(33, "\n".join(PAGE_TABLE_MARKERS)), [])
+        self.assertTrue(validate_page_tables(35, "\n".join(PAGE_TABLE_MARKERS)))
+        self.assertTrue(validate_page_tables(33, "\n".join(PAGE_TABLE_MARKERS[:-1])))
+        self.assertTrue(validate_page_tables(33, "\n".join(PAGE_TABLE_MARKERS) + "\nFINNOS:KERNEL:PAGE_TABLE_ERROR"))
+
+    def test_page_table_unexpected_fault_and_order(self):
+        output = "\n".join(PAGE_TABLE_MARKERS[:-1]) + "\nFINNOS:EXCEPTION:PAGE_FAULT"
+        errors = validate_page_tables(33, output)
+        self.assertTrue(any("unexpected page fault" in error for error in errors))
 
 if __name__ == "__main__": unittest.main()

@@ -1,5 +1,7 @@
 //! `FinnOS` x86-64 exception dispatch and handlers.
 
+#[cfg(feature = "qemu-test-page-tables")]
+use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::idt;
@@ -95,6 +97,8 @@ impl PageFaultErrorCode {
 
 /// Atomic test state for the controlled exception test feature.
 static TEST_STATE: AtomicU8 = AtomicU8::new(TestState::Idle as u8);
+#[cfg(feature = "qemu-test-page-tables")]
+static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
 /// Permanently resident Task State Segment used by the early exception foundation.
 static mut EXCEPTION_TSS: TSS = TSS::new();
@@ -111,6 +115,10 @@ enum TestState {
     BreakpointHandled = 2,
     /// An invalid-opcode exception is expected next.
     InvalidOpcodeExpected = 3,
+    /// A supervisor read from the scratch page is expected next.
+    PageFaultExpected = 4,
+    /// The expected scratch-page fault was handled exactly once.
+    PageFaultHandled = 5,
 }
 
 /// Normalized exception frame built by the assembly entry stubs.
@@ -624,7 +632,36 @@ fn handle_page_fault(frame: &ExceptionFrame) {
         shadow = error.shadow_stack(),
         sgx = error.sgx(),
     ));
+    #[cfg(feature = "qemu-test-page-tables")]
+    {
+        let expected = EXPECTED_PAGE_FAULT_ADDRESS.load(Ordering::SeqCst);
+        if cr2 == expected
+            && !error.present()
+            && !error.write()
+            && !error.user()
+            && !error.reserved_violation()
+            && !error.instruction_fetch()
+            && TEST_STATE
+                .compare_exchange(
+                    TestState::PageFaultExpected as u8,
+                    TestState::PageFaultHandled as u8,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            serial::log(format_args!("FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_PASS\n"));
+            qemu::exit(0x10);
+        }
+    }
     fatal(frame, "PAGE_FAULT");
+}
+
+/// Arm the single controlled supervisor-read page-fault test.
+#[cfg(feature = "qemu-test-page-tables")]
+pub fn expect_non_present_read(address: u64) {
+    EXPECTED_PAGE_FAULT_ADDRESS.store(address, Ordering::SeqCst);
+    TEST_STATE.store(TestState::PageFaultExpected as u8, Ordering::SeqCst);
 }
 
 fn handle_unhandled(frame: &ExceptionFrame) {

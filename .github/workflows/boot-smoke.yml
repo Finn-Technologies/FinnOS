@@ -27,3 +27,5 @@ jobs:
         run: ./tools/finn test-memory-map
       - name: Run physical page allocator integration test
         run: ./tools/finn test-page-allocator
+      - name: Run page-table integration test
+        run: ./tools/finn test-page-tables

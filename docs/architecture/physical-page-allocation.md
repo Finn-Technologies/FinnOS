@@ -33,3 +33,4 @@ early-boot phase. Boot-services and runtime-services memory are not reclaimed;
 there is no FinnOS-owned page-table manager, kernel heap, user-space allocator,
 NUMA support, or huge-page support. The next step is FinnOS-owned x86-64 page
 tables.
+The page-table builder consumes a fixed 64-page reservation from the early allocator. This is table storage, not a general heap, and the independent allocator QEMU test intentionally completes before that reservation.

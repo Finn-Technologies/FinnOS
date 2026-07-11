@@ -87,3 +87,4 @@ If the final map would exceed `MAX_MEMORY_REGIONS`, the parser returns a structu
 ## Next step
 
 The next Kernel Core step is FinnOS-owned x86-64 page tables, which can consume physical addresses returned by the allocator.
+The classified ranges remain the source of physical-page ownership while paging is built; page-table storage is reserved from `Usable` pages and is not returned while active.

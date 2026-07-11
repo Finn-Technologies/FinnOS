@@ -11,6 +11,10 @@ Objective: establish architecture, governance, build metadata, and a minimal ker
 
 Objective: load a minimal kernel through UEFI in x86-64 QEMU. The boot contract, diagnostics, real FAT image, separate kernel ELF, framebuffer handoff, and automated smoke test are complete. Non-goal: user space.
 
+### 3.4 FinnOS-owned x86-64 page tables — Complete for x86-64 QEMU
+
+Objective: construct and activate a FinnOS-owned four-level address space with protected kernel mappings, stack guard pages, resource mappings, validation, and deterministic page-table testing. Non-goal: user address spaces, demand paging, swapping, or the final higher-half layout. The next planned task remains the early kernel heap.
+
 ## 3. Kernel Core — In Progress
 
 Objective: implement initial privileged primitives. Deliverables include objects, memory, scheduling, interrupts, and IPC foundations. Completion requires reviewed invariants and tests. Non-goal: broad hardware.

@@ -14,3 +14,4 @@ The kernel also initializes a fixed-capacity early physical page allocator from 
 Planned concerns include architecture boundaries, failure behavior, and security and performance tradeoffs. Exact scheduler algorithms, syscall numbers, object layouts, and memory policies are unresolved. The current implementation boots only the diagnostic x86-64 path and contains no scheduling, virtual memory manager, IPC, or kernel heap beyond boot validation, exception dispatch, memory-map parsing, early physical page allocation, serial output, and framebuffer diagnostics.
 
 Non-goals for this stage are compatibility with another kernel and premature ABI commitments. Open questions include service restart semantics, resource accounting, and the final object model.
+After physical allocation, the x86-64 path builds and activates a FinnOS-owned identity-mapped address space. See [x86-64 virtual memory](x86_64-virtual-memory.md).
