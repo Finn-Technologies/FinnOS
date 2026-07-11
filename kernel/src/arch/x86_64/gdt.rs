@@ -1,4 +1,4 @@
-//! FinnOS-owned x86-64 Global Descriptor Table.
+//! `FinnOS`-owned x86-64 Global Descriptor Table.
 
 use super::tss::TSS;
 
@@ -34,7 +34,7 @@ const fn encode_descriptor(base: u32, limit: u32, access: u8, flags: u8) -> u64 
     let mut descriptor: u64 = 0;
     descriptor |= (limit & 0xffff) as u64;
     descriptor |= ((base & 0x00ff_ffff) as u64) << 16;
-    descriptor |= ((access & 0xff) as u64) << 40;
+    descriptor |= (access as u64) << 40;
     descriptor |= ((limit >> 16) as u64 & 0xf) << 48;
     descriptor |= ((flags & 0xf) as u64) << 52;
     descriptor |= ((base >> 24) as u64 & 0xff) << 56;
@@ -69,7 +69,8 @@ pub const fn tss_descriptor_low(tss_base: u64, tss_limit: u32) -> u64 {
     let mut descriptor: u64 = (limit & 0xffff) as u64;
     descriptor |= ((base & 0x00ff_ffff) as u64) << 16;
     // Present, ring 0, available 64-bit TSS.
-    descriptor |= (0b1000_1001 as u64) << 40;
+    const TSS_ACCESS: u64 = 0b1000_1001;
+    descriptor |= TSS_ACCESS << 40;
     descriptor |= (((limit >> 16) & 0xf) as u64) << 48;
     descriptor |= (((base >> 24) & 0xff) as u64) << 56;
     descriptor
@@ -101,7 +102,7 @@ pub unsafe fn init(tss: &TSS) {
         (*gdt)[1] = kernel_code_descriptor();
         (*gdt)[2] = kernel_data_descriptor();
     }
-    let tss_base = tss as *const TSS as usize as u64;
+    let tss_base = core::ptr::from_ref(tss) as usize as u64;
     let tss_limit = core::mem::size_of::<TSS>() as u64 - 1;
     unsafe {
         (*gdt)[3] = tss_descriptor_low(tss_base, tss_limit as u32);

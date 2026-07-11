@@ -195,6 +195,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn tss_ist1_matches_double_fault_stack_top() {
         let mut tss = TSS::new();
         unsafe {

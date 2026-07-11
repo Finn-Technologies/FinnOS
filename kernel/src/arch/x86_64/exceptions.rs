@@ -1,4 +1,4 @@
-//! FinnOS x86-64 exception dispatch and handlers.
+//! `FinnOS` x86-64 exception dispatch and handlers.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -122,7 +122,7 @@ enum TestState {
 /// Three hardware frame variants exist on x86-64:
 ///
 /// 1. Ring-0 exception without an IST or privilege transition: the CPU pushes `rip`, `cs`, and
-///    `rflags`. Error-code exceptions also push an error code. This is the current FinnOS case.
+///    `rflags`. Error-code exceptions also push an error code. This is the current `FinnOS` case.
 ///
 /// 2. Exception using an IST stack (including double fault): the CPU switches to the IST stack
 ///    and pushes the same frame as case 1, but on the new stack. The `ExceptionFrame` describes
@@ -536,6 +536,7 @@ pub unsafe fn init() {
 extern "C" fn rust_exception_dispatch(frame: *const ExceptionFrame) {
     // SAFETY: The assembly stubs always pass a valid, aligned frame pointer.
     let frame = unsafe { &*frame };
+    #[allow(clippy::cast_possible_truncation)]
     match frame.vector as u8 {
         VECTOR_BREAKPOINT => handle_breakpoint(frame),
         VECTOR_INVALID_OPCODE => handle_invalid_opcode(frame),

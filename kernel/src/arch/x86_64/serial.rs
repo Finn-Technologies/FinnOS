@@ -20,7 +20,7 @@ impl Serial {
         out(COM1 + 4, 3);
     }
     #[allow(unsafe_code)]
-    fn write_byte(&mut self, byte: u8) {
+    fn write_byte(&self, byte: u8) {
         while inp(COM1 + 5) & 0x20 == 0 {}
         out(COM1, byte);
     }

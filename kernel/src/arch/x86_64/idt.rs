@@ -1,4 +1,4 @@
-//! FinnOS-owned x86-64 Interrupt Descriptor Table.
+//! `FinnOS`-owned x86-64 Interrupt Descriptor Table.
 
 use super::gdt::KERNEL_CODE_SELECTOR;
 
@@ -263,10 +263,10 @@ mod tests {
     fn build_exception_idt_uses_kernel_code_selector() {
         let addresses = HandlerAddresses::new();
         let idt = build_exception_idt(&addresses);
-        for vector in 0..32 {
+        for (vector, entry) in idt.iter().enumerate().take(32) {
             // The selector field is stored as a u16; reconstruct it from the packed entry.
-            let selector = (idt[vector].selector as u16) & 0xfff8;
-            assert_eq!(selector, KERNEL_CODE_SELECTOR);
+            let selector = entry.selector & 0xfff8;
+            assert_eq!(selector, KERNEL_CODE_SELECTOR, "vector {vector}");
         }
     }
 

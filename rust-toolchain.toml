@@ -1,6 +1,5 @@
 [toolchain]
-# Pinned so local development and CI use the same compiler/clippy version.
-channel = "1.97.0"
+channel = "stable"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
 targets = ["x86_64-unknown-none", "x86_64-unknown-uefi"]
