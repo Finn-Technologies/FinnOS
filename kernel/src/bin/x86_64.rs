@@ -9,6 +9,7 @@ use finn_kernel::{
     arch::x86_64::qemu,
     boot_validation::validate_pointer,
     framebuffer::{encode_pixel, pixel_offset},
+    memory::parse_and_classify,
 };
 
 core::arch::global_asm!(
@@ -58,6 +59,49 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
             info.memory_map.byte_len,
             info.memory_map.descriptor_size
         );
+        match parse_and_classify(info) {
+            Ok((table, summary)) => {
+                finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_PARSED\n");
+                finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED\n");
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:DESCRIPTORS={}\n",
+                    summary.descriptor_count
+                );
+                finn_kernel::serial_log!("FINNOS:MEMORY:REGIONS={}\n", summary.region_count);
+                finn_kernel::serial_log!("FINNOS:MEMORY:USABLE_BYTES={}\n", summary.usable_bytes);
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:RESERVED_BYTES={}\n",
+                    summary.reserved_bytes
+                );
+                finn_kernel::serial_log!("FINNOS:MEMORY:KERNEL_BYTES={}\n", summary.kernel_bytes);
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:FRAMEBUFFER_BYTES={}\n",
+                    summary.framebuffer_bytes
+                );
+                #[cfg(feature = "qemu-test-memory-map")]
+                {
+                    if summary.usable_bytes == 0 {
+                        finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_USABLE\n");
+                        failure();
+                    }
+                    if summary.kernel_bytes == 0 {
+                        finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_KERNEL\n");
+                        failure();
+                    }
+                    if summary.framebuffer_bytes == 0 {
+                        finn_kernel::serial_log!(
+                            "FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_FRAMEBUFFER\n"
+                        );
+                        failure();
+                    }
+                }
+                let _ = table;
+            }
+            Err(error) => {
+                finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:{:?}\n", error);
+                failure();
+            }
+        }
     } else {
         finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_OK absent\n");
     }

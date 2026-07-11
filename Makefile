@@ -39,6 +39,12 @@ run-headless:
 test-boot:
 	./tools/finn test-boot
 
+test-exceptions:
+	./tools/finn test-exceptions
+
+test-memory-map:
+	./tools/finn test-memory-map
+
 check-all:
 	./tools/finn check-all
 

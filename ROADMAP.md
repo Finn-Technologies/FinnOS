@@ -19,7 +19,7 @@ Objective: implement initial privileged primitives. Deliverables include objects
 
 Objective: install a FinnOS-owned GDT, TSS, IDT, and deterministic exception handlers. Automated QEMU breakpoint and invalid-opcode tests pass. Non-goal: external IRQs, timer interrupts, user-mode exceptions, page-fault recovery.
 
-### 3.2 Memory-map parsing — Next
+### 3.2 Memory-map parsing — Complete for x86-64 QEMU
 
 Objective: parse and classify the UEFI memory map into validated FinnOS memory regions. Non-goal: allocating pages, reclaiming runtime-service memory, creating virtual mappings.
 

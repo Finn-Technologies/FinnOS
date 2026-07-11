@@ -35,6 +35,8 @@ Current validation only builds and tests the foundational Rust crate. Target fil
 ./tools/finn image
 ./tools/finn run
 ./tools/finn test-boot
+./tools/finn test-exceptions
+./tools/finn test-memory-map
 ./tools/finn check-all
 ```
 

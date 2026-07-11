@@ -7,7 +7,7 @@
 /// Magic identifying a `FinnOS` boot-information structure (`FINNOSBI`).
 pub const BOOT_INFO_MAGIC: u64 = 0x4649_4E4E_4F53_4249;
 /// Version of the C-compatible boot protocol.
-pub const BOOT_PROTOCOL_VERSION: u32 = 1;
+pub const BOOT_PROTOCOL_VERSION: u32 = 2;
 /// A framebuffer is present and directly writable.
 pub const BOOT_FLAG_FRAMEBUFFER_PRESENT: u64 = 1 << 0;
 /// A raw UEFI memory map is present.
@@ -106,6 +106,8 @@ pub struct BootInfo {
     pub framebuffer: FramebufferInfo,
     /// Loaded kernel physical range.
     pub kernel_image: PhysicalRange,
+    /// `BootInfo` structure physical range (retained by the loader).
+    pub boot_info_storage: PhysicalRange,
     /// Physical ACPI RSDP address, if present.
     pub rsdp_address: u64,
 }
@@ -135,6 +137,10 @@ impl BootInfo {
                 pixel_format: PixelFormat::Unknown,
             },
             kernel_image: PhysicalRange {
+                start: 0,
+                byte_len: 0,
+            },
+            boot_info_storage: PhysicalRange {
                 start: 0,
                 byte_len: 0,
             },
@@ -180,6 +186,8 @@ pub fn validate(info: &BootInfo) -> Result<(), BootInfoError> {
             || info.memory_map.byte_len == 0
             || info.memory_map.descriptor_size == 0
             || info.memory_map.descriptor_size > info.memory_map.byte_len
+            || info.boot_info_storage.start == 0
+            || info.boot_info_storage.byte_len == 0
         {
             return Err(BootInfoError::InvalidMemoryMap);
         }
@@ -229,9 +237,11 @@ mod tests {
     #[test]
     fn rejects_version_and_size() {
         let mut info = BootInfo::empty();
-        info.version = 2;
+        info.version = 3;
         assert_eq!(validate(&info), Err(BootInfoError::UnsupportedVersion));
-        info.version = 1;
+        info.version = BOOT_PROTOCOL_VERSION + 1;
+        assert_eq!(validate(&info), Err(BootInfoError::UnsupportedVersion));
+        info.version = BOOT_PROTOCOL_VERSION;
         info.structure_size = 0;
         assert_eq!(validate(&info), Err(BootInfoError::UnexpectedStructureSize));
     }

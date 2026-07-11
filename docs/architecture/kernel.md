@@ -7,6 +7,8 @@ FinnOS is pursuing a hybrid microkernel direction. The privileged kernel is expe
 
 The x86-64 exception foundation is now in place: a FinnOS-owned GDT, TSS with a dedicated double-fault IST stack, IDT, and assembly exception-entry stubs dispatch breakpoint, invalid-opcode, double-fault, general-protection, and page-fault exceptions. See [x86-64 exceptions](x86_64-exceptions.md) for details.
 
-Planned concerns include architecture boundaries, failure behavior, and security and performance tradeoffs. Exact scheduler algorithms, syscall numbers, object layouts, and memory policies are unresolved. The current implementation boots only the diagnostic x86-64 path and contains no scheduling, physical or virtual memory manager, IPC, or kernel core beyond boot validation, exception dispatch, serial output, and framebuffer diagnostics.
+The kernel now parses and classifies the raw UEFI memory map into architecture-neutral `MemoryRegion` records. The parser validates descriptor metadata, decodes descriptors safely from `&[u8]`, maps UEFI types to conservative FinnOS classifications, and excludes the kernel image, `BootInfo` storage, raw memory-map storage, and framebuffer before producing a sorted, non-overlapping, normalized region table. See [physical memory map](physical-memory-map.md) for details.
+
+Planned concerns include architecture boundaries, failure behavior, and security and performance tradeoffs. Exact scheduler algorithms, syscall numbers, object layouts, and memory policies are unresolved. The current implementation boots only the diagnostic x86-64 path and contains no scheduling, physical or virtual memory manager, IPC, or kernel core beyond boot validation, exception dispatch, memory-map parsing, serial output, and framebuffer diagnostics.
 
 Non-goals for this stage are compatibility with another kernel and premature ABI commitments. Open questions include service restart semantics, resource accounting, and the final object model.
