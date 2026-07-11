@@ -51,7 +51,6 @@ pub struct ISTEntry {
 }
 
 impl Default for TSS {
-    #[must_use]
     fn default() -> Self {
         Self::new()
     }

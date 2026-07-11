@@ -38,9 +38,15 @@ def _make_image_linux(esp: Path, output: Path) -> Path:
         subprocess.run([mkfs, "-F", "32", str(image)], check=True, capture_output=True)
         # Copy the ESP tree into the image using mtools. Create directories first,
         # then copy files.
-        directories = sorted({src.relative_to(esp).parent for src in esp.rglob("*") if src.is_file()})
-        for directory in directories:
-            path = "/".join(directory.parts)
+        directories: set[Path] = set()
+        for src in esp.rglob("*"):
+            if src.is_file():
+                directory = src.relative_to(esp).parent
+                while directory != Path("."):
+                    directories.add(directory)
+                    directory = directory.parent
+        for directory in sorted(directories, key=lambda p: p.parts):
+            path = directory.as_posix()
             subprocess.run([mmd, "-i", str(image), f"::{path}"], check=True, capture_output=True)
         for src in esp.rglob("*"):
             if src.is_file():

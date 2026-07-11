@@ -29,7 +29,6 @@ pub struct IdtEntry {
 }
 
 impl Default for IdtEntry {
-    #[must_use]
     fn default() -> Self {
         Self::empty()
     }
@@ -106,7 +105,6 @@ pub struct HandlerAddresses {
 }
 
 impl Default for HandlerAddresses {
-    #[must_use]
     fn default() -> Self {
         Self::new()
     }
