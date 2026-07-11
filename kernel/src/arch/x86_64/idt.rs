@@ -199,6 +199,7 @@ pub unsafe fn load() {
     // `IDT` is a permanently resident static array.
     let idt = &raw const IDT;
     let pointer = IdtPointer {
+        #[allow(clippy::cast_possible_truncation)]
         limit: (core::mem::size_of::<[IdtEntry; IDT_ENTRIES]>() - 1) as u16,
         base: idt as u64,
     };
@@ -207,7 +208,7 @@ pub unsafe fn load() {
     unsafe {
         core::arch::asm! {
             "lidt [rdi]",
-            in("rdi") &pointer,
+            in("rdi") core::ptr::addr_of!(pointer),
             options(nostack, preserves_flags)
         };
     }
@@ -274,11 +275,11 @@ mod tests {
     fn build_exception_idt_ordinary_vectors_use_ist_zero() {
         let addresses = HandlerAddresses::new();
         let idt = build_exception_idt(&addresses);
-        for vector in 0..32 {
+        for (vector, entry) in idt.iter().enumerate().take(32) {
             if vector == 8 {
                 continue;
             }
-            assert_eq!(idt[vector].ist(), 0, "vector {} should not use IST", vector);
+            assert_eq!(entry.ist(), 0, "vector {vector} should not use IST");
         }
     }
 

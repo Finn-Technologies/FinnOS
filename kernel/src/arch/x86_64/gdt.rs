@@ -64,12 +64,12 @@ pub const fn kernel_data_descriptor() -> u64 {
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
 pub const fn tss_descriptor_low(tss_base: u64, tss_limit: u32) -> u64 {
+    // Present, ring 0, available 64-bit TSS.
+    const TSS_ACCESS: u64 = 0b1000_1001;
     let base = tss_base as u32;
     let limit = tss_limit & 0x000f_ffff;
     let mut descriptor: u64 = (limit & 0xffff) as u64;
     descriptor |= ((base & 0x00ff_ffff) as u64) << 16;
-    // Present, ring 0, available 64-bit TSS.
-    const TSS_ACCESS: u64 = 0b1000_1001;
     descriptor |= TSS_ACCESS << 40;
     descriptor |= (((limit >> 16) & 0xf) as u64) << 48;
     descriptor |= (((base >> 24) & 0xff) as u64) << 56;
@@ -88,7 +88,7 @@ pub const fn selector(index: u16, rpl: u8) -> u16 {
     (index << 3) | (rpl as u16 & 0x3)
 }
 
-/// Initialize and load the FinnOS GDT.
+/// Initialize and load the `FinnOS` GDT.
 ///
 /// # Safety
 ///
@@ -103,6 +103,7 @@ pub unsafe fn init(tss: &TSS) {
         (*gdt)[2] = kernel_data_descriptor();
     }
     let tss_base = core::ptr::from_ref(tss) as usize as u64;
+    #[allow(clippy::cast_possible_truncation)]
     let tss_limit = core::mem::size_of::<TSS>() as u64 - 1;
     unsafe {
         (*gdt)[3] = tss_descriptor_low(tss_base, tss_limit as u32);
@@ -110,6 +111,7 @@ pub unsafe fn init(tss: &TSS) {
     }
 
     let pointer = GdtPointer {
+        #[allow(clippy::cast_possible_truncation)]
         limit: (core::mem::size_of::<[u64; GDT_ENTRIES]>() - 1) as u16,
         base: gdt as u64,
     };
@@ -118,7 +120,7 @@ pub unsafe fn init(tss: &TSS) {
     unsafe {
         core::arch::asm! {
             "lgdt [rdi]",
-            in("rdi") &pointer,
+            in("rdi") core::ptr::addr_of!(pointer),
             options(nostack, preserves_flags)
         };
     }

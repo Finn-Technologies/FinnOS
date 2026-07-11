@@ -1,4 +1,4 @@
-//! FinnOS-owned x86-64 Task State Segment.
+//! `FinnOS`-owned x86-64 Task State Segment.
 
 /// Size of the dedicated double-fault IST stack.
 const DOUBLE_FAULT_STACK_SIZE: usize = 64 * 1024;
@@ -112,7 +112,7 @@ static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack {
 /// # Safety
 ///
 /// Must be called once on the BSP before loading the task register.
-#[allow(unsafe_code)]
+#[allow(unsafe_code, clippy::cast_possible_truncation)]
 pub unsafe fn init(tss: &mut TSS, rsp0: u64) {
     tss.set_rsp0(rsp0);
     // SAFETY: `DOUBLE_FAULT_STACK` is a static array accessed only during init.
