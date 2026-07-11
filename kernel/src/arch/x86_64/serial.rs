@@ -10,6 +10,7 @@ pub struct Serial;
 
 impl Serial {
     /// Configure COM1 for 115200 8-N-1.
+    #[allow(clippy::unused_self)]
     pub fn init(&mut self) {
         out(COM1 + 1, 0);
         out(COM1 + 3, 0x80);
@@ -19,8 +20,8 @@ impl Serial {
         out(COM1 + 2, 0xc7);
         out(COM1 + 4, 3);
     }
-    #[allow(unsafe_code)]
-    fn write_byte(&mut self, byte: u8) {
+    #[allow(unsafe_code, clippy::unused_self)]
+    fn write_byte(&self, byte: u8) {
         while inp(COM1 + 5) & 0x20 == 0 {}
         out(COM1, byte);
     }

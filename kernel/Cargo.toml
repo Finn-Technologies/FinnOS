@@ -17,6 +17,7 @@ default = []
 kernel-bin = []
 qemu-test-exit = []
 qemu-test-panic = []
+qemu-test-exceptions = []
 
 [[bin]]
 name = "finn-kernel-x86_64"

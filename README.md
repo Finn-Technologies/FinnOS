@@ -10,7 +10,7 @@ Peony is the native user-interface and application platform: Peony Display, Peon
 
 ## Project status
 
-FinnOS now boots a separate kernel in x86-64 QEMU through UEFI. The boot manager loads and validates the kernel ELF, hands off the memory map and GOP framebuffer, and the kernel prints serial diagnostics and halts after First Boot. There is no usable desktop, mobile environment, or application runtime yet.
+FinnOS now boots a separate kernel in x86-64 QEMU through UEFI. The boot manager loads and validates the kernel ELF, hands off the memory map and GOP framebuffer, and the kernel installs its own GDT, TSS, IDT, and exception handlers before completing First Boot. There is no usable desktop, mobile environment, or application runtime yet.
 
 ## Intended platforms
 

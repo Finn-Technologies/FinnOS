@@ -37,6 +37,12 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         let _ = pointer;
         panic!("controlled test panic");
     }
+
+    // SAFETY: Called once on the BSP with interrupts disabled; the early stack is valid.
+    unsafe {
+        finn_kernel::arch::x86_64::exceptions::init_exception_foundation(current_stack_top());
+    }
+
     let info = match validate_pointer(pointer) {
         Ok(info) => info,
         Err(_) => {
@@ -69,6 +75,15 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         failure();
     }
     finn_kernel::serial_log!("FINNOS:KERNEL:FIRST_BOOT_COMPLETE\n");
+
+    #[cfg(feature = "qemu-test-exceptions")]
+    {
+        // SAFETY: The exception foundation is initialized and the IDT is loaded.
+        unsafe {
+            finn_kernel::arch::x86_64::exceptions::run_exception_tests();
+        }
+    }
+
     qemu::exit(0x10)
 }
 
@@ -105,6 +120,17 @@ fn draw(info: &BootInfo) {
 fn failure() -> ! {
     finn_kernel::serial_log!("FINNOS:KERNEL:FAILURE\n");
     qemu::exit(0x11)
+}
+
+/// Return the top of the early kernel stack set up by `_start`.
+#[allow(unsafe_code)]
+fn current_stack_top() -> u64 {
+    // SAFETY: `__stack_top` is defined by the linker script and marks the top of the
+    // boot-allocated kernel stack.
+    unsafe extern "C" {
+        static __stack_top: u8;
+    }
+    unsafe { &__stack_top as *const u8 as u64 }
 }
 
 #[panic_handler]
