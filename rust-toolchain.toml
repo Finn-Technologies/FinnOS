@@ -1,4 +1,5 @@
 [toolchain]
-channel = "stable"
+# Pinned so local development and CI use the same compiler/clippy version.
+channel = "1.97.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
