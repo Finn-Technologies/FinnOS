@@ -160,9 +160,9 @@ mod tests {
     #[test]
     fn rsp0_round_trips() {
         let mut tss = TSS::new();
-        tss.set_rsp0(0xfedcba98_76543210);
-        assert_eq!(tss.rsp0_low, 0x76543210);
-        assert_eq!(tss.rsp0_high, 0xfedcba98);
+        tss.set_rsp0(0xfedc_ba98_7654_3210);
+        assert_eq!(tss.rsp0_low, 0x7654_3210);
+        assert_eq!(tss.rsp0_high, 0xfedc_ba98);
     }
 
     #[test]
