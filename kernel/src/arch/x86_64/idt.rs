@@ -28,11 +28,18 @@ pub struct IdtEntry {
     _reserved: u32,
 }
 
+impl Default for IdtEntry {
+    #[must_use]
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl IdtEntry {
     /// Create an empty, non-present IDT entry.
     #[must_use]
-    pub const fn empty() -> IdtEntry {
-        IdtEntry {
+    pub const fn empty() -> Self {
+        Self {
             offset_low: 0,
             selector: 0,
             ist: 0,
@@ -98,11 +105,18 @@ pub struct HandlerAddresses {
     pub handlers: [u64; 32],
 }
 
+impl Default for HandlerAddresses {
+    #[must_use]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HandlerAddresses {
     /// Create a new handler-address table initialized to zero.
     #[must_use]
-    pub const fn new() -> HandlerAddresses {
-        HandlerAddresses { handlers: [0; 32] }
+    pub const fn new() -> Self {
+        Self { handlers: [0; 32] }
     }
 }
 
@@ -114,14 +128,14 @@ impl HandlerAddresses {
 #[must_use]
 pub fn build_exception_idt(addresses: &HandlerAddresses) -> [IdtEntry; IDT_ENTRIES] {
     let mut idt = [IdtEntry::empty(); IDT_ENTRIES];
-    for vector in 0..32 {
+    for (vector, &handler) in addresses.handlers.iter().enumerate() {
         let ist = if vector == 8 { 1 } else { 0 };
         let gate_type = if vector == 3 {
             IDT_TRAP_GATE
         } else {
             IDT_INTERRUPT_GATE
         };
-        idt[vector].set(addresses.handlers[vector], ist, gate_type | 0x80);
+        idt[vector].set(handler, ist, gate_type | 0x80);
     }
     idt
 }

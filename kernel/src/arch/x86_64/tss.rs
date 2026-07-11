@@ -44,11 +44,18 @@ pub struct ISTEntry {
     pub high: u32,
 }
 
+impl Default for TSS {
+    #[must_use]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TSS {
     /// Create a zero-initialized TSS.
     #[must_use]
-    pub const fn new() -> TSS {
-        TSS {
+    pub const fn new() -> Self {
+        Self {
             _reserved0: 0,
             rsp0_low: 0,
             rsp0_high: 0,

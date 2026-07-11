@@ -28,14 +28,20 @@ def make_image(esp: Path, output: Path) -> Path:
 def _make_image_linux(esp: Path, output: Path) -> Path:
     mkfs = shutil.which("mkfs.vfat")
     mcopy = shutil.which("mcopy")
-    if not mkfs or not mcopy:
-        raise RuntimeError("real FAT image creation requires mkfs.vfat and mcopy (dosfstools, mtools)")
+    mmd = shutil.which("mmd")
+    if not mkfs or not mcopy or not mmd:
+        raise RuntimeError("real FAT image creation requires mkfs.vfat, mcopy, and mmd (dosfstools, mtools)")
     with tempfile.TemporaryDirectory(prefix="finnos-image-") as temporary:
         image = Path(temporary) / "esp.img"
         # Create a 64 MB FAT32 image.
         subprocess.run(["dd", "if=/dev/zero", f"of={image}", "bs=1M", "count=64"], check=True, capture_output=True)
         subprocess.run([mkfs, "-F", "32", str(image)], check=True, capture_output=True)
-        # Copy the ESP tree into the image using mcopy.
+        # Copy the ESP tree into the image using mtools. Create directories first,
+        # then copy files.
+        directories = sorted({src.relative_to(esp).parent for src in esp.rglob("*") if src.is_file()})
+        for directory in directories:
+            path = "/".join(directory.parts)
+            subprocess.run([mmd, "-i", str(image), f"::{path}"], check=True, capture_output=True)
         for src in esp.rglob("*"):
             if src.is_file():
                 rel = src.relative_to(esp).as_posix()

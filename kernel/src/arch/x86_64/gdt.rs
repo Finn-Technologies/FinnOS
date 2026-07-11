@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn kernel_code_has_expected_access_and_flags() {
         let descriptor = kernel_code_descriptor();
-        let access = (descriptor >> 40) as u8 & 0xff;
+        let access = (descriptor >> 40) as u8;
         let flags = (descriptor >> 52) as u8 & 0xf;
         assert_eq!(access, 0x9a);
         assert_eq!(flags, 0xa);
@@ -200,14 +200,14 @@ mod tests {
     #[test]
     fn kernel_data_has_expected_access() {
         let descriptor = kernel_data_descriptor();
-        let access = (descriptor >> 40) as u8 & 0xff;
+        let access = (descriptor >> 40) as u8;
         assert_eq!(access, 0x92);
     }
 
     #[test]
     fn tss_low_access_byte_is_available_tss() {
         let descriptor = tss_descriptor_low(0x1234_5678_9abc_def0, 0x1_ffff);
-        let access = (descriptor >> 40) as u8 & 0xff;
+        let access = (descriptor >> 40) as u8;
         assert_eq!(access, 0x89);
     }
 
