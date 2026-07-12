@@ -5,6 +5,7 @@
 //! regions. It does not allocate memory; all tables use fixed-capacity arrays.
 
 pub mod allocator;
+pub mod heap;
 pub mod map;
 pub mod region;
 pub mod uefi;

@@ -11,7 +11,7 @@ The kernel now parses and classifies the raw UEFI memory map into architecture-n
 
 The kernel also initializes a fixed-capacity early physical page allocator from the classified usable regions. It performs deterministic first-fit allocation, validated deallocation, and adjacent free-range merging without a heap. See [physical page allocation](physical-page-allocation.md). The x86-64 paging layer consumes reserved pages from this allocator for its fixed-capacity table pool.
 
-Planned concerns include architecture boundaries, failure behavior, and security and performance tradeoffs. Exact scheduler algorithms, syscall numbers, object layouts, and memory policies are unresolved. The current implementation boots only the diagnostic x86-64 path and contains no scheduling, virtual memory manager, IPC, or kernel heap beyond boot validation, exception dispatch, memory-map parsing, early physical page allocation, serial output, and framebuffer diagnostics.
+The x86-64 path now maps a fixed early kernel heap and installs its bounded first-fit global allocator after paging activation. Planned concerns include architecture boundaries, failure behavior, and security and performance tradeoffs. Exact scheduler algorithms, syscall numbers, object layouts, and memory policies are unresolved. The current implementation contains no scheduling, user-space virtual-memory manager, IPC, or automatic heap growth.
 
 Non-goals for this stage are compatibility with another kernel and premature ABI commitments. Open questions include service restart semantics, resource accounting, and the final object model.
 After physical allocation, the x86-64 path builds and activates a FinnOS-owned identity-mapped address space. See [x86-64 virtual memory](x86_64-virtual-memory.md).

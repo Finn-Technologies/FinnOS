@@ -82,7 +82,7 @@ If the final map would exceed `MAX_MEMORY_REGIONS`, the parser returns a structu
 - The physical page allocator uses only `Usable` regions and does not reclaim boot-services or runtime-services memory.
 - FinnOS-owned page-table storage is reserved from usable pages and remains allocated while the
   active address space exists.
-- There is no kernel heap.
+- The early kernel heap reserves its backing pages from the physical page allocator after paging activation.
 - x86-64 UEFI QEMU only.
 
 The classified ranges remain the source of physical-page ownership while paging is built; page-table storage is reserved from `Usable` pages and is not returned while active.

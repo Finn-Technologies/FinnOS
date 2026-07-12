@@ -70,6 +70,7 @@ pub enum PagingError {
     GuardPageMapped,
     MappingPlanCapacityExceeded,
     CorruptPageTableState,
+    CounterUnderflow,
     PhysicalAddressTooWide,
     ZeroPageRange,
 }
@@ -612,6 +613,16 @@ pub struct ActiveAddressSpace {
     pool: PageTablePagePool,
     mapped_pages: u64,
     width: u8,
+    active: bool,
+}
+
+/// Result of adding a 4 KiB leaf mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MapOutcome {
+    /// A new leaf was installed.
+    Created,
+    /// The exact frame and permissions were already present.
+    AlreadyPresent,
 }
 impl ActiveAddressSpace {
     pub const fn root(&self) -> PhysicalFrame {
@@ -626,6 +637,30 @@ impl ActiveAddressSpace {
     pub const fn width(&self) -> u8 {
         self.width
     }
+    /// Map one supervisor-only 4 KiB page.
+    #[allow(unsafe_code)]
+    pub fn map_page(
+        &mut self,
+        page: VirtualPage,
+        frame: PhysicalFrame,
+        permissions: MappingPermissions,
+    ) -> Result<MapOutcome, PagingError> {
+        permissions.validate()?;
+        // SAFETY: All table pages are owned by this address space and remain accessible through
+        // the current identity transition mappings or the active page tables.
+        let outcome = unsafe { map_one(self, page, frame, permissions) }?;
+        if outcome == MapOutcome::Created {
+            self.mapped_pages = self
+                .mapped_pages
+                .checked_add(1)
+                .ok_or(PagingError::AddressOverflow)?;
+            if self.active {
+                // SAFETY: The page is canonical and the active root was installed by activate.
+                unsafe { invalidate(page.address()) };
+            }
+        }
+        Ok(outcome)
+    }
     #[allow(unsafe_code)]
     pub fn translate(&self, virtual_address: u64) -> Result<Option<Translation>, PagingError> {
         // SAFETY: the root and every followed entry were created by this module.
@@ -633,11 +668,20 @@ impl ActiveAddressSpace {
     }
     #[allow(unsafe_code)]
     pub fn unmap_page(&mut self, page: VirtualPage) -> Result<PhysicalFrame, PagingError> {
+        if self.mapped_pages == 0 {
+            return Err(PagingError::CounterUnderflow);
+        }
         // SAFETY: the root is owned by this address space and the page is validated.
         let result = unsafe { clear_leaf(self.root, page.address(), self.width) }?;
-        // SAFETY: the address is canonical and belongs to the active address space.
-        unsafe {
-            invalidate(page.address());
+        self.mapped_pages = self
+            .mapped_pages
+            .checked_sub(1)
+            .ok_or(PagingError::CounterUnderflow)?;
+        if self.active {
+            // SAFETY: The address is canonical and belongs to the active address space.
+            unsafe {
+                invalidate(page.address());
+            }
         }
         Ok(result)
     }
@@ -675,23 +719,26 @@ pub fn build(
         pool,
         mapped_pages: 0,
         width,
+        active: false,
     };
     let pool_count = space.pool.reserved_count();
     for index in 0..pool_count {
         let address = space.pool.pages()[index];
         // SAFETY: the pool page is allocator-owned and identity mapped during transition.
-        unsafe {
+        let outcome = unsafe {
             map_one(
                 &mut space,
                 VirtualPage::new(address)?,
                 PhysicalFrame::new(address, width)?,
                 MappingPermissions::kernel_rw_nx(),
             )?
+        };
+        if outcome == MapOutcome::Created {
+            space.mapped_pages = space
+                .mapped_pages
+                .checked_add(1)
+                .ok_or(PagingError::AddressOverflow)?;
         }
-        space.mapped_pages = space
-            .mapped_pages
-            .checked_add(1)
-            .ok_or(PagingError::AddressOverflow)?;
     }
     for request in plan.as_slice() {
         for page in 0..request.page_count {
@@ -708,18 +755,20 @@ pub fn build(
                 .ok_or(PagingError::AddressOverflow)?;
             let frame = PhysicalFrame::new(physical_address, width)?;
             // SAFETY: table pages are allocator-owned and identity mapped during transition.
-            unsafe {
+            let outcome = unsafe {
                 map_one(
                     &mut space,
                     VirtualPage::new(virtual_address)?,
                     frame,
                     request.permissions,
                 )?
+            };
+            if outcome == MapOutcome::Created {
+                space.mapped_pages = space
+                    .mapped_pages
+                    .checked_add(1)
+                    .ok_or(PagingError::AddressOverflow)?;
             }
-            space.mapped_pages = space
-                .mapped_pages
-                .checked_add(1)
-                .ok_or(PagingError::AddressOverflow)?;
         }
     }
     Ok(space)
@@ -732,7 +781,7 @@ unsafe fn map_one(
     page: VirtualPage,
     frame: PhysicalFrame,
     permissions: MappingPermissions,
-) -> Result<(), PagingError> {
+) -> Result<MapOutcome, PagingError> {
     let mut table = space.root.address();
     for index in [
         pml4_index(page.address()),
@@ -764,12 +813,12 @@ unsafe fn map_one(
     let new = PageTableEntry::leaf(frame, permissions)?;
     if old.is_present() {
         if old.raw() == new.raw() {
-            return Ok(());
+            return Ok(MapOutcome::AlreadyPresent);
         }
-        return Err(PagingError::AlreadyMapped);
+        return Err(PagingError::MappingConflict);
     }
     write_entry(leaf_address, new);
-    Ok(())
+    Ok(MapOutcome::Created)
 }
 
 #[allow(unsafe_code)]
@@ -884,7 +933,7 @@ unsafe fn invalidate(address: u64) {
 /// Activate a prepared address space and enable the protections required by W^X.
 #[allow(unsafe_code)]
 #[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn activate(space: &ActiveAddressSpace) -> Result<(), PagingError> {
+pub unsafe fn activate(space: &mut ActiveAddressSpace) -> Result<(), PagingError> {
     if !cpu_paging_info()?.nx_supported {
         return Err(PagingError::NxUnsupported);
     }
@@ -904,6 +953,7 @@ pub unsafe fn activate(space: &ActiveAddressSpace) -> Result<(), PagingError> {
     if read_cr3() & !0xfff != space.root.address() {
         return Err(PagingError::Cr3ActivationFailed);
     }
+    space.active = true;
     Ok(())
 }
 #[cfg(target_arch = "x86_64")]

@@ -30,8 +30,8 @@ mapped, or initialized.
 
 This allocator is not thread-safe and is intended only for the current
 single-core early-boot phase. Boot-services and runtime-services memory are
-not reclaimed. There is no kernel heap, user-space allocator, NUMA support, or
-huge-page allocation policy.
+not reclaimed. There is no user-space allocator, NUMA support, or huge-page
+allocation policy.
 
 The FinnOS-owned x86-64 paging layer now reserves a fixed 64-page table pool
 from this allocator. Those physical pages remain allocated while the active
@@ -39,4 +39,7 @@ address space exists. This pool is page-table storage, not a general kernel
 heap. Only the explicitly required kernel mappings are created; physical pages
 are not generally usable through arbitrary virtual mappings.
 
-The next Kernel Core step is the early kernel heap.
+The early kernel heap separately reserves 256 backing pages from this allocator;
+those pages are mapped only through the explicitly required heap virtual range.
+Further Kernel Core work remains scheduling, interrupt, process, and IPC
+foundations.

@@ -1,6 +1,6 @@
 import unittest
 
-from tools.finnlib.qemu import MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, validate_page_allocator, validate_page_tables, validate_smoke
+from tools.finnlib.qemu import HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke
 
 class BootLogTests(unittest.TestCase):
     def test_markers_in_order(self):
@@ -30,5 +30,12 @@ class BootLogTests(unittest.TestCase):
         output = "\n".join(PAGE_TABLE_MARKERS[:-1]) + "\nFINNOS:EXCEPTION:PAGE_FAULT"
         errors = validate_page_tables(33, output)
         self.assertTrue(any("unexpected page fault" in error for error in errors))
+
+    def test_heap_markers_and_failure_paths(self):
+        self.assertEqual(validate_heap(33, "\n".join(HEAP_MARKERS)), [])
+        self.assertTrue(validate_heap(35, "\n".join(HEAP_MARKERS)))
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS[:-1])))
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:HEAP_ERROR:OutOfMemory"))
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:HEAP_OOM"))
 
 if __name__ == "__main__": unittest.main()

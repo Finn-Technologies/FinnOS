@@ -1,4 +1,4 @@
-.PHONY: help doctor build check test format format-check lint
+.PHONY: help doctor build check test format format-check lint test-heap
 
 help:
 	./tools/finn help
@@ -50,6 +50,9 @@ test-page-allocator:
 
 test-page-tables:
 	./tools/finn test-page-tables
+
+test-heap:
+	./tools/finn test-heap
 
 check-all:
 	./tools/finn check-all

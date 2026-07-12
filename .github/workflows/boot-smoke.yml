@@ -25,3 +25,5 @@ jobs:
         run: ./tools/finn test-page-allocator
       - name: Run page-table integration test
         run: ./tools/finn test-page-tables
+      - name: Run heap integration test
+        run: ./tools/finn test-heap

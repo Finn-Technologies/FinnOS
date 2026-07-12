@@ -10,3 +10,8 @@ Paging adds only validated raw-pointer volatile access to identity-mapped table 
 The physical page allocator is safe Rust and does not access or write allocated
 physical pages. It returns addresses only; no new unsafe code is required for
 its metadata or validation logic.
+
+The early heap contains the narrow unsafe boundary for in-band free-list nodes, `UnsafeCell`,
+`GlobalAlloc`, and zeroing the already-validated virtual heap range. Nodes are written only inside
+validated free regions, the global heap is initialized once, and allocation is not supported from
+interrupt context.
