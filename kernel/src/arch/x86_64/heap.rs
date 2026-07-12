@@ -146,16 +146,13 @@ impl KernelHeapMapping {
                     Err(HeapMappingError::RollbackFailed)
                 };
             }
-            self.mapped_count = match self.mapped_count.checked_add(1) {
-                Some(count) => count,
-                None => {
-                    let rollback = self.rollback(address_space, allocator);
-                    return match rollback {
-                        Ok(()) => Err(HeapMappingError::MappingValidationFailed),
-                        Err(error) => Err(error),
-                    };
-                }
+            let Some(count) = self.mapped_count.checked_add(1) else {
+                return match self.rollback(address_space, allocator) {
+                    Ok(()) => Err(HeapMappingError::MappingValidationFailed),
+                    Err(error) => Err(error),
+                };
             };
+            self.mapped_count = count;
         }
         if self.validate(address_space).is_err() {
             self.rollback(address_space, allocator)?;
@@ -226,26 +223,17 @@ impl KernelHeapMapping {
     ) -> Result<(), HeapMappingError> {
         let mut failed = false;
         for index in (0..self.mapped_count).rev() {
-            let offset = match (index as u64).checked_mul(PAGE_SIZE) {
-                Some(offset) => offset,
-                None => {
-                    failed = true;
-                    continue;
-                }
+            let Some(offset) = (index as u64).checked_mul(PAGE_SIZE) else {
+                failed = true;
+                continue;
             };
-            let virtual_address = match KERNEL_HEAP_START.checked_add(offset) {
-                Some(address) => address,
-                None => {
-                    failed = true;
-                    continue;
-                }
+            let Some(virtual_address) = KERNEL_HEAP_START.checked_add(offset) else {
+                failed = true;
+                continue;
             };
-            let page = match VirtualPage::new(virtual_address) {
-                Ok(page) => page,
-                Err(_) => {
-                    failed = true;
-                    continue;
-                }
+            let Ok(page) = VirtualPage::new(virtual_address) else {
+                failed = true;
+                continue;
             };
             match address_space.unmap_page(page) {
                 Ok(frame) if frame.address() == self.physical_pages[index] => {
