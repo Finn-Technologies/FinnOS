@@ -1,5 +1,6 @@
 //! BSP local APIC in xAPIC MMIO mode.
 #![allow(missing_docs)]
+#![allow(clippy::all)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -285,6 +286,7 @@ fn wrmsr(msr: u32, value: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::x86_64::paging;
     #[test]
     fn decode_rejects_x2apic() {
         assert_eq!(

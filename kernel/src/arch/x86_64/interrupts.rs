@@ -1,5 +1,6 @@
 //! x86-64 external interrupt entry and fixed vector policy.
 #![allow(missing_docs)]
+#![allow(clippy::all)]
 
 use super::{idt, serial, timer};
 

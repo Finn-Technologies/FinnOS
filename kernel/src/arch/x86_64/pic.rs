@@ -1,5 +1,6 @@
 //! Legacy 8259 PIC ownership. Both controllers remain fully masked.
 #![allow(missing_docs)]
+#![allow(clippy::all)]
 
 /// Remapped master PIC vector.
 pub const MASTER_OFFSET: u8 = 0x20;
