@@ -51,11 +51,11 @@ mod asm_stubs {
     #![allow(unsafe_code)]
     core::arch::global_asm!(
         r#"
-        .macro SAVE_REGS
+        .macro SAVE_INTERRUPT_REGS
             push r15; push r14; push r13; push r12; push r11; push r10; push r9; push r8
             push rbp; push rdi; push rsi; push rdx; push rcx; push rbx; push rax
         .endm
-        .macro RESTORE_REGS
+        .macro RESTORE_INTERRUPT_REGS
             pop rax; pop rbx; pop rcx; pop rdx; pop rsi; pop rdi; pop rbp; pop r8
             pop r9; pop r10; pop r11; pop r12; pop r13; pop r14; pop r15
         .endm
@@ -63,10 +63,10 @@ mod asm_stubs {
         .globl external_interrupt_entry
         external_interrupt_entry:
             cld
-            SAVE_REGS
+            SAVE_INTERRUPT_REGS
             mov rdi, rsp
             call rust_interrupt_dispatch
-            RESTORE_REGS
+            RESTORE_INTERRUPT_REGS
             add rsp, 16
             iretq
         .align 16
