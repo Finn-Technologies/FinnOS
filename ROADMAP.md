@@ -35,7 +35,16 @@ mappings, validation, and real deterministic page-table fault testing.
 Non-goal: user address spaces, demand paging, swapping, or the final
 higher-half layout.
 
-The next planned Kernel Core task is the early kernel heap.
+### 3.5 Early kernel heap — Complete for x86-64 QEMU
+
+Objective: map a bounded supervisor-only heap, install a deterministic
+first-fit global allocator, support common Rust `alloc` types, and
+validate alignment, deallocation, fragmentation, exhaustion, and
+invariants.
+Non-goal: interrupt-context allocation, per-CPU heaps, user heaps,
+automatic growth, or general-purpose virtual-memory management.
+
+Further Kernel Core scheduling, interrupt, process, and IPC work remains planned.
 
 ## 4. First User Space — Planned
 

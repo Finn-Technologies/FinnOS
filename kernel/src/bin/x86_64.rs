@@ -3,14 +3,29 @@
 #![allow(unsafe_code)]
 #![allow(unreachable_code)]
 
+extern crate alloc;
+
+#[cfg(feature = "qemu-test-heap")]
+use alloc::{boxed::Box, string::String, vec::Vec};
+#[cfg(feature = "qemu-test-heap")]
+use core::alloc::Layout;
 use core::panic::PanicInfo;
 use finn_boot_protocol::{BOOT_FLAG_FRAMEBUFFER_PRESENT, BOOT_FLAG_MEMORY_MAP_PRESENT, BootInfo};
+use finn_kernel::memory::heap::LockedHeap;
 use finn_kernel::{
-    arch::x86_64::{paging, qemu},
+    arch::x86_64::{heap::KernelHeapMapping, paging, qemu},
     boot_validation::validate_pointer,
     framebuffer::{encode_pixel, pixel_offset},
     memory::{EarlyPhysicalPageAllocator, parse_and_classify},
 };
+
+#[global_allocator]
+static GLOBAL_HEAP: LockedHeap = LockedHeap::empty();
+
+#[cfg(feature = "qemu-test-heap")]
+const HEAP_TEST_POINTER_CAPACITY: usize = 1024;
+#[cfg(feature = "qemu-test-heap")]
+static mut HEAP_TEST_POINTERS: [*mut u8; 1024] = [core::ptr::null_mut(); 1024];
 
 core::arch::global_asm!(
     r#"
@@ -184,7 +199,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLES_ACTIVATING\n");
                 // SAFETY: `build_page_tables` validated every mapping, kept the stack and
                 // instruction identity-mapped, and interrupts remain disabled from entry.
-                if unsafe { paging::activate(&address_space) }.is_err() {
+                if unsafe { paging::activate(&mut address_space) }.is_err() {
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:PAGE_TABLE_ERROR:Cr3ActivationFailed\n"
                     );
@@ -218,6 +233,38 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 }
                 finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLES_ACTIVE\n");
                 finn_kernel::serial_log!("FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED\n");
+                if !interrupts_disabled() {
+                    finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_ERROR:InterruptsEnabled\n");
+                    failure();
+                }
+                let mut heap_mapping = KernelHeapMapping::empty();
+                if let Err(error) = heap_mapping.initialize(&mut address_space, &mut allocator) {
+                    finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_ERROR:{:?}\n", error);
+                    failure();
+                }
+                finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_MAPPED\n");
+                if let Err(error) = GLOBAL_HEAP.initialize(
+                    finn_kernel::arch::x86_64::heap::KERNEL_HEAP_START as usize,
+                    finn_kernel::arch::x86_64::heap::KERNEL_HEAP_END as usize,
+                ) {
+                    finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_ERROR:{:?}\n", error);
+                    failure();
+                }
+                if let Err(error) = GLOBAL_HEAP.check_invariants() {
+                    finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_ERROR:{:?}\n", error);
+                    failure();
+                }
+                let heap_stats = GLOBAL_HEAP.stats();
+                finn_kernel::serial_log!("FINNOS:KERNEL:HEAP_READY\n");
+                finn_kernel::serial_log!(
+                    "FINNOS:HEAP:VIRTUAL_START={:#x}\nFINNOS:HEAP:SIZE_BYTES={}\nFINNOS:HEAP:BACKING_PAGES={}\nFINNOS:HEAP:FREE_BYTES={}\nFINNOS:HEAP:ALLOCATED_BYTES={}\nFINNOS:HEAP:FREE_REGIONS={}\nFINNOS:HEAP:GUARD_PAGES=2\n",
+                    finn_kernel::arch::x86_64::heap::KERNEL_HEAP_START,
+                    finn_kernel::arch::x86_64::heap::KERNEL_HEAP_SIZE,
+                    heap_mapping.mapped_count(),
+                    heap_stats.free_bytes,
+                    heap_stats.allocated_bytes,
+                    heap_stats.free_region_count,
+                );
                 #[cfg(feature = "qemu-test-page-tables")]
                 {
                     draw(info);
@@ -259,6 +306,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
     }
     finn_kernel::serial_log!("FINNOS:KERNEL:FIRST_BOOT_COMPLETE\n");
 
+    #[cfg(feature = "qemu-test-heap")]
+    run_heap_test();
+
     #[cfg(feature = "qemu-test-exceptions")]
     {
         // SAFETY: The exception foundation is initialized and the IDT is loaded.
@@ -267,6 +317,165 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         }
     }
 
+    qemu::exit(0x10)
+}
+
+fn interrupts_disabled() -> bool {
+    let flags: u64;
+    // SAFETY: `pushfq`/`pop` reads processor flags without changing control state.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
+    }
+    flags & (1 << 9) == 0
+}
+
+#[cfg(feature = "qemu-test-heap")]
+fn run_heap_test() -> ! {
+    use finn_kernel::arch::x86_64::heap::{KERNEL_HEAP_END, KERNEL_HEAP_START};
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:BEGIN\n");
+    let baseline = GLOBAL_HEAP.stats();
+    let alignments = [1usize, 2, 4, 8, 16, 32, 64, 256, 4096, 65_536];
+    for alignment in alignments {
+        let layout = Layout::from_size_align(37, alignment).unwrap_or_else(|_| failure());
+        let pointer = GLOBAL_HEAP.allocate(layout).unwrap_or_else(|_| failure());
+        let address = pointer as usize;
+        if address < KERNEL_HEAP_START as usize
+            || address >= KERNEL_HEAP_END as usize
+            || !address.is_multiple_of(alignment)
+        {
+            failure();
+        }
+        // SAFETY: The global heap returned this live allocation and the exact layout is used.
+        unsafe {
+            core::ptr::write_bytes(pointer, 0xa5, layout.size());
+            if core::ptr::read_volatile(pointer) != 0xa5 {
+                failure();
+            }
+            GLOBAL_HEAP
+                .deallocate(pointer, layout)
+                .unwrap_or_else(|_| failure());
+        }
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:ALIGNMENT_OK\n");
+    {
+        let value = Box::new([0x5a_u8; 128]);
+        if value.iter().any(|byte| *byte != 0x5a)
+            || !(value.as_ptr() as usize >= KERNEL_HEAP_START as usize
+                && (value.as_ptr() as usize) < KERNEL_HEAP_END as usize)
+        {
+            failure();
+        }
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:BOX_OK\n");
+    {
+        let mut values = Vec::<u64>::new();
+        values.try_reserve_exact(1024).unwrap_or_else(|_| failure());
+        for value in 0..1024 {
+            values.push(value as u64 * 3);
+        }
+        if values.len() != 1024
+            || values
+                .iter()
+                .enumerate()
+                .any(|(i, value)| *value != i as u64 * 3)
+        {
+            failure();
+        }
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:VEC_OK\n");
+    {
+        let mut text = String::new();
+        text.try_reserve_exact(32).unwrap_or_else(|_| failure());
+        text.push_str("FinnOS early heap");
+        if text != "FinnOS early heap" {
+            failure();
+        }
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:STRING_OK\n");
+    let block = Layout::from_size_align(128, 8).unwrap();
+    let a = GLOBAL_HEAP.allocate(block).unwrap_or_else(|_| failure());
+    let b = GLOBAL_HEAP.allocate(block).unwrap_or_else(|_| failure());
+    let c = GLOBAL_HEAP.allocate(block).unwrap_or_else(|_| failure());
+    unsafe {
+        GLOBAL_HEAP
+            .deallocate(b, block)
+            .unwrap_or_else(|_| failure())
+    };
+    let small = Layout::from_size_align(64, 8).unwrap();
+    let d = GLOBAL_HEAP.allocate(small).unwrap_or_else(|_| failure());
+    if d != b {
+        failure();
+    }
+    unsafe {
+        GLOBAL_HEAP
+            .deallocate(d, small)
+            .unwrap_or_else(|_| failure());
+        GLOBAL_HEAP
+            .deallocate(a, block)
+            .unwrap_or_else(|_| failure());
+        GLOBAL_HEAP
+            .deallocate(c, block)
+            .unwrap_or_else(|_| failure());
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:FRAGMENTATION_OK\n");
+    let exhaustion_layout = Layout::from_size_align(1025, 8).unwrap();
+    let mut count = 0usize;
+    while count < HEAP_TEST_POINTER_CAPACITY {
+        match GLOBAL_HEAP.allocate(exhaustion_layout) {
+            Ok(pointer) => {
+                // SAFETY: This test runs once on the BSP and the fixed array is dedicated to
+                // its pointer bookkeeping.
+                unsafe { HEAP_TEST_POINTERS[count] = pointer };
+                count += 1;
+            }
+            Err(_) => break,
+        }
+    }
+    if count == 0
+        || count == HEAP_TEST_POINTER_CAPACITY
+        || GLOBAL_HEAP.allocate(exhaustion_layout).is_ok()
+    {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:EXHAUSTION_OK\n");
+    for index in 0..count {
+        let pointer = unsafe { HEAP_TEST_POINTERS[index] };
+        unsafe {
+            GLOBAL_HEAP
+                .deallocate(pointer, exhaustion_layout)
+                .unwrap_or_else(|_| failure())
+        };
+    }
+    let reused = GLOBAL_HEAP
+        .allocate(exhaustion_layout)
+        .unwrap_or_else(|_| failure());
+    unsafe {
+        GLOBAL_HEAP
+            .deallocate(reused, exhaustion_layout)
+            .unwrap_or_else(|_| failure())
+    };
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:REUSE_OK\n");
+    let stats = GLOBAL_HEAP.stats();
+    if stats.free_bytes != baseline.free_bytes || stats.allocated_bytes != baseline.allocated_bytes
+    {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:HEAP:TOTAL_BYTES={} FREE_BYTES={} ALLOCATED_BYTES={} PEAK_ALLOCATED_BYTES={} ALLOCATIONS={} DEALLOCATIONS={} FAILED_ALLOCATIONS={} FREE_REGIONS={} LARGEST_FREE_REGION={}\n",
+        stats.total_bytes,
+        stats.free_bytes,
+        stats.allocated_bytes,
+        stats.peak_allocated_bytes,
+        stats.allocation_count,
+        stats.deallocation_count,
+        stats.failed_allocation_count,
+        stats.free_region_count,
+        stats.largest_free_region,
+    );
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:STATS_OK\n");
+    GLOBAL_HEAP.check_invariants().unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:INVARIANTS_OK\n");
+    finn_kernel::serial_log!("FINNOS:TEST:HEAP:PASS\n");
     qemu::exit(0x10)
 }
 

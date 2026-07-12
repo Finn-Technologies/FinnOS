@@ -17,3 +17,9 @@ the allocator independently.
 `build/out/x86_64-qemu-page-tables/` and validates the FinnOS-owned root,
 mapping permissions, null-page protection, stack guard pages, scratch mapping
 and unmapping, and real vector-14 page-fault delivery.
+
+`./tools/finn test-heap` builds an isolated image under
+`build/out/x86_64-qemu-heap/` and validates heap mapping, guard pages, direct
+alignment, `Box`, fallible `Vec`, `String`, fragmentation, exhaustion, reuse,
+statistics, and allocator invariants. All test images use QEMU status 33 for
+success; the heap test never performs allocation from interrupt context.
