@@ -8,6 +8,22 @@
 // module as well, so this module documents the hardware invariants in its public type comments
 // while retaining the crate's existing compatibility for generated low-level API items.
 #![allow(missing_docs)]
+// These narrowly describe the representation and volatile/assembly boundary in this module:
+// integer casts encode architectural fields, the fixed-capacity API intentionally has no
+// `is_empty` companion, and several public helpers are hardware-facing rather than builder APIs.
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::len_without_is_empty,
+    clippy::manual_range_contains,
+    clippy::missing_const_for_fn,
+    clippy::missing_errors_doc,
+    clippy::missing_safety_doc,
+    clippy::must_use_candidate,
+    clippy::semicolon_if_nothing_returned,
+    clippy::struct_excessive_bools
+)]
 
 use crate::memory::{EarlyPhysicalPageAllocator, PAGE_SIZE, PageAllocationError, PhysicalPage};
 

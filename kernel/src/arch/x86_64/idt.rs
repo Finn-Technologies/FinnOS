@@ -12,8 +12,9 @@ const IDT_ENTRIES: usize = 256;
 #[unsafe(link_section = ".kernel_after_stack")]
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::empty(); IDT_ENTRIES];
 
-/// Return the physical/identity address of FinnOS IDT storage.
+/// Return the physical/identity address of `FinnOS` IDT storage.
 #[allow(unsafe_code)]
+#[must_use]
 pub fn storage_address() -> u64 {
     core::ptr::addr_of!(IDT) as u64
 }
@@ -35,7 +36,7 @@ pub struct IdtEntry {
     /// High 32 bits of the handler offset.
     offset_high: u32,
     /// Reserved.
-    _reserved: u32,
+    reserved: u32,
 }
 
 impl Default for IdtEntry {
@@ -55,7 +56,7 @@ impl IdtEntry {
             type_attr: 0,
             offset_mid: 0,
             offset_high: 0,
-            _reserved: 0,
+            reserved: 0,
         }
     }
 
@@ -214,7 +215,7 @@ pub fn gate_diagnostic(vector: usize) -> Option<(u64, u16, u8, u8, u32)> {
         entry.selector,
         entry.ist(),
         entry.type_attr(),
-        entry._reserved,
+        entry.reserved,
     ))
 }
 
