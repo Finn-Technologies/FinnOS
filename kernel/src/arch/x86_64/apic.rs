@@ -1,6 +1,6 @@
 //! BSP local APIC in xAPIC MMIO mode.
 #![allow(missing_docs)]
-#![allow(clippy::all)]
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

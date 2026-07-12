@@ -1,6 +1,6 @@
 //! Polled PIT channel-2 reference used only during local APIC calibration.
 #![allow(missing_docs)]
-#![allow(clippy::all)]
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
 const CHANNEL2: u16 = 0x42;
 const COMMAND: u16 = 0x43;
