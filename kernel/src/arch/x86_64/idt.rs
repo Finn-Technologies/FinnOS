@@ -6,7 +6,17 @@ use super::gdt::KERNEL_CODE_SELECTOR;
 const IDT_ENTRIES: usize = 256;
 
 /// IDT storage. Must remain valid permanently after load.
+// SAFETY: The linker places descriptor storage above the guarded early stack so a large
+// pre-activation call frame cannot overwrite an active IDT.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".kernel_after_stack")]
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::empty(); IDT_ENTRIES];
+
+/// Return the physical/identity address of FinnOS IDT storage.
+#[allow(unsafe_code)]
+pub fn storage_address() -> u64 {
+    core::ptr::addr_of!(IDT) as u64
+}
 
 /// x86-64 IDT gate descriptor.
 #[repr(C)]
@@ -188,6 +198,24 @@ pub fn handler_ist(vector: usize) -> Option<u8> {
     }
     // SAFETY: `IDT` is a static array; reads are safe after init.
     Some(unsafe { IDT[vector].ist() })
+}
+
+/// Return key fields of an IDT gate for transition diagnostics.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn gate_diagnostic(vector: usize) -> Option<(u64, u16, u8, u8, u32)> {
+    if vector >= IDT_ENTRIES {
+        return None;
+    }
+    // SAFETY: IDT is initialized before diagnostics run and the read is bounded.
+    let entry = unsafe { IDT[vector] };
+    Some((
+        entry.offset(),
+        entry.selector,
+        entry.ist(),
+        entry.type_attr(),
+        entry._reserved,
+    ))
 }
 
 /// Load the IDT into the processor.

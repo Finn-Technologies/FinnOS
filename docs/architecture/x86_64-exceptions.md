@@ -17,7 +17,7 @@ This document describes the early x86-64 exception-handling architecture in Finn
 - External IRQ routing or APIC initialization.
 - Timer interrupts.
 - User-mode exceptions or signal delivery.
-- Page-fault recovery or FinnOS-owned page tables.
+- Page-fault recovery or demand paging.
 - Scheduler support.
 
 ## GDT role
@@ -85,7 +85,7 @@ The assembly stubs push registers in a fixed order, and the `ExceptionFrame` lay
 
 ## Page-fault CR2 reporting
 
-The page-fault handler reads `CR2` to obtain the faulting address and decodes the architectural error-code flags (present/protection violation, read/write, user/supervisor, reserved-bit violation, instruction fetch, protection key, shadow stack). It does not attempt recovery because FinnOS does not yet own page tables.
+The page-fault handler reads `CR2` to obtain the faulting address and decodes the architectural error-code flags (present/protection violation, read/write, user/supervisor, reserved-bit violation, instruction fetch, protection key, shadow stack). The page-table integration test unmaps `0x0000_4000_0000_0000`, arms the expected supervisor read state, and performs a real volatile read. Only vector 14 may emit the pass marker; the handler requires matching CR2, a non-present read error (`0`), and a single atomic state transition before exiting QEMU successfully.
 
 ## Fatal versus resumable exceptions
 

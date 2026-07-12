@@ -7,3 +7,5 @@ Page-table storage is a deterministic 64-page pool allocated through `EarlyPhysi
 Kernel text is read-only executable. Read-only data and BootInfo/memory-map storage are read-only NX. Writable data, BSS, the early stack, and page-table storage are writable NX. The null page and one page on each side of the 64 KiB early stack are non-present. The framebuffer is writable NX with conservative PWT+PCD uncached policy; write combining is not claimed. ACPI RSDP storage is mapped only when present.
 
 Activation enables EFER.NXE and CR0.WP, writes the new root to CR3, and validates translations through a software walker. Mapping changes use `invlpg`. The current assumptions are one BSP, no user address spaces, no intermediate-table reclamation, and no final higher-half layout. The next step is an early kernel heap.
+
+The exception smoke test executes real `int3` and `ud2` instructions after activation. The page-table test writes and reads a scratch mapping, unmaps it, then performs the real unmapped volatile read described above; unexpected faults remain fatal.

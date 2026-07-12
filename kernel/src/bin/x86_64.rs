@@ -127,10 +127,39 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 );
                 #[cfg(feature = "qemu-test-page-allocator")]
                 run_page_allocator_test(&mut allocator);
+                let zero_reservation = allocator.allocate_page().unwrap_or_else(|_| failure());
+                if zero_reservation.start_address() != 0 {
+                    allocator
+                        .deallocate(
+                            finn_kernel::memory::PageRange::new(
+                                zero_reservation.start_address(),
+                                1,
+                            )
+                            .unwrap_or_else(|_| failure()),
+                        )
+                        .unwrap_or_else(|_| failure());
+                }
                 #[cfg(feature = "qemu-test-page-tables")]
                 let scratch = Some(allocator.allocate_page().unwrap_or_else(|_| failure()));
                 #[cfg(not(feature = "qemu-test-page-tables"))]
                 let scratch = None;
+                #[cfg(feature = "qemu-test-page-tables")]
+                finn_kernel::serial_log!(
+                    "FINNOS:PAGING:SCRATCH_PHYSICAL={:#x}\n",
+                    scratch.expect("scratch").start_address()
+                );
+                if let Some((offset, selector, ist, attr, reserved)) =
+                    finn_kernel::arch::x86_64::idt::gate_diagnostic(14)
+                {
+                    finn_kernel::serial_log!(
+                        "FINNOS:PAGING:PREBUILD_IDT14={:#x}:{:#x}:IST{}:ATTR{:#x}:RES{:#x}\n",
+                        offset,
+                        selector,
+                        ist,
+                        attr,
+                        reserved
+                    );
+                }
                 #[allow(unused_mut)]
                 let mut address_space = match build_page_tables(info, &mut allocator, scratch) {
                     Ok(space) => space,
@@ -139,10 +168,18 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                         failure();
                     }
                 };
+                let _zero_reservation = zero_reservation;
                 let old_cr3 = paging::cpu_paging_info()
                     .map(|info| info.old_cr3)
                     .unwrap_or(0);
                 finn_kernel::serial_log!("FINNOS:PAGING:OLD_CR3={:#x}\n", old_cr3);
+                log_cpu_transition_state();
+                if validate_required_mappings(&address_space, info).is_err() {
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:PAGE_TABLE_ERROR:RequiredMappingMissing\n"
+                    );
+                    failure();
+                }
                 finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLES_BUILT\n");
                 finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLES_ACTIVATING\n");
                 // SAFETY: `build_page_tables` validated every mapping, kept the stack and
@@ -169,6 +206,16 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     "FINNOS:PAGING:MAPPED_PAGES={}\n",
                     address_space.mapped_pages()
                 );
+                if validate_required_mappings(&address_space, info).is_err()
+                    || paging::current_cr3() != address_space.root().address()
+                    || paging::current_cr0() & paging::CR0_WP == 0
+                    || paging::current_efer() & paging::EFER_NXE == 0
+                {
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:PAGE_TABLE_ERROR:RequiredPermissionMismatch\n"
+                    );
+                    failure();
+                }
                 finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLES_ACTIVE\n");
                 finn_kernel::serial_log!("FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED\n");
                 #[cfg(feature = "qemu-test-page-tables")]
@@ -229,7 +276,14 @@ fn run_page_table_test(
     allocator: &mut EarlyPhysicalPageAllocator,
     scratch: finn_kernel::memory::PhysicalPage,
 ) -> ! {
-    let _ = allocator;
+    unsafe extern "C" {
+        static __stack_guard_low_start: u8;
+        static __stack_guard_low_end: u8;
+        static __stack_guard_high_start: u8;
+        static __stack_guard_high_end: u8;
+        static __stack_bottom: u8;
+        static __stack_top: u8;
+    }
     finn_kernel::serial_log!("FINNOS:TEST:PAGE_TABLES:BEGIN\n");
     if address_space.root().address() == 0 {
         failure();
@@ -247,6 +301,46 @@ fn run_page_table_test(
         failure();
     }
     finn_kernel::serial_log!("FINNOS:TEST:PAGE_TABLES:PERMISSIONS_OK\n");
+    let low_start = unsafe { &__stack_guard_low_start as *const u8 as u64 };
+    let low_end = unsafe { &__stack_guard_low_end as *const u8 as u64 };
+    let high_start = unsafe { &__stack_guard_high_start as *const u8 as u64 };
+    let high_end = unsafe { &__stack_guard_high_end as *const u8 as u64 };
+    let stack_bottom = unsafe { &__stack_bottom as *const u8 as u64 };
+    let stack_top = unsafe { &__stack_top as *const u8 as u64 };
+    if !low_start.is_multiple_of(finn_kernel::memory::PAGE_SIZE)
+        || !low_end.is_multiple_of(finn_kernel::memory::PAGE_SIZE)
+        || !high_start.is_multiple_of(finn_kernel::memory::PAGE_SIZE)
+        || !high_end.is_multiple_of(finn_kernel::memory::PAGE_SIZE)
+        || low_end <= low_start
+        || high_end <= high_start
+        || !(low_end < current_stack_pointer() && current_stack_pointer() < high_start)
+        || current_stack_pointer() <= stack_bottom
+        || current_stack_pointer() >= stack_top
+    {
+        failure();
+    }
+    let mut guard_page = low_start;
+    while guard_page < low_end {
+        if address_space
+            .translate(guard_page)
+            .unwrap_or_else(|_| failure())
+            .is_some()
+        {
+            failure();
+        }
+        guard_page += finn_kernel::memory::PAGE_SIZE;
+    }
+    guard_page = high_start;
+    while guard_page < high_end {
+        if address_space
+            .translate(guard_page)
+            .unwrap_or_else(|_| failure())
+            .is_some()
+        {
+            failure();
+        }
+        guard_page += finn_kernel::memory::PAGE_SIZE;
+    }
     if address_space
         .translate(0)
         .unwrap_or_else(|_| failure())
@@ -282,13 +376,21 @@ fn run_page_table_test(
         failure();
     }
     finn_kernel::serial_log!("FINNOS:TEST:PAGE_TABLES:SCRATCH_UNMAP_OK\n");
+    allocator
+        .deallocate(
+            finn_kernel::memory::PageRange::new(scratch.start_address(), 1)
+                .unwrap_or_else(|_| failure()),
+        )
+        .unwrap_or_else(|_| failure());
+    allocator.check_invariants().unwrap_or_else(|_| failure());
+    finn_kernel::arch::x86_64::exceptions::expect_non_present_read(paging::SCRATCH_VIRTUAL_ADDRESS);
     finn_kernel::serial_log!("FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_BEGIN\n");
-    // The software walk above has established the exact non-present state. Keep
-    // the completion path deterministic while the exception-entry ABI is still
-    // being brought under the new address-space invariants.
-    finn_kernel::serial_log!("FINNOS:EXCEPTION:PAGE_FAULT\n");
-    finn_kernel::serial_log!("FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_PASS\n");
-    qemu::exit(0x10)
+    // SAFETY: the test has removed the leaf, invalidated the address, and armed
+    // the page-fault handler for exactly this supervisor read.
+    unsafe {
+        let _ = core::ptr::read_volatile(paging::SCRATCH_VIRTUAL_ADDRESS as *const u8);
+    }
+    failure()
 }
 
 fn build_page_tables(
@@ -309,6 +411,8 @@ fn build_page_tables(
         static __data_end: u8;
         static __bss_start: u8;
         static __bss_end: u8;
+        static __kernel_after_stack_start: u8;
+        static __kernel_after_stack_end: u8;
         static __stack_bottom: u8;
         static __stack_top: u8;
         static __stack_guard_low_start: u8;
@@ -361,6 +465,13 @@ fn build_page_tables(
         section(
             &__bss_start as *const u8 as u64,
             &__bss_end as *const u8 as u64,
+            paging::MappingPermissions::kernel_rw_nx(),
+            paging::MappingPurpose::KernelBss,
+            &mut plan,
+        )?;
+        section(
+            &__kernel_after_stack_start as *const u8 as u64,
+            &__kernel_after_stack_end as *const u8 as u64,
             paging::MappingPermissions::kernel_rw_nx(),
             paging::MappingPurpose::KernelBss,
             &mut plan,
@@ -451,6 +562,174 @@ fn build_page_tables(
         })?;
     }
     paging::build(&plan, allocator, cpu.physical_address_width)
+}
+
+fn validate_required_mappings(
+    address_space: &paging::ActiveAddressSpace,
+    info: &BootInfo,
+) -> Result<(), paging::PagingError> {
+    unsafe extern "C" {
+        static __stack_guard_low_start: u8;
+        static __stack_guard_low_end: u8;
+        static __stack_guard_high_start: u8;
+        static __stack_guard_high_end: u8;
+        static __stack_bottom: u8;
+        static __stack_top: u8;
+        static _start: u8;
+    }
+    let check =
+        |address: u64, writable: bool, executable: bool| -> Result<(), paging::PagingError> {
+            let translation = address_space
+                .translate(address)?
+                .ok_or(paging::PagingError::RequiredMappingMissing)?;
+            if translation.effective_writable != writable
+                || translation.effective_executable != executable
+                || translation.effective_user
+            {
+                return Err(paging::PagingError::RequiredPermissionMismatch);
+            }
+            Ok(())
+        };
+    unsafe {
+        check(&__stack_bottom as *const u8 as u64, true, false)?;
+        check(current_stack_pointer(), true, false)?;
+        check(&_start as *const u8 as u64, false, true)?;
+        check(kernel_main as *const () as u64, false, true)?;
+    }
+    for vector in [3, 6, 14] {
+        check(
+            finn_kernel::arch::x86_64::exceptions::handler_address(vector)
+                .ok_or(paging::PagingError::RequiredMappingMissing)?,
+            false,
+            true,
+        )?;
+    }
+    check(
+        finn_kernel::arch::x86_64::exceptions::dispatcher_address(),
+        false,
+        true,
+    )?;
+    check(
+        finn_kernel::arch::x86_64::gdt::storage_address(),
+        true,
+        false,
+    )?;
+    check(
+        finn_kernel::arch::x86_64::idt::storage_address(),
+        true,
+        false,
+    )?;
+    check(
+        finn_kernel::arch::x86_64::exceptions::storage_address(),
+        true,
+        false,
+    )?;
+    check(
+        finn_kernel::arch::x86_64::tss::double_fault_stack_start(),
+        true,
+        false,
+    )?;
+    let low_start = unsafe { &__stack_guard_low_start as *const u8 as u64 };
+    let low_end = unsafe { &__stack_guard_low_end as *const u8 as u64 };
+    let high_start = unsafe { &__stack_guard_high_start as *const u8 as u64 };
+    let high_end = unsafe { &__stack_guard_high_end as *const u8 as u64 };
+    if !low_start.is_multiple_of(4096)
+        || !low_end.is_multiple_of(4096)
+        || !high_start.is_multiple_of(4096)
+        || !high_end.is_multiple_of(4096)
+        || low_end <= low_start
+        || high_end <= high_start
+        || address_space.translate(low_start)?.is_some()
+        || address_space.translate(high_start)?.is_some()
+        || !(low_end < current_stack_pointer() && current_stack_pointer() < high_start)
+    {
+        return Err(paging::PagingError::GuardPageMapped);
+    }
+    if address_space.translate(0)?.is_some() {
+        return Err(paging::PagingError::NullPageMapped);
+    }
+    let boot = address_space
+        .translate(info.boot_info_storage.start)?
+        .ok_or(paging::PagingError::RequiredMappingMissing)?;
+    if boot.effective_writable || boot.effective_executable {
+        return Err(paging::PagingError::RequiredPermissionMismatch);
+    }
+    let map = address_space
+        .translate(info.memory_map.address)?
+        .ok_or(paging::PagingError::RequiredMappingMissing)?;
+    if map.effective_writable || map.effective_executable {
+        return Err(paging::PagingError::RequiredPermissionMismatch);
+    }
+    let fb = address_space
+        .translate(info.framebuffer.address)?
+        .ok_or(paging::PagingError::RequiredMappingMissing)?;
+    if !fb.effective_writable || fb.effective_executable || !fb.cache_disable || !fb.write_through {
+        return Err(paging::PagingError::RequiredPermissionMismatch);
+    }
+    for &page in address_space.pool().pages() {
+        let translation = address_space
+            .translate(page)?
+            .ok_or(paging::PagingError::RequiredMappingMissing)?;
+        if !translation.effective_writable
+            || translation.effective_executable
+            || translation.effective_user
+        {
+            return Err(paging::PagingError::RequiredPermissionMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn current_stack_pointer() -> u64 {
+    let value: u64;
+    // SAFETY: reading RSP is a side-effect-free diagnostic operation in ring zero.
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+fn current_instruction_pointer() -> u64 {
+    let value: u64;
+    // SAFETY: LEA reads the current RIP without touching memory.
+    unsafe {
+        core::arch::asm!("lea {}, [rip]", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+fn log_cpu_transition_state() {
+    let cr = paging::cpu_paging_info().unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:PAGING:CR0={:#x} CR4={:#x} EFER={:#x} RIP={:#x} RSP={:#x}\n",
+        cr.cr0,
+        cr.cr4,
+        cr.efer,
+        current_instruction_pointer(),
+        current_stack_pointer()
+    );
+    finn_kernel::serial_log!(
+        "FINNOS:PAGING:GDT={:#x} IDT={:#x} TSS={:#x} IST={:#x}\n",
+        finn_kernel::arch::x86_64::gdt::storage_address(),
+        finn_kernel::arch::x86_64::idt::storage_address(),
+        finn_kernel::arch::x86_64::exceptions::storage_address(),
+        finn_kernel::arch::x86_64::tss::double_fault_stack_start()
+    );
+    for vector in [3, 6, 14] {
+        if let Some((offset, selector, ist, attr, reserved)) =
+            finn_kernel::arch::x86_64::idt::gate_diagnostic(vector)
+        {
+            finn_kernel::serial_log!(
+                "FINNOS:PAGING:IDT{}={:#x}:{:#x}:IST{}:ATTR{:#x}:RES{:#x}\n",
+                vector,
+                offset,
+                selector,
+                ist,
+                attr,
+                reserved
+            );
+        }
+    }
 }
 
 #[cfg(feature = "qemu-test-page-allocator")]

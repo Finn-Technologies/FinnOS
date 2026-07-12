@@ -3,21 +3,11 @@
 //! The safe half of this module describes addresses, entries, permissions, and
 //! deterministic mapping plans. The small unsafe half is only used by the
 //! kernel binary to touch identity-mapped table pages and the CPU registers.
+// The paging API is consumed by the freestanding kernel binary and is intentionally also
+// available to host-side tests. The crate-wide documentation lint applies to the binary-facing
+// module as well, so this module documents the hardware invariants in its public type comments
+// while retaining the crate's existing compatibility for generated low-level API items.
 #![allow(missing_docs)]
-#![allow(dead_code)]
-#![allow(
-    clippy::cast_lossless,
-    clippy::cast_possible_truncation,
-    clippy::doc_markdown,
-    clippy::len_without_is_empty,
-    clippy::manual_range_contains,
-    clippy::missing_const_for_fn,
-    clippy::missing_errors_doc,
-    clippy::missing_safety_doc,
-    clippy::must_use_candidate,
-    clippy::semicolon_if_nothing_returned,
-    clippy::struct_excessive_bools
-)]
 
 use crate::memory::{EarlyPhysicalPageAllocator, PAGE_SIZE, PageAllocationError, PhysicalPage};
 
@@ -128,8 +118,9 @@ impl VirtualPage {
 }
 
 pub const fn is_canonical(address: u64) -> bool {
+    let sign = (address >> 47) & 1;
     let upper = address >> 48;
-    upper == 0 || upper == 0xffff
+    (sign == 0 && upper == 0) || (sign == 1 && upper == 0xffff)
 }
 pub const fn align_down(address: u64) -> u64 {
     address & !(PAGE_SIZE - 1)
@@ -285,15 +276,37 @@ impl MappingPlan {
         if request.virtual_start == 0 {
             return Err(PagingError::NullPageMapped);
         }
+        if self.as_slice().iter().any(|old| *old == request) {
+            return Ok(());
+        }
         for old in self.as_slice() {
-            let old_end = old.virtual_start + old.page_count * PAGE_SIZE;
+            let old_bytes = old
+                .page_count
+                .checked_mul(PAGE_SIZE)
+                .ok_or(PagingError::PageCountOverflow)?;
+            let old_end = old
+                .virtual_start
+                .checked_add(old_bytes)
+                .ok_or(PagingError::AddressOverflow)?;
             if request.virtual_start < old_end && old.virtual_start < v_end {
-                let compatible = request.permissions == old.permissions
-                    && request.physical_start == old.physical_start;
-                if compatible {
-                    return Ok(());
+                let overlap_start = request.virtual_start.max(old.virtual_start);
+                let request_offset = overlap_start
+                    .checked_sub(request.virtual_start)
+                    .ok_or(PagingError::AddressOverflow)?;
+                let old_offset = overlap_start
+                    .checked_sub(old.virtual_start)
+                    .ok_or(PagingError::AddressOverflow)?;
+                let request_physical = request
+                    .physical_start
+                    .checked_add(request_offset)
+                    .ok_or(PagingError::AddressOverflow)?;
+                let old_physical = old
+                    .physical_start
+                    .checked_add(old_offset)
+                    .ok_or(PagingError::AddressOverflow)?;
+                if request.permissions != old.permissions || request_physical != old_physical {
+                    return Err(PagingError::MappingConflict);
                 }
-                return Err(PagingError::MappingConflict);
             }
         }
         if self.count == MAX_MAPPING_REQUESTS {
@@ -323,9 +336,12 @@ impl PageTableEntry {
     const USER: u64 = 1 << 2;
     const WRITE_THROUGH: u64 = 1 << 3;
     const CACHE_DISABLE: u64 = 1 << 4;
+    #[allow(dead_code)]
     const ACCESSED: u64 = 1 << 5;
+    #[allow(dead_code)]
     const DIRTY: u64 = 1 << 6;
     const HUGE: u64 = 1 << 7;
+    #[allow(dead_code)]
     const GLOBAL: u64 = 1 << 8;
     const NX: u64 = 1 << 63;
     pub const fn empty() -> Self {
@@ -402,6 +418,45 @@ pub struct CpuPagingInfo {
     pub physical_address_width: u8,
     pub nx_supported: bool,
     pub old_cr3: u64,
+    pub cr0: u64,
+    pub cr4: u64,
+    pub efer: u64,
+}
+
+pub const CR0_PG: u64 = 1 << 31;
+pub const CR0_WP: u64 = 1 << 16;
+pub const CR4_PAE: u64 = 1 << 5;
+pub const CR4_LA57: u64 = 1 << 12;
+pub const EFER_LME: u64 = 1 << 8;
+pub const EFER_LMA: u64 = 1 << 10;
+pub const EFER_NXE: u64 = 1 << 11;
+
+pub fn validate_cpu_state(
+    cr0: u64,
+    cr4: u64,
+    efer: u64,
+    width: u8,
+    nx_supported: bool,
+) -> Result<(), PagingError> {
+    if cr0 & CR0_PG == 0 {
+        return Err(PagingError::PagingNotEnabled);
+    }
+    if cr4 & CR4_PAE == 0 {
+        return Err(PagingError::PaeNotEnabled);
+    }
+    if cr4 & CR4_LA57 != 0 {
+        return Err(PagingError::UnsupportedFiveLevelPaging);
+    }
+    if efer & EFER_LME == 0 || efer & EFER_LMA == 0 {
+        return Err(PagingError::LongModeNotActive);
+    }
+    if !nx_supported {
+        return Err(PagingError::NxUnsupported);
+    }
+    if width < 36 || width > 52 {
+        return Err(PagingError::InvalidPhysicalAddressWidth);
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -419,24 +474,17 @@ pub fn cpu_paging_info() -> Result<CpuPagingInfo, PagingError> {
         return Err(PagingError::InvalidPhysicalAddressWidth);
     }
     let width = (core::arch::x86_64::__cpuid(0x8000_0008).eax & 0xff) as u8;
-    let cr4 = read_cr4();
-    if cr4 & (1 << 12) != 0 {
-        return Err(PagingError::UnsupportedFiveLevelPaging);
-    }
     let cr0 = read_cr0();
-    if cr0 & (1 << 31) == 0 {
-        return Err(PagingError::PagingNotEnabled);
-    }
-    if cr4 & (1 << 5) == 0 {
-        return Err(PagingError::PaeNotEnabled);
-    }
-    if !(36..=52).contains(&width) {
-        return Err(PagingError::InvalidPhysicalAddressWidth);
-    }
+    let cr4 = read_cr4();
+    let efer = rdmsr(0xc000_0080);
+    validate_cpu_state(cr0, cr4, efer, width, nx)?;
     Ok(CpuPagingInfo {
         physical_address_width: width,
         nx_supported: nx,
         old_cr3: read_cr3(),
+        cr0,
+        cr4,
+        efer,
     })
 }
 #[cfg(not(target_arch = "x86_64"))]
@@ -472,6 +520,19 @@ fn read_cr4() -> u64 {
     value
 }
 
+#[allow(unsafe_code)]
+pub fn current_cr3() -> u64 {
+    read_cr3() & !0xfff
+}
+#[allow(unsafe_code)]
+pub fn current_cr0() -> u64 {
+    read_cr0()
+}
+#[allow(unsafe_code)]
+pub fn current_efer() -> u64 {
+    rdmsr(0xc000_0080)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PageTablePagePool {
     pages: [u64; MAX_PAGE_TABLE_PAGES],
@@ -491,7 +552,19 @@ impl PageTablePagePool {
     ) -> Result<Self, PageAllocationError> {
         let mut pool = Self::empty();
         while pool.reserved_count < MAX_PAGE_TABLE_PAGES {
-            let page = allocator.allocate_page()?;
+            let page = match allocator.allocate_page() {
+                Ok(page) => page,
+                Err(error) => {
+                    for &address in pool.pages() {
+                        // The allocator owns every page in this partial reservation, so a
+                        // failed reservation must return those pages before reporting failure.
+                        if let Ok(range) = crate::memory::PageRange::new(address, 1) {
+                            let _ = allocator.deallocate(range);
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             pool.pages[pool.reserved_count] = page.start_address();
             pool.reserved_count += 1;
         }
@@ -572,20 +645,6 @@ pub fn build(
     allocator: &mut EarlyPhysicalPageAllocator,
     width: u8,
 ) -> Result<ActiveAddressSpace, PagingError> {
-    // Keep physical page zero unavailable as well as virtual page zero. The
-    // page allocator intentionally remains architecture-neutral, so this
-    // one-page architectural reservation is made at the paging boundary.
-    let probe = allocator
-        .allocate_page()
-        .map_err(|_| PagingError::PageTablePoolExhausted)?;
-    if probe.start_address() != 0 {
-        allocator
-            .deallocate(
-                crate::memory::PageRange::new(probe.start_address(), 1)
-                    .map_err(|_| PagingError::PageTablePoolExhausted)?,
-            )
-            .map_err(|_| PagingError::PageTablePoolExhausted)?;
-    }
     let mut pool =
         PageTablePagePool::reserve(allocator).map_err(|_| PagingError::PageTablePoolExhausted)?;
     let root_page = pool.take()?;
@@ -854,10 +913,17 @@ mod tests {
     use super::*;
     #[test]
     fn canonical_and_indices() {
+        assert!(is_canonical(0));
         assert!(is_canonical(0x0000_7fff_ffff_f000));
         assert!(is_canonical(0xffff_8000_0000_0000));
+        assert!(is_canonical(u64::MAX));
+        assert!(!is_canonical(0x0000_8000_0000_0000));
+        assert!(!is_canonical(0xffff_7fff_ffff_ffff));
         assert!(!is_canonical(0x0001_0000_0000_0000));
         assert_eq!(pml4_index(0x1234_5678_9abc), 0x24);
+        assert_eq!(pdpt_index(0x1234_5678_9abc), 0xd1);
+        assert_eq!(page_directory_index(0x1234_5678_9abc), 0xb3);
+        assert_eq!(page_table_index(0x1234_5678_9abc), 0x189);
         assert_eq!(page_offset(0x1234), 0x234);
     }
     #[test]
@@ -905,6 +971,70 @@ mod tests {
         let mut z = r;
         z.virtual_start = 0;
         assert_eq!(p.push(z), Err(PagingError::NullPageMapped));
+    }
+
+    #[test]
+    fn plan_accepts_compatible_partial_overlap() {
+        let mut p = MappingPlan::new();
+        let permissions = MappingPermissions::kernel_r_nx();
+        p.push(MappingRequest {
+            virtual_start: 0x1000,
+            physical_start: 0x5000,
+            page_count: 3,
+            permissions,
+            purpose: MappingPurpose::BootInfo,
+        })
+        .unwrap();
+        p.push(MappingRequest {
+            virtual_start: 0x2000,
+            physical_start: 0x6000,
+            page_count: 3,
+            permissions,
+            purpose: MappingPurpose::MemoryMapStorage,
+        })
+        .unwrap();
+        let mut conflict = MappingRequest {
+            virtual_start: 0x2000,
+            physical_start: 0x7000,
+            page_count: 1,
+            permissions,
+            purpose: MappingPurpose::TestScratch,
+        };
+        assert_eq!(p.push(conflict), Err(PagingError::MappingConflict));
+        conflict.physical_start = 0x5000;
+        conflict.permissions = MappingPermissions::kernel_rw_nx();
+        assert_eq!(p.push(conflict), Err(PagingError::MappingConflict));
+    }
+
+    #[test]
+    fn cpu_state_requires_long_mode_and_nx() {
+        let valid = CR0_PG | CR0_WP;
+        let valid_cr4 = CR4_PAE;
+        let valid_efer = EFER_LME | EFER_LMA;
+        assert_eq!(
+            validate_cpu_state(valid & !CR0_PG, valid_cr4, valid_efer, 48, true),
+            Err(PagingError::PagingNotEnabled)
+        );
+        assert_eq!(
+            validate_cpu_state(valid, 0, valid_efer, 48, true),
+            Err(PagingError::PaeNotEnabled)
+        );
+        assert_eq!(
+            validate_cpu_state(valid, valid_cr4 | CR4_LA57, valid_efer, 48, true),
+            Err(PagingError::UnsupportedFiveLevelPaging)
+        );
+        assert_eq!(
+            validate_cpu_state(valid, valid_cr4, EFER_LMA, 48, true),
+            Err(PagingError::LongModeNotActive)
+        );
+        assert_eq!(
+            validate_cpu_state(valid, valid_cr4, valid_efer, 48, false),
+            Err(PagingError::NxUnsupported)
+        );
+        assert_eq!(
+            validate_cpu_state(valid, valid_cr4, valid_efer, 35, true),
+            Err(PagingError::InvalidPhysicalAddressWidth)
+        );
     }
     #[test]
     fn pool_capacity_is_fixed() {

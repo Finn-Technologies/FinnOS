@@ -9,7 +9,16 @@ use super::tss::TSS;
 const GDT_ENTRIES: usize = 8;
 
 /// GDT storage. Must remain valid permanently after load.
+// SAFETY: The linker places descriptor storage above the guarded early stack.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".kernel_after_stack")]
 static mut GDT: [u64; GDT_ENTRIES] = [0; GDT_ENTRIES];
+
+/// Return the physical/identity address of FinnOS GDT storage.
+#[allow(unsafe_code)]
+pub fn storage_address() -> u64 {
+    core::ptr::addr_of!(GDT) as u64
+}
 
 /// Segment selector for the kernel code descriptor.
 pub const KERNEL_CODE_SELECTOR: u16 = 0x08;

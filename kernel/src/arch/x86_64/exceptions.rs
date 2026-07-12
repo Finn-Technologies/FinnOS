@@ -101,7 +101,17 @@ static TEST_STATE: AtomicU8 = AtomicU8::new(TestState::Idle as u8);
 static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
 /// Permanently resident Task State Segment used by the early exception foundation.
+// SAFETY: The linker places descriptor storage above the guarded early stack.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".kernel_after_stack")]
 static mut EXCEPTION_TSS: TSS = TSS::new();
+
+/// Return the physical/identity address of the resident exception TSS.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn storage_address() -> u64 {
+    core::ptr::addr_of!(EXCEPTION_TSS) as u64
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -519,6 +529,20 @@ fn handler_addresses() -> idt::HandlerAddresses {
     addresses
 }
 
+/// Return the address of an installed assembly exception stub.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn handler_address(vector: u8) -> Option<u64> {
+    let addresses = handler_addresses();
+    addresses.handlers.get(usize::from(vector)).copied()
+}
+
+/// Return the address of the Rust exception dispatcher.
+#[must_use]
+pub fn dispatcher_address() -> u64 {
+    rust_exception_dispatch as *const () as u64
+}
+
 /// Initialize the IDT with the early exception handlers.
 ///
 /// # Safety
@@ -528,10 +552,18 @@ fn handler_addresses() -> idt::HandlerAddresses {
 pub unsafe fn init() {
     let addresses = handler_addresses();
     let idt = idt::build_exception_idt(&addresses);
+    serial::log(format_args!(
+        "FINNOS:KERNEL:IDT_BUILD14={:#x}\n",
+        addresses.handlers[14]
+    ));
     // SAFETY: `idt::install` copies the built IDT into the static IDT storage.
     unsafe {
         idt::install(idt);
     }
+    serial::log(format_args!(
+        "FINNOS:KERNEL:IDT_INSTALLED14={:#x}\n",
+        idt::handler_offset(14).unwrap_or(0)
+    ));
 }
 
 /// Rust dispatch function called from the assembly entry stubs.
@@ -561,12 +593,14 @@ extern "C" fn rust_exception_dispatch(frame: *const ExceptionFrame) {
 /// `BreakpointHandled`. Returns `false` if the breakpoint was unexpected.
 #[cfg(feature = "qemu-test-exceptions")]
 fn accept_breakpoint() -> bool {
-    let previous = TEST_STATE.load(Ordering::SeqCst);
-    if previous != TestState::BreakpointExpected as u8 {
-        return false;
-    }
-    TEST_STATE.store(TestState::BreakpointHandled as u8, Ordering::SeqCst);
-    true
+    TEST_STATE
+        .compare_exchange(
+            TestState::BreakpointExpected as u8,
+            TestState::BreakpointHandled as u8,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
 }
 
 fn handle_breakpoint(frame: &ExceptionFrame) {
@@ -731,69 +765,50 @@ pub unsafe fn init_exception_foundation(rsp0: u64) {
 #[allow(unsafe_code)]
 pub unsafe fn run_exception_tests() {
     serial::log(format_args!("FINNOS:TEST:EXCEPTIONS:BEGIN\n"));
-
-    // Keep the exception smoke sequence deterministic on firmware/QEMU builds
-    // where an INT3 delivery can race the post-CR3 descriptor-table transition.
-    // Host-side state tests still cover the acceptance logic; fatal exceptions
-    // remain fatal in the normal dispatcher.
-    #[cfg(feature = "qemu-test-exceptions")]
-    {
-        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
-        serial::log(format_args!("FINNOS:EXCEPTION:BREAKPOINT\n"));
-        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
-        serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
-        serial::log(format_args!("FINNOS:EXCEPTION:INVALID_OPCODE\n"));
-        serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:PASS\n"));
-        qemu::exit(0x10);
+    serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
+    TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
+    // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an
+    // exception that pushes a frame and runs a handler; no memory or stack behavior
+    // is declared for the instruction itself.
+    unsafe {
+        core::arch::asm!("int3");
     }
+    serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
 
-    #[cfg(not(feature = "qemu-test-exceptions"))]
-    {
-        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
-        TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
-        // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an
-        // exception that pushes a frame and runs a handler; no memory or stack behavior
-        // is declared for the instruction itself.
-        unsafe {
-            core::arch::asm!("int3");
-        }
-        serial::log(format_args!("FINNOS:TEST:BREAKPOINT:PASS\n"));
-
-        serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
-        TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
-        // SAFETY: `ud2` is a controlled invalid-opcode in the test feature. It intentionally
-        // does not return through the ordinary path; the CPU raises #UD and the handler exits.
-        // No memory or stack behavior is declared for the instruction itself.
-        unsafe {
-            core::arch::asm!("ud2");
-        }
-        // `ud2` should not return; if it does, the test failed.
-        fatal(
-            &ExceptionFrame {
-                rax: 0,
-                rbx: 0,
-                rcx: 0,
-                rdx: 0,
-                rsi: 0,
-                rdi: 0,
-                rbp: 0,
-                r8: 0,
-                r9: 0,
-                r10: 0,
-                r11: 0,
-                r12: 0,
-                r13: 0,
-                r14: 0,
-                r15: 0,
-                vector: 0,
-                error_code: 0,
-                rip: 0,
-                cs: 0,
-                rflags: 0,
-            },
-            "INVALID_OPCODE_DID_NOT_FAULT",
-        );
+    serial::log(format_args!("FINNOS:TEST:INVALID_OPCODE:BEGIN\n"));
+    TEST_STATE.store(TestState::InvalidOpcodeExpected as u8, Ordering::SeqCst);
+    // SAFETY: `ud2` is a controlled invalid-opcode in the test feature. It intentionally
+    // does not return through the ordinary path; the CPU raises #UD and the handler exits.
+    // No memory or stack behavior is declared for the instruction itself.
+    unsafe {
+        core::arch::asm!("ud2");
     }
+    // `ud2` should not return; if it does, the test failed.
+    fatal(
+        &ExceptionFrame {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            vector: 0,
+            error_code: 0,
+            rip: 0,
+            cs: 0,
+            rflags: 0,
+        },
+        "INVALID_OPCODE_DID_NOT_FAULT",
+    );
 }
 
 #[cfg(test)]
