@@ -1,7 +1,4 @@
 //! Legacy 8259 PIC ownership. Both controllers remain fully masked.
-#![allow(missing_docs)]
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
-
 /// Remapped master PIC vector.
 pub const MASTER_OFFSET: u8 = 0x20;
 /// Remapped slave PIC vector.
@@ -16,7 +13,19 @@ const IO_WAIT: u16 = 0x80;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PicError {
     /// Hardware readback did not retain the required mask.
-    ReadbackFailed { master: u8, slave: u8 },
+    ReadbackFailed {
+        /// Master mask read back from port 0x21.
+        master: u8,
+        /// Slave mask read back from port 0xa1.
+        slave: u8,
+    },
+}
+
+/// Read the current master and slave masks.
+#[allow(unsafe_code)]
+pub fn masks() -> (u8, u8) {
+    // SAFETY: These are documented byte-wide PIC data ports; reads have no memory aliasing.
+    unsafe { (in_u8(MASTER_DATA), in_u8(SLAVE_DATA)) }
 }
 
 #[allow(unsafe_code)]
@@ -44,6 +53,10 @@ fn wait() {
 }
 
 /// Remap both PICs and verify that every legacy IRQ remains masked.
+///
+/// # Errors
+///
+/// Returns an error if either mask fails readback verification.
 #[allow(unsafe_code)]
 pub fn initialize() -> Result<(u8, u8), PicError> {
     // SAFETY: Initialization runs on the BSP while IF is clear and uses byte-width accesses.

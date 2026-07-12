@@ -1,7 +1,4 @@
 //! Polled PIT channel-2 reference used only during local APIC calibration.
-#![allow(missing_docs)]
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
-
 const CHANNEL2: u16 = 0x42;
 const COMMAND: u16 = 0x43;
 const SPEAKER: u16 = 0x61;
@@ -12,12 +9,19 @@ const POLL_LIMIT: u32 = 20_000_000;
 /// PIT calibration failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PitError {
+    /// The requested duration is zero.
     InvalidDuration,
+    /// The PIT count cannot be represented.
     CountOverflow,
+    /// Channel 2 did not reach terminal count before the bounded timeout.
     Timeout,
 }
 
 /// Convert a duration to a valid 16-bit PIT count.
+///
+/// # Errors
+///
+/// Returns an error for zero durations or counts outside the PIT range.
 pub fn duration_count(milliseconds: u64) -> Result<u16, PitError> {
     if milliseconds == 0 {
         return Err(PitError::InvalidDuration);
@@ -29,7 +33,7 @@ pub fn duration_count(milliseconds: u64) -> Result<u16, PitError> {
     if count == 0 || count > u64::from(u16::MAX) {
         return Err(PitError::CountOverflow);
     }
-    Ok(count as u16)
+    u16::try_from(count).map_err(|_| PitError::CountOverflow)
 }
 
 #[allow(unsafe_code)]
@@ -50,6 +54,14 @@ unsafe fn in_u8(port: u16) -> u8 {
 }
 
 /// Run a 10 ms channel-2 one-shot and return its count.
+///
+/// Interrupts may remain enabled while this function polls channel 2. No other
+/// subsystem may access channel 2 during the interval, and speaker output is
+/// disabled and the original gate state is restored.
+///
+/// # Errors
+///
+/// Returns an invalid-duration, count-overflow, or bounded-timeout error.
 #[allow(unsafe_code)]
 pub fn wait_reference(milliseconds: u64) -> Result<u16, PitError> {
     let count = duration_count(milliseconds)?;
@@ -58,8 +70,8 @@ pub fn wait_reference(milliseconds: u64) -> Result<u16, PitError> {
         let original = in_u8(SPEAKER);
         out_u8(SPEAKER, original & !0x02 & !0x01);
         out_u8(COMMAND, 0xb0); // channel 2, lobyte/hibyte, mode 0, binary
-        out_u8(CHANNEL2, count as u8);
-        out_u8(CHANNEL2, (count >> 8) as u8);
+        out_u8(CHANNEL2, u8::try_from(count & 0xff).unwrap_or(0));
+        out_u8(CHANNEL2, u8::try_from(count >> 8).unwrap_or(0));
         out_u8(SPEAKER, (original & !0x02) & !0x01);
         out_u8(SPEAKER, ((original & !0x02) & !0x01) | 0x01);
         let mut polls = 0;
@@ -89,5 +101,10 @@ mod tests {
     #[test]
     fn count_overflow_is_rejected() {
         assert_eq!(duration_count(100), Err(PitError::CountOverflow));
+    }
+
+    #[test]
+    fn fifty_ms_reference_is_59659() {
+        assert_eq!(duration_count(50), Ok(59_659));
     }
 }

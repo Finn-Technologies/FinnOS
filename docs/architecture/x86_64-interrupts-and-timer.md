@@ -19,18 +19,21 @@ x2APIC is rejected. Its physical page is mapped once at
 Register access is bounded 32-bit volatile access.
 
 The local APIC is software-enabled in xAPIC mode. PIT channel 2 is programmed
-as a polled, speaker-disabled one-shot for a 10 ms reference. The measured
-APIC decrement calibrates a periodic divide-by-16 timer at 100 Hz. Each timer
-entry increments an atomic 64-bit tick counter and writes APIC EOI exactly
-once. Ticks convert to saturated monotonic milliseconds; this is not wall-clock
-time and no sleep or timer-queue API exists.
+as a polled, speaker-disabled one-shot for a 10 ms reference. If the measured
+decrement is `elapsed`, the periodic initial count is calculated with checked
+integer arithmetic as `elapsed * 1000 / (reference_ms * target_hz)`, truncating
+toward zero. For 10 ms and 100 Hz this is approximately the measured 10 ms
+count, not counts per second. An independent 50 ms PIT window accepts 3–7
+observed timer ticks in QEMU. Each timer entry increments an atomic 64-bit tick
+counter and writes APIC EOI exactly once. Ticks convert to saturated monotonic
+milliseconds; this is not wall-clock time and no sleep or timer-queue API exists.
 
 Interrupt context is tracked by a non-allocating nesting counter. Heap
 allocation and deallocation are rejected before the heap lock in that context;
 the timer handler never allocates. Unexpected external vectors are diagnosed,
 maskable interrupts are disabled, and normal builds halt fatally. Successful
-normal boot enters an interruptible `hlt` idle loop after First Boot; this is
-not a scheduler.
+normal boot enters an interruptible `hlt` idle loop after First Boot; fatal
+paths use the separate `cli; hlt` loop. Neither is a scheduler.
 
 The timer integration test waits with `hlt` for at least eight real local APIC
 deliveries. It does not execute `int 0x40`. The only software interrupt in the

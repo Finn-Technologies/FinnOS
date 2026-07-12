@@ -97,6 +97,10 @@ impl PageFaultErrorCode {
 
 /// Atomic test state for the controlled exception test feature.
 static TEST_STATE: AtomicU8 = AtomicU8::new(TestState::Idle as u8);
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+/// Test-only pre-call exception stack-alignment diagnostic.
+pub static EXCEPTION_CALL_ALIGNMENT: AtomicU8 = AtomicU8::new(u8::MAX);
 #[cfg(feature = "qemu-test-page-tables")]
 static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
@@ -244,9 +248,16 @@ mod asm_stubs {
         .align 16
         .globl exception_no_error
         exception_no_error:
+            cld
             SAVE_REGS
-            mov rdi, rsp
+            mov r12, rsp
+            mov rdi, r12
+            and rsp, -16
+            mov rdx, rsp
+            and edx, 15
+            mov byte ptr [rip + EXCEPTION_CALL_ALIGNMENT], dl
             call rust_exception_dispatch
+            mov rsp, r12
             RESTORE_REGS
             add rsp, 16
             iretq
@@ -260,9 +271,16 @@ mod asm_stubs {
         .align 16
         .globl exception_error
         exception_error:
+            cld
             SAVE_REGS
-            mov rdi, rsp
+            mov r12, rsp
+            mov rdi, r12
+            and rsp, -16
+            mov rdx, rsp
+            and edx, 15
+            mov byte ptr [rip + EXCEPTION_CALL_ALIGNMENT], dl
             call rust_exception_dispatch
+            mov rsp, r12
             RESTORE_REGS
             add rsp, 16
             iretq
@@ -543,6 +561,12 @@ pub fn dispatcher_address() -> u64 {
     rust_exception_dispatch as *const () as u64
 }
 
+/// Return the recorded pre-call exception stack alignment.
+#[must_use]
+pub fn call_site_alignment() -> u8 {
+    EXCEPTION_CALL_ALIGNMENT.load(Ordering::Acquire)
+}
+
 /// Initialize the IDT with the early exception handlers.
 ///
 /// # Safety
@@ -576,6 +600,9 @@ pub unsafe fn init() {
 extern "C" fn rust_exception_dispatch(frame: *const ExceptionFrame) {
     // SAFETY: The assembly stubs always pass a valid, aligned frame pointer.
     let frame = unsafe { &*frame };
+    if call_site_alignment() != 0 {
+        fatal(frame, "EXCEPTION_CALL_ALIGNMENT");
+    }
     #[allow(clippy::cast_possible_truncation)]
     match frame.vector as u8 {
         VECTOR_BREAKPOINT => handle_breakpoint(frame),

@@ -1,8 +1,13 @@
 //! x86-64 external interrupt entry and fixed vector policy.
-#![allow(missing_docs)]
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::{idt, serial, timer};
+
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+/// Test-only pre-call stack-alignment diagnostic.
+pub static INTERRUPT_CALL_ALIGNMENT: AtomicU8 = AtomicU8::new(u8::MAX);
 
 /// First legacy PIC vector.
 pub const PIC_VECTOR_START: u8 = 0x20;
@@ -21,21 +26,33 @@ pub const EXTERNAL_GATE_IST: u8 = 0;
 pub struct InterruptFrame {
     /// Saved registers in assembly order.
     pub rax: u64,
+    /// Saved RBX.
     pub rbx: u64,
+    /// Saved RCX.
     pub rcx: u64,
+    /// Saved RDX.
     pub rdx: u64,
+    /// Saved RSI.
     pub rsi: u64,
+    /// Saved RDI.
     pub rdi: u64,
     /// Saved base pointer.
     pub rbp: u64,
     /// Saved extended registers.
     pub r8: u64,
+    /// Saved R9.
     pub r9: u64,
+    /// Saved R10.
     pub r10: u64,
+    /// Saved R11.
     pub r11: u64,
+    /// Saved R12.
     pub r12: u64,
+    /// Saved R13.
     pub r13: u64,
+    /// Saved R14.
     pub r14: u64,
+    /// Saved R15.
     pub r15: u64,
     /// Vector pushed by the stub.
     pub vector: u64,
@@ -43,7 +60,9 @@ pub struct InterruptFrame {
     pub error_code: u64,
     /// CPU-pushed return frame.
     pub rip: u64,
+    /// Saved code selector.
     pub cs: u64,
+    /// Saved flags.
     pub rflags: u64,
 }
 
@@ -64,8 +83,14 @@ mod asm_stubs {
         external_interrupt_entry:
             cld
             SAVE_INTERRUPT_REGS
-            mov rdi, rsp
+            mov r12, rsp
+            mov rdi, r12
+            and rsp, -16
+            mov rdx, rsp
+            and edx, 15
+            mov byte ptr [rip + INTERRUPT_CALL_ALIGNMENT], dl
             call rust_interrupt_dispatch
+            mov rsp, r12
             RESTORE_INTERRUPT_REGS
             add rsp, 16
             iretq
@@ -106,6 +131,12 @@ pub fn dispatcher_address() -> u64 {
     rust_interrupt_dispatch as *const () as u64
 }
 
+/// Return the recorded pre-call stack alignment (test diagnostics).
+#[must_use]
+pub fn call_site_alignment() -> u8 {
+    INTERRUPT_CALL_ALIGNMENT.load(Ordering::Acquire)
+}
+
 /// Install timer and spurious gates while IF remains clear.
 #[allow(unsafe_code)]
 pub unsafe fn install() {
@@ -127,11 +158,13 @@ pub unsafe fn install() {
 }
 
 /// Validate the two external gates.
+#[must_use]
 pub fn validate() -> bool {
     [TIMER_VECTOR, SPURIOUS_VECTOR].iter().all(|&vector| {
         idt::gate_diagnostic(usize::from(vector)).is_some_and(
             |(offset, selector, ist, attr, reserved)| {
                 offset != 0
+                    && super::paging::is_canonical(offset)
                     && selector == super::gdt::KERNEL_CODE_SELECTOR
                     && ist == 0
                     && attr == idt::IDT_INTERRUPT_GATE | 0x80
@@ -147,7 +180,7 @@ pub fn validate() -> bool {
 extern "C" fn rust_interrupt_dispatch(frame: *const InterruptFrame) {
     // SAFETY: The entry stubs pass a pointer to their fixed, register-aligned frame.
     let frame = unsafe { &*frame };
-    match frame.vector as u8 {
+    match u8::try_from(frame.vector).unwrap_or(u8::MAX) {
         TIMER_VECTOR => timer::handle_tick(),
         SPURIOUS_VECTOR => timer::handle_spurious(),
         vector => {

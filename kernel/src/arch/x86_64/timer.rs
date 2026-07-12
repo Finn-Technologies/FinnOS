@@ -1,6 +1,4 @@
 //! BSP local APIC periodic timer policy and monotonic ticks.
-#![allow(missing_docs)]
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -25,34 +23,66 @@ static TICK_OVERFLOW: AtomicBool = AtomicBool::new(false);
 /// Timer setup failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TimerError {
+    /// The PIT reference failed.
     Pit(PitError),
+    /// An APIC operation failed.
     Apic(ApicError),
+    /// A calibration input was zero.
     CalibrationZero,
+    /// Checked calibration arithmetic overflowed.
     CalibrationOverflow,
+    /// The programmed initial count was zero.
     TimerInitialCountZero,
+    /// A timer-dependent API was called before initialization.
     TimerNotInitialized,
+    /// Initialization was attempted twice.
     AlreadyInitialized,
+    /// The independent frequency window was outside tolerance.
+    FrequencyWindowOutOfRange,
 }
 
-/// Pure APIC-count calibration arithmetic.
-pub fn counts_per_tick(elapsed: u32, reference_ms: u64) -> Result<u32, TimerError> {
-    if elapsed == 0 || reference_ms == 0 {
+/// Calculate the initial count for a periodic timer.
+///
+/// Integer division intentionally truncates toward zero after checked arithmetic.
+///
+/// # Errors
+///
+/// Returns an error for zero inputs, overflow, or a result outside `u32`.
+pub fn periodic_initial_count(
+    elapsed_counts: u32,
+    reference_milliseconds: u64,
+    target_frequency_hz: u64,
+) -> Result<u32, TimerError> {
+    if elapsed_counts == 0 || reference_milliseconds == 0 || target_frequency_hz == 0 {
         return Err(TimerError::CalibrationZero);
     }
-    let numerator = u64::from(elapsed)
+    let numerator = u64::from(elapsed_counts)
         .checked_mul(1000)
         .ok_or(TimerError::CalibrationOverflow)?;
+    let denominator = reference_milliseconds
+        .checked_mul(target_frequency_hz)
+        .ok_or(TimerError::CalibrationOverflow)?;
     let result = numerator
-        .checked_div(reference_ms)
+        .checked_div(denominator)
         .ok_or(TimerError::CalibrationZero)?;
     if result == 0 || result > u64::from(u32::MAX) {
         return Err(TimerError::CalibrationOverflow);
     }
-    Ok(result as u32)
+    u32::try_from(result).map_err(|_| TimerError::CalibrationOverflow)
+}
+
+/// Validate the independent 50 ms frequency window.
+#[must_use]
+pub fn frequency_window_valid(ticks: u64) -> bool {
+    (3..=7).contains(&ticks)
 }
 
 /// Configure and start the calibrated 100 Hz periodic APIC timer.
-pub fn initialize(apic: LocalApic) -> Result<(u32, u32), TimerError> {
+///
+/// # Errors
+///
+/// Returns an error if calibration or APIC programming fails.
+pub fn initialize(apic: LocalApic) -> Result<(u32, u32, u32), TimerError> {
     if INITIALIZED.swap(true, Ordering::AcqRel) {
         return Err(TimerError::AlreadyInitialized);
     }
@@ -66,12 +96,12 @@ pub fn initialize(apic: LocalApic) -> Result<(u32, u32), TimerError> {
         let elapsed = u32::MAX
             .checked_sub(current)
             .ok_or(TimerError::CalibrationZero)?;
-        let initial = counts_per_tick(elapsed, TICK_MILLISECONDS).map_err(|error| error)?;
+        let initial = periodic_initial_count(elapsed, TICK_MILLISECONDS, FREQUENCY_HZ)?;
         if initial == 0 {
             return Err(TimerError::TimerInitialCountZero);
         }
         apic.program_timer(initial).map_err(TimerError::Apic)?;
-        Ok((u32::from(reference), initial))
+        Ok((u32::from(reference), elapsed, initial))
     })();
     if result.is_err() {
         INITIALIZED.store(false, Ordering::Release);
@@ -124,8 +154,12 @@ pub fn is_initialized() -> bool {
 
 /// The allocation-free timer ISR body.
 pub fn handle_tick() {
-    let Ok(_guard) = InterruptContextGuard::enter() else {
-        return;
+    let _guard = match InterruptContextGuard::enter() {
+        Ok(guard) => guard,
+        Err(_) => {
+            apic::timer_eoi();
+            return;
+        }
     };
     CONTEXT_OBSERVED.store(true, Ordering::Release);
     if !INITIALIZED.load(Ordering::Acquire) {
@@ -161,10 +195,44 @@ mod tests {
     use super::*;
     #[test]
     fn calibration_is_integer_and_deterministic() {
-        assert_eq!(counts_per_tick(100_000, 10), Ok(10_000_000));
+        assert_eq!(periodic_initial_count(637_937, 10, 100), Ok(637_937));
+        assert_eq!(periodic_initial_count(1_000_000, 20, 100), Ok(500_000));
     }
     #[test]
     fn zero_calibration_is_rejected() {
-        assert_eq!(counts_per_tick(0, 10), Err(TimerError::CalibrationZero));
+        assert_eq!(
+            periodic_initial_count(0, 10, 100),
+            Err(TimerError::CalibrationZero)
+        );
+    }
+
+    #[test]
+    fn frequency_window_tolerance_is_three_to_seven() {
+        assert!(!frequency_window_valid(0));
+        assert!(!frequency_window_valid(1));
+        assert!(frequency_window_valid(3));
+        assert!(frequency_window_valid(5));
+        assert!(frequency_window_valid(7));
+        assert!(!frequency_window_valid(8));
+    }
+
+    #[test]
+    fn calibration_rejects_zero_frequency_and_overflow() {
+        assert_eq!(
+            periodic_initial_count(1, 10, 0),
+            Err(TimerError::CalibrationZero)
+        );
+        assert_eq!(
+            periodic_initial_count(1, 0, 100),
+            Err(TimerError::CalibrationZero)
+        );
+        assert_eq!(
+            periodic_initial_count(1, u64::MAX, 2),
+            Err(TimerError::CalibrationOverflow)
+        );
+        assert_eq!(
+            periodic_initial_count(u32::MAX, 1, 1),
+            Err(TimerError::CalibrationOverflow)
+        );
     }
 }
