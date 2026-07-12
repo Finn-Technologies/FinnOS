@@ -72,12 +72,13 @@ pub fn current_base(width: u8) -> Result<(u64, bool), ApicError> {
     decode_base(rdmsr(IA32_APIC_BASE), width)
 }
 
-/// Decode and validate an IA32_APIC_BASE value.
+/// Decode and validate an `IA32_APIC_BASE` value.
 ///
 /// # Errors
 ///
 /// Returns an error when xAPIC is unavailable or the base is invalid.
-pub fn decode_base(msr: u64, physical_width: u8) -> Result<(u64, bool), ApicError> {
+#[allow(clippy::manual_range_contains)]
+pub const fn decode_base(msr: u64, physical_width: u8) -> Result<(u64, bool), ApicError> {
     let x2apic = msr & (1 << 10) != 0;
     if x2apic {
         return Err(ApicError::X2ApicActive);
@@ -86,7 +87,7 @@ pub fn decode_base(msr: u64, physical_width: u8) -> Result<(u64, bool), ApicErro
         return Err(ApicError::InvalidApicBase);
     }
     let base = msr & (((1u64 << physical_width) - 1) & !0xfff);
-    if base == 0 || !base.is_multiple_of(4096) || base & !((1u64 << physical_width) - 1) != 0 {
+    if base == 0 || base % 4096 != 0 || base & !((1u64 << physical_width) - 1) != 0 {
         return Err(ApicError::InvalidApicBase);
     }
     Ok((base, msr & (1 << 11) != 0))
@@ -149,7 +150,7 @@ impl LocalApic {
         };
         let version = candidate.read(VERSION)?;
         let highest_lvt = highest_lvt_entry(version);
-        if version & 0xff == 0 {
+        if version.to_le_bytes()[0] == 0 {
             return Err(ApicError::InvalidVersion);
         }
         let apic = candidate;
@@ -176,12 +177,12 @@ impl LocalApic {
         Ok(apic)
     }
 
-    /// Physical APIC base reported by IA32_APIC_BASE.
+    /// Physical APIC base reported by `IA32_APIC_BASE`.
     #[must_use]
     pub const fn physical_base(self) -> u64 {
         self.physical_base
     }
-    /// Virtual APIC base used by FinnOS.
+    /// Virtual APIC base used by `FinnOS`.
     #[must_use]
     pub const fn virtual_base(self) -> u64 {
         self.virtual_base
@@ -315,7 +316,7 @@ pub fn eoi_count() -> u64 {
 /// Return the highest supported LVT entry from the APIC version register.
 #[must_use]
 pub const fn highest_lvt_entry(version: u32) -> u8 {
-    ((version >> 16) & 0xff) as u8
+    version.to_le_bytes()[2]
 }
 
 /// Return whether an LVT index is supported by an APIC version.
@@ -365,7 +366,7 @@ fn rdmsr(msr: u32) -> u64 {
     }
     (u64::from(high) << 32) | u64::from(low)
 }
-#[allow(unsafe_code)]
+#[allow(unsafe_code, clippy::cast_possible_truncation)]
 fn wrmsr(msr: u32, value: u64) {
     // SAFETY: Only the global-enable bit of the documented APIC base MSR is changed.
     unsafe {

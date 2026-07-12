@@ -138,6 +138,10 @@ pub fn call_site_alignment() -> u8 {
 }
 
 /// Install timer and spurious gates while IF remains clear.
+///
+/// # Safety
+///
+/// Must be called during single-BSP initialization before enabling maskable interrupts.
 #[allow(unsafe_code)]
 pub unsafe fn install() {
     // SAFETY: The two symbols are executable ring-0 entry points and IDT storage is resident.
@@ -201,7 +205,7 @@ mod tests {
     use core::mem::{offset_of, size_of};
     #[test]
     fn policy_does_not_collide() {
-        assert!(PIC_VECTOR_END < TIMER_VECTOR);
+        const { assert!(PIC_VECTOR_END < TIMER_VECTOR) };
         assert!((0..=0x1f).all(|v| v != TIMER_VECTOR));
         assert_ne!(TIMER_VECTOR, SPURIOUS_VECTOR);
     }

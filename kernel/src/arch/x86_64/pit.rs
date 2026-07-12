@@ -40,7 +40,7 @@ pub fn duration_count(milliseconds: u64) -> Result<u16, PitError> {
 unsafe fn out_u8(port: u16, value: u8) {
     // SAFETY: PIT and speaker ports are byte-wide legacy x86 I/O ports.
     unsafe {
-        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags))
+        core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags));
     };
 }
 #[allow(unsafe_code)]
@@ -48,7 +48,7 @@ unsafe fn in_u8(port: u16) -> u8 {
     let value: u8;
     // SAFETY: PIT and speaker ports are byte-wide legacy x86 I/O ports.
     unsafe {
-        core::arch::asm!("in al, dx", out("al") value, in("dx") port, options(nostack, preserves_flags))
+        core::arch::asm!("in al, dx", out("al") value, in("dx") port, options(nostack, preserves_flags));
     };
     value
 }

@@ -154,12 +154,9 @@ pub fn is_initialized() -> bool {
 
 /// The allocation-free timer ISR body.
 pub fn handle_tick() {
-    let _guard = match InterruptContextGuard::enter() {
-        Ok(guard) => guard,
-        Err(_) => {
-            apic::timer_eoi();
-            return;
-        }
+    let Ok(_guard) = InterruptContextGuard::enter() else {
+        apic::timer_eoi();
+        return;
     };
     CONTEXT_OBSERVED.store(true, Ordering::Release);
     if !INITIALIZED.load(Ordering::Acquire) {
