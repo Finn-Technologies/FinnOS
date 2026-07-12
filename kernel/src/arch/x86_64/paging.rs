@@ -292,7 +292,7 @@ impl MappingPlan {
         if request.virtual_start == 0 {
             return Err(PagingError::NullPageMapped);
         }
-        if self.as_slice().iter().any(|old| *old == request) {
+        if self.as_slice().contains(&request) {
             return Ok(());
         }
         for old in self.as_slice() {
