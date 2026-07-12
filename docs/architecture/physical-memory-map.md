@@ -80,10 +80,9 @@ If the final map would exceed `MAX_MEMORY_REGIONS`, the parser returns a structu
 - Memory is classified but not allocated.
 - Boot-services memory is not yet reclaimed.
 - The physical page allocator uses only `Usable` regions and does not reclaim boot-services or runtime-services memory.
-- There are no FinnOS-owned page tables.
+- FinnOS-owned page-table storage is reserved from usable pages and remains allocated while the
+  active address space exists.
 - There is no kernel heap.
 - x86-64 UEFI QEMU only.
 
-## Next step
-
-The next Kernel Core step is FinnOS-owned x86-64 page tables, which can consume physical addresses returned by the allocator.
+The classified ranges remain the source of physical-page ownership while paging is built; page-table storage is reserved from `Usable` pages and is not returned while active.

@@ -105,9 +105,19 @@ struct DoubleFaultStack {
     data: [u8; DOUBLE_FAULT_STACK_SIZE],
 }
 
+// SAFETY: The linker places the dedicated IST storage above the guarded early stack.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".kernel_after_stack")]
 static mut DOUBLE_FAULT_STACK: DoubleFaultStack = DoubleFaultStack {
     data: [0; DOUBLE_FAULT_STACK_SIZE],
 };
+
+/// Return the physical/identity address of the dedicated double-fault stack.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn double_fault_stack_start() -> u64 {
+    core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64
+}
 
 /// Initialize the TSS with a valid RSP0 and a dedicated double-fault IST stack.
 ///

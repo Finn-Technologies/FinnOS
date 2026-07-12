@@ -20,6 +20,7 @@ qemu-test-panic = []
 qemu-test-exceptions = []
 qemu-test-memory-map = []
 qemu-test-page-allocator = []
+qemu-test-page-tables = ["qemu-test-exit"]
 
 [[bin]]
 name = "finn-kernel-x86_64"

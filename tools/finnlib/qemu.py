@@ -7,12 +7,22 @@ MARKERS = (
     "FINNOS:KERNEL:ENTRY", "FINNOS:KERNEL:GDT_OK", "FINNOS:KERNEL:TSS_OK", "FINNOS:KERNEL:IDT_OK",
     "FINNOS:KERNEL:EXCEPTIONS_READY", "FINNOS:KERNEL:BOOTINFO_OK", "FINNOS:KERNEL:MEMORY_MAP_OK",
     "FINNOS:KERNEL:MEMORY_MAP_PARSED", "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED", "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
-    "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT", "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING", "FINNOS:KERNEL:PAGE_TABLES_ACTIVE", "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED", "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+)
+
+PAGE_TABLE_MARKERS = MARKERS + (
+    "FINNOS:TEST:PAGE_TABLES:BEGIN", "FINNOS:TEST:PAGE_TABLES:CR3_OK",
+    "FINNOS:TEST:PAGE_TABLES:PERMISSIONS_OK", "FINNOS:TEST:PAGE_TABLES:GUARD_PAGES_OK",
+    "FINNOS:TEST:PAGE_TABLES:SCRATCH_MAP_OK", "FINNOS:TEST:PAGE_TABLES:SCRATCH_UNMAP_OK",
+    "FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_BEGIN", "FINNOS:EXCEPTION:PAGE_FAULT",
+    "FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_PASS",
 )
 
 EXCEPTION_MARKERS = (
     "FINNOS:KERNEL:GDT_OK", "FINNOS:KERNEL:TSS_OK", "FINNOS:KERNEL:IDT_OK",
-    "FINNOS:KERNEL:EXCEPTIONS_READY", "FINNOS:TEST:EXCEPTIONS:BEGIN",
+    "FINNOS:KERNEL:EXCEPTIONS_READY",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT", "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING", "FINNOS:KERNEL:PAGE_TABLES_ACTIVE", "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED",
+    "FINNOS:TEST:EXCEPTIONS:BEGIN",
     "FINNOS:EXCEPTION:BREAKPOINT", "FINNOS:TEST:BREAKPOINT:PASS",
     "FINNOS:TEST:INVALID_OPCODE:BEGIN", "FINNOS:EXCEPTION:INVALID_OPCODE",
     "FINNOS:TEST:INVALID_OPCODE:PASS",
@@ -31,6 +41,7 @@ MEMORY_MAP_MARKERS = (
     "FINNOS:MEMORY:REGIONS=",
     "FINNOS:MEMORY:USABLE_BYTES=",
     "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT", "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING", "FINNOS:KERNEL:PAGE_TABLES_ACTIVE", "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED",
     "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
 )
 
@@ -98,6 +109,34 @@ def validate_page_allocator(status: int, output: str) -> list[str]:
     if positions != sorted(position for position in positions if position >= 0): errors.append("page-allocator markers are out of order")
     for marker in ("FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR", "FINNOS:EXCEPTION:FATAL", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:KERNEL:PANIC"):
         if marker in output: errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_page_tables(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in PAGE_TABLE_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing marker(s): " + ", ".join(marker for marker, position in zip(PAGE_TABLE_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0): errors.append("page-table markers are out of order")
+    for marker in ("FINNOS:KERNEL:PAGE_TABLE_ERROR", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:INVALID_OPCODE", "FINNOS:EXCEPTION:UNHANDLED", "FINNOS:KERNEL:PANIC"):
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
+    fault = "FINNOS:EXCEPTION:PAGE_FAULT"
+    fault_begin = "FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_BEGIN"
+    fault_pass = "FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_PASS"
+    fault_positions = [index for index in (output.find(fault), output.find(fault_pass)) if index >= 0]
+    if output.count(fault) != 1:
+        errors.append("expected exactly one page fault handler marker")
+    if output.count(fault_pass) != 1:
+        errors.append("expected exactly one page fault pass marker")
+    if fault in output and fault_pass not in output:
+        errors.append("unexpected page fault")
+    if fault in output and output.find(fault_begin) > output.find(fault):
+        errors.append("page fault occurred before page-fault test began")
+    if fault_pass in output and fault not in output:
+        errors.append("page fault pass marker has no handler marker")
+    if len(fault_positions) == 2 and fault_positions != sorted(fault_positions):
+        errors.append("page fault handler markers are out of order")
+    if status != 33 and fault in output:
+        errors.append("page fault handler did not produce success status")
     return errors
 
 def qemu_command(qemu: str, firmware: str, image: Path, headless: bool = False, test_exit: bool = False) -> list[str]:

@@ -7,3 +7,4 @@
 
 The wrapper may later become a compiled FinnOS development CLI.
 `./tools/finn test-page-allocator` runs the isolated physical-page allocator QEMU test. Its image and log directory are `build/out/x86_64-qemu-page-allocator`.
+The QEMU commands include `test-page-tables`, which uses a dedicated output directory and verifies the FinnOS-owned four-level address space. `check-all` runs all five boot/integration tests.

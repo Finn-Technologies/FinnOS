@@ -48,6 +48,9 @@ test-memory-map:
 test-page-allocator:
 	./tools/finn test-page-allocator
 
+test-page-tables:
+	./tools/finn test-page-tables
+
 check-all:
 	./tools/finn check-all
 

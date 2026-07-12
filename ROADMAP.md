@@ -27,6 +27,16 @@ Objective: parse and classify the UEFI memory map into validated FinnOS memory r
 
 Objective: allocate and release aligned physical pages from classified usable memory using fixed-capacity metadata. Non-goal: page tables, mappings, heaps, or reclamation of firmware memory.
 
+### 3.4 FinnOS-owned x86-64 page tables — Complete for x86-64 QEMU
+
+Objective: construct and activate a FinnOS-owned four-level address
+space with protected kernel mappings, stack guard pages, resource
+mappings, validation, and real deterministic page-table fault testing.
+Non-goal: user address spaces, demand paging, swapping, or the final
+higher-half layout.
+
+The next planned Kernel Core task is the early kernel heap.
+
 ## 4. First User Space — Planned
 
 Objective: start isolated services and a minimal runtime. Completion requires service startup and failure diagnostics. Non-goal: desktop applications.

@@ -22,7 +22,7 @@ The project is pursuing a hybrid microkernel direction with typed IPC and explic
 
 ## Repository status
 
-FinnOS currently builds a bootable x86-64 UEFI image for QEMU. Automated tests verify the boot manager, separate kernel loading, framebuffer handoff, exception handling, UEFI memory-map classification, and early physical page allocation. FinnOS does not yet have its own page tables, a kernel heap, user space, drivers, or Peony.
+FinnOS currently builds a bootable x86-64 UEFI image for QEMU. Automated tests verify the boot manager, separate kernel loading, framebuffer handoff, exception handling, FinnOS-owned page-table activation, UEFI memory-map classification, and early physical page allocation. FinnOS does not yet have a kernel heap, user space, drivers, or Peony.
 
 ## Building the current scaffold
 

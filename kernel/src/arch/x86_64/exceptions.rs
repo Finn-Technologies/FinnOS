@@ -1,5 +1,7 @@
 //! `FinnOS` x86-64 exception dispatch and handlers.
 
+#[cfg(feature = "qemu-test-page-tables")]
+use core::sync::atomic::AtomicU64;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::idt;
@@ -95,9 +97,21 @@ impl PageFaultErrorCode {
 
 /// Atomic test state for the controlled exception test feature.
 static TEST_STATE: AtomicU8 = AtomicU8::new(TestState::Idle as u8);
+#[cfg(feature = "qemu-test-page-tables")]
+static EXPECTED_PAGE_FAULT_ADDRESS: AtomicU64 = AtomicU64::new(0);
 
 /// Permanently resident Task State Segment used by the early exception foundation.
+// SAFETY: The linker places descriptor storage above the guarded early stack.
+#[allow(unsafe_code)]
+#[unsafe(link_section = ".kernel_after_stack")]
 static mut EXCEPTION_TSS: TSS = TSS::new();
+
+/// Return the physical/identity address of the resident exception TSS.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn storage_address() -> u64 {
+    core::ptr::addr_of!(EXCEPTION_TSS) as u64
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -111,6 +125,10 @@ enum TestState {
     BreakpointHandled = 2,
     /// An invalid-opcode exception is expected next.
     InvalidOpcodeExpected = 3,
+    /// A supervisor read from the scratch page is expected next.
+    PageFaultExpected = 4,
+    /// The expected scratch-page fault was handled exactly once.
+    PageFaultHandled = 5,
 }
 
 /// Normalized exception frame built by the assembly entry stubs.
@@ -511,6 +529,20 @@ fn handler_addresses() -> idt::HandlerAddresses {
     addresses
 }
 
+/// Return the address of an installed assembly exception stub.
+#[must_use]
+#[allow(unsafe_code)]
+pub fn handler_address(vector: u8) -> Option<u64> {
+    let addresses = handler_addresses();
+    addresses.handlers.get(usize::from(vector)).copied()
+}
+
+/// Return the address of the Rust exception dispatcher.
+#[must_use]
+pub fn dispatcher_address() -> u64 {
+    rust_exception_dispatch as *const () as u64
+}
+
 /// Initialize the IDT with the early exception handlers.
 ///
 /// # Safety
@@ -520,10 +552,18 @@ fn handler_addresses() -> idt::HandlerAddresses {
 pub unsafe fn init() {
     let addresses = handler_addresses();
     let idt = idt::build_exception_idt(&addresses);
+    serial::log(format_args!(
+        "FINNOS:KERNEL:IDT_BUILD14={:#x}\n",
+        addresses.handlers[14]
+    ));
     // SAFETY: `idt::install` copies the built IDT into the static IDT storage.
     unsafe {
         idt::install(idt);
     }
+    serial::log(format_args!(
+        "FINNOS:KERNEL:IDT_INSTALLED14={:#x}\n",
+        idt::handler_offset(14).unwrap_or(0)
+    ));
 }
 
 /// Rust dispatch function called from the assembly entry stubs.
@@ -553,12 +593,14 @@ extern "C" fn rust_exception_dispatch(frame: *const ExceptionFrame) {
 /// `BreakpointHandled`. Returns `false` if the breakpoint was unexpected.
 #[cfg(feature = "qemu-test-exceptions")]
 fn accept_breakpoint() -> bool {
-    let previous = TEST_STATE.load(Ordering::SeqCst);
-    if previous != TestState::BreakpointExpected as u8 {
-        return false;
-    }
-    TEST_STATE.store(TestState::BreakpointHandled as u8, Ordering::SeqCst);
-    true
+    TEST_STATE
+        .compare_exchange(
+            TestState::BreakpointExpected as u8,
+            TestState::BreakpointHandled as u8,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        )
+        .is_ok()
 }
 
 fn handle_breakpoint(frame: &ExceptionFrame) {
@@ -624,7 +666,36 @@ fn handle_page_fault(frame: &ExceptionFrame) {
         shadow = error.shadow_stack(),
         sgx = error.sgx(),
     ));
+    #[cfg(feature = "qemu-test-page-tables")]
+    {
+        let expected = EXPECTED_PAGE_FAULT_ADDRESS.load(Ordering::SeqCst);
+        if cr2 == expected
+            && !error.present()
+            && !error.write()
+            && !error.user()
+            && !error.reserved_violation()
+            && !error.instruction_fetch()
+            && TEST_STATE
+                .compare_exchange(
+                    TestState::PageFaultExpected as u8,
+                    TestState::PageFaultHandled as u8,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            serial::log(format_args!("FINNOS:TEST:PAGE_TABLES:PAGE_FAULT_PASS\n"));
+            qemu::exit(0x10);
+        }
+    }
     fatal(frame, "PAGE_FAULT");
+}
+
+/// Arm the single controlled supervisor-read page-fault test.
+#[cfg(feature = "qemu-test-page-tables")]
+pub fn expect_non_present_read(address: u64) {
+    EXPECTED_PAGE_FAULT_ADDRESS.store(address, Ordering::SeqCst);
+    TEST_STATE.store(TestState::PageFaultExpected as u8, Ordering::SeqCst);
 }
 
 fn handle_unhandled(frame: &ExceptionFrame) {
@@ -694,7 +765,6 @@ pub unsafe fn init_exception_foundation(rsp0: u64) {
 #[allow(unsafe_code)]
 pub unsafe fn run_exception_tests() {
     serial::log(format_args!("FINNOS:TEST:EXCEPTIONS:BEGIN\n"));
-
     serial::log(format_args!("FINNOS:TEST:BREAKPOINT:BEGIN\n"));
     TEST_STATE.store(TestState::BreakpointExpected as u8, Ordering::SeqCst);
     // SAFETY: `int3` is a controlled breakpoint in the test feature. It causes an

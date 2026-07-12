@@ -1,7 +1,7 @@
 # QEMU development
 
-> Status: Planned first-boot workflow
-> Implementation: Command construction and marker parsing are tested; QEMU is unavailable in the current environment
+> Status: Implemented for x86-64 UEFI QEMU
+> Implementation: Boot and integration tests run in QEMU with OVMF
 
 `tools/finn` discovers `FINNOS_OVMF_CODE` first, then standard Homebrew and Linux OVMF paths. `FINNOS_QEMU_X86_64` overrides QEMU and `FINNOS_BOOT_TIMEOUT_SECONDS` controls the smoke-test timeout, defaulting to 45 seconds.
 
@@ -9,4 +9,11 @@ An x86-64 guest on Apple silicon must use software emulation; the command must n
 
 `./tools/finn test-page-allocator` builds an isolated image under
 `build/out/x86_64-qemu-page-allocator/` and validates allocation, reuse,
-deallocation, double-free rejection, invariants, and status 33.
+deallocation, double-free rejection, allocator invariants, and QEMU status
+33. It intentionally completes before page-table activation because it tests
+the allocator independently.
+
+`./tools/finn test-page-tables` builds an isolated image under
+`build/out/x86_64-qemu-page-tables/` and validates the FinnOS-owned root,
+mapping permissions, null-page protection, stack guard pages, scratch mapping
+and unmapping, and real vector-14 page-fault delivery.
