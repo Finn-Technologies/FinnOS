@@ -8,7 +8,7 @@ use super::paging::{
 
 /// Fixed virtual address reserved for the local APIC page.
 pub const LOCAL_APIC_VIRTUAL_BASE: u64 = 0x0000_3000_0000_0000;
-/// IA32_APIC_BASE MSR.
+/// `IA32_APIC_BASE` MSR.
 pub const IA32_APIC_BASE: u32 = 0x1b;
 /// xAPIC software-enable bit.
 pub const APIC_SOFTWARE_ENABLE: u32 = 1 << 8;
@@ -77,7 +77,7 @@ pub fn current_base(width: u8) -> Result<(u64, bool), ApicError> {
 /// # Errors
 ///
 /// Returns an error when xAPIC is unavailable or the base is invalid.
-#[allow(clippy::manual_range_contains)]
+#[allow(clippy::manual_range_contains, clippy::manual_is_multiple_of)]
 pub const fn decode_base(msr: u64, physical_width: u8) -> Result<(u64, bool), ApicError> {
     let x2apic = msr & (1 << 10) != 0;
     if x2apic {
@@ -381,15 +381,15 @@ mod tests {
     #[test]
     fn decode_rejects_x2apic() {
         assert_eq!(
-            decode_base(1 << 10 | 0xfee00000, 36),
+            decode_base(1 << 10 | 0xfee0_0000, 36),
             Err(ApicError::X2ApicActive)
         );
     }
     #[test]
     fn decode_preserves_enable_state() {
         assert_eq!(
-            decode_base(1 << 11 | 0xfee00000, 36),
-            Ok((0xfee00000, true))
+            decode_base(1 << 11 | 0xfee0_0000, 36),
+            Ok((0xfee0_0000, true))
         );
     }
     #[test]
