@@ -28,9 +28,15 @@ full-page alignment, containment, nonzero ranges, merged adjacency, and page
 counters after mutations. Physical addresses are returned but not written,
 mapped, or initialized.
 
-This is not thread-safe and is intended only for the current single-core
-early-boot phase. Boot-services and runtime-services memory are not reclaimed;
-there is no FinnOS-owned page-table manager, kernel heap, user-space allocator,
-NUMA support, or huge-page support. The next step is FinnOS-owned x86-64 page
-tables.
-The page-table builder consumes a fixed 64-page reservation from the early allocator. This is table storage, not a general heap, and the independent allocator QEMU test intentionally completes before that reservation.
+This allocator is not thread-safe and is intended only for the current
+single-core early-boot phase. Boot-services and runtime-services memory are
+not reclaimed. There is no kernel heap, user-space allocator, NUMA support, or
+huge-page allocation policy.
+
+The FinnOS-owned x86-64 paging layer now reserves a fixed 64-page table pool
+from this allocator. Those physical pages remain allocated while the active
+address space exists. This pool is page-table storage, not a general kernel
+heap. Only the explicitly required kernel mappings are created; physical pages
+are not generally usable through arbitrary virtual mappings.
+
+The next Kernel Core step is the early kernel heap.
