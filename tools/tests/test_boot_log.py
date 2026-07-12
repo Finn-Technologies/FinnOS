@@ -1,6 +1,6 @@
 import unittest
 
-from tools.finnlib.qemu import HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke
+from tools.finnlib.qemu import HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
     def test_markers_in_order(self):
@@ -79,5 +79,19 @@ class BootLogTests(unittest.TestCase):
 
     def test_heap_missing_final_marker(self):
         self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS[:-1])))
+
+    def test_timer_complete_sequence(self):
+        output = "\n".join(TIMER_MARKERS) + "\nFINNOS:INTERRUPTS:PIC_MASTER_MASK=0xff\nFINNOS:INTERRUPTS:PIC_SLAVE_MASK=0xff\nFINNOS:APIC:PHYSICAL_BASE=0xfee00000\nFINNOS:APIC:VIRTUAL_BASE=0x0000300000000000\nFINNOS:APIC:ID=0\nFINNOS:APIC:VERSION=0x50014\nFINNOS:TIMER:APIC_COUNTS_PER_TICK=100\nFINNOS:TIMER:TEST_START_TICKS=1\nFINNOS:TIMER:TEST_END_TICKS=9\nFINNOS:TIMER:TEST_ELAPSED_TICKS=8\nFINNOS:TIMER:TEST_UPTIME_MS=90"
+        self.assertEqual(validate_timer(33, output), [])
+
+    def test_timer_rejects_wrong_status_and_short_ticks(self):
+        output = "\n".join(TIMER_MARKERS) + "\nFINNOS:TIMER:TEST_START_TICKS=1\nFINNOS:TIMER:TEST_END_TICKS=2\nFINNOS:TIMER:TEST_ELAPSED_TICKS=1"
+        self.assertTrue(validate_timer(35, output))
+
+    def test_timer_rejects_error_marker_and_duplicate_ready(self):
+        output = "\n".join(TIMER_MARKERS) + "\nFINNOS:KERNEL:TIMER_READY\nFINNOS:KERNEL:TIMER_ERROR:Timeout"
+        errors = validate_timer(33, output)
+        self.assertTrue(any("TIMER_READY" in error for error in errors))
+        self.assertTrue(any("forbidden" in error for error in errors))
 
 if __name__ == "__main__": unittest.main()

@@ -1,7 +1,7 @@
 # Finn Kernel architecture
 
 > Status: Initial architectural direction
-> Implementation: x86-64 first-boot path exists; kernel core is not implemented
+> Implementation: x86-64 first-boot and interrupt/timer foundations exist; kernel core remains in progress
 
 FinnOS is pursuing a hybrid microkernel direction. The privileged kernel is expected to own scheduling, virtual memory, interrupts, timers, IPC primitives, capability enforcement, and typed kernel-object management. Drivers and services should run in user space where practical.
 
@@ -15,3 +15,10 @@ The x86-64 path now maps a fixed early kernel heap and installs its bounded firs
 
 Non-goals for this stage are compatibility with another kernel and premature ABI commitments. Open questions include service restart semantics, resource accounting, and the final object model.
 After physical allocation, the x86-64 path builds and activates a FinnOS-owned identity-mapped address space. See [x86-64 virtual memory](x86_64-virtual-memory.md).
+The current BSP then owns a xAPIC periodic timer at 100 Hz and exposes
+monotonic ticks. See [x86-64 interrupts and timer](x86_64-interrupts-and-timer.md).
+# Kernel Core interrupt boundary
+
+The current x86-64 Kernel Core includes a single-BSP xAPIC periodic timer and
+monotonic ticks. General external IRQ routing, IOAPIC/MADT support, SMP,
+scheduling, preemption, user mode, and device drivers remain future work.

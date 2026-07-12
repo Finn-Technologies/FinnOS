@@ -15,3 +15,9 @@ The early heap contains the narrow unsafe boundary for in-band free-list nodes, 
 `GlobalAlloc`, and zeroing the already-validated virtual heap range. Nodes are written only inside
 validated free regions, the global heap is initialized once, and allocation is not supported from
 interrupt context.
+# Interrupt and MMIO unsafe boundaries
+
+Interrupt stubs, `iretq`, port I/O, APIC MSR access, volatile APIC MMIO, and
+IF/HLT instructions are isolated in x86-64 modules. Their comments document
+the ring-0 frame layout, bounded offsets, byte/32-bit widths, and the required
+mapped permissions. No ordinary Rust reference aliases the APIC register page.

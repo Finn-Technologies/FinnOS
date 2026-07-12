@@ -9,3 +9,8 @@ Kernel text is read-only executable. Read-only data and BootInfo/memory-map stor
 Activation enables EFER.NXE and CR0.WP, writes the new root to CR3, and validates translations through a software walker. Mapping changes use `invlpg`. After activation, the kernel maps the bounded early heap through the active root. The current assumptions are one BSP, no user address spaces, no intermediate-table reclamation, and no final higher-half layout.
 
 The exception smoke test executes real `int3` and `ud2` instructions after activation. The page-table test writes and reads a scratch mapping, unmaps it, then performs the real unmapped volatile read described above; unexpected faults remain fatal.
+# Local APIC mapping
+
+The BSP local APIC physical frame is not identity-mapped or allocated as RAM.
+It is mapped at `0x0000_3000_0000_0000` as supervisor-only writable NX MMIO
+with cache-disable and write-through bits.

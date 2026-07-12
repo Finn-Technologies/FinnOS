@@ -37,3 +37,9 @@ single-core early-boot allocator: interrupt-context allocation, per-CPU heaps,
 user heaps, slab caches, automatic growth, heap-page reclamation, NUMA, and a
 general virtual-memory manager are not implemented. Stable Rust is used
 without a third-party allocator dependency or nightly feature gate.
+# Interrupt-context prohibition
+
+The heap rejects explicit allocation and deallocation from interrupt context
+before taking its spin lock. The global allocator returns null for interrupt
+allocation and ignores interrupt deallocation, preventing single-core ISR
+re-entry deadlock.

@@ -12,7 +12,15 @@
 ./tools/finn test-page-allocator
 ./tools/finn test-page-tables
 ./tools/finn test-heap
+./tools/finn test-timer-interrupts
 ./tools/finn check-all
 ```
 
-`test-boot`, `test-exceptions`, and `test-memory-map` run after FinnOS page-table and heap activation. `test-page-allocator` intentionally exits before activation because it tests the physical allocator independently. `test-page-tables` uses a dedicated image and validates the owned root, permissions, guards, scratch mapping, unmapping, and page-fault test state. `test-heap` validates the global allocator and common Rust allocation types in a dedicated QEMU image. Future categories include unit, kernel, integration, virtual-machine boot, driver conformance, fuzzing, fault injection, Peony visual, and update/recovery tests.
+All integration tests except `test-page-allocator` run after timer activation; the allocator test intentionally exits before activation. `test-timer-interrupts` uses a dedicated image and validates real local-APIC delivery. Future categories include unit, kernel, integration, virtual-machine boot, driver conformance, fuzzing, fault injection, Peony visual, and update/recovery tests.
+# Timer integration test
+
+`./tools/finn test-timer-interrupts` builds a feature-specific kernel and waits
+with `hlt` for at least eight periodic local-APIC timer deliveries. It checks
+monotonic ticks, EOI, the spurious return path, interrupt context, and ordinary
+heap use. It never executes `int 0x40`; `int 0xff` is used only for the
+spurious-dispatch test.

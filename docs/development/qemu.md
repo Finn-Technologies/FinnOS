@@ -23,3 +23,9 @@ and unmapping, and real vector-14 page-fault delivery.
 alignment, `Box`, fallible `Vec`, `String`, fragmentation, exhaustion, reuse,
 statistics, and allocator invariants. All test images use QEMU status 33 for
 success; the heap test never performs allocation from interrupt context.
+# Local APIC timer evidence
+
+QEMU uses the existing q35/UEFI path. The timer test requires status 33 and
+numeric serial evidence for the APIC base, PIT reference, calibrated APIC
+count, and at least eight increasing ticks. No software timer device or
+synthetic clock is used.
