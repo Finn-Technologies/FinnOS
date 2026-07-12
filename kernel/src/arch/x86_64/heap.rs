@@ -90,14 +90,6 @@ impl KernelHeapMapping {
             return Err(HeapMappingError::GuardPageMapped);
         }
         for index in 0..KERNEL_HEAP_PAGE_COUNT {
-            let page = match allocator.allocate_page() {
-                Ok(page) => page,
-                Err(error) => {
-                    self.rollback(address_space, allocator);
-                    return Err(error.into());
-                }
-            };
-            self.physical_pages[index] = page.start_address();
             let virtual_address = KERNEL_HEAP_START
                 .checked_add(
                     (index as u64)
@@ -105,45 +97,68 @@ impl KernelHeapMapping {
                         .ok_or(HeapMappingError::InvalidHeapRange)?,
                 )
                 .ok_or(HeapMappingError::InvalidHeapRange)?;
+            let virtual_page =
+                VirtualPage::new(virtual_address).map_err(HeapMappingError::Paging)?;
+            let page = match allocator.allocate_page() {
+                Ok(page) => page,
+                Err(error) => {
+                    return match self.rollback(address_space, allocator) {
+                        Ok(()) => Err(error.into()),
+                        Err(rollback_error) => Err(rollback_error),
+                    };
+                }
+            };
+            self.physical_pages[index] = page.start_address();
             let frame = match PhysicalFrame::new(page.start_address(), address_space.width()) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    let _ = allocator.deallocate(PageRange::new(page.start_address(), 1)?);
-                    self.physical_pages[index] = 0;
-                    self.rollback(address_space, allocator);
-                    return Err(error.into());
+                    let cleanup = self.release_unmapped_page(index, allocator).is_ok();
+                    let rollback = self.rollback(address_space, allocator).is_ok();
+                    return if cleanup && rollback {
+                        Err(error.into())
+                    } else {
+                        Err(HeapMappingError::RollbackFailed)
+                    };
                 }
             };
             let outcome = match address_space.map_page(
-                VirtualPage::new(virtual_address)?,
+                virtual_page,
                 frame,
                 MappingPermissions::kernel_rw_nx(),
             ) {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    let cleanup = allocator
-                        .deallocate(PageRange::new(page.start_address(), 1)?)
-                        .is_ok();
-                    self.physical_pages[index] = 0;
-                    let rollback = self.rollback(address_space, allocator);
-                    if !cleanup || !rollback {
-                        return Err(HeapMappingError::RollbackFailed);
-                    }
-                    return Err(error.into());
+                    let cleanup = self.release_unmapped_page(index, allocator).is_ok();
+                    let rollback = self.rollback(address_space, allocator).is_ok();
+                    return if cleanup && rollback {
+                        Err(error.into())
+                    } else {
+                        Err(HeapMappingError::RollbackFailed)
+                    };
                 }
             };
             if outcome != super::paging::MapOutcome::Created {
-                let _ = allocator.deallocate(PageRange::new(page.start_address(), 1)?);
-                self.physical_pages[index] = 0;
-                let _ = self.rollback(address_space, allocator);
-                return Err(HeapMappingError::MappingValidationFailed);
+                let cleanup = self.release_unmapped_page(index, allocator).is_ok();
+                let rollback = self.rollback(address_space, allocator).is_ok();
+                return if cleanup && rollback {
+                    Err(HeapMappingError::MappingValidationFailed)
+                } else {
+                    Err(HeapMappingError::RollbackFailed)
+                };
             }
-            self.mapped_count += 1;
+            self.mapped_count = match self.mapped_count.checked_add(1) {
+                Some(count) => count,
+                None => {
+                    let rollback = self.rollback(address_space, allocator);
+                    return match rollback {
+                        Ok(()) => Err(HeapMappingError::MappingValidationFailed),
+                        Err(error) => Err(error),
+                    };
+                }
+            };
         }
         if self.validate(address_space).is_err() {
-            if !self.rollback(address_space, allocator) {
-                return Err(HeapMappingError::RollbackFailed);
-            }
+            self.rollback(address_space, allocator)?;
             return Err(HeapMappingError::MappingValidationFailed);
         }
         // SAFETY: Every byte in this complete virtual range was just validated as mapped,
@@ -190,33 +205,77 @@ impl KernelHeapMapping {
         self.mapped_count
     }
 
+    fn release_unmapped_page(
+        &mut self,
+        index: usize,
+        allocator: &mut EarlyPhysicalPageAllocator,
+    ) -> Result<(), HeapMappingError> {
+        let address = self.physical_pages[index];
+        let range = PageRange::new(address, 1).map_err(HeapMappingError::PhysicalAllocation)?;
+        allocator
+            .deallocate(range)
+            .map_err(HeapMappingError::PhysicalAllocation)?;
+        self.physical_pages[index] = 0;
+        Ok(())
+    }
+
     fn rollback(
         &mut self,
         address_space: &mut ActiveAddressSpace,
         allocator: &mut EarlyPhysicalPageAllocator,
-    ) -> bool {
-        let mut success = true;
+    ) -> Result<(), HeapMappingError> {
+        let mut failed = false;
         for index in (0..self.mapped_count).rev() {
-            let virtual_address = KERNEL_HEAP_START + (index as u64) * PAGE_SIZE;
-            match VirtualPage::new(virtual_address) {
-                Ok(page) => {
-                    if address_space.unmap_page(page).is_err() {
-                        success = false;
+            let offset = match (index as u64).checked_mul(PAGE_SIZE) {
+                Some(offset) => offset,
+                None => {
+                    failed = true;
+                    continue;
+                }
+            };
+            let virtual_address = match KERNEL_HEAP_START.checked_add(offset) {
+                Some(address) => address,
+                None => {
+                    failed = true;
+                    continue;
+                }
+            };
+            let page = match VirtualPage::new(virtual_address) {
+                Ok(page) => page,
+                Err(_) => {
+                    failed = true;
+                    continue;
+                }
+            };
+            match address_space.unmap_page(page) {
+                Ok(frame) if frame.address() == self.physical_pages[index] => {
+                    if self.release_unmapped_page(index, allocator).is_err() {
+                        failed = true;
                     }
                 }
-                Err(_) => success = false,
+                Ok(_) | Err(_) => failed = true,
             }
-            match PageRange::new(self.physical_pages[index], 1) {
-                Ok(range) => {
-                    if allocator.deallocate(range).is_err() {
-                        success = false;
-                    }
-                }
-                Err(_) => success = false,
-            }
-            self.physical_pages[index] = 0;
         }
         self.mapped_count = 0;
-        success && allocator.check_invariants().is_ok()
+        if self.physical_pages.iter().any(|address| *address != 0) {
+            failed = true;
+        }
+        if allocator.check_invariants().is_err() {
+            failed = true;
+        }
+        if address_space
+            .translate(KERNEL_HEAP_GUARD_LOW)
+            .map_or(true, |translation| translation.is_some())
+            || address_space
+                .translate(KERNEL_HEAP_GUARD_HIGH)
+                .map_or(true, |translation| translation.is_some())
+        {
+            failed = true;
+        }
+        if failed {
+            Err(HeapMappingError::RollbackFailed)
+        } else {
+            Ok(())
+        }
     }
 }

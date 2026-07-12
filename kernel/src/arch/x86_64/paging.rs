@@ -646,6 +646,9 @@ impl ActiveAddressSpace {
         permissions: MappingPermissions,
     ) -> Result<MapOutcome, PagingError> {
         permissions.validate()?;
+        if self.mapped_pages == u64::MAX {
+            return Err(PagingError::AddressOverflow);
+        }
         // SAFETY: All table pages are owned by this address space and remain accessible through
         // the current identity transition mappings or the active page tables.
         let outcome = unsafe { map_one(self, page, frame, permissions) }?;

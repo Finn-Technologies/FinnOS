@@ -31,11 +31,53 @@ class BootLogTests(unittest.TestCase):
         errors = validate_page_tables(33, output)
         self.assertTrue(any("unexpected page fault" in error for error in errors))
 
-    def test_heap_markers_and_failure_paths(self):
+    def test_heap_complete_sequence(self):
         self.assertEqual(validate_heap(33, "\n".join(HEAP_MARKERS)), [])
+
+    def test_heap_wrong_status(self):
         self.assertTrue(validate_heap(35, "\n".join(HEAP_MARKERS)))
-        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS[:-1])))
-        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:HEAP_ERROR:OutOfMemory"))
+
+    def test_heap_missing_heap_mapped(self):
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS[1:])))
+
+    def test_heap_missing_heap_ready(self):
+        output = "\n".join(HEAP_MARKERS[:1] + HEAP_MARKERS[2:])
+        self.assertTrue(validate_heap(33, output))
+
+    def test_heap_duplicate_heap_ready(self):
+        heap_ready = "FINNOS:KERNEL:HEAP_READY"
+        output = "\n".join(HEAP_MARKERS + (heap_ready,))
+        self.assertTrue(validate_heap(33, output))
+
+    def test_heap_missing_box(self):
+        output = "\n".join(marker for marker in HEAP_MARKERS if "BOX_OK" not in marker)
+        self.assertTrue(validate_heap(33, output))
+
+    def test_heap_missing_exhaustion(self):
+        output = "\n".join(marker for marker in HEAP_MARKERS if "EXHAUSTION_OK" not in marker)
+        self.assertTrue(validate_heap(33, output))
+
+    def test_heap_out_of_order_markers(self):
+        output = "\n".join(HEAP_MARKERS[:2] + (HEAP_MARKERS[3], HEAP_MARKERS[2]) + HEAP_MARKERS[4:])
+        self.assertTrue(validate_heap(33, output))
+
+    def test_heap_error_marker(self):
+        self.assertTrue(
+            validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:HEAP_ERROR:OutOfMemory")
+        )
+
+    def test_heap_oom_marker(self):
         self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:HEAP_OOM"))
+
+    def test_heap_fatal_exception_marker(self):
+        self.assertTrue(
+            validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:EXCEPTION:PAGE_FAULT")
+        )
+
+    def test_heap_panic_marker(self):
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS) + "\nFINNOS:KERNEL:PANIC"))
+
+    def test_heap_missing_final_marker(self):
+        self.assertTrue(validate_heap(33, "\n".join(HEAP_MARKERS[:-1])))
 
 if __name__ == "__main__": unittest.main()

@@ -350,7 +350,17 @@ impl HeapAllocator {
         if !self.initialized {
             return Err(HeapError::NotInitialized);
         }
-        if self.heap_start >= self.heap_end || self.free_head == 0 {
+        if self.heap_start >= self.heap_end {
+            return Err(HeapError::CorruptHeapState);
+        }
+        if self.free_head == 0 {
+            if self.stats.free_bytes == 0
+                && self.stats.free_region_count == 0
+                && self.stats.largest_free_region == 0
+                && self.stats.allocated_bytes == self.stats.total_bytes
+            {
+                return Ok(());
+            }
             return Err(HeapError::CorruptHeapState);
         }
         let mut current = self.free_head;
@@ -689,10 +699,16 @@ mod tests {
 
     #[test]
     fn initialization_and_statistics() {
-        let (_buffer, allocator) = allocator();
+        let (_buffer, mut allocator) = allocator();
         assert_eq!(allocator.stats().free_bytes, 65_536);
         assert_eq!(allocator.stats().free_region_count, 1);
         assert!(allocator.check_invariants().is_ok());
+        let start = allocator.heap_start;
+        let end = allocator.heap_end;
+        assert_eq!(
+            allocator.initialize(start, end),
+            Err(HeapError::AlreadyInitialized)
+        );
     }
 
     #[test]
@@ -766,6 +782,96 @@ mod tests {
                 Layout::from_size_align(8, 8).unwrap()
             ),
             Err(HeapError::PointerOutsideHeap)
+        );
+    }
+
+    #[test]
+    fn exact_fit_accepts_empty_free_list_and_restores_heap() {
+        let (_buffer, mut allocator) = allocator();
+        let layout = Layout::from_size_align(65_536, 8).unwrap();
+        let pointer = allocator.allocate(layout).unwrap();
+        let stats = allocator.stats();
+        assert_eq!(stats.free_bytes, 0);
+        assert_eq!(stats.allocated_bytes, stats.total_bytes);
+        assert_eq!(stats.free_region_count, 0);
+        assert_eq!(stats.largest_free_region, 0);
+        assert!(allocator.check_invariants().is_ok());
+        assert_eq!(allocator.allocate(layout), Err(HeapError::OutOfMemory));
+        assert_eq!(allocator.stats().failed_allocation_count, 1);
+        assert_eq!(allocator.stats().free_bytes, 0);
+        allocator.deallocate(pointer, layout).unwrap();
+        assert_eq!(allocator.stats().free_bytes, 65_536);
+        assert_eq!(allocator.stats().free_region_count, 1);
+        assert_eq!(allocator.stats().largest_free_region, 65_536);
+        assert!(allocator.check_invariants().is_ok());
+    }
+
+    #[test]
+    fn initialization_rejects_invalid_ranges_and_repeated_initialization() {
+        let mut invalid = HeapAllocator::empty();
+        assert_eq!(
+            invalid.initialize(0, 4096),
+            Err(HeapError::InvalidHeapRange)
+        );
+        assert_eq!(
+            invalid.initialize(4096, 4096),
+            Err(HeapError::InvalidHeapRange)
+        );
+        assert_eq!(
+            invalid.initialize(1, 8192),
+            Err(HeapError::HeapStartMisaligned)
+        );
+        assert_eq!(invalid.initialize(4096, 4104), Err(HeapError::HeapTooSmall));
+    }
+
+    #[test]
+    fn normalization_rejects_zero_size_and_handles_metadata_rounding() {
+        assert_eq!(
+            HeapAllocator::normalized_layout(Layout::from_size_align(0, 8).unwrap()),
+            Err(HeapError::ZeroSizedAllocation)
+        );
+        let normalized =
+            HeapAllocator::normalized_layout(Layout::from_size_align(1, 1).unwrap()).unwrap();
+        assert!(normalized.size >= FREE_REGION_SIZE);
+        assert_eq!(normalized.align, FREE_REGION_ALIGNMENT);
+        let aligned =
+            HeapAllocator::normalized_layout(Layout::from_size_align(1, 65_536).unwrap()).unwrap();
+        assert_eq!(aligned.align, 65_536);
+    }
+
+    #[test]
+    fn failed_allocation_only_increments_failure_counter() {
+        let (_buffer, mut allocator) = allocator();
+        let layout = Layout::from_size_align(65_536, 8).unwrap();
+        let pointer = allocator.allocate(layout).unwrap();
+        let before = allocator.stats();
+        assert_eq!(allocator.allocate(layout), Err(HeapError::OutOfMemory));
+        let after = allocator.stats();
+        assert_eq!(after.free_bytes, before.free_bytes);
+        assert_eq!(after.allocated_bytes, before.allocated_bytes);
+        assert_eq!(after.free_region_count, before.free_region_count);
+        assert_eq!(
+            after.failed_allocation_count,
+            before.failed_allocation_count + 1
+        );
+        allocator.deallocate(pointer, layout).unwrap();
+    }
+
+    #[test]
+    fn empty_free_list_counter_mismatches_are_rejected() {
+        let (_buffer, mut allocator) = allocator();
+        let layout = Layout::from_size_align(65_520, 8).unwrap();
+        let _pointer = allocator.allocate(layout).unwrap();
+        allocator.stats.free_bytes = 1;
+        assert_eq!(
+            allocator.check_invariants(),
+            Err(HeapError::CorruptHeapState)
+        );
+        allocator.stats.free_bytes = 0;
+        allocator.stats.free_region_count = 1;
+        assert_eq!(
+            allocator.check_invariants(),
+            Err(HeapError::CorruptHeapState)
         );
     }
 }
