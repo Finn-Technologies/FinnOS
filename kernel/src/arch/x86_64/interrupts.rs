@@ -296,6 +296,11 @@ pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, Attribu
 }
 
 /// Validates that a complete frame lies inside the publication selected by its RSP.
+///
+/// # Errors
+///
+/// Returns an error when no stable publication contains the interrupted
+/// stack pointer or when the complete frame exceeds that publication.
 pub fn validate_frame_stack(
     frame_pointer: u64,
     interrupted_rsp: u64,
@@ -519,15 +524,22 @@ impl KernelInterruptFrame {
     /// Size of the complete hardware footprint including its alignment slot.
     pub const SIZE: u64 = Self::IRET_FRAME_SIZE + 8;
     /// Returns the interrupted CPL0 stack pointer from the hardware tail.
-    #[must_use]
-    pub fn interrupted_rsp(&self) -> Result<u64, FrameValidationError> {
+    /// # Errors
+    ///
+    /// Returns [`FrameValidationError::NoncanonicalRsp`] when the CPU-saved
+    /// interrupted stack pointer is not canonical.
+    pub const fn interrupted_rsp(&self) -> Result<u64, FrameValidationError> {
         if !super::paging::is_canonical(self.saved_rsp) {
             return Err(FrameValidationError::NoncanonicalRsp);
         }
         Ok(self.saved_rsp)
     }
     /// Validates the complete frame and its derived old RSP.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame pointer, complete frame footprint,
+    /// saved return fields, or interrupted stack pointer is invalid.
     pub fn validate(&self, frame_pointer: u64) -> Result<u64, FrameValidationError> {
         if frame_pointer == 0 {
             return Err(FrameValidationError::Null);
@@ -535,7 +547,7 @@ impl KernelInterruptFrame {
         if !super::paging::is_canonical(frame_pointer) {
             return Err(FrameValidationError::NoncanonicalFrame);
         }
-        if frame_pointer % 8 != 0 {
+        if !frame_pointer.is_multiple_of(8) {
             return Err(FrameValidationError::MisalignedFrame);
         }
         let frame_end = frame_pointer
@@ -714,7 +726,10 @@ extern "C" fn rust_interrupt_dispatch(
         return core::ptr::null_mut();
     };
     let frame_pointer = frame as u64;
-    if frame.is_null() || !super::paging::is_canonical(frame_pointer) || frame_pointer % 8 != 0 {
+    if frame.is_null()
+        || !super::paging::is_canonical(frame_pointer)
+        || !frame_pointer.is_multiple_of(8)
+    {
         return core::ptr::null_mut();
     }
     // SAFETY: the entry stubs pass a canonical, aligned pointer to their

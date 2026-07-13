@@ -394,6 +394,11 @@ pub fn idle_rsp() -> u64 {
 }
 
 /// Returns the generation-tagged idle task identity.
+///
+/// # Errors
+///
+/// Returns an error when the scheduler policy has not been initialized or
+/// its idle-task invariant is unavailable.
 pub fn idle_task_id() -> Result<TaskId, SchedulerError> {
     Ok(runtime_ref()?.policy.idle_id())
 }
