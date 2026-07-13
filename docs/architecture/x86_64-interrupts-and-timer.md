@@ -8,7 +8,10 @@ there are no user-callable gates.
 
 The assembly entries save all general-purpose registers, push a vector and a
 synthetic zero error code, execute `cld`, call the Rust dispatcher with a
-16-byte aligned SysV64 stack, restore the frame, and return with `iretq`.
+16-byte aligned SysV64 stack, restore the complete 184-byte frame, and return
+with `iretq`. The supported ring-0/IST-0 hardware tail has saved RSP at `+160`,
+saved SS at `+168`, and an alignment slot at `+176`; `iretq` consumes the return
+fields through `+176`.
 This milestone assumes ring-0-only execution and therefore does not use
 `swapgs` or save SIMD state.
 

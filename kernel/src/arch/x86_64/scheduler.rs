@@ -204,6 +204,7 @@ pub fn initialize(
     )
     .map_err(|_| SchedulerError::InvalidEntry)?;
     if let Err(error) = runtime.policy.check_invariants() {
+        super::interrupts::unpublish_task_stack(idle.slot());
         let mut owned = runtime.slots[idle.slot()].stack.take().ok_or(
             SchedulerError::InitializationRollbackFailed {
                 original: RollbackCause::Task(error),
@@ -314,8 +315,27 @@ pub fn spawn(
         .stack
         .as_ref()
         .ok_or(SchedulerError::InvalidEntry)?;
-    super::interrupts::publish_task_stack(id, published.virtual_start(), published.virtual_end())
-        .map_err(|_| SchedulerError::InvalidEntry)?;
+    if super::interrupts::publish_task_stack(id, published.virtual_start(), published.virtual_end())
+        .is_err()
+    {
+        let mut owned = runtime.slots[id.slot()]
+            .stack
+            .take()
+            .ok_or(SchedulerError::InvalidEntry)?;
+        let cleanup = reclaim_task_stack(&mut owned, address_space, allocator);
+        let policy_cleanup = runtime.policy.abort_spawn(id);
+        if cleanup.is_err() || policy_cleanup.is_err() {
+            runtime.poisoned = true;
+            return Err(SchedulerError::SpawnRollbackFailed {
+                original: RollbackCause::Runtime,
+                cleanup: cleanup.err().map_or_else(
+                    || RollbackCause::Task(policy_cleanup.unwrap_err()),
+                    RollbackCause::Stack,
+                ),
+            });
+        }
+        return Err(SchedulerError::InvalidEntry);
+    }
     Ok(id)
 }
 
@@ -373,6 +393,11 @@ pub fn idle_rsp() -> u64 {
     IDLE_RSP.load(Ordering::Relaxed)
 }
 
+/// Returns the generation-tagged idle task identity.
+pub fn idle_task_id() -> Result<TaskId, SchedulerError> {
+    Ok(runtime_ref()?.policy.idle_id())
+}
+
 /// Returns attempts to enter scheduler mutation from interrupt context.
 pub fn interrupt_context_entry_count() -> u64 {
     INTERRUPT_CONTEXT_ENTRIES.load(Ordering::Relaxed)
@@ -404,11 +429,23 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
             if slot.entry.is_some() || slot.stack.is_some() {
                 return Err(SchedulerError::InvalidEntry);
             }
+            if !super::interrupts::task_stack_published(runtime.policy.bootstrap_id()) {
+                return Err(SchedulerError::InvalidEntry);
+            }
             continue;
         }
         match state {
             TaskState::Vacant => {
                 if slot.entry.is_some() || slot.context.rsp != 0 || slot.stack.is_some() {
+                    return Err(SchedulerError::InvalidEntry);
+                }
+                if super::interrupts::task_stack_published(
+                    TaskId::new(
+                        u8::try_from(slot_index).map_err(|_| SchedulerError::InvalidEntry)?,
+                        runtime.policy.slot_snapshot(slot_index)?.0.generation(),
+                    )
+                    .map_err(|_| SchedulerError::InvalidEntry)?,
+                ) {
                     return Err(SchedulerError::InvalidEntry);
                 }
             }
@@ -418,6 +455,10 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
                     || slot.context.rsp == 0
                     || !stack.contains(slot.context.rsp)
                 {
+                    return Err(SchedulerError::InvalidEntry);
+                }
+                let id = runtime.policy.slot_snapshot(slot_index)?.0;
+                if !super::interrupts::task_stack_published(id) {
                     return Err(SchedulerError::InvalidEntry);
                 }
                 validate_task_stack(stack, address_space)?;

@@ -22,7 +22,9 @@ calibration, and periodic timer programming have been validated.
 # Preemption-context invariants
 
 External entries save fifteen GPRs followed by vector, synthetic error code,
-RIP, CS, and RFLAGS. CPL0/IST0 does not push RSP/SS; diagnostics derive the
-interrupted stack address from the fixed frame contract. Published task stacks
+RIP, CS, RFLAGS, saved RSP, saved SS, and an alignment slot. The current
+ring-0/IST-0 contract validates a 184-byte footprint and uses the saved RSP
+value for attribution; user-mode and alternate-IST frames are separate future
+contracts. Published task stacks
 use per-slot release/acquire metadata and generation-tagged IDs. Interrupt
 dispatch never borrows scheduler runtime or mutates runnable policy.

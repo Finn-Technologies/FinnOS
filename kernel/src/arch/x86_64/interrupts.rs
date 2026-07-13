@@ -1,10 +1,11 @@
 //! x86-64 external interrupt entry and fixed vector policy.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use super::{idt, serial, timer};
+use crate::interrupt::InterruptContextGuard;
 use crate::task::TaskId;
 
 #[allow(unsafe_code)]
@@ -61,6 +62,36 @@ pub enum AttributionError {
     InvalidGeneration,
     /// The frame does not fit entirely in the selected stack.
     FrameOutsideStack,
+    /// The interrupt frame pointer or its complete-frame arithmetic is invalid.
+    InvalidFrame,
+}
+
+/// A stable copy of one published task-stack interval.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublishedStackInfo {
+    /// Generation-tagged task identity.
+    pub task_id: TaskId,
+    /// Inclusive lower publication boundary.
+    pub start: u64,
+    /// Exclusive upper publication boundary.
+    pub end: u64,
+}
+
+/// Errors validating an interrupt frame before dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameValidationError {
+    /// The frame pointer was null.
+    Null,
+    /// The frame pointer was not canonical.
+    NoncanonicalFrame,
+    /// The frame pointer did not satisfy the ABI alignment contract.
+    MisalignedFrame,
+    /// Checked frame arithmetic overflowed.
+    AddressOverflow,
+    /// A required field was invalid.
+    InvalidFields,
+    /// The derived interrupted RSP was not canonical.
+    NoncanonicalRsp,
 }
 
 /// A copy of all general-purpose registers saved by an interrupt entry.
@@ -109,6 +140,10 @@ pub struct InterruptedTaskSnapshot {
     pub returned_frame_pointer: u64,
     /// Derived interrupted RSP.
     pub interrupted_rsp: u64,
+    /// Address of the CPU-saved RSP slot.
+    pub saved_rsp_field_address: u64,
+    /// CPU-saved SS selector.
+    pub saved_ss: u64,
     /// Interrupted RIP.
     pub rip: u64,
     /// Interrupted CS.
@@ -135,6 +170,8 @@ static SNAPSHOT: SnapshotCell = SnapshotCell(UnsafeCell::new(InterruptedTaskSnap
     frame_pointer: 0,
     returned_frame_pointer: 0,
     interrupted_rsp: 0,
+    saved_rsp_field_address: 0,
+    saved_ss: 0,
     rip: 0,
     cs: 0,
     rflags: 0,
@@ -159,6 +196,11 @@ static SNAPSHOT: SnapshotCell = SnapshotCell(UnsafeCell::new(InterruptedTaskSnap
     },
 }));
 static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CAPTURED: AtomicBool = AtomicBool::new(false);
+static CAPTURE_VECTOR: AtomicU8 = AtomicU8::new(u8::MAX);
+static CAPTURE_TASK_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
+static CAPTURE_TASK_GENERATION: AtomicU32 = AtomicU32::new(0);
 #[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 /// Set while the dedicated real-timer preservation helper is active.
@@ -192,14 +234,17 @@ pub fn unpublish_task_stack(slot_index: usize) {
         slot.active.store(false, Ordering::Release);
     }
 }
-/// Attributes an interrupted stack pointer using only atomic publications.
-///
-/// # Errors
-///
-/// Returns an [`AttributionError`] when the pointer is non-canonical, no
-/// publication matches, publications overlap or change while being read, or
-/// the mirrored task identity is invalid.
-pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, AttributionError> {
+
+/// Returns whether a generation-tagged task currently has an active publication.
+#[must_use]
+pub fn task_stack_published(id: TaskId) -> bool {
+    let Some(slot) = PUBLISHED_STACKS.get(id.slot()) else {
+        return false;
+    };
+    slot.active.load(Ordering::Acquire)
+        && slot.generation.load(Ordering::Acquire) == id.generation()
+}
+fn find_published_stack(interrupted_rsp: u64) -> Result<PublishedStackInfo, AttributionError> {
     if !super::paging::is_canonical(interrupted_rsp) {
         return Err(AttributionError::NoncanonicalRsp);
     }
@@ -224,12 +269,45 @@ pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, Attribu
                 u8::try_from(slot_index).map_err(|_| AttributionError::InvalidGeneration)?;
             let id = TaskId::new(slot_index, generation)
                 .map_err(|_| AttributionError::InvalidGeneration)?;
-            if found.replace(id).is_some() {
+            if found
+                .replace(PublishedStackInfo {
+                    task_id: id,
+                    start,
+                    end,
+                })
+                .is_some()
+            {
                 return Err(AttributionError::MultipleMatch);
             }
         }
     }
     found.ok_or(AttributionError::NoMatch)
+}
+
+/// Attributes an interrupted stack pointer using only atomic publications.
+///
+/// # Errors
+///
+/// Returns an [`AttributionError`] when the pointer is non-canonical, no
+/// publication matches, publications overlap or change while being read, or
+/// the mirrored task identity is invalid.
+pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, AttributionError> {
+    Ok(find_published_stack(interrupted_rsp)?.task_id)
+}
+
+/// Validates that a complete frame lies inside the publication selected by its RSP.
+pub fn validate_frame_stack(
+    frame_pointer: u64,
+    interrupted_rsp: u64,
+) -> Result<PublishedStackInfo, AttributionError> {
+    let publication = find_published_stack(interrupted_rsp)?;
+    let frame_end = frame_pointer
+        .checked_add(KernelInterruptFrame::SIZE)
+        .ok_or(AttributionError::FrameOutsideStack)?;
+    if frame_pointer < publication.start || frame_end > publication.end {
+        return Err(AttributionError::FrameOutsideStack);
+    }
+    Ok(publication)
 }
 
 const fn save_registers(frame: &KernelInterruptFrame) -> SavedGeneralRegisters {
@@ -252,7 +330,27 @@ const fn save_registers(frame: &KernelInterruptFrame) -> SavedGeneralRegisters {
     }
 }
 #[allow(unsafe_code)]
-fn record_snapshot(frame: &KernelInterruptFrame, returned: *mut KernelInterruptFrame, id: TaskId) {
+fn record_snapshot(
+    frame: &KernelInterruptFrame,
+    returned: *mut KernelInterruptFrame,
+    id: TaskId,
+) -> bool {
+    let expected_vector = CAPTURE_VECTOR.load(Ordering::Acquire);
+    let expected_slot = CAPTURE_TASK_SLOT.load(Ordering::Acquire);
+    let expected_generation = CAPTURE_TASK_GENERATION.load(Ordering::Acquire);
+    if !CAPTURE_ACTIVE.load(Ordering::Acquire)
+        || expected_vector != u8::try_from(frame.vector).unwrap_or(u8::MAX)
+        || expected_slot != id.slot()
+        || expected_generation != id.generation()
+    {
+        return false;
+    }
+    if CAPTURE_ACTIVE
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
     let sequence = SNAPSHOT_SEQUENCE
         .fetch_add(1, Ordering::AcqRel)
         .saturating_add(1);
@@ -262,7 +360,15 @@ fn record_snapshot(frame: &KernelInterruptFrame, returned: *mut KernelInterruptF
             task_id: id,
             frame_pointer: core::ptr::from_ref(frame) as u64,
             returned_frame_pointer: returned as u64,
-            interrupted_rsp: frame.interrupted_rsp(),
+            interrupted_rsp: frame.interrupted_rsp().unwrap_or(0),
+            saved_rsp_field_address: (core::ptr::from_ref(frame) as u64)
+                .checked_add(
+                    KernelInterruptFrame::GPR_PREFIX_SIZE
+                        + KernelInterruptFrame::SOFTWARE_PREFIX_SIZE
+                        + KernelInterruptFrame::HARDWARE_RETURN_SIZE,
+                )
+                .unwrap_or(0),
+            saved_ss: frame.saved_ss,
             rip: frame.rip,
             cs: frame.cs,
             rflags: frame.rflags,
@@ -272,11 +378,35 @@ fn record_snapshot(frame: &KernelInterruptFrame, returned: *mut KernelInterruptF
         };
     }
     SNAPSHOT_SEQUENCE.store(sequence.saturating_add(1), Ordering::Release);
+    CAPTURED.store(true, Ordering::Release);
+    true
 }
 /// Reads a stable diagnostic snapshot, retrying a bounded number of times.
 #[must_use]
 #[allow(unsafe_code)]
 pub fn snapshot() -> Option<InterruptedTaskSnapshot> {
+    if crate::interrupt::in_interrupt_context() {
+        return None;
+    }
+    #[cfg(target_os = "none")]
+    let interrupts_were_enabled = super::cpu::interrupts_enabled();
+    #[cfg(target_os = "none")]
+    if interrupts_were_enabled {
+        super::cpu::disable_interrupts();
+    }
+    let result = snapshot_copy();
+    #[cfg(target_os = "none")]
+    if interrupts_were_enabled {
+        super::cpu::enable_interrupts();
+    }
+    result
+}
+
+#[allow(unsafe_code)]
+fn snapshot_copy() -> Option<InterruptedTaskSnapshot> {
+    if !CAPTURED.load(Ordering::Acquire) {
+        return None;
+    }
     for _ in 0..3 {
         let before = SNAPSHOT_SEQUENCE.load(Ordering::Acquire);
         if before == 0 || !before.is_multiple_of(2) {
@@ -291,13 +421,30 @@ pub fn snapshot() -> Option<InterruptedTaskSnapshot> {
     None
 }
 /// Starts the bounded real-timer preservation observation phase.
-pub fn begin_timer_test() {
+pub fn begin_capture(vector: u8, task_id: TaskId) {
+    SNAPSHOT_SEQUENCE.store(0, Ordering::Release);
+    CAPTURED.store(false, Ordering::Release);
+    CAPTURE_VECTOR.store(vector, Ordering::Release);
+    CAPTURE_TASK_SLOT.store(task_id.slot(), Ordering::Release);
+    CAPTURE_TASK_GENERATION.store(task_id.generation(), Ordering::Release);
+    CAPTURE_ACTIVE.store(true, Ordering::Release);
+}
+
+/// Ends a phase-specific capture without permitting later interrupts to overwrite it.
+pub fn end_capture() {
+    CAPTURE_ACTIVE.store(false, Ordering::Release);
+}
+
+/// Starts the bounded real-timer preservation observation phase.
+pub fn begin_timer_test(task_id: TaskId) {
     PREEMPTION_TIMER_OBSERVED.store(false, Ordering::Release);
     PREEMPTION_TIMER_PHASE.store(true, Ordering::Release);
+    begin_capture(TIMER_VECTOR, task_id);
 }
 /// Ends the bounded real-timer preservation observation phase.
 pub fn end_timer_test() {
     PREEMPTION_TIMER_PHASE.store(false, Ordering::Release);
+    end_capture();
 }
 /// Returns whether a real timer was observed during the phase.
 #[must_use]
@@ -348,34 +495,74 @@ pub struct KernelInterruptFrame {
     pub cs: u64,
     /// Saved flags.
     pub rflags: u64,
+    /// CPU-saved interrupted RSP for the current 64-bit interrupt contract.
+    pub saved_rsp: u64,
+    /// CPU-saved interrupted SS selector.
+    pub saved_ss: u64,
+    /// Hardware alignment slot following the iretq fields.
+    pub hardware_alignment: u64,
 }
 
 /// Backwards-compatible spelling for the external entry's fixed frame.
 pub type InterruptFrame = KernelInterruptFrame;
 
 impl KernelInterruptFrame {
-    /// Size of the complete CPL0 frame built by the stubs.
-    pub const SIZE: u64 = 20 * 8;
-    /// Returns the interrupted CPL0 stack pointer. CPL0/IST0 does not push RSP/SS.
+    /// Number of bytes occupied by the saved GPR prefix.
+    pub const GPR_PREFIX_SIZE: u64 = 15 * 8;
+    /// Number of bytes occupied by the software vector and synthetic error code.
+    pub const SOFTWARE_PREFIX_SIZE: u64 = 2 * 8;
+    /// Number of bytes occupied by the CPU's CPL0 return fields.
+    pub const HARDWARE_RETURN_SIZE: u64 = 3 * 8;
+    /// Size of the `iretq`-interpreted CPL0/IST0 frame through saved SS.
+    pub const IRET_FRAME_SIZE: u64 =
+        Self::GPR_PREFIX_SIZE + Self::SOFTWARE_PREFIX_SIZE + Self::HARDWARE_RETURN_SIZE + (2 * 8);
+    /// Size of the complete hardware footprint including its alignment slot.
+    pub const SIZE: u64 = Self::IRET_FRAME_SIZE + 8;
+    /// Returns the interrupted CPL0 stack pointer from the hardware tail.
     #[must_use]
-    pub fn interrupted_rsp(&self) -> u64 {
-        (core::ptr::from_ref(self) as u64)
-            .checked_add(Self::SIZE)
-            .unwrap_or(0)
+    pub fn interrupted_rsp(&self) -> Result<u64, FrameValidationError> {
+        if !super::paging::is_canonical(self.saved_rsp) {
+            return Err(FrameValidationError::NoncanonicalRsp);
+        }
+        Ok(self.saved_rsp)
     }
-    /// Validates the invariant fields for an installed external vector.
+    /// Validates the complete frame and its derived old RSP.
     #[must_use]
-    pub fn valid(&self) -> bool {
+    pub fn validate(&self, frame_pointer: u64) -> Result<u64, FrameValidationError> {
+        if frame_pointer == 0 {
+            return Err(FrameValidationError::Null);
+        }
+        if !super::paging::is_canonical(frame_pointer) {
+            return Err(FrameValidationError::NoncanonicalFrame);
+        }
+        if frame_pointer % 8 != 0 {
+            return Err(FrameValidationError::MisalignedFrame);
+        }
+        let frame_end = frame_pointer
+            .checked_add(Self::SIZE)
+            .ok_or(FrameValidationError::AddressOverflow)?;
+        if !super::paging::is_canonical(frame_end.saturating_sub(1)) {
+            return Err(FrameValidationError::NoncanonicalFrame);
+        }
         let vector = u8::try_from(self.vector).ok();
-        matches!(
+        if !matches!(
             vector,
             Some(TIMER_VECTOR | SPURIOUS_VECTOR | PREEMPTION_TEST_VECTOR)
-        ) && self.error_code == 0
-            && self.cs == u64::from(super::gdt::KERNEL_CODE_SELECTOR)
-            && self.cs.trailing_zeros() >= 2
-            && super::paging::is_canonical(self.rip)
-            && super::paging::is_canonical(self.interrupted_rsp())
-            && self.rflags & 2 != 0
+        ) || self.error_code != 0
+            || self.cs != u64::from(super::gdt::KERNEL_CODE_SELECTOR)
+            || self.cs.trailing_zeros() < 2
+            || !super::paging::is_canonical(self.rip)
+            || self.rflags & 2 == 0
+            || self.saved_ss != u64::from(super::gdt::KERNEL_DATA_SELECTOR)
+        {
+            return Err(FrameValidationError::InvalidFields);
+        }
+        self.interrupted_rsp()
+    }
+    /// Validates a frame using its own address.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        self.validate(core::ptr::from_ref(self) as u64).is_ok()
     }
 }
 
@@ -523,14 +710,23 @@ pub fn validate() -> bool {
 extern "C" fn rust_interrupt_dispatch(
     frame: *mut KernelInterruptFrame,
 ) -> *mut KernelInterruptFrame {
-    // SAFETY: The entry stubs pass a pointer to their fixed, register-aligned frame.
-    let frame_ref = unsafe { &*frame };
-    if !frame_ref.valid() {
-        return core::ptr::null_mut();
-    }
-    let Ok(task_id) = attribute_interrupted_rsp(frame_ref.interrupted_rsp()) else {
+    let Ok(_interrupt_guard) = InterruptContextGuard::enter() else {
         return core::ptr::null_mut();
     };
+    let frame_pointer = frame as u64;
+    if frame.is_null() || !super::paging::is_canonical(frame_pointer) || frame_pointer % 8 != 0 {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the entry stubs pass a canonical, aligned pointer to their
+    // complete fixed frame; validation below precedes all field use.
+    let frame_ref = unsafe { &*frame };
+    let Ok(interrupted_rsp) = frame_ref.validate(frame_pointer) else {
+        return core::ptr::null_mut();
+    };
+    let Ok(publication) = validate_frame_stack(frame_pointer, interrupted_rsp) else {
+        return core::ptr::null_mut();
+    };
+    let task_id = publication.task_id;
     match u8::try_from(frame_ref.vector).unwrap_or(u8::MAX) {
         TIMER_VECTOR => timer::handle_tick(),
         SPURIOUS_VECTOR => timer::handle_spurious(),
@@ -545,8 +741,10 @@ extern "C" fn rust_interrupt_dispatch(
             super::qemu::exit(0x11);
         }
     }
-    record_snapshot(frame_ref, frame, task_id);
-    if frame_ref.vector == u64::from(TIMER_VECTOR) && PREEMPTION_TIMER_PHASE.load(Ordering::Acquire)
+    let captured = record_snapshot(frame_ref, frame, task_id);
+    if captured
+        && frame_ref.vector == u64::from(TIMER_VECTOR)
+        && PREEMPTION_TIMER_PHASE.load(Ordering::Acquire)
     {
         PREEMPTION_TIMER_OBSERVED.store(true, Ordering::Release);
     }
@@ -586,9 +784,12 @@ mod tests {
             offset_of!(KernelInterruptFrame, rip),
             offset_of!(KernelInterruptFrame, cs),
             offset_of!(KernelInterruptFrame, rflags),
+            offset_of!(KernelInterruptFrame, saved_rsp),
+            offset_of!(KernelInterruptFrame, saved_ss),
+            offset_of!(KernelInterruptFrame, hardware_alignment),
         ];
         assert_eq!(offsets, core::array::from_fn(|field| field * 8));
-        assert_eq!(size_of::<KernelInterruptFrame>(), 20 * 8);
+        assert_eq!(size_of::<KernelInterruptFrame>(), 23 * 8);
         assert_eq!(core::mem::align_of::<KernelInterruptFrame>(), 8);
     }
 
@@ -654,6 +855,9 @@ mod tests {
             rip: 0x1000,
             cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
             rflags: 2,
+            saved_rsp: 0x1100,
+            saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
+            hardware_alignment: 0,
         };
         assert!(frame.valid());
         frame.cs |= 3;
@@ -667,5 +871,68 @@ mod tests {
         frame.error_code = 0;
         frame.vector = 0x20;
         assert!(!frame.valid());
+    }
+
+    #[test]
+    fn frame_tail_extracts_saved_rsp_and_validates_ss() {
+        let mut frame = KernelInterruptFrame {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            vector: u64::from(TIMER_VECTOR),
+            error_code: 0,
+            rip: 0x2000,
+            cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
+            rflags: 2,
+            saved_rsp: 0x8000,
+            saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
+            hardware_alignment: 0,
+        };
+        assert_eq!(frame.interrupted_rsp(), Ok(0x8000));
+        assert!(frame.valid());
+        frame.saved_rsp = 0x0001_0000_0000_0000;
+        assert!(!frame.valid());
+        frame.saved_rsp = 0x8000;
+        frame.saved_ss = 0;
+        assert!(!frame.valid());
+    }
+
+    #[test]
+    fn complete_frame_bounds_use_the_hardware_footprint() {
+        let id = TaskId::new(6, 3).unwrap();
+        publish_task_stack(id, 0x1000, 0x2000).unwrap();
+        assert_eq!(
+            validate_frame_stack(0x1000, 0x1000 + KernelInterruptFrame::SIZE),
+            Ok(PublishedStackInfo {
+                task_id: id,
+                start: 0x1000,
+                end: 0x2000,
+            })
+        );
+        assert_eq!(
+            validate_frame_stack(0x1f00, 0x1f00),
+            Err(AttributionError::FrameOutsideStack)
+        );
+        unpublish_task_stack(id.slot());
+    }
+
+    #[test]
+    fn phase_capture_is_frozen_until_explicitly_started_again() {
+        let id = TaskId::new(7, 4).unwrap();
+        begin_capture(PREEMPTION_TEST_VECTOR, id);
+        end_capture();
+        assert!(snapshot().is_none());
     }
 }

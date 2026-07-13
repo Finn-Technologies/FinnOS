@@ -1,12 +1,16 @@
 # Preemption-ready interrupt contexts
 
-The x86-64 external interrupt entry builds a `repr(C)` 160-byte frame containing
-all fifteen general-purpose registers, vector, synthetic error code, RIP, CS,
-and RFLAGS in assembly stack order. For the current CPL0/IST0 contract the CPU
-does not push RSP or SS; the interrupted RSP is therefore the frame address plus
-160 bytes. User-mode frame extensions are intentionally not supported.
+The x86-64 external interrupt entry builds a `repr(C)` 184-byte resumable frame.
+Its 160-byte saved-register/software prefix contains all fifteen general-purpose
+registers, vector, synthetic error code, RIP, CS, and RFLAGS. QEMU's current
+long-mode ring-0/IST-0 delivery supplies a hardware tail at offsets `+160`
+(saved RSP) and `+168` (saved SS), followed by an eight-byte alignment slot;
+the `iretq` fields occupy through `+176`. The saved RSP value—not a slot
+address—is the exact pre-interrupt RSP. The kernel data selector `0x10` is
+validated as saved SS. Future CPL3 or nonzero-IST entries require a separate
+frame contract.
 
-The Rust dispatcher receives a mutable frame and returns the frame to restore.
+The Rust dispatcher receives a mutable complete frame and returns the frame to restore.
 Today it always returns the original pointer, so timer delivery resumes the
 interrupted task. This is distinct from `TaskContext`, which is only the SysV64
 call-boundary state used by cooperative switching.
