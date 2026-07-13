@@ -1,8 +1,26 @@
 import unittest
 
-from tools.finnlib.qemu import HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
+from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
+    def cooperative_log(self):
+        evidence = [f"FINNOS:TASKS:EVENT_{index}={value}" for index, value in enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))]
+        evidence += ["FINNOS:TASKS:EVENT_COUNT=9", "FINNOS:TASKS:OLD_GENERATION=1", "FINNOS:TASKS:NEW_GENERATION=2", "FINNOS:TASKS:TIMER_START_TICKS=10", "FINNOS:TASKS:TIMER_END_TICKS=12"]
+        return "\n".join(COOPERATIVE_TASK_MARKERS + tuple(evidence))
+
+    def test_cooperative_tasks_complete_sequence(self):
+        self.assertEqual(validate_cooperative_tasks(33, self.cooperative_log()), [])
+
+    def test_cooperative_tasks_rejects_status_events_and_generation(self):
+        self.assertTrue(validate_cooperative_tasks(35, self.cooperative_log()))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log().replace("EVENT_4=22", "EVENT_4=99")))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log().replace("NEW_GENERATION=2", "NEW_GENERATION=1")))
+
+    def test_cooperative_tasks_rejects_missing_marker_and_panic(self):
+        output = self.cooperative_log().replace("FINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK\n", "")
+        self.assertTrue(validate_cooperative_tasks(33, output))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log() + "\nFINNOS:KERNEL:PANIC"))
+
     def test_markers_in_order(self):
         self.assertEqual(validate_smoke(33, "\n".join(MARKERS)), [])
 

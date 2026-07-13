@@ -55,6 +55,16 @@ preemption, user-mode interrupt delivery, or wall-clock time.
 
 Further Kernel Core scheduling, interrupt, process, and IPC work remains planned.
 
+### 3.7 Cooperative kernel tasks — Complete for x86-64 QEMU
+
+Objective: add fixed-capacity kernel tasks, guarded task stacks, a
+deterministic cooperative runnable queue, real x86-64 context switching,
+task completion, stack reclamation, and a scheduler-backed idle task.
+
+Non-goal: timer-driven preemption, priorities, sleeping, SMP, user
+processes, separate address spaces, system calls, or IPC. Preemption,
+process, user-mode, and IPC foundations remain planned.
+
 ## 4. First User Space — Planned
 
 Objective: start isolated services and a minimal runtime. Completion requires service startup and failure diagnostics. Non-goal: desktop applications.

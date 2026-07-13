@@ -202,6 +202,36 @@ def validate_heap(status: int, output: str) -> list[str]:
             errors.append(f"forbidden marker found: {marker}")
     return errors
 
+COOPERATIVE_TASK_MARKERS = MARKERS[:-2] + (
+    "FINNOS:KERNEL:TASK_STACKS_READY", "FINNOS:KERNEL:SCHEDULER_READY",
+    "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+    "FINNOS:TEST:COOPERATIVE_TASKS:BEGIN", "FINNOS:TEST:COOPERATIVE_TASKS:BOOTSTRAP_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:STACKS_OK", "FINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_BEGIN",
+    "FINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_OK", "FINNOS:TEST:COOPERATIVE_TASKS:REGISTER_STATE_OK", "FINNOS:TEST:COOPERATIVE_TASKS:STACK_ISOLATION_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:TASK_EXIT_OK", "FINNOS:TEST:COOPERATIVE_TASKS:STACK_RECLAIM_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:SLOT_REUSE_OK", "FINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK", "FINNOS:TEST:COOPERATIVE_TASKS:TIMER_CONTINUITY_OK", "FINNOS:TEST:COOPERATIVE_TASKS:INVARIANTS_OK", "FINNOS:TEST:COOPERATIVE_TASKS:PASS",
+)
+
+def validate_cooperative_tasks(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in COOPERATIVE_TASK_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing cooperative-task marker(s): " + ", ".join(marker for marker, position in zip(COOPERATIVE_TASK_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0): errors.append("cooperative-task markers are out of order")
+    if output.count("FINNOS:KERNEL:SCHEDULER_READY") != 1: errors.append("expected exactly one SCHEDULER_READY")
+    if output.count("FINNOS:TEST:COOPERATIVE_TASKS:PASS") != 1: errors.append("expected exactly one cooperative-task PASS")
+    import re
+    events = [(int(index), int(value)) for index, value in re.findall(r"FINNOS:TASKS:EVENT_(\d+)=(\d+)", output)]
+    if events != list(enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))): errors.append("worker event order is not A1/B1/C1/A2/B2/C2/A3/B3/C3")
+    if "FINNOS:TASKS:EVENT_COUNT=9" not in output: errors.append("worker event count is not nine")
+    generations = {key: int(value) for key, value in re.findall(r"FINNOS:TASKS:(OLD_GENERATION|NEW_GENERATION)=(\d+)", output)}
+    if generations.get("NEW_GENERATION", 0) <= generations.get("OLD_GENERATION", 0): errors.append("task slot generation did not advance")
+    ticks = {key: int(value) for key, value in re.findall(r"FINNOS:TASKS:(TIMER_START_TICKS|TIMER_END_TICKS)=(\d+)", output)}
+    if ticks.get("TIMER_END_TICKS", 0) <= ticks.get("TIMER_START_TICKS", 0): errors.append("timer ticks did not advance across task switches")
+    for marker in ("FINNOS:KERNEL:SCHEDULER_ERROR", "FINNOS:KERNEL:TASK_STACK_ERROR", "FINNOS:TASK:CONTEXT_ERROR", "FINNOS:INTERRUPT:UNEXPECTED", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:EXCEPTION:UNHANDLED", "FINNOS:KERNEL:PANIC"):
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
+    return errors
+
 def qemu_command(qemu: str, firmware: str, image: Path, headless: bool = False, test_exit: bool = False) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.

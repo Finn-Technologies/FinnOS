@@ -29,3 +29,5 @@ jobs:
         run: ./tools/finn test-heap
       - name: Run timer interrupt integration test
         run: ./tools/finn test-timer-interrupts
+      - name: Run cooperative task integration test
+        run: ./tools/finn test-cooperative-tasks

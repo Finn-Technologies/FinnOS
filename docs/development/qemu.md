@@ -29,3 +29,7 @@ QEMU uses the existing q35/UEFI path. The timer test requires status 33 and
 numeric serial evidence for the APIC base, PIT reference, calibrated APIC
 count, and at least eight increasing ticks. No software timer device or
 synthetic clock is used.
+
+# Cooperative task evidence
+
+`./tools/finn test-cooperative-tasks` uses isolated target and image directories. Status 33 is accepted only after exact worker ordering, register preservation, reclamation, generation reuse, a real idle probe, and timer continuity validate.

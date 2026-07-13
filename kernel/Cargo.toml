@@ -23,6 +23,7 @@ qemu-test-page-allocator = []
 qemu-test-page-tables = ["qemu-test-exit"]
 qemu-test-heap = ["qemu-test-exit"]
 qemu-test-timer-interrupts = ["qemu-test-exit"]
+qemu-test-cooperative-tasks = ["qemu-test-exit"]
 
 [[bin]]
 name = "finn-kernel-x86_64"
