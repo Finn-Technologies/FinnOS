@@ -30,8 +30,9 @@ only for the spurious-dispatch test.
 `./tools/finn test-cooperative-tasks` uses real guarded worker stacks and validates FIFO order, stack persistence, callee-saved registers, exit, reclamation, stale-ID rejection, idle execution, and timer continuity.
 # Kernel preemption-context coverage
 
-The host suite checks the 160-byte saved-register prefix, 184-byte resumable
-footprint, saved RSP/SS tail, checked complete-frame bounds, publication
-boundaries, overlap rejection, phase capture freezing, and preemption nesting.
+The host suite checks the 136-byte saved-register/software prefix, 176-byte raw
+frame, bounded 0/4/8/12-byte alignment slack (188-byte maximum footprint), saved
+RSP/SS tail, checked frame bounds, publication boundaries, overlap rejection,
+phase capture freezing, and preemption nesting.
 The dedicated QEMU suite adds real interrupts and timer delivery; it does not
 replace the existing cooperative task test.

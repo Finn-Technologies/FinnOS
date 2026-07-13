@@ -68,6 +68,21 @@ pub enum AttributionError {
     InvalidFrame,
 }
 
+impl AttributionError {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::NoncanonicalRsp => "noncanonical-rsp",
+            Self::NoMatch => "no-publication-match",
+            Self::MultipleMatch => "multiple-publication-match",
+            Self::UnstablePublication => "unstable-publication",
+            Self::InvalidGeneration => "invalid-generation",
+            Self::AlreadyPublished => "already-published",
+            Self::FrameOutsideStack => "frame-outside-stack",
+            Self::InvalidFrame => "invalid-frame",
+        }
+    }
+}
+
 /// A stable copy of one published task-stack interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PublishedStackInfo {
@@ -96,6 +111,65 @@ pub enum FrameValidationError {
     NoncanonicalRsp,
     /// The saved RSP does not follow the complete frame footprint.
     SavedRspMismatch,
+}
+
+impl FrameValidationError {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::NoncanonicalFrame => "noncanonical-frame",
+            Self::MisalignedFrame => "misaligned-frame",
+            Self::AddressOverflow => "address-overflow",
+            Self::InvalidFields => "invalid-fields",
+            Self::NoncanonicalRsp => "noncanonical-rsp",
+            Self::SavedRspMismatch => "saved-rsp-mismatch",
+        }
+    }
+}
+
+/// Supported raw ring-0 interrupt-frame layouts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Ring0FrameLayout {
+    /// The saved RSP immediately follows the raw frame.
+    Aligned,
+    /// A four-byte stack-alignment gap follows the raw frame.
+    PaddedByFour,
+    /// An eight-byte hardware alignment gap follows the raw frame.
+    PaddedByEight,
+    /// A twelve-byte stack-alignment gap follows the raw frame.
+    PaddedByTwelve,
+}
+
+impl Ring0FrameLayout {
+    /// Returns the validated bytes occupied from the raw frame pointer through
+    /// the saved-RSP boundary.
+    pub const fn footprint_size(self) -> u64 {
+        match self {
+            Self::Aligned => KernelInterruptFrame::SIZE,
+            Self::PaddedByFour => KernelInterruptFrame::SIZE + 4,
+            Self::PaddedByEight => KernelInterruptFrame::SIZE + 8,
+            Self::PaddedByTwelve => KernelInterruptFrame::SIZE + 12,
+        }
+    }
+    /// Returns the alignment-gap size for this layout.
+    pub const fn gap_size(self) -> u64 {
+        match self {
+            Self::Aligned => 0,
+            Self::PaddedByFour => 4,
+            Self::PaddedByEight => 8,
+            Self::PaddedByTwelve => 12,
+        }
+    }
+
+    const fn from_gap(gap: u64) -> Option<Self> {
+        match gap {
+            0 => Some(Self::Aligned),
+            4 => Some(Self::PaddedByFour),
+            8 => Some(Self::PaddedByEight),
+            12 => Some(Self::PaddedByTwelve),
+            _ => None,
+        }
+    }
 }
 
 /// Errors from phase-scoped interrupt capture ownership.
@@ -165,6 +239,8 @@ pub struct InterruptedTaskSnapshot {
     pub saved_rsp_field_address: u64,
     /// CPU-saved SS selector.
     pub saved_ss: u64,
+    /// Validated raw-frame layout, including any alignment gap.
+    pub layout: Ring0FrameLayout,
     /// Interrupted RIP.
     pub rip: u64,
     /// Interrupted CS.
@@ -193,6 +269,7 @@ static SNAPSHOT: SnapshotCell = SnapshotCell(UnsafeCell::new(InterruptedTaskSnap
     interrupted_rsp: 0,
     saved_rsp_field_address: 0,
     saved_ss: 0,
+    layout: Ring0FrameLayout::Aligned,
     rip: 0,
     cs: 0,
     rflags: 0,
@@ -332,15 +409,27 @@ pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, Attribu
 pub fn validate_frame_stack(
     frame_pointer: u64,
     interrupted_rsp: u64,
+    layout: Ring0FrameLayout,
 ) -> Result<PublishedStackInfo, AttributionError> {
     let publication = find_published_stack(interrupted_rsp)?;
     let frame_end = frame_pointer
-        .checked_add(KernelInterruptFrame::SIZE)
+        .checked_add(layout.footprint_size())
         .ok_or(AttributionError::FrameOutsideStack)?;
     if frame_pointer < publication.start || frame_end > publication.end {
         return Err(AttributionError::FrameOutsideStack);
     }
     Ok(publication)
+}
+
+fn reject_frame(
+    frame: Option<&KernelInterruptFrame>,
+    validation: &str,
+) -> *mut KernelInterruptFrame {
+    let vector = frame.map_or(0, |frame| frame.vector);
+    serial::log(format_args!(
+        "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR\nFINNOS:INTERRUPT:VECTOR={vector:#x}\nFINNOS:INTERRUPT:FRAME_ERROR={validation}\n"
+    ));
+    core::ptr::null_mut()
 }
 
 const fn save_registers(frame: &KernelInterruptFrame) -> SavedGeneralRegisters {
@@ -367,6 +456,7 @@ fn record_snapshot(
     frame: &KernelInterruptFrame,
     returned: *mut KernelInterruptFrame,
     id: TaskId,
+    layout: Ring0FrameLayout,
 ) -> bool {
     let expected_vector = CAPTURE_VECTOR.load(Ordering::Acquire);
     let expected_slot = CAPTURE_TASK_SLOT.load(Ordering::Acquire);
@@ -404,6 +494,7 @@ fn record_snapshot(
                 )
                 .unwrap_or(0),
             saved_ss: frame.saved_ss,
+            layout,
             rip: frame.rip,
             cs: frame.cs,
             rflags: frame.rflags,
@@ -459,6 +550,11 @@ fn snapshot_copy() -> Option<InterruptedTaskSnapshot> {
     None
 }
 /// Starts the bounded real-timer preservation observation phase.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::InvalidTask`] for an invalid task identity or
+/// [`CaptureError::AlreadyActive`] when another capture owns the phase.
 pub fn begin_capture(vector: u8, task_id: TaskId) -> Result<CaptureToken, CaptureError> {
     if task_id.generation() == 0 {
         return Err(CaptureError::InvalidTask);
@@ -484,6 +580,11 @@ pub fn begin_capture(vector: u8, task_id: TaskId) -> Result<CaptureToken, Captur
 }
 
 /// Ends a phase-specific capture without permitting later interrupts to overwrite it.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::StaleToken`] when the token belongs to an older
+/// capture phase.
 pub fn end_capture(token: CaptureToken) -> Result<(), CaptureError> {
     if CAPTURE_GENERATION.load(Ordering::Acquire) != token.generation {
         return Err(CaptureError::StaleToken);
@@ -494,6 +595,10 @@ pub fn end_capture(token: CaptureToken) -> Result<(), CaptureError> {
 }
 
 /// Starts the bounded real-timer preservation observation phase.
+///
+/// # Errors
+///
+/// Returns the phase-ownership errors from [`begin_capture`].
 pub fn begin_timer_test(task_id: TaskId) -> Result<CaptureToken, CaptureError> {
     PREEMPTION_TIMER_OBSERVED.store(false, Ordering::Release);
     let token = begin_capture(TIMER_VECTOR, task_id)?;
@@ -501,6 +606,11 @@ pub fn begin_timer_test(task_id: TaskId) -> Result<CaptureToken, CaptureError> {
     Ok(token)
 }
 /// Ends the bounded real-timer preservation observation phase.
+///
+/// # Errors
+///
+/// Returns [`CaptureError::StaleToken`] when the token belongs to an older
+/// capture phase.
 pub fn end_timer_test(token: CaptureToken) -> Result<(), CaptureError> {
     PREEMPTION_TIMER_PHASE.store(false, Ordering::Release);
     end_capture(token)
@@ -558,8 +668,6 @@ pub struct KernelInterruptFrame {
     pub saved_rsp: u64,
     /// CPU-saved interrupted SS selector.
     pub saved_ss: u64,
-    /// Hardware alignment slot following the iretq fields.
-    pub hardware_alignment: u64,
 }
 
 /// Backwards-compatible spelling for the external entry's fixed frame.
@@ -572,11 +680,13 @@ impl KernelInterruptFrame {
     pub const SOFTWARE_PREFIX_SIZE: u64 = 2 * 8;
     /// Number of bytes occupied by the CPU's CPL0 return fields.
     pub const HARDWARE_RETURN_SIZE: u64 = 3 * 8;
-    /// Size of the `iretq`-interpreted CPL0/IST0 frame through saved SS.
+    /// Size of the raw `iretq`-interpreted CPL0/IST0 frame through saved SS.
     pub const IRET_FRAME_SIZE: u64 =
         Self::GPR_PREFIX_SIZE + Self::SOFTWARE_PREFIX_SIZE + Self::HARDWARE_RETURN_SIZE + (2 * 8);
-    /// Size of the complete hardware footprint including its alignment slot.
-    pub const SIZE: u64 = Self::IRET_FRAME_SIZE + 8;
+    /// Size of the raw frame passed by the assembly entry.
+    pub const SIZE: u64 = Self::IRET_FRAME_SIZE;
+    /// Maximum supported footprint including the bounded alignment gap.
+    pub const MAX_FOOTPRINT_SIZE: u64 = Self::SIZE + 12;
     /// Returns the interrupted CPL0 stack pointer from the hardware tail.
     /// # Errors
     ///
@@ -588,13 +698,16 @@ impl KernelInterruptFrame {
         }
         Ok(self.saved_rsp)
     }
-    /// Validates the complete frame and its derived old RSP.
+    /// Validates the raw frame and returns its saved RSP and layout.
     ///
     /// # Errors
     ///
     /// Returns an error when the frame pointer, complete frame footprint,
     /// saved return fields, or interrupted stack pointer is invalid.
-    pub fn validate(&self, frame_pointer: u64) -> Result<u64, FrameValidationError> {
+    pub fn validate_with_layout(
+        &self,
+        frame_pointer: u64,
+    ) -> Result<(u64, Ring0FrameLayout), FrameValidationError> {
         if frame_pointer == 0 {
             return Err(FrameValidationError::Null);
         }
@@ -611,9 +724,11 @@ impl KernelInterruptFrame {
             return Err(FrameValidationError::NoncanonicalFrame);
         }
         let saved_rsp = self.interrupted_rsp()?;
-        if frame_end != saved_rsp {
-            return Err(FrameValidationError::SavedRspMismatch);
-        }
+        let gap = saved_rsp
+            .checked_sub(frame_end)
+            .ok_or(FrameValidationError::SavedRspMismatch)?;
+        let layout =
+            Ring0FrameLayout::from_gap(gap).ok_or(FrameValidationError::SavedRspMismatch)?;
         let vector = u8::try_from(self.vector).ok();
         if !matches!(
             vector,
@@ -627,7 +742,11 @@ impl KernelInterruptFrame {
         {
             return Err(FrameValidationError::InvalidFields);
         }
-        Ok(saved_rsp)
+        Ok((saved_rsp, layout))
+    }
+    /// Validates the raw frame and returns its saved RSP.
+    pub fn validate(&self, frame_pointer: u64) -> Result<u64, FrameValidationError> {
+        Ok(self.validate_with_layout(frame_pointer)?.0)
     }
     /// Validates a frame using its own address.
     #[must_use]
@@ -788,33 +907,28 @@ extern "C" fn rust_interrupt_dispatch(
         || !super::paging::is_canonical(frame_pointer)
         || !frame_pointer.is_multiple_of(8)
     {
-        return core::ptr::null_mut();
+        return reject_frame(None, "invalid-raw-pointer");
     }
     // SAFETY: the entry stubs pass a canonical, aligned pointer to their
     // complete fixed frame; validation below precedes all field use.
     let frame_ref = unsafe { &*frame };
-    let contract_frame_pointer = match frame_ref.validate(frame_pointer) {
-        Ok(_) => frame_pointer,
-        Err(FrameValidationError::SavedRspMismatch) => {
-            // Same-CPL delivery can leave one alignment word before the
-            // measured tail. Normalize that raw base to the strict supported
-            // 184-byte contract before stack attribution.
-            let Some(normalized) = frame_pointer.checked_sub(8) else {
-                return core::ptr::null_mut();
-            };
-            if frame_ref.validate(normalized).is_err() {
-                return core::ptr::null_mut();
-            }
-            normalized
+    let (interrupted_rsp, layout) = match frame_ref.validate_with_layout(frame_pointer) {
+        Ok(validated) => validated,
+        Err(error) => {
+            return reject_frame(Some(frame_ref), error.name());
         }
-        Err(_) => return core::ptr::null_mut(),
     };
-    let interrupted_rsp = match frame_ref.validate(contract_frame_pointer) {
-        Ok(rsp) => rsp,
-        Err(_) => return core::ptr::null_mut(),
+    let publication = match find_published_stack(interrupted_rsp) {
+        Ok(publication) => publication,
+        Err(error) => {
+            return reject_frame(Some(frame_ref), error.name());
+        }
     };
-    let Ok(publication) = validate_frame_stack(contract_frame_pointer, interrupted_rsp) else {
-        return core::ptr::null_mut();
+    let Some(frame_end) = frame_pointer.checked_add(layout.footprint_size()) else {
+        return reject_frame(Some(frame_ref), "frame-footprint-overflow");
+    };
+    if frame_pointer < publication.start || frame_end > publication.end {
+        return reject_frame(Some(frame_ref), AttributionError::FrameOutsideStack.name());
     };
     let task_id = publication.task_id;
     match u8::try_from(frame_ref.vector).unwrap_or(u8::MAX) {
@@ -831,7 +945,7 @@ extern "C" fn rust_interrupt_dispatch(
             super::qemu::exit(0x11);
         }
     }
-    let captured = record_snapshot(frame_ref, frame, task_id);
+    let captured = record_snapshot(frame_ref, frame, task_id, layout);
     if captured
         && frame_ref.vector == u64::from(TIMER_VECTOR)
         && PREEMPTION_TIMER_PHASE.load(Ordering::Acquire)
@@ -876,10 +990,9 @@ mod tests {
             offset_of!(KernelInterruptFrame, rflags),
             offset_of!(KernelInterruptFrame, saved_rsp),
             offset_of!(KernelInterruptFrame, saved_ss),
-            offset_of!(KernelInterruptFrame, hardware_alignment),
         ];
         assert_eq!(offsets, core::array::from_fn(|field| field * 8));
-        assert_eq!(size_of::<KernelInterruptFrame>(), 23 * 8);
+        assert_eq!(size_of::<KernelInterruptFrame>(), 22 * 8);
         assert_eq!(core::mem::align_of::<KernelInterruptFrame>(), 8);
     }
 
@@ -951,7 +1064,6 @@ mod tests {
             rflags: 2,
             saved_rsp: 0,
             saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
-            hardware_alignment: 0,
         };
         frame.saved_rsp = core::ptr::from_ref(&frame) as u64 + KernelInterruptFrame::SIZE;
         assert!(frame.valid());
@@ -993,7 +1105,6 @@ mod tests {
             rflags: 2,
             saved_rsp: 0,
             saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
-            hardware_alignment: 0,
         };
         frame.saved_rsp = core::ptr::from_ref(&frame) as u64 + KernelInterruptFrame::SIZE;
         let expected_rsp = frame.saved_rsp;
@@ -1017,7 +1128,11 @@ mod tests {
         let id = TaskId::new(6, 3).unwrap();
         publish_task_stack(id, 0x20_000, 0x21_000).unwrap();
         assert_eq!(
-            validate_frame_stack(0x20_000, 0x20_000 + KernelInterruptFrame::SIZE),
+            validate_frame_stack(
+                0x20_000,
+                0x20_000 + KernelInterruptFrame::SIZE,
+                Ring0FrameLayout::Aligned,
+            ),
             Ok(PublishedStackInfo {
                 task_id: id,
                 start: 0x20_000,
@@ -1025,10 +1140,79 @@ mod tests {
             })
         );
         assert_eq!(
-            validate_frame_stack(0x20_f80, 0x20_f80),
+            validate_frame_stack(0x20_f80, 0x20_f80, Ring0FrameLayout::Aligned),
+            Err(AttributionError::FrameOutsideStack)
+        );
+        assert_eq!(
+            validate_frame_stack(
+                0x20_f70,
+                0x20_f70 + KernelInterruptFrame::SIZE + 8,
+                Ring0FrameLayout::PaddedByEight,
+            ),
+            Err(AttributionError::FrameOutsideStack)
+        );
+        assert_eq!(
+            validate_frame_stack(u64::MAX - 7, 0x20_100, Ring0FrameLayout::Aligned,),
             Err(AttributionError::FrameOutsideStack)
         );
         unpublish_task_stack(id.slot());
+    }
+
+    #[test]
+    fn raw_frame_layout_accepts_optional_alignment_gap_without_changing_pointer() {
+        let mut frame = KernelInterruptFrame {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            vector: u64::from(TIMER_VECTOR),
+            error_code: 0,
+            rip: 0x2000,
+            cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
+            rflags: 2,
+            saved_rsp: 0,
+            saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
+        };
+        let raw = core::ptr::from_ref(&frame) as u64;
+        frame.saved_rsp = raw + KernelInterruptFrame::SIZE + 8;
+        let (saved_rsp, layout) = frame.validate_with_layout(raw).unwrap();
+        assert_eq!(saved_rsp, frame.saved_rsp);
+        assert_eq!(layout, Ring0FrameLayout::PaddedByEight);
+        assert_eq!(layout.gap_size(), 8);
+        assert_eq!(
+            layout.footprint_size(),
+            KernelInterruptFrame::MAX_FOOTPRINT_SIZE
+        );
+        assert_eq!(raw, core::ptr::from_ref(&frame) as u64);
+        for (gap, expected) in [
+            (0_u64, Ring0FrameLayout::Aligned),
+            (4_u64, Ring0FrameLayout::PaddedByFour),
+            (8_u64, Ring0FrameLayout::PaddedByEight),
+            (12_u64, Ring0FrameLayout::PaddedByTwelve),
+        ] {
+            frame.saved_rsp = raw + KernelInterruptFrame::SIZE + gap;
+            assert_eq!(frame.validate_with_layout(raw).unwrap().1, expected);
+        }
+        frame.saved_rsp = raw + KernelInterruptFrame::SIZE + 16;
+        assert_eq!(
+            frame.validate_with_layout(raw),
+            Err(FrameValidationError::SavedRspMismatch)
+        );
+        assert_eq!(
+            frame.validate_with_layout(u64::MAX - 7),
+            Err(FrameValidationError::NoncanonicalFrame)
+        );
     }
 
     #[test]

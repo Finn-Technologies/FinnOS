@@ -24,7 +24,8 @@ mapped permissions. No ordinary Rust reference aliases the APIC register page.
 # Interrupt-context unsafe boundary
 
 The assembly entry is the only live-frame boundary: it saves/restores all GPRs,
-validates the canonical 184-byte frame and saved RSP/SS tail, and finishes with
+validates the canonical 176-byte raw frame plus bounded 0/4/8/12-byte slack and
+saved RSP/SS tail, and finishes with
 `iretq`. Snapshot reads reject interrupt context, mask IF only around the fixed
 copy, and restore the prior IF state; phase tokens freeze the first matching
 vector/task capture so unrelated interrupts cannot overwrite evidence. The

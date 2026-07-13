@@ -132,23 +132,35 @@ struct Runtime {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StackRollbackState {
+    Missing,
+    Reclaimed,
+    Retained,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SpawnRollbackReport {
     publication_inactive: bool,
-    stack_reclaimed: bool,
-    stack_retained: bool,
+    stack: StackRollbackState,
     policy_aborted: bool,
     slot_empty: bool,
 }
 
 impl SpawnRollbackReport {
-    fn is_consistent(self) -> bool {
+    const fn is_consistent(self) -> bool {
         if !self.publication_inactive {
             return false;
         }
         if self.slot_empty {
-            self.stack_reclaimed && self.policy_aborted && !self.stack_retained
+            matches!(self.stack, StackRollbackState::Reclaimed) && self.policy_aborted
         } else {
-            !self.policy_aborted && (self.stack_retained || !self.stack_reclaimed)
+            !self.policy_aborted
+                && matches!(
+                    self.stack,
+                    StackRollbackState::Missing
+                        | StackRollbackState::Reclaimed
+                        | StackRollbackState::Retained
+                )
         }
     }
 }
@@ -316,7 +328,7 @@ fn rollback_initialization(
     }
 }
 
-fn initialization_cleanup_result(
+const fn initialization_cleanup_result(
     original: RollbackCause,
     cleanup: Result<(), TaskStackError>,
 ) -> SchedulerError {
@@ -366,8 +378,7 @@ fn rollback_spawn_publication(
             },
             report: SpawnRollbackReport {
                 publication_inactive,
-                stack_reclaimed: false,
-                stack_retained: false,
+                stack: StackRollbackState::Missing,
                 policy_aborted: false,
                 slot_empty: false,
             },
@@ -385,8 +396,7 @@ fn rollback_spawn_publication(
                 error: SchedulerError::Publication(original),
                 report: SpawnRollbackReport {
                     publication_inactive,
-                    stack_reclaimed: true,
-                    stack_retained: false,
+                    stack: StackRollbackState::Reclaimed,
                     policy_aborted: true,
                     slot_empty: true,
                 },
@@ -417,8 +427,7 @@ fn rollback_spawn_publication(
             },
             report: SpawnRollbackReport {
                 publication_inactive,
-                stack_reclaimed: true,
-                stack_retained: true,
+                stack: StackRollbackState::Reclaimed,
                 policy_aborted: false,
                 slot_empty: false,
             },
@@ -433,8 +442,7 @@ fn rollback_spawn_publication(
         },
         report: SpawnRollbackReport {
             publication_inactive,
-            stack_reclaimed: false,
-            stack_retained: true,
+            stack: StackRollbackState::Retained,
             policy_aborted: false,
             slot_empty: false,
         },
@@ -1032,22 +1040,19 @@ mod tests {
         let cases = [
             SpawnRollbackReport {
                 publication_inactive: true,
-                stack_reclaimed: true,
-                stack_retained: false,
+                stack: StackRollbackState::Reclaimed,
                 policy_aborted: true,
                 slot_empty: true,
             },
             SpawnRollbackReport {
                 publication_inactive: true,
-                stack_reclaimed: false,
-                stack_retained: true,
+                stack: StackRollbackState::Retained,
                 policy_aborted: false,
                 slot_empty: false,
             },
             SpawnRollbackReport {
                 publication_inactive: true,
-                stack_reclaimed: true,
-                stack_retained: true,
+                stack: StackRollbackState::Reclaimed,
                 policy_aborted: false,
                 slot_empty: false,
             },
@@ -1056,8 +1061,7 @@ mod tests {
         assert!(
             !SpawnRollbackReport {
                 publication_inactive: true,
-                stack_reclaimed: true,
-                stack_retained: true,
+                stack: StackRollbackState::Reclaimed,
                 policy_aborted: true,
                 slot_empty: true,
             }

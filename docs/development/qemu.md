@@ -37,7 +37,8 @@ synthetic clock is used.
 
 Run `./tools/finn test-preemption-context` to exercise the real 0x41 software
 interrupt, real APIC timer delivery, bootstrap/worker/idle stack attribution,
-full-GPR preservation, the 184-byte saved-RSP/SS frame tail, phase-frozen
+full-GPR preservation, the 176-byte raw frame plus bounded 0/4/8/12-byte slack,
+phase-frozen
 snapshots, and deferred request behavior. The validator requires status 33,
 ordered markers, exact pre/saved/post RSP equality, complete-frame evidence,
 unchanged CR3, and no task switch from the timer handler.

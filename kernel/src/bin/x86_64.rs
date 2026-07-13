@@ -659,13 +659,13 @@ fn run_preemption_context_test(
     use finn_kernel::arch::x86_64::{apic, interrupts, paging, timer};
     use finn_kernel::preemption::{self, PreemptionGuard};
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:BEGIN\n");
-    if core::mem::size_of::<finn_kernel::arch::x86_64::interrupts::KernelInterruptFrame>() != 184
+    if core::mem::size_of::<finn_kernel::arch::x86_64::interrupts::KernelInterruptFrame>() != 176
         || core::mem::align_of::<finn_kernel::arch::x86_64::interrupts::KernelInterruptFrame>() != 8
     {
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:FRAME_SIZE=184\nFINNOS:PREEMPT:FRAME_PREFIX_SIZE=160\nFINNOS:PREEMPT:FRAME_IRET_SIZE=176\nFINNOS:PREEMPT:FRAME_FOOTPRINT_SIZE=184\nFINNOS:TEST:PREEMPTION_CONTEXT:FRAME_LAYOUT_OK\n"
+        "FINNOS:PREEMPT:FRAME_SIZE=176\nFINNOS:PREEMPT:FRAME_PREFIX_SIZE=136\nFINNOS:PREEMPT:FRAME_IRET_SIZE=176\nFINNOS:PREEMPT:FRAME_FOOTPRINT_SIZE=188\nFINNOS:TEST:PREEMPTION_CONTEXT:FRAME_LAYOUT_OK\n"
     );
     let bootstrap_id = scheduler::current_task().unwrap_or_else(|_| failure());
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_BEGIN\n");
@@ -744,9 +744,10 @@ fn run_preemption_context_test(
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:SOFTWARE_FRAME={:#x}\nFINNOS:PREEMPT:SOFTWARE_RETURN_FRAME={:#x}\nFINNOS:PREEMPT:SOFTWARE_VECTOR=0x41\nFINNOS:PREEMPT:SOFTWARE_CS={:#x}\nFINNOS:PREEMPT:SOFTWARE_RFLAGS={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_RIP={:#x}\nFINNOS:PREEMPT:SOFTWARE_EXPECTED_RIP={:#x}\nFINNOS:PREEMPT:SOFTWARE_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_EXPECTED_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_POST_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_SS={:#x}\nFINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:ALL_GPRS_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RIP_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RSP_OK\n",
+        "FINNOS:PREEMPT:SOFTWARE_FRAME={:#x}\nFINNOS:PREEMPT:SOFTWARE_RETURN_FRAME={:#x}\nFINNOS:PREEMPT:SOFTWARE_LAYOUT={}\nFINNOS:PREEMPT:SOFTWARE_VECTOR=0x41\nFINNOS:PREEMPT:SOFTWARE_CS={:#x}\nFINNOS:PREEMPT:SOFTWARE_RFLAGS={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_RIP={:#x}\nFINNOS:PREEMPT:SOFTWARE_EXPECTED_RIP={:#x}\nFINNOS:PREEMPT:SOFTWARE_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_EXPECTED_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_POST_RSP={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:SOFTWARE_SAVED_SS={:#x}\nFINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:ALL_GPRS_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RIP_OK\nFINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RSP_OK\n",
         software.frame_pointer,
         software.returned_frame_pointer,
+        software.layout.gap_size(),
         software.cs,
         software.rflags,
         software.rip,
@@ -815,9 +816,10 @@ fn run_preemption_context_test(
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:TIMER_FRAME={:#x}\nFINNOS:PREEMPT:TIMER_RETURN_FRAME={:#x}\nFINNOS:PREEMPT:TIMER_VECTOR=0x40\nFINNOS:PREEMPT:TIMER_CS={:#x}\nFINNOS:PREEMPT:TIMER_RFLAGS={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_RIP={:#x}\nFINNOS:PREEMPT:TIMER_LOOP_START={:#x}\nFINNOS:PREEMPT:TIMER_LOOP_END={:#x}\nFINNOS:PREEMPT:TIMER_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:TIMER_EXPECTED_RSP={:#x}\nFINNOS:PREEMPT:TIMER_POST_RSP={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_SS={:#x}\nFINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_OK\n",
+        "FINNOS:PREEMPT:TIMER_FRAME={:#x}\nFINNOS:PREEMPT:TIMER_RETURN_FRAME={:#x}\nFINNOS:PREEMPT:TIMER_LAYOUT={}\nFINNOS:PREEMPT:TIMER_VECTOR=0x40\nFINNOS:PREEMPT:TIMER_CS={:#x}\nFINNOS:PREEMPT:TIMER_RFLAGS={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_RIP={:#x}\nFINNOS:PREEMPT:TIMER_LOOP_START={:#x}\nFINNOS:PREEMPT:TIMER_LOOP_END={:#x}\nFINNOS:PREEMPT:TIMER_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:TIMER_EXPECTED_RSP={:#x}\nFINNOS:PREEMPT:TIMER_POST_RSP={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:TIMER_SAVED_SS={:#x}\nFINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_OK\n",
         timer_snapshot.frame_pointer,
         timer_snapshot.returned_frame_pointer,
+        timer_snapshot.layout.gap_size(),
         timer_snapshot.cs,
         timer_snapshot.rflags,
         timer_snapshot.rip,
@@ -852,8 +854,9 @@ fn run_preemption_context_test(
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:IDLE_FRAME={:#x}\nFINNOS:PREEMPT:IDLE_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:IDLE_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:IDLE_SAVED_SS={:#x}\nFINNOS:PREEMPT:TEST_IDLE_SLOT={}\nFINNOS:PREEMPT:TEST_IDLE_GENERATION={}\nFINNOS:TEST:PREEMPTION_CONTEXT:IDLE_ATTRIBUTION_OK\n",
+        "FINNOS:PREEMPT:IDLE_FRAME={:#x}\nFINNOS:PREEMPT:IDLE_LAYOUT={}\nFINNOS:PREEMPT:IDLE_INTERRUPTED_RSP={:#x}\nFINNOS:PREEMPT:IDLE_SAVED_RSP_FIELD={:#x}\nFINNOS:PREEMPT:IDLE_SAVED_SS={:#x}\nFINNOS:PREEMPT:TEST_IDLE_SLOT={}\nFINNOS:PREEMPT:TEST_IDLE_GENERATION={}\nFINNOS:TEST:PREEMPTION_CONTEXT:IDLE_ATTRIBUTION_OK\n",
         idle_snapshot.frame_pointer,
+        idle_snapshot.layout.gap_size(),
         idle_snapshot.interrupted_rsp,
         idle_snapshot.saved_rsp_field_address,
         idle_snapshot.saved_ss,
@@ -980,8 +983,9 @@ fn preemption_worker() {
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:WORKER_SOFTWARE_FRAME={:#x}\nFINNOS:PREEMPT:WORKER_SOFTWARE_TASK_SLOT={}\nFINNOS:PREEMPT:WORKER_SOFTWARE_GENERATION={}\nFINNOS:PREEMPT:WORKER_SOFTWARE_RSP={:#x}\nFINNOS:PREEMPT:WORKER_SOFTWARE_SAVED_SS={:#x}\n",
+        "FINNOS:PREEMPT:WORKER_SOFTWARE_FRAME={:#x}\nFINNOS:PREEMPT:WORKER_SOFTWARE_LAYOUT={}\nFINNOS:PREEMPT:WORKER_SOFTWARE_TASK_SLOT={}\nFINNOS:PREEMPT:WORKER_SOFTWARE_GENERATION={}\nFINNOS:PREEMPT:WORKER_SOFTWARE_RSP={:#x}\nFINNOS:PREEMPT:WORKER_SOFTWARE_SAVED_SS={:#x}\n",
         software_snapshot.frame_pointer,
+        software_snapshot.layout.gap_size(),
         software_snapshot.task_id.slot(),
         software_snapshot.task_id.generation(),
         software_snapshot.interrupted_rsp,
@@ -996,8 +1000,9 @@ fn preemption_worker() {
         failure();
     }
     finn_kernel::serial_log!(
-        "FINNOS:PREEMPT:WORKER_TIMER_FRAME={:#x}\nFINNOS:PREEMPT:WORKER_TIMER_TASK_SLOT={}\nFINNOS:PREEMPT:WORKER_TIMER_GENERATION={}\nFINNOS:PREEMPT:WORKER_TIMER_RSP={:#x}\nFINNOS:PREEMPT:WORKER_TIMER_SAVED_SS={:#x}\n",
+        "FINNOS:PREEMPT:WORKER_TIMER_FRAME={:#x}\nFINNOS:PREEMPT:WORKER_TIMER_LAYOUT={}\nFINNOS:PREEMPT:WORKER_TIMER_TASK_SLOT={}\nFINNOS:PREEMPT:WORKER_TIMER_GENERATION={}\nFINNOS:PREEMPT:WORKER_TIMER_RSP={:#x}\nFINNOS:PREEMPT:WORKER_TIMER_SAVED_SS={:#x}\n",
         timer_snapshot.frame_pointer,
+        timer_snapshot.layout.gap_size(),
         timer_snapshot.task_id.slot(),
         timer_snapshot.task_id.generation(),
         timer_snapshot.interrupted_rsp,

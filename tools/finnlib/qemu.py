@@ -159,6 +159,10 @@ TIMER_MARKERS = MARKERS + (
 def validate_timer(status: int, output: str) -> list[str]:
     errors: list[str] = []
     if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    if status != 33 and "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_OK" in output and "FINNOS:TEST:TIMER_INTERRUPTS:PASS" not in output:
+        errors.append("timer test timed out after partial timer markers")
+    if status != 33 and "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_BEGIN" in output and "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR" not in output:
+        errors.append("missing timer-frame error marker on failed timer phase")
     positions = [output.find(marker) for marker in TIMER_MARKERS]
     if any(position < 0 for position in positions): errors.append("missing timer marker(s)")
     if positions != sorted(position for position in positions if position >= 0): errors.append("timer markers are out of order")
@@ -245,6 +249,7 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
             errors.append(f"expected exactly one marker: {marker}")
     required = [
         "FRAME_SIZE", "FRAME_PREFIX_SIZE", "FRAME_IRET_SIZE", "FRAME_FOOTPRINT_SIZE",
+        "SOFTWARE_LAYOUT", "TIMER_LAYOUT", "IDLE_LAYOUT", "WORKER_SOFTWARE_LAYOUT", "WORKER_TIMER_LAYOUT",
         "SOFTWARE_FRAME", "SOFTWARE_RETURN_FRAME", "SOFTWARE_VECTOR", "SOFTWARE_CS", "SOFTWARE_RFLAGS",
         "SOFTWARE_SAVED_RIP", "SOFTWARE_EXPECTED_RIP", "SOFTWARE_INTERRUPTED_RSP", "SOFTWARE_EXPECTED_RSP",
         "SOFTWARE_POST_RSP", "SOFTWARE_SAVED_RSP_FIELD", "SOFTWARE_SAVED_SS",
@@ -276,8 +281,11 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
             values[key] = value
         except ValueError:
             errors.append(f"invalid numeric field {key}")
-    if values.get("FRAME_SIZE") != 184 or values.get("FRAME_PREFIX_SIZE") != 160 or values.get("FRAME_IRET_SIZE") != 176 or values.get("FRAME_FOOTPRINT_SIZE") != 184:
+    if values.get("FRAME_SIZE") != 176 or values.get("FRAME_PREFIX_SIZE") != 136 or values.get("FRAME_IRET_SIZE") != 176 or values.get("FRAME_FOOTPRINT_SIZE") != 188:
         errors.append("invalid complete frame sizes")
+    for key in ("SOFTWARE_LAYOUT", "TIMER_LAYOUT", "IDLE_LAYOUT", "WORKER_SOFTWARE_LAYOUT", "WORKER_TIMER_LAYOUT"):
+        if values.get(key) not in (0, 4, 8, 12):
+            errors.append(f"invalid frame layout gap {key}")
     if values.get("SOFTWARE_FRAME") != values.get("SOFTWARE_RETURN_FRAME"):
         errors.append("software frame pointer changed")
     if values.get("SOFTWARE_VECTOR") != 0x41 or values.get("SOFTWARE_CS") != 0x8 or values.get("SOFTWARE_SAVED_SS") != 0x10 or values.get("SOFTWARE_RFLAGS", 0) & 2 == 0:
@@ -286,7 +294,9 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
         errors.append("software RIP mismatch")
     if not (values.get("SOFTWARE_INTERRUPTED_RSP") == values.get("SOFTWARE_EXPECTED_RSP") == values.get("SOFTWARE_POST_RSP")):
         errors.append("software RSP mismatch")
-    if values.get("SOFTWARE_SAVED_RSP_FIELD") != values.get("SOFTWARE_FRAME", 0) + 160 or values.get("SOFTWARE_SAVED_RSP_FIELD") != values.get("SOFTWARE_INTERRUPTED_RSP") - 0x18:
+    if values.get("SOFTWARE_INTERRUPTED_RSP") != values.get("SOFTWARE_FRAME", 0) + 176 + values.get("SOFTWARE_LAYOUT", 0):
+        errors.append("software raw-frame footprint mismatch")
+    if values.get("SOFTWARE_SAVED_RSP_FIELD") != values.get("SOFTWARE_FRAME", 0) + 160 or values.get("SOFTWARE_SAVED_RSP_FIELD") != values.get("SOFTWARE_INTERRUPTED_RSP") - 0x10 - values.get("SOFTWARE_LAYOUT", 0):
         errors.append("software saved-RSP field mismatch")
     if values.get("TIMER_FRAME") != values.get("TIMER_RETURN_FRAME"):
         errors.append("timer frame pointer changed")
@@ -296,8 +306,14 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
         errors.append("timer RIP is outside spin loop")
     if not (values.get("TIMER_INTERRUPTED_RSP") == values.get("TIMER_EXPECTED_RSP") == values.get("TIMER_POST_RSP")):
         errors.append("timer RSP mismatch")
-    if values.get("TIMER_SAVED_RSP_FIELD") != values.get("TIMER_FRAME", 0) + 160 or values.get("TIMER_SAVED_RSP_FIELD") != values.get("TIMER_INTERRUPTED_RSP", 0) - 0x18:
+    if values.get("TIMER_INTERRUPTED_RSP") != values.get("TIMER_FRAME", 0) + 176 + values.get("TIMER_LAYOUT", 0):
+        errors.append("timer raw-frame footprint mismatch")
+    if values.get("TIMER_SAVED_RSP_FIELD") != values.get("TIMER_FRAME", 0) + 160 or values.get("TIMER_SAVED_RSP_FIELD") != values.get("TIMER_INTERRUPTED_RSP", 0) - 0x10 - values.get("TIMER_LAYOUT", 0):
         errors.append("timer saved-RSP field mismatch")
+    if values.get("IDLE_INTERRUPTED_RSP") != values.get("IDLE_FRAME", 0) + 176 + values.get("IDLE_LAYOUT", 0):
+        errors.append("idle raw-frame footprint mismatch")
+    if values.get("IDLE_SAVED_RSP_FIELD") != values.get("IDLE_FRAME", 0) + 160 or values.get("IDLE_SAVED_RSP_FIELD") != values.get("IDLE_INTERRUPTED_RSP", 0) - 0x10 - values.get("IDLE_LAYOUT", 0):
+        errors.append("idle saved-RSP field mismatch")
     if values.get("BOOTSTRAP_SLOT") != 0 or values.get("BOOTSTRAP_GENERATION", 0) == 0 or values.get("WORKER_SLOT", 0) < 2 or values.get("WORKER_GENERATION", 0) == 0 or values.get("IDLE_SLOT") != 1 or values.get("IDLE_GENERATION", 0) == 0:
         errors.append("invalid task identities")
     if (values.get("TEST_IDLE_SLOT"), values.get("TEST_IDLE_GENERATION")) != (values.get("IDLE_SLOT"), values.get("IDLE_GENERATION")):

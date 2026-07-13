@@ -1,17 +1,19 @@
 # Preemption-ready interrupt contexts
 
-The x86-64 external interrupt entry builds a `repr(C)` 184-byte resumable frame.
-Its 160-byte saved-register/software prefix contains all fifteen general-purpose
-registers, vector, synthetic error code, RIP, CS, and RFLAGS. QEMU's current
-long-mode ring-0/IST-0 delivery supplies a hardware tail at offsets `+160`
-(saved RSP) and `+168` (saved SS), followed by an eight-byte alignment slot;
-the `iretq` fields occupy through `+176`. The saved RSP value—not a slot
-address—is the exact pre-interrupt RSP, and the current contract requires
-`frame_pointer + 184 == saved_rsp`. The kernel data selector `0x10` is
-validated as saved SS. Future CPL3 or nonzero-IST entries require a separate
-frame contract. This is the measured and integration-tested FinnOS QEMU
-ring-0/IST-0 contract, not a claim about the system-programming volume of the
-AMD64 manual.
+The x86-64 external interrupt entry builds a raw `repr(C)` 176-byte resumable
+frame. Its 136-byte saved-register/software prefix contains all fifteen
+general-purpose registers, vector, synthetic error code, RIP, CS, and RFLAGS;
+the 40-byte raw return tail contains saved RSP and saved SS through the final
+`iretq` field. QEMU's measured ring-0/IST-0 delivery permits either no gap or
+bounded four-state alignment slack of 0, 4, 8, or 12 bytes after that raw
+frame, so the attributed footprint is 176 through 188 bytes. The saved RSP
+value—not a slot address—is the exact pre-interrupt RSP, and validation accepts
+only those measured relationships. The dispatcher returns the raw pointer
+unchanged.
+The kernel data selector `0x10` is validated as saved SS. Future CPL3 or
+nonzero-IST entries require a separate frame contract. This is the measured
+and integration-tested FinnOS QEMU ring-0/IST-0 contract, not a claim about
+the system-programming volume of the AMD64 manual.
 
 The Rust dispatcher receives a mutable complete frame and returns the frame to restore.
 Today it always returns the original pointer, so timer delivery resumes the

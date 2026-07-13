@@ -3,9 +3,10 @@
 ## Decision
 
 Use a complete, fixed ring-0 interrupt-return frame and dispatcher-selected
-return pointer. The current QEMU contract is a 160-byte prefix plus saved RSP,
-saved SS, and one alignment slot (184-byte footprint, with `iretq` fields through
-176). Keep it separate from cooperative `TaskContext`, and introduce
+return pointer. The current QEMU contract is a 136-byte prefix plus a 40-byte
+raw `iretq` tail (176 bytes), followed by measured 0/4/8/12-byte alignment
+slack (188-byte maximum footprint). Keep it separate from cooperative `TaskContext`,
+and introduce
 allocation-free nested preemption-disable state with deferred requests.
 
 ## Consequences
