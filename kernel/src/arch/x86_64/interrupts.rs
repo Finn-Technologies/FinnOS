@@ -34,15 +34,17 @@ struct PublishedTaskStack {
     end: AtomicU64,
 }
 impl PublishedTaskStack {
-    const EMPTY: Self = Self {
-        active: AtomicBool::new(false),
-        generation: AtomicU32::new(0),
-        start: AtomicU64::new(0),
-        end: AtomicU64::new(0),
-    };
+    const fn empty() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            generation: AtomicU32::new(0),
+            start: AtomicU64::new(0),
+            end: AtomicU64::new(0),
+        }
+    }
 }
 static PUBLISHED_STACKS: [PublishedTaskStack; MAX_PUBLISHED_STACKS] =
-    [const { PublishedTaskStack::EMPTY }; MAX_PUBLISHED_STACKS];
+    [const { PublishedTaskStack::empty() }; MAX_PUBLISHED_STACKS];
 
 /// Errors from stack-derived task attribution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -167,6 +169,11 @@ pub static PREEMPTION_TIMER_PHASE: AtomicBool = AtomicBool::new(false);
 pub static PREEMPTION_TIMER_OBSERVED: AtomicBool = AtomicBool::new(false);
 
 /// Publishes one task stack with release ordering.
+///
+/// # Errors
+///
+/// Returns [`AttributionError::InvalidGeneration`] when the task identity or
+/// stack bounds cannot be represented by the publication table.
 pub fn publish_task_stack(id: TaskId, start: u64, end: u64) -> Result<(), AttributionError> {
     if id.generation() == 0 || id.slot() >= MAX_PUBLISHED_STACKS || start >= end {
         return Err(AttributionError::InvalidGeneration);
@@ -186,13 +193,18 @@ pub fn unpublish_task_stack(slot_index: usize) {
     }
 }
 /// Attributes an interrupted stack pointer using only atomic publications.
+///
+/// # Errors
+///
+/// Returns an [`AttributionError`] when the pointer is non-canonical, no
+/// publication matches, publications overlap or change while being read, or
+/// the mirrored task identity is invalid.
 pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, AttributionError> {
     if !super::paging::is_canonical(interrupted_rsp) {
         return Err(AttributionError::NoncanonicalRsp);
     }
     let mut found = None;
-    for slot_index in 0..MAX_PUBLISHED_STACKS {
-        let slot = &PUBLISHED_STACKS[slot_index];
+    for (slot_index, slot) in PUBLISHED_STACKS.iter().enumerate() {
         let active = slot.active.load(Ordering::Acquire);
         if !active {
             continue;
@@ -208,7 +220,9 @@ pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, Attribu
             return Err(AttributionError::UnstablePublication);
         }
         if start < interrupted_rsp && interrupted_rsp <= end {
-            let id = TaskId::new(slot_index as u8, generation)
+            let slot_index =
+                u8::try_from(slot_index).map_err(|_| AttributionError::InvalidGeneration)?;
+            let id = TaskId::new(slot_index, generation)
                 .map_err(|_| AttributionError::InvalidGeneration)?;
             if found.replace(id).is_some() {
                 return Err(AttributionError::MultipleMatch);
@@ -218,7 +232,7 @@ pub fn attribute_interrupted_rsp(interrupted_rsp: u64) -> Result<TaskId, Attribu
     found.ok_or(AttributionError::NoMatch)
 }
 
-fn save_registers(frame: &KernelInterruptFrame) -> SavedGeneralRegisters {
+const fn save_registers(frame: &KernelInterruptFrame) -> SavedGeneralRegisters {
     SavedGeneralRegisters {
         rax: frame.rax,
         rbx: frame.rbx,
@@ -246,13 +260,13 @@ fn record_snapshot(frame: &KernelInterruptFrame, returned: *mut KernelInterruptF
     unsafe {
         *SNAPSHOT.0.get() = InterruptedTaskSnapshot {
             task_id: id,
-            frame_pointer: frame as *const _ as u64,
+            frame_pointer: core::ptr::from_ref(frame) as u64,
             returned_frame_pointer: returned as u64,
             interrupted_rsp: frame.interrupted_rsp(),
             rip: frame.rip,
             cs: frame.cs,
             rflags: frame.rflags,
-            vector: frame.vector as u8,
+            vector: u8::try_from(frame.vector).unwrap_or(u8::MAX),
             sequence,
             registers: save_registers(frame),
         };
@@ -265,7 +279,7 @@ fn record_snapshot(frame: &KernelInterruptFrame, returned: *mut KernelInterruptF
 pub fn snapshot() -> Option<InterruptedTaskSnapshot> {
     for _ in 0..3 {
         let before = SNAPSHOT_SEQUENCE.load(Ordering::Acquire);
-        if before == 0 || before % 2 != 0 {
+        if before == 0 || !before.is_multiple_of(2) {
             continue;
         }
         // SAFETY: sequence validation rejects a concurrent interrupt write.
@@ -345,7 +359,7 @@ impl KernelInterruptFrame {
     /// Returns the interrupted CPL0 stack pointer. CPL0/IST0 does not push RSP/SS.
     #[must_use]
     pub fn interrupted_rsp(&self) -> u64 {
-        (self as *const Self as u64)
+        (core::ptr::from_ref(self) as u64)
             .checked_add(Self::SIZE)
             .unwrap_or(0)
     }
@@ -357,8 +371,8 @@ impl KernelInterruptFrame {
             vector,
             Some(TIMER_VECTOR | SPURIOUS_VECTOR | PREEMPTION_TEST_VECTOR)
         ) && self.error_code == 0
-            && self.cs == super::gdt::KERNEL_CODE_SELECTOR as u64
-            && self.cs & 3 == 0
+            && self.cs == u64::from(super::gdt::KERNEL_CODE_SELECTOR)
+            && self.cs.trailing_zeros() >= 2
             && super::paging::is_canonical(self.rip)
             && super::paging::is_canonical(self.interrupted_rsp())
             && self.rflags & 2 != 0
@@ -514,9 +528,8 @@ extern "C" fn rust_interrupt_dispatch(
     if !frame_ref.valid() {
         return core::ptr::null_mut();
     }
-    let task_id = match attribute_interrupted_rsp(frame_ref.interrupted_rsp()) {
-        Ok(id) => id,
-        Err(_) => return core::ptr::null_mut(),
+    let Ok(task_id) = attribute_interrupted_rsp(frame_ref.interrupted_rsp()) else {
+        return core::ptr::null_mut();
     };
     match u8::try_from(frame_ref.vector).unwrap_or(u8::MAX) {
         TIMER_VECTOR => timer::handle_tick(),
@@ -639,7 +652,7 @@ mod tests {
             vector: u64::from(TIMER_VECTOR),
             error_code: 0,
             rip: 0x1000,
-            cs: u64::from(super::gdt::KERNEL_CODE_SELECTOR),
+            cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
             rflags: 2,
         };
         assert!(frame.valid());
