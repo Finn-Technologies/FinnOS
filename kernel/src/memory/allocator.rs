@@ -184,7 +184,7 @@ impl EarlyPhysicalPageAllocator {
     }
 
     /// Copies bounded allocator state without constructing a large stack temporary.
-    #[cfg(target_os = "none")]
+    #[allow(dead_code)]
     pub(crate) const fn copy_state_from(&mut self, source: &Self) {
         self.managed.copy_from_slice(&source.managed);
         self.managed_count = source.managed_count;
