@@ -1061,7 +1061,7 @@ mod tests {
         assert!(
             !SpawnRollbackReport {
                 publication_inactive: true,
-                stack: StackRollbackState::Reclaimed,
+                stack: StackRollbackState::Missing,
                 policy_aborted: true,
                 slot_empty: true,
             }

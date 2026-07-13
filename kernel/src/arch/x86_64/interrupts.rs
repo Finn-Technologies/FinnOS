@@ -1146,7 +1146,7 @@ mod tests {
             })
         );
         assert_eq!(
-            validate_frame_stack(0x20_f80, 0x20_f80, Ring0FrameLayout::Aligned),
+            validate_frame_stack(0x20_f80, 0x20_f90, Ring0FrameLayout::Aligned),
             Err(AttributionError::FrameOutsideStack)
         );
         assert_eq!(
@@ -1196,8 +1196,9 @@ mod tests {
         assert_eq!(saved_rsp, frame.saved_rsp);
         assert_eq!(layout, Ring0FrameLayout::PaddedByEight);
         assert_eq!(layout.gap_size(), 8);
+        assert_eq!(layout.footprint_size(), KernelInterruptFrame::SIZE + 8);
         assert_eq!(
-            layout.footprint_size(),
+            Ring0FrameLayout::PaddedByTwelve.footprint_size(),
             KernelInterruptFrame::MAX_FOOTPRINT_SIZE
         );
         assert_eq!(raw, core::ptr::from_ref(&frame) as u64);
