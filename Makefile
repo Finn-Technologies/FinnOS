@@ -1,4 +1,4 @@
-.PHONY: help doctor build check test format format-check lint test-heap test-timer-interrupts
+.PHONY: help doctor build check test format format-check lint test-heap test-timer-interrupts test-cooperative-tasks
 
 help:
 	./tools/finn help
@@ -56,6 +56,9 @@ test-heap:
 
 test-timer-interrupts:
 	./tools/finn test-timer-interrupts
+
+test-cooperative-tasks:
+	./tools/finn test-cooperative-tasks
 
 check-all:
 	./tools/finn check-all

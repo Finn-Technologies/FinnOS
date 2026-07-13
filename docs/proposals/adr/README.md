@@ -17,3 +17,4 @@ An ADR records a decision and its tradeoffs. Statuses are Proposed, Accepted, Re
 - [Boot protocol version 2 for memory map](0009-memory-map-protocol-v2.md)
 - [Bounded early kernel heap](0012-bounded-early-kernel-heap.md)
 - [x86-64 BSP local APIC timer](0013-x86_64-local-apic-timer.md)
+- [Cooperative kernel tasks](0014-cooperative-kernel-tasks.md)

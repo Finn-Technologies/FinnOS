@@ -1,8 +1,72 @@
 import unittest
 
-from tools.finnlib.qemu import HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
+from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
+    def cooperative_log(self):
+        evidence = [f"FINNOS:TASKS:EVENT_{index}={value}" for index, value in enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))]
+        evidence += [
+            "FINNOS:TASKS:EVENT_COUNT=9", "FINNOS:TASKS:A_STACK_START=0x1000", "FINNOS:TASKS:A_STACK_END=0x3000", "FINNOS:TASKS:A_SENTINEL=0x1800",
+            "FINNOS:TASKS:B_STACK_START=0x4000", "FINNOS:TASKS:B_STACK_END=0x6000", "FINNOS:TASKS:B_SENTINEL=0x4800",
+            "FINNOS:TASKS:C_STACK_START=0x7000", "FINNOS:TASKS:C_STACK_END=0x9000", "FINNOS:TASKS:C_SENTINEL=0x7800",
+            "FINNOS:TASKS:IDLE_STACK_START=0xa000", "FINNOS:TASKS:IDLE_STACK_END=0xc000", "FINNOS:TASKS:IDLE_RSP=0xa800",
+            "FINNOS:TASKS:COMPLETED_DELTA=4", "FINNOS:TASKS:EXITED_BEFORE_REAP=4", "FINNOS:TASKS:QUEUE_LENGTH_BEFORE_REAP=0",
+            "FINNOS:TASKS:PHYSICAL_FREE_BASELINE=100", "FINNOS:TASKS:PHYSICAL_FREE_AFTER_REAP=100", "FINNOS:TASKS:MAPPED_BASELINE=50", "FINNOS:TASKS:MAPPED_AFTER_REAP=50",
+            "FINNOS:TASKS:VACANT_BASELINE=6", "FINNOS:TASKS:VACANT_AFTER_REAP=6", "FINNOS:TASKS:REAPED_DELTA=4", "FINNOS:TASKS:REUSED_SLOT=2",
+            "FINNOS:TASKS:OLD_GENERATION=1", "FINNOS:TASKS:NEW_GENERATION=2", "FINNOS:TASKS:STALE_ID_REJECTED=1", "FINNOS:TASKS:REUSE_RUNS=1",
+            "FINNOS:TASKS:IDLE_TICK_DELTA=1", "FINNOS:TASKS:TIMER_START_TICKS=10", "FINNOS:TASKS:TIMER_END_TICKS=12", "FINNOS:TASKS:TICK_DELTA=2",
+            "FINNOS:TASKS:DELIVERY_DELTA=2", "FINNOS:TASKS:EOI_DELTA=2", "FINNOS:TASKS:CR3_BEFORE=0x1000", "FINNOS:TASKS:CR3_AFTER=0x1000", "FINNOS:TASKS:SCHEDULER_ISR_ENTRIES=0",
+        ]
+        return "\n".join(COOPERATIVE_TASK_MARKERS + tuple(evidence))
+
+    def test_cooperative_tasks_complete_sequence(self):
+        self.assertEqual(validate_cooperative_tasks(33, self.cooperative_log()), [])
+
+    def test_cooperative_tasks_rejects_status_events_and_generation(self):
+        self.assertTrue(validate_cooperative_tasks(35, self.cooperative_log()))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log().replace("EVENT_4=22", "EVENT_4=99")))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log().replace("NEW_GENERATION=2", "NEW_GENERATION=1")))
+
+    def test_cooperative_tasks_rejects_missing_marker_and_panic(self):
+        output = self.cooperative_log().replace("FINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK\n", "")
+        self.assertTrue(validate_cooperative_tasks(33, output))
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log() + "\nFINNOS:KERNEL:PANIC"))
+
+    def test_cooperative_tasks_rejects_each_numeric_contract_violation(self):
+        cases = {
+            "duplicate numeric": lambda log: log + "\nFINNOS:TASKS:TICK_DELTA=2",
+            "missing numeric": lambda log: log.replace("FINNOS:TASKS:EOI_DELTA=2\n", ""),
+            "overflow numeric": lambda log: log.replace("CR3_AFTER=0x1000", "CR3_AFTER=0x10000000000000000"),
+            "sentinel range": lambda log: log.replace("A_SENTINEL=0x1800", "A_SENTINEL=0x3000"),
+            "worker overlap": lambda log: log.replace("B_STACK_START=0x4000", "B_STACK_START=0x2000"),
+            "idle overlap": lambda log: log.replace("IDLE_STACK_START=0xa000", "IDLE_STACK_START=0x8000"),
+            "idle rsp": lambda log: log.replace("IDLE_RSP=0xa800", "IDLE_RSP=0xc000"),
+            "completion": lambda log: log.replace("COMPLETED_DELTA=4", "COMPLETED_DELTA=3"),
+            "exited": lambda log: log.replace("EXITED_BEFORE_REAP=4", "EXITED_BEFORE_REAP=3"),
+            "queue": lambda log: log.replace("QUEUE_LENGTH_BEFORE_REAP=0", "QUEUE_LENGTH_BEFORE_REAP=1"),
+            "physical baseline": lambda log: log.replace("PHYSICAL_FREE_AFTER_REAP=100", "PHYSICAL_FREE_AFTER_REAP=99"),
+            "mapped baseline": lambda log: log.replace("MAPPED_AFTER_REAP=50", "MAPPED_AFTER_REAP=49"),
+            "vacant baseline": lambda log: log.replace("VACANT_AFTER_REAP=6", "VACANT_AFTER_REAP=5"),
+            "reaped": lambda log: log.replace("REAPED_DELTA=4", "REAPED_DELTA=3"),
+            "reuse slot": lambda log: log.replace("REUSED_SLOT=2", "REUSED_SLOT=3"),
+            "generation exact": lambda log: log.replace("NEW_GENERATION=2", "NEW_GENERATION=3"),
+            "stale id": lambda log: log.replace("STALE_ID_REJECTED=1", "STALE_ID_REJECTED=0"),
+            "reuse runs": lambda log: log.replace("REUSE_RUNS=1", "REUSE_RUNS=2"),
+            "idle tick": lambda log: log.replace("IDLE_TICK_DELTA=1", "IDLE_TICK_DELTA=0"),
+            "tick delta": lambda log: log.replace("TICK_DELTA=2", "TICK_DELTA=1"),
+            "delivery": lambda log: log.replace("DELIVERY_DELTA=2", "DELIVERY_DELTA=0"),
+            "eoi": lambda log: log.replace("EOI_DELTA=2", "EOI_DELTA=1"),
+            "cr3": lambda log: log.replace("CR3_AFTER=0x1000", "CR3_AFTER=0x2000"),
+            "scheduler isr": lambda log: log.replace("SCHEDULER_ISR_ENTRIES=0", "SCHEDULER_ISR_ENTRIES=1"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name):
+                self.assertTrue(validate_cooperative_tasks(33, mutate(self.cooperative_log())))
+
+    def test_cooperative_tasks_rejects_duplicate_marker(self):
+        marker = "FINNOS:TEST:COOPERATIVE_TASKS:TASK_EXIT_OK"
+        self.assertTrue(validate_cooperative_tasks(33, self.cooperative_log() + "\n" + marker))
+
     def test_markers_in_order(self):
         self.assertEqual(validate_smoke(33, "\n".join(MARKERS)), [])
 

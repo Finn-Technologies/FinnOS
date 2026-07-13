@@ -13,6 +13,7 @@
 ./tools/finn test-page-tables
 ./tools/finn test-heap
 ./tools/finn test-timer-interrupts
+./tools/finn test-cooperative-tasks
 ./tools/finn check-all
 ```
 
@@ -25,3 +26,5 @@ the independent 50 ms PIT frequency window, monotonic ticks, EOI, the spurious
 return path, ABI call alignment, interrupt context, and real heap rejection in
 simulated interrupt context. It never executes `int 0x40`; `int 0xff` is used
 only for the spurious-dispatch test.
+
+`./tools/finn test-cooperative-tasks` uses real guarded worker stacks and validates FIFO order, stack persistence, callee-saved registers, exit, reclamation, stale-ID rejection, idle execution, and timer continuity.

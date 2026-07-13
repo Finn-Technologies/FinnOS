@@ -22,7 +22,7 @@ The project is pursuing a hybrid microkernel direction with typed IPC and explic
 
 ## Repository status
 
-FinnOS currently builds a bootable x86-64 UEFI image for QEMU. Automated tests also verify the BSP xAPIC timer, real periodic interrupt delivery, EOI, monotonic ticks, and interrupt-context heap protection. FinnOS still does not have IOAPIC routing, device IRQs, a scheduler, preemption, user space, drivers, or Peony.
+FinnOS currently builds a bootable x86-64 UEFI image for QEMU. Automated tests verify the BSP xAPIC timer and a bounded cooperative kernel scheduler with guarded stacks, real context switches, task exit, reclamation, and scheduler-backed idle. FinnOS still does not have IOAPIC routing, device IRQs, preemption, user space, drivers, or Peony.
 
 ## Building the current scaffold
 

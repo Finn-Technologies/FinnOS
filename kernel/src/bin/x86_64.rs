@@ -10,10 +10,12 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 #[cfg(feature = "qemu-test-heap")]
 use core::alloc::Layout;
 use core::panic::PanicInfo;
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use finn_boot_protocol::{BOOT_FLAG_FRAMEBUFFER_PRESENT, BOOT_FLAG_MEMORY_MAP_PRESENT, BootInfo};
 use finn_kernel::memory::heap::LockedHeap;
 use finn_kernel::{
-    arch::x86_64::{heap::KernelHeapMapping, paging, qemu},
+    arch::x86_64::{heap::KernelHeapMapping, paging, qemu, scheduler},
     boot_validation::validate_pointer,
     framebuffer::{encode_pixel, pixel_offset},
     memory::{EarlyPhysicalPageAllocator, parse_and_classify},
@@ -21,6 +23,17 @@ use finn_kernel::{
 
 #[global_allocator]
 static GLOBAL_HEAP: LockedHeap = LockedHeap::empty();
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+static COOPERATIVE_EVENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+static mut COOPERATIVE_EVENTS: [u8; 9] = [0; 9];
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+static COOPERATIVE_REUSE_RUNS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+static COOPERATIVE_SENTINELS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+static COOPERATIVE_SENTINEL_CHECKS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 
 #[cfg(feature = "qemu-test-heap")]
 const HEAP_TEST_POINTER_CAPACITY: usize = 1024;
@@ -44,6 +57,70 @@ _start:
     jmp 1b
 "#
 );
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+core::arch::global_asm!(
+    r#"
+    .global finnos_test_callee_saved
+finnos_test_callee_saved:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 8
+    movabs rbx, 0x1122334455667788
+    movabs rbp, 0x8877665544332211
+    movabs r12, 0x13579bdf2468ace0
+    movabs r13, 0x0eca8642fdb97531
+    movabs r14, 0xa5a55a5af0f00f0f
+    movabs r15, 0x5a5aa5a50f0ff0f0
+    call finnos_cooperative_register_yield
+    test rax, rax
+    jz 1f
+    movabs rax, 0x1122334455667788
+    cmp rbx, rax
+    jne 1f
+    movabs rax, 0x8877665544332211
+    cmp rbp, rax
+    jne 1f
+    movabs rax, 0x13579bdf2468ace0
+    cmp r12, rax
+    jne 1f
+    movabs rax, 0x0eca8642fdb97531
+    cmp r13, rax
+    jne 1f
+    movabs rax, 0xa5a55a5af0f00f0f
+    cmp r14, rax
+    jne 1f
+    movabs rax, 0x5a5aa5a50f0ff0f0
+    cmp r15, rax
+    jne 1f
+    mov eax, 1
+    jmp 2f
+1:  xor eax, eax
+2:  add rsp, 8
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+"#
+);
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+unsafe extern "sysv64" {
+    fn finnos_test_callee_saved() -> u64;
+}
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+#[unsafe(no_mangle)]
+extern "sysv64" fn finnos_cooperative_register_yield() -> u64 {
+    u64::from(scheduler::yield_now().is_ok())
+}
 
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
@@ -312,6 +389,37 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     finn_kernel::arch::x86_64::cpu::halt_once();
                 }
                 finn_kernel::serial_log!("FINNOS:KERNEL:TIMER_READY\n");
+                let (bootstrap_id, idle_id) =
+                    match scheduler::initialize(&mut address_space, &mut allocator) {
+                        Ok(ids) => ids,
+                        Err(error) => {
+                            finn_kernel::serial_log!(
+                                "FINNOS:KERNEL:TASK_STACK_ERROR:{:?}\n",
+                                error
+                            );
+                            failure();
+                        }
+                    };
+                scheduler::check_runtime_invariants(&address_space).unwrap_or_else(|_| failure());
+                finn_kernel::serial_log!(
+                    "FINNOS:KERNEL:TASK_STACKS_READY\nFINNOS:KERNEL:SCHEDULER_READY\nFINNOS:TASKS:CAPACITY=8\nFINNOS:TASKS:STACK_SIZE_BYTES=65536\nFINNOS:TASKS:STACK_REGION_BASE=0x0000280000000000\nFINNOS:TASKS:BOOTSTRAP_ID={}:{}\nFINNOS:TASKS:IDLE_ID={}:{}\n",
+                    bootstrap_id.slot(),
+                    bootstrap_id.generation(),
+                    idle_id.slot(),
+                    idle_id.generation(),
+                );
+                #[cfg(feature = "qemu-test-cooperative-tasks")]
+                {
+                    draw(info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_cooperative_task_test(&mut address_space, &mut allocator);
+                }
                 #[cfg(feature = "qemu-test-page-tables")]
                 {
                     draw(info);
@@ -373,10 +481,11 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
     {
         if !finn_kernel::arch::x86_64::cpu::interrupts_enabled()
             || !finn_kernel::arch::x86_64::timer::is_initialized()
+            || scheduler::check_invariants().is_err()
         {
             failure();
         }
-        finn_kernel::arch::x86_64::cpu::interruptible_idle_loop()
+        scheduler::park_bootstrap_and_run_idle()
     }
 }
 
@@ -387,6 +496,282 @@ fn interrupts_disabled() -> bool {
         core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
     }
     flags & (1 << 9) == 0
+}
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+fn cooperative_worker() {
+    let id = scheduler::current_task().unwrap_or_else(|_| failure());
+    if !(2..=4).contains(&id.slot()) {
+        failure();
+    }
+    let pattern = u8::try_from(id.slot())
+        .unwrap_or_else(|_| failure())
+        .wrapping_mul(0x31);
+    let sentinel = [pattern; 1024];
+    let worker_index = id.slot() - 2;
+    COOPERATIVE_SENTINELS[worker_index].store(sentinel.as_ptr() as u64, Ordering::Relaxed);
+    for step in 1..=3_u8 {
+        if id.slot() == 2 && step == 1 {
+            finn_kernel::arch::x86_64::cpu::halt_once();
+        }
+        let index = COOPERATIVE_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+        if index >= 9 || sentinel.iter().any(|byte| *byte != pattern) {
+            failure();
+        }
+        // SAFETY: each worker writes one distinct monotonically assigned event
+        // index on the single BSP; the test reads only after all workers exit.
+        unsafe {
+            COOPERATIVE_EVENTS[index] = (id.slot() as u8 - 1) * 10 + step;
+        }
+        if step != 3 {
+            scheduler::yield_now().unwrap_or_else(|_| failure());
+        }
+        if sentinel.iter().any(|byte| *byte != pattern) {
+            failure();
+        }
+        COOPERATIVE_SENTINEL_CHECKS[worker_index].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+fn cooperative_reuse_worker() {
+    COOPERATIVE_REUSE_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+fn cooperative_register_peer() {}
+
+#[cfg(feature = "qemu-test-cooperative-tasks")]
+fn run_cooperative_task_test(
+    address_space: &mut paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> ! {
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:COOPERATIVE_TASKS:BEGIN\nFINNOS:TEST:COOPERATIVE_TASKS:BOOTSTRAP_OK\n"
+    );
+    let start_ticks = finn_kernel::arch::x86_64::timer::ticks();
+    let start_deliveries = finn_kernel::arch::x86_64::timer::real_deliveries();
+    let start_eois = finn_kernel::arch::x86_64::apic::eoi_count();
+    let cr3_before = paging::current_cr3();
+    let free_baseline = allocator.free_pages();
+    let mapped_baseline = address_space.mapped_pages();
+    let stats_baseline = scheduler::stats().unwrap_or_else(|_| failure());
+    let a = scheduler::spawn(cooperative_worker, address_space, allocator)
+        .unwrap_or_else(|_| failure());
+    let b = scheduler::spawn(cooperative_worker, address_space, allocator)
+        .unwrap_or_else(|_| failure());
+    let c = scheduler::spawn(cooperative_worker, address_space, allocator)
+        .unwrap_or_else(|_| failure());
+    let idle = finn_kernel::task::TaskId::new(1, 1).unwrap_or_else(|_| failure());
+    let a_stack = scheduler::task_diagnostics(a).unwrap_or_else(|_| failure());
+    let b_stack = scheduler::task_diagnostics(b).unwrap_or_else(|_| failure());
+    let c_stack = scheduler::task_diagnostics(c).unwrap_or_else(|_| failure());
+    let idle_stack = scheduler::task_diagnostics(idle).unwrap_or_else(|_| failure());
+    if !(a_stack.stack_end <= b_stack.stack_start
+        && b_stack.stack_end <= c_stack.stack_start
+        && (c_stack.stack_end <= idle_stack.stack_start
+            || idle_stack.stack_end <= a_stack.stack_start))
+    {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:A_STACK_START={:#x}\nFINNOS:TASKS:A_STACK_END={:#x}\nFINNOS:TASKS:B_STACK_START={:#x}\nFINNOS:TASKS:B_STACK_END={:#x}\nFINNOS:TASKS:C_STACK_START={:#x}\nFINNOS:TASKS:C_STACK_END={:#x}\nFINNOS:TASKS:IDLE_STACK_START={:#x}\nFINNOS:TASKS:IDLE_STACK_END={:#x}\nFINNOS:TEST:COOPERATIVE_TASKS:STACKS_OK\nFINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_BEGIN\n",
+        a_stack.stack_start,
+        a_stack.stack_end,
+        b_stack.stack_start,
+        b_stack.stack_end,
+        c_stack.stack_start,
+        c_stack.stack_end,
+        idle_stack.stack_start,
+        idle_stack.stack_end
+    );
+    for _ in 0..3 {
+        scheduler::yield_now().unwrap_or_else(|_| failure());
+    }
+    let expected = [11, 21, 31, 12, 22, 32, 13, 23, 33];
+    if COOPERATIVE_EVENT_COUNT.load(Ordering::Relaxed) != expected.len() {
+        failure();
+    }
+    for (index, value) in expected.iter().enumerate() {
+        // SAFETY: workers have exited and no other code writes the fixed test buffer.
+        let actual = unsafe { COOPERATIVE_EVENTS[index] };
+        finn_kernel::serial_log!("FINNOS:TASKS:EVENT_{index}={actual}\n");
+        if actual != *value {
+            failure();
+        }
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:EVENT_COUNT=9\nFINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_OK\n"
+    );
+    let register_peer = scheduler::spawn(cooperative_register_peer, address_space, allocator)
+        .unwrap_or_else(|_| failure());
+    // SAFETY: the helper preserves its caller's callee-saved registers and
+    // follows the SysV64 stack-alignment contract around the real yield call.
+    if unsafe { finnos_test_callee_saved() } != 1 {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:TEST:COOPERATIVE_TASKS:REGISTER_STATE_OK\n");
+    let sentinels = core::array::from_fn::<_, 3, _>(|index| {
+        COOPERATIVE_SENTINELS[index].load(Ordering::Relaxed)
+    });
+    for (index, (sentinel, stack)) in sentinels
+        .iter()
+        .zip([a_stack, b_stack, c_stack])
+        .enumerate()
+    {
+        if *sentinel < stack.stack_start
+            || *sentinel + 1024 > stack.stack_end
+            || COOPERATIVE_SENTINEL_CHECKS[index].load(Ordering::Relaxed) != 3
+            || sentinels
+                .iter()
+                .enumerate()
+                .any(|(other, value)| other != index && value == sentinel)
+        {
+            failure();
+        }
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:A_SENTINEL={:#x}\nFINNOS:TASKS:B_SENTINEL={:#x}\nFINNOS:TASKS:C_SENTINEL={:#x}\nFINNOS:TEST:COOPERATIVE_TASKS:STACK_ISOLATION_OK\n",
+        sentinels[0],
+        sentinels[1],
+        sentinels[2]
+    );
+    let before_reap = scheduler::stats().unwrap_or_else(|_| failure());
+    if before_reap.completed_task_count - stats_baseline.completed_task_count != 4
+        || before_reap.exited_tasks != 4
+        || before_reap.queue_length != 0
+        || scheduler::current_task()
+            .unwrap_or_else(|_| failure())
+            .slot()
+            != 0
+        || [a, b, c, register_peer].iter().any(|id| {
+            scheduler::task_diagnostics(*id).map_or(true, |diagnostic| {
+                diagnostic.state != finn_kernel::task::TaskState::Exited
+                    || diagnostic.queued
+                    || diagnostic.stack_start == 0
+            })
+        })
+    {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:COMPLETED_DELTA=4\nFINNOS:TASKS:EXITED_BEFORE_REAP=4\nFINNOS:TASKS:QUEUE_LENGTH_BEFORE_REAP=0\nFINNOS:TEST:COOPERATIVE_TASKS:TASK_EXIT_OK\n"
+    );
+    for id in [a, b, c, register_peer] {
+        scheduler::reap(id, address_space, allocator).unwrap_or_else(|_| failure());
+    }
+    if allocator.free_pages() != free_baseline || address_space.mapped_pages() != mapped_baseline {
+        failure();
+    }
+    let after_reap = scheduler::stats().unwrap_or_else(|_| failure());
+    if after_reap.vacant_tasks != stats_baseline.vacant_tasks
+        || after_reap.reaped_task_count - stats_baseline.reaped_task_count != 4
+    {
+        failure();
+    }
+    for stack in [a_stack, b_stack, c_stack] {
+        let mut address = stack.stack_start;
+        while address < stack.stack_end {
+            if address_space
+                .translate(address)
+                .unwrap_or_else(|_| failure())
+                .is_some()
+            {
+                failure();
+            }
+            address += finn_kernel::memory::PAGE_SIZE;
+        }
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:PHYSICAL_FREE_BASELINE={free_baseline}\nFINNOS:TASKS:PHYSICAL_FREE_AFTER_REAP={}\nFINNOS:TASKS:MAPPED_BASELINE={mapped_baseline}\nFINNOS:TASKS:MAPPED_AFTER_REAP={}\nFINNOS:TASKS:VACANT_BASELINE={}\nFINNOS:TASKS:VACANT_AFTER_REAP={}\nFINNOS:TASKS:REAPED_DELTA=4\nFINNOS:TEST:COOPERATIVE_TASKS:STACK_RECLAIM_OK\n",
+        allocator.free_pages(),
+        address_space.mapped_pages(),
+        stats_baseline.vacant_tasks,
+        after_reap.vacant_tasks
+    );
+    let d = scheduler::spawn(cooperative_reuse_worker, address_space, allocator)
+        .unwrap_or_else(|_| failure());
+    if d.slot() != a.slot() || d.generation() == a.generation() {
+        failure();
+    }
+    if scheduler::task_state(a)
+        != Err(scheduler::SchedulerError::Task(
+            finn_kernel::task::TaskError::StaleTaskId,
+        ))
+    {
+        failure();
+    }
+    scheduler::yield_now().unwrap_or_else(|_| failure());
+    if COOPERATIVE_REUSE_RUNS.load(Ordering::Relaxed) != 1 {
+        failure();
+    }
+    scheduler::reap(d, address_space, allocator).unwrap_or_else(|_| failure());
+    if allocator.free_pages() != free_baseline || address_space.mapped_pages() != mapped_baseline {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:REUSED_SLOT={}\nFINNOS:TASKS:OLD_GENERATION={}\nFINNOS:TASKS:NEW_GENERATION={}\nFINNOS:TASKS:STALE_ID_REJECTED=1\nFINNOS:TASKS:REUSE_RUNS=1\nFINNOS:TEST:COOPERATIVE_TASKS:SLOT_REUSE_OK\n",
+        d.slot(),
+        a.generation(),
+        d.generation()
+    );
+    let idle_start_ticks = finn_kernel::arch::x86_64::timer::ticks();
+    let heap_before_idle = GLOBAL_HEAP.stats();
+    scheduler::probe_idle_once().unwrap_or_else(|_| failure());
+    let idle_diagnostic = scheduler::task_diagnostics(idle).unwrap_or_else(|_| failure());
+    let idle_rsp = scheduler::idle_rsp();
+    let idle_tick_delta = finn_kernel::arch::x86_64::timer::ticks() - idle_start_ticks;
+    if idle_tick_delta == 0
+        || idle_rsp < idle_diagnostic.stack_start
+        || idle_rsp >= idle_diagnostic.stack_end
+        || GLOBAL_HEAP.stats() != heap_before_idle
+        || scheduler::current_task()
+            .unwrap_or_else(|_| failure())
+            .slot()
+            != 0
+    {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:IDLE_RSP={idle_rsp:#x}\nFINNOS:TASKS:IDLE_TICK_DELTA={idle_tick_delta}\nFINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK\n"
+    );
+    let end_ticks = finn_kernel::arch::x86_64::timer::ticks();
+    let end_deliveries = finn_kernel::arch::x86_64::timer::real_deliveries();
+    let end_eois = finn_kernel::arch::x86_64::apic::eoi_count();
+    let cr3_after = paging::current_cr3();
+    if end_ticks <= start_ticks
+        || end_deliveries <= start_deliveries
+        || end_eois <= start_eois
+        || end_eois - start_eois != end_deliveries - start_deliveries
+        || cr3_after != cr3_before
+        || scheduler::interrupt_context_entry_count() != 0
+        || finn_kernel::arch::x86_64::apic::timer_in_service()
+        || finn_kernel::interrupt::interrupt_context_faulted()
+        || !finn_kernel::arch::x86_64::cpu::interrupts_enabled()
+        || finn_kernel::interrupt::interrupt_depth() != 0
+    {
+        failure();
+    }
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TASKS:TIMER_START_TICKS={start_ticks}\nFINNOS:TASKS:TIMER_END_TICKS={end_ticks}\nFINNOS:TASKS:TICK_DELTA={}\nFINNOS:TASKS:DELIVERY_DELTA={}\nFINNOS:TASKS:EOI_DELTA={}\nFINNOS:TASKS:CR3_BEFORE={cr3_before:#x}\nFINNOS:TASKS:CR3_AFTER={cr3_after:#x}\nFINNOS:TASKS:SCHEDULER_ISR_ENTRIES=0\nFINNOS:TEST:COOPERATIVE_TASKS:TIMER_CONTINUITY_OK\n",
+        end_ticks - start_ticks,
+        end_deliveries - start_deliveries,
+        end_eois - start_eois
+    );
+    scheduler::check_runtime_invariants(address_space).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:COOPERATIVE_TASKS:INVARIANTS_OK\nFINNOS:TEST:COOPERATIVE_TASKS:PASS\n"
+    );
+    qemu::exit(0x10)
 }
 
 #[cfg(feature = "qemu-test-timer-interrupts")]
