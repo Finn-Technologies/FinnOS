@@ -169,6 +169,7 @@ impl From<PagingError> for TaskStackError {
 ///
 /// Returns a structured error if allocation, mapping, zeroing validation, or
 /// rollback fails.
+#[allow(clippy::too_many_lines)]
 pub fn map_task_stack(
     mapping: &mut TaskStackMapping,
     address_space: &mut ActiveAddressSpace,
@@ -349,8 +350,7 @@ pub fn reclaim_task_stack(
     }
     prospective.check_invariants()?;
     let mapped_baseline = address_space.mapped_pages();
-    let mut unmapped = 0usize;
-    for index in 0..TASK_STACK_PAGE_COUNT {
+    for (unmapped, index) in (0..TASK_STACK_PAGE_COUNT).enumerate() {
         let address = layout.stack_start + (index as u64) * PAGE_SIZE;
         let returned = match address_space.unmap_page(VirtualPage::new(address)?) {
             Ok(frame) => frame,
@@ -377,7 +377,6 @@ pub fn reclaim_task_stack(
             }
             return Err(TaskStackError::CorruptMapping);
         }
-        unmapped += 1;
     }
     if address_space.translate(layout.lower_guard)?.is_some()
         || address_space.translate(layout.upper_guard)?.is_some()
@@ -474,19 +473,15 @@ fn rollback_with_extra_page(
         return Err(TaskStackError::RollbackFailed);
     }
 
-    let mut unmapped = 0usize;
-    for index in 0..mapping.mapped_count {
+    for (unmapped, index) in (0..mapping.mapped_count).enumerate() {
         let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
-        let returned = match address_space.unmap_page(VirtualPage::new(address)?) {
-            Ok(frame) => frame,
-            Err(_) => {
-                if restore_unmapped(mapping, address_space, unmapped).is_err()
-                    || address_space.mapped_pages() != mapped_baseline
-                {
-                    return Err(TaskStackError::RollbackFailed);
-                }
-                return Err(original);
+        let Ok(returned) = address_space.unmap_page(VirtualPage::new(address)?) else {
+            if restore_unmapped(mapping, address_space, unmapped).is_err()
+                || address_space.mapped_pages() != mapped_baseline
+            {
+                return Err(TaskStackError::RollbackFailed);
             }
+            return Err(original);
         };
         if returned.address() != mapping.physical_pages[index] {
             let restored_current = address_space.map_page(
@@ -502,10 +497,9 @@ fn rollback_with_extra_page(
             }
             return Err(TaskStackError::CorruptMapping);
         }
-        unmapped += 1;
     }
     if address_space.mapped_pages() != mapped_baseline {
-        if restore_unmapped(mapping, address_space, unmapped).is_err() {
+        if restore_unmapped(mapping, address_space, mapping.mapped_count).is_err() {
             return Err(TaskStackError::RollbackFailed);
         }
         return Err(TaskStackError::RollbackFailed);

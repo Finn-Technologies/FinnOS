@@ -312,6 +312,10 @@ pub fn task_state(id: TaskId) -> Result<TaskState, SchedulerError> {
 }
 
 /// Returns non-owning task diagnostics for integration validation.
+///
+/// # Errors
+///
+/// Returns an error when the runtime is unavailable or `id` is stale or invalid.
 pub fn task_diagnostics(id: TaskId) -> Result<TaskDiagnostics, SchedulerError> {
     let runtime = runtime_ref()?;
     let state = runtime.policy.state(id)?;
@@ -330,6 +334,10 @@ pub fn task_diagnostics(id: TaskId) -> Result<TaskDiagnostics, SchedulerError> {
 }
 
 /// Returns allocation-free scheduler statistics.
+///
+/// # Errors
+///
+/// Returns an error when the runtime is unavailable or poisoned.
 pub fn stats() -> Result<crate::task::SchedulerStats, SchedulerError> {
     Ok(runtime_ref()?.policy.stats())
 }
