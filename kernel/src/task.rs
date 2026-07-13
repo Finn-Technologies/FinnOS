@@ -212,6 +212,7 @@ pub struct SchedulerStats {
 }
 
 /// Heap-free single-BSP cooperative scheduler policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Scheduler {
     entries: [Entry; MAX_TASKS],
     queue: RunnableQueue,
@@ -221,6 +222,13 @@ pub struct Scheduler {
     reaped: u64,
     switches: u64,
     yields: u64,
+}
+
+/// Prevalidated, infallible task-reap policy update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedReap {
+    id: TaskId,
+    next_generation: u32,
 }
 
 impl Scheduler {
@@ -368,8 +376,8 @@ impl Scheduler {
         self.switches = self.switches.saturating_add(1);
         Ok(next)
     }
-    /// Reclaims an exited ordinary task, invalidating its former identity.
-    pub fn reap(&mut self, id: TaskId) -> Result<(), TaskError> {
+    /// Prevalidates reclamation without mutating policy state.
+    pub fn prepare_reap(&self, id: TaskId) -> Result<PreparedReap, TaskError> {
         ensure_not_interrupt_context()?;
         if id.slot() < 2 {
             return Err(TaskError::ReservedTask);
@@ -381,14 +389,28 @@ impl Scheduler {
         if entry.state != TaskState::Exited {
             return Err(TaskError::InvalidTransition);
         }
-        let generation = entry
+        let next_generation = entry
             .generation
             .checked_add(1)
             .ok_or(TaskError::GenerationOverflow)?;
-        let entry = self.entry_mut(id)?;
+        Ok(PreparedReap {
+            id,
+            next_generation,
+        })
+    }
+
+    /// Commits a previously prepared reap without a fallible operation.
+    pub const fn commit_reap(&mut self, prepared: PreparedReap) {
+        let entry = &mut self.entries[prepared.id.slot()];
         entry.state = TaskState::Vacant;
-        entry.generation = generation;
+        entry.generation = prepared.next_generation;
         self.reaped = self.reaped.saturating_add(1);
+    }
+
+    /// Reclaims an exited ordinary task, invalidating its former identity.
+    pub fn reap(&mut self, id: TaskId) -> Result<(), TaskError> {
+        let prepared = self.prepare_reap(id)?;
+        self.commit_reap(prepared);
         Ok(())
     }
     /// Blocks bootstrap permanently and selects the dedicated idle task.
@@ -454,7 +476,7 @@ impl Scheduler {
             {
                 return Err(TaskError::CorruptState);
             }
-            if slot >= 2 {
+            if slot >= 2 || slot == BOOTSTRAP_SLOT {
                 let id = TaskId::new(slot as u8, entry.generation)?;
                 let expected = usize::from(entry.state == TaskState::Ready);
                 if self.queue.count(id) != expected {
@@ -473,7 +495,7 @@ impl Scheduler {
         for offset in 0..self.queue.len {
             let id = self.queue.ids[(self.queue.head + offset) % MAX_TASKS]
                 .ok_or(TaskError::CorruptState)?;
-            if id.slot() < 2 || self.state(id)? != TaskState::Ready || id == self.current {
+            if id.slot() == IDLE_SLOT || self.state(id)? != TaskState::Ready || id == self.current {
                 return Err(TaskError::CorruptState);
             }
         }
@@ -659,5 +681,48 @@ mod tests {
         assert!(scheduler.queue.contains(id));
         assert_eq!(scheduler.created, 1);
         scheduler.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn bootstrap_queue_states_are_invariant_valid() {
+        let mut worker_run = Scheduler::new();
+        let worker = worker_run.spawn().unwrap();
+        worker_run.check_invariants().unwrap();
+        assert_eq!(worker_run.yield_current(), Ok(Some(worker)));
+        assert!(worker_run.is_queued(worker_run.bootstrap_id()));
+        worker_run.check_invariants().unwrap();
+        assert_eq!(
+            worker_run.yield_current(),
+            Ok(Some(worker_run.bootstrap_id()))
+        );
+        worker_run.check_invariants().unwrap();
+
+        let mut probe = Scheduler::new();
+        assert_eq!(probe.begin_idle_probe(), Ok(probe.idle_id()));
+        assert!(probe.is_queued(probe.bootstrap_id()));
+        probe.check_invariants().unwrap();
+        assert_eq!(probe.yield_current(), Ok(Some(probe.bootstrap_id())));
+        assert!(probe.queue.is_empty());
+        probe.check_invariants().unwrap();
+
+        let mut parked = Scheduler::new();
+        assert_eq!(parked.park_bootstrap(), Ok(parked.idle_id()));
+        parked.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn prepared_reap_overflow_is_bitwise_non_mutating() {
+        let mut scheduler = Scheduler::new();
+        scheduler.entries[2] = Entry {
+            generation: u32::MAX,
+            state: TaskState::Exited,
+        };
+        let before = scheduler;
+        let id = TaskId::new(2, u32::MAX).unwrap();
+        assert_eq!(
+            scheduler.prepare_reap(id),
+            Err(TaskError::GenerationOverflow)
+        );
+        assert_eq!(scheduler, before);
     }
 }

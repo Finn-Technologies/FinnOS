@@ -469,12 +469,7 @@ pub fn reap(
 ) -> Result<(), SchedulerError> {
     reject_interrupt_context()?;
     let runtime = runtime_mut()?;
-    if id == runtime.policy.current()
-        || id.slot() < 2
-        || runtime.policy.state(id)? != TaskState::Exited
-    {
-        return Err(SchedulerError::Task(TaskError::InvalidTransition));
-    }
+    let prepared = runtime.policy.prepare_reap(id)?;
     let slot = &mut runtime.slots[id.slot()];
     let mut stack = slot.stack.take().ok_or(SchedulerError::InvalidEntry)?;
     if let Err(error) = reclaim_task_stack(&mut stack, address_space, allocator) {
@@ -482,7 +477,7 @@ pub fn reap(
         return Err(error.into());
     }
     *slot = RuntimeSlot::EMPTY;
-    runtime.policy.reap(id)?;
+    runtime.policy.commit_reap(prepared);
     Ok(())
 }
 
@@ -501,10 +496,9 @@ pub fn park_bootstrap_and_run_idle() -> ! {
     let plan = (|| {
         let runtime = runtime_mut().ok()?;
         let old = runtime.policy.current();
-        let next = runtime.policy.park_bootstrap().ok()?;
-        let old_rsp = &raw mut runtime.slots[old.slot()].context.rsp;
-        let new_rsp = runtime.slots[next.slot()].context.rsp;
-        (new_rsp != 0).then_some((old_rsp, new_rsp))
+        let mut candidate = runtime.policy;
+        let next = candidate.park_bootstrap().ok()?;
+        commit_switch_candidate(runtime, old, candidate, next).ok()
     })();
     SWITCHING.store(false, Ordering::Release);
     let Some((old_rsp, new_rsp)) = plan else {
@@ -528,16 +522,12 @@ pub fn probe_idle_once() -> Result<(), SchedulerError> {
     if SWITCHING.swap(true, Ordering::Acquire) {
         return Err(SchedulerError::Reentrant);
     }
-    let result = (|| {
+    let result: Result<(*mut u64, u64), SchedulerError> = (|| {
         let runtime = runtime_mut()?;
         let old = runtime.policy.current();
-        let next = runtime.policy.begin_idle_probe()?;
-        let old_rsp = &raw mut runtime.slots[old.slot()].context.rsp;
-        let new_rsp = runtime.slots[next.slot()].context.rsp;
-        if new_rsp == 0 {
-            return Err(SchedulerError::InvalidEntry);
-        }
-        Ok((old_rsp, new_rsp))
+        let mut candidate = runtime.policy;
+        let next = candidate.begin_idle_probe()?;
+        commit_switch_candidate(runtime, old, candidate, next)
     })();
     SWITCHING.store(false, Ordering::Release);
     let (old_rsp, new_rsp) = result?;
@@ -556,15 +546,11 @@ fn prepare_yield() -> Result<Option<(*mut u64, u64)>, SchedulerError> {
     let result = (|| {
         let runtime = runtime_mut()?;
         let old = runtime.policy.current();
-        let Some(next) = runtime.policy.yield_current()? else {
+        let mut candidate = runtime.policy;
+        let Some(next) = candidate.yield_current()? else {
             return Ok(None);
         };
-        let old_rsp = &raw mut runtime.slots[old.slot()].context.rsp;
-        let new_rsp = runtime.slots[next.slot()].context.rsp;
-        if new_rsp == 0 {
-            return Err(SchedulerError::InvalidEntry);
-        }
-        Ok(Some((old_rsp, new_rsp)))
+        commit_switch_candidate(runtime, old, candidate, next).map(Some)
     })();
     SWITCHING.store(false, Ordering::Release);
     result
@@ -587,10 +573,9 @@ pub fn exit_current() -> ! {
     let plan = (|| {
         let runtime = runtime_mut().ok()?;
         let old = runtime.policy.current();
-        let next = runtime.policy.exit_current().ok()?;
-        let old_rsp = &raw mut runtime.slots[old.slot()].context.rsp;
-        let new_rsp = runtime.slots[next.slot()].context.rsp;
-        (new_rsp != 0).then_some((old_rsp, new_rsp))
+        let mut candidate = runtime.policy;
+        let next = candidate.exit_current().ok()?;
+        commit_switch_candidate(runtime, old, candidate, next).ok()
     })();
     SWITCHING.store(false, Ordering::Release);
     let Some((old_rsp, new_rsp)) = plan else {
@@ -602,6 +587,37 @@ pub fn exit_current() -> ! {
         switch(old_rsp, new_rsp);
     }
     fatal_scheduler()
+}
+
+fn validate_selected_context(runtime: &Runtime, id: TaskId) -> Result<(), SchedulerError> {
+    let slot = &runtime.slots[id.slot()];
+    if slot.context.rsp == 0 {
+        return Err(SchedulerError::InvalidEntry);
+    }
+    if id.slot() == 0 {
+        if slot.entry.is_some() || slot.stack.is_some() {
+            return Err(SchedulerError::InvalidEntry);
+        }
+        return Ok(());
+    }
+    let stack = slot.stack.as_ref().ok_or(SchedulerError::InvalidEntry)?;
+    if slot.entry.is_none() || !stack.contains(slot.context.rsp) {
+        return Err(SchedulerError::InvalidEntry);
+    }
+    Ok(())
+}
+
+fn commit_switch_candidate(
+    runtime: &mut Runtime,
+    old: TaskId,
+    candidate: Scheduler,
+    next: TaskId,
+) -> Result<(*mut u64, u64), SchedulerError> {
+    validate_selected_context(runtime, next)?;
+    let old_rsp = &raw mut runtime.slots[old.slot()].context.rsp;
+    let new_rsp = runtime.slots[next.slot()].context.rsp;
+    runtime.policy = candidate;
+    Ok((old_rsp, new_rsp))
 }
 fn idle_task() {
     loop {
@@ -658,6 +674,62 @@ fn runtime_mut() -> Result<&'static mut Runtime, SchedulerError> {
             Err(SchedulerError::Poisoned)
         } else {
             Ok(runtime)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_runtime(policy: Scheduler) -> Runtime {
+        Runtime {
+            policy,
+            slots: [const { RuntimeSlot::EMPTY }; MAX_TASKS],
+            poisoned: false,
+        }
+    }
+
+    #[test]
+    fn invalid_selected_context_never_commits_candidate_policy() {
+        let mut yielding_policy = Scheduler::new();
+        yielding_policy.spawn().unwrap();
+        let mut yielding = empty_runtime(yielding_policy);
+        let before = yielding.policy;
+        let old = before.current();
+        let mut candidate = before;
+        let next = candidate.yield_current().unwrap().unwrap();
+        assert_eq!(
+            commit_switch_candidate(&mut yielding, old, candidate, next),
+            Err(SchedulerError::InvalidEntry)
+        );
+        assert_eq!(yielding.policy, before);
+
+        let mut exiting_policy = Scheduler::new();
+        let worker = exiting_policy.spawn().unwrap();
+        assert_eq!(exiting_policy.yield_current(), Ok(Some(worker)));
+        let mut exiting = empty_runtime(exiting_policy);
+        let before = exiting.policy;
+        let old = before.current();
+        let mut candidate = before;
+        let next = candidate.exit_current().unwrap();
+        assert_eq!(
+            commit_switch_candidate(&mut exiting, old, candidate, next),
+            Err(SchedulerError::InvalidEntry)
+        );
+        assert_eq!(exiting.policy, before);
+
+        for transition in [Scheduler::park_bootstrap, Scheduler::begin_idle_probe] {
+            let mut runtime = empty_runtime(Scheduler::new());
+            let before = runtime.policy;
+            let old = before.current();
+            let mut candidate = before;
+            let next = transition(&mut candidate).unwrap();
+            assert_eq!(
+                commit_switch_candidate(&mut runtime, old, candidate, next),
+                Err(SchedulerError::InvalidEntry)
+            );
+            assert_eq!(runtime.policy, before);
         }
     }
 }

@@ -70,6 +70,7 @@ pub struct TaskStackMapping {
     virtual_start: u64,
     virtual_end: u64,
     physical_pages: [u64; TASK_STACK_PAGE_COUNT],
+    owned_count: usize,
     mapped_count: usize,
 }
 
@@ -86,6 +87,7 @@ impl TaskStackMapping {
             virtual_start: layout.stack_start,
             virtual_end: layout.stack_end,
             physical_pages: [0; TASK_STACK_PAGE_COUNT],
+            owned_count: 0,
             mapped_count: 0,
         })
     }
@@ -110,15 +112,20 @@ impl TaskStackMapping {
     pub const fn mapped_count(&self) -> usize {
         self.mapped_count
     }
+    /// Returns the number of physical frames exclusively owned.
+    #[must_use]
+    pub const fn owned_count(&self) -> usize {
+        self.owned_count
+    }
     /// Returns whether no physical frame is owned.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.mapped_count == 0
+        self.owned_count == 0
     }
     /// Returns a recorded physical frame for a mapped page.
     #[must_use]
     pub fn physical_page(&self, index: usize) -> Option<u64> {
-        (index < self.mapped_count).then(|| self.physical_pages[index])
+        (index < self.owned_count).then(|| self.physical_pages[index])
     }
     /// Returns whether an address lies inside the mapped stack range.
     #[must_use]
@@ -195,13 +202,14 @@ pub fn map_task_stack(
                 );
             }
         };
+        mapping.physical_pages[index] = page.start_address();
+        mapping.owned_count += 1;
         let Some(virtual_address) = layout.stack_start.checked_add((index as u64) * PAGE_SIZE)
         else {
-            return rollback_with_unmapped_page(
+            return rollback(
                 mapping,
                 address_space,
                 allocator,
-                page.start_address(),
                 free_baseline,
                 mapped_baseline,
                 TaskStackError::Layout(TaskStackLayoutError::AddressOverflow),
@@ -210,11 +218,10 @@ pub fn map_task_stack(
         let virtual_page = match VirtualPage::new(virtual_address) {
             Ok(page) => page,
             Err(error) => {
-                return rollback_with_unmapped_page(
+                return rollback(
                     mapping,
                     address_space,
                     allocator,
-                    page.start_address(),
                     free_baseline,
                     mapped_baseline,
                     TaskStackError::Paging(error),
@@ -224,11 +231,10 @@ pub fn map_task_stack(
         let frame = match PhysicalFrame::new(page.start_address(), address_space.width()) {
             Ok(frame) => frame,
             Err(error) => {
-                return rollback_with_unmapped_page(
+                return rollback(
                     mapping,
                     address_space,
                     allocator,
-                    page.start_address(),
                     free_baseline,
                     mapped_baseline,
                     TaskStackError::Paging(error),
@@ -238,29 +244,26 @@ pub fn map_task_stack(
         match address_space.map_page(virtual_page, frame, MappingPermissions::kernel_rw_nx()) {
             Ok(MapOutcome::Created) => {}
             Ok(MapOutcome::AlreadyPresent) => {
-                return rollback_with_unmapped_page(
+                return rollback(
                     mapping,
                     address_space,
                     allocator,
-                    page.start_address(),
                     free_baseline,
                     mapped_baseline,
                     TaskStackError::AlreadyMapped,
                 );
             }
             Err(error) => {
-                return rollback_with_unmapped_page(
+                return rollback(
                     mapping,
                     address_space,
                     allocator,
-                    page.start_address(),
                     free_baseline,
                     mapped_baseline,
                     TaskStackError::Paging(error),
                 );
             }
         }
-        mapping.physical_pages[index] = page.start_address();
         mapping.mapped_count += 1;
     }
     // SAFETY: Every byte in [stack_start, stack_end) has just been mapped writable,
@@ -292,7 +295,8 @@ pub fn validate_task_stack(
     mapping: &TaskStackMapping,
     address_space: &ActiveAddressSpace,
 ) -> Result<(), TaskStackError> {
-    if mapping.mapped_count != TASK_STACK_PAGE_COUNT {
+    if mapping.owned_count != TASK_STACK_PAGE_COUNT || mapping.mapped_count != TASK_STACK_PAGE_COUNT
+    {
         return Err(TaskStackError::CorruptMapping);
     }
     let layout = TaskStackLayout::for_slot(mapping.slot())?;
@@ -343,19 +347,20 @@ pub fn reclaim_task_stack(
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> Result<(), TaskStackError> {
     validate_task_stack(mapping, address_space)?;
-    let layout = TaskStackLayout::for_slot(mapping.slot())?;
+    let empty = TaskStackMapping::empty(mapping.slot())?;
     let prospective = allocator_transaction(allocator);
     for address in mapping.physical_pages {
         prospective.deallocate(PageRange::new(address, 1)?)?;
     }
     prospective.check_invariants()?;
     let mapped_baseline = address_space.mapped_pages();
+    let (virtual_pages, physical_frames) = prevalidate_leaf_objects(mapping, address_space)?;
     for (unmapped, index) in (0..TASK_STACK_PAGE_COUNT).enumerate() {
-        let address = layout.stack_start + (index as u64) * PAGE_SIZE;
-        let returned = match address_space.unmap_page(VirtualPage::new(address)?) {
+        let returned = match address_space.unmap_page(virtual_pages[index]) {
             Ok(frame) => frame,
             Err(error) => {
-                if restore_unmapped(mapping, address_space, unmapped).is_err()
+                if restore_unmapped(address_space, &virtual_pages, &physical_frames, unmapped)
+                    .is_err()
                     || address_space.mapped_pages() != mapped_baseline
                 {
                     return Err(TaskStackError::RollbackFailed);
@@ -365,12 +370,13 @@ pub fn reclaim_task_stack(
         };
         if returned.address() != mapping.physical_pages[index] {
             let restore_current = address_space.map_page(
-                VirtualPage::new(address)?,
+                virtual_pages[index],
                 returned,
                 MappingPermissions::kernel_rw_nx(),
             );
             if restore_current != Ok(MapOutcome::Created)
-                || restore_unmapped(mapping, address_space, unmapped).is_err()
+                || restore_unmapped(address_space, &virtual_pages, &physical_frames, unmapped)
+                    .is_err()
                 || address_space.mapped_pages() != mapped_baseline
             {
                 return Err(TaskStackError::RollbackFailed);
@@ -378,26 +384,48 @@ pub fn reclaim_task_stack(
             return Err(TaskStackError::CorruptMapping);
         }
     }
-    if address_space.translate(layout.lower_guard)?.is_some()
-        || address_space.translate(layout.upper_guard)?.is_some()
-    {
-        return Err(TaskStackError::CorruptMapping);
-    }
     allocator.copy_state_from(prospective);
-    *mapping = TaskStackMapping::empty(mapping.slot())?;
+    *mapping = empty;
     Ok(())
 }
 
-fn restore_unmapped(
+fn prevalidate_leaf_objects(
     mapping: &TaskStackMapping,
+    address_space: &ActiveAddressSpace,
+) -> Result<
+    (
+        [VirtualPage; TASK_STACK_PAGE_COUNT],
+        [PhysicalFrame; TASK_STACK_PAGE_COUNT],
+    ),
+    TaskStackError,
+> {
+    let mut virtual_pages = [VirtualPage::new(mapping.virtual_start)?; TASK_STACK_PAGE_COUNT];
+    let mut physical_frames =
+        [PhysicalFrame::new(mapping.physical_pages[0], address_space.width())?;
+            TASK_STACK_PAGE_COUNT];
+    for index in 0..mapping.mapped_count {
+        virtual_pages[index] = VirtualPage::new(
+            mapping
+                .virtual_start
+                .checked_add((index as u64) * PAGE_SIZE)
+                .ok_or(TaskStackLayoutError::AddressOverflow)?,
+        )?;
+        physical_frames[index] =
+            PhysicalFrame::new(mapping.physical_pages[index], address_space.width())?;
+    }
+    Ok((virtual_pages, physical_frames))
+}
+
+fn restore_unmapped(
     address_space: &mut ActiveAddressSpace,
+    virtual_pages: &[VirtualPage; TASK_STACK_PAGE_COUNT],
+    physical_frames: &[PhysicalFrame; TASK_STACK_PAGE_COUNT],
     count: usize,
 ) -> Result<(), TaskStackError> {
     for index in 0..count {
-        let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
         let outcome = address_space.map_page(
-            VirtualPage::new(address)?,
-            PhysicalFrame::new(mapping.physical_pages[index], address_space.width())?,
+            virtual_pages[index],
+            physical_frames[index],
             MappingPermissions::kernel_rw_nx(),
         )?;
         if outcome != MapOutcome::Created {
@@ -405,26 +433,6 @@ fn restore_unmapped(
         }
     }
     Ok(())
-}
-
-fn rollback_with_unmapped_page(
-    mapping: &mut TaskStackMapping,
-    address_space: &mut ActiveAddressSpace,
-    allocator: &mut EarlyPhysicalPageAllocator,
-    page: u64,
-    free_baseline: u64,
-    mapped_baseline: u64,
-    original: TaskStackError,
-) -> Result<(), TaskStackError> {
-    rollback_with_extra_page(
-        mapping,
-        address_space,
-        allocator,
-        Some(page),
-        free_baseline,
-        mapped_baseline,
-        original,
-    )
 }
 
 fn rollback(
@@ -435,37 +443,13 @@ fn rollback(
     mapped_baseline: u64,
     original: TaskStackError,
 ) -> Result<(), TaskStackError> {
-    rollback_with_extra_page(
-        mapping,
-        address_space,
-        allocator,
-        None,
-        free_baseline,
-        mapped_baseline,
-        original,
-    )
-}
-
-fn rollback_with_extra_page(
-    mapping: &mut TaskStackMapping,
-    address_space: &mut ActiveAddressSpace,
-    allocator: &mut EarlyPhysicalPageAllocator,
-    extra_page: Option<u64>,
-    free_baseline: u64,
-    mapped_baseline: u64,
-    original: TaskStackError,
-) -> Result<(), TaskStackError> {
     let prospective = allocator_transaction(allocator);
-    if let Some(page) = extra_page {
-        prospective
-            .deallocate(PageRange::new(page, 1)?)
-            .map_err(|_| TaskStackError::RollbackFailed)?;
-    }
-    for index in 0..mapping.mapped_count {
+    for index in 0..mapping.owned_count {
         prospective
             .deallocate(PageRange::new(mapping.physical_pages[index], 1)?)
             .map_err(|_| TaskStackError::RollbackFailed)?;
     }
+    let empty = TaskStackMapping::empty(mapping.slot())?;
     prospective
         .check_invariants()
         .map_err(|_| TaskStackError::RollbackFailed)?;
@@ -473,11 +457,20 @@ fn rollback_with_extra_page(
         return Err(TaskStackError::RollbackFailed);
     }
 
+    let leaf_objects = if mapping.mapped_count == 0 {
+        None
+    } else {
+        Some(prevalidate_leaf_objects(mapping, address_space)?)
+    };
+    let restored_mapped_count = mapped_baseline
+        .checked_add(mapping.mapped_count as u64)
+        .ok_or(TaskStackError::RollbackFailed)?;
+
     for (unmapped, index) in (0..mapping.mapped_count).enumerate() {
-        let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
-        let Ok(returned) = address_space.unmap_page(VirtualPage::new(address)?) else {
-            if restore_unmapped(mapping, address_space, unmapped).is_err()
-                || address_space.mapped_pages() != mapped_baseline
+        let (virtual_pages, physical_frames) = leaf_objects.as_ref().expect("mapped leaves exist");
+        let Ok(returned) = address_space.unmap_page(virtual_pages[index]) else {
+            if restore_unmapped(address_space, virtual_pages, physical_frames, unmapped).is_err()
+                || address_space.mapped_pages() != restored_mapped_count
             {
                 return Err(TaskStackError::RollbackFailed);
             }
@@ -485,13 +478,14 @@ fn rollback_with_extra_page(
         };
         if returned.address() != mapping.physical_pages[index] {
             let restored_current = address_space.map_page(
-                VirtualPage::new(address)?,
+                virtual_pages[index],
                 returned,
                 MappingPermissions::kernel_rw_nx(),
             );
             if restored_current != Ok(MapOutcome::Created)
-                || restore_unmapped(mapping, address_space, unmapped).is_err()
-                || address_space.mapped_pages() != mapped_baseline
+                || restore_unmapped(address_space, virtual_pages, physical_frames, unmapped)
+                    .is_err()
+                || address_space.mapped_pages() != restored_mapped_count
             {
                 return Err(TaskStackError::RollbackFailed);
             }
@@ -499,13 +493,21 @@ fn rollback_with_extra_page(
         }
     }
     if address_space.mapped_pages() != mapped_baseline {
-        if restore_unmapped(mapping, address_space, mapping.mapped_count).is_err() {
+        let (virtual_pages, physical_frames) = leaf_objects.as_ref().expect("mapped leaves exist");
+        if restore_unmapped(
+            address_space,
+            virtual_pages,
+            physical_frames,
+            mapping.mapped_count,
+        )
+        .is_err()
+        {
             return Err(TaskStackError::RollbackFailed);
         }
         return Err(TaskStackError::RollbackFailed);
     }
     allocator.copy_state_from(prospective);
-    *mapping = TaskStackMapping::empty(mapping.slot())?;
+    *mapping = empty;
     Err(original)
 }
 
