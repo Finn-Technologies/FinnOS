@@ -23,6 +23,8 @@ struct FreeRegion {
 /// Errors returned by the bounded kernel heap allocator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HeapError {
+    /// Allocation or deallocation was attempted from interrupt context.
+    InterruptContextAllocationForbidden,
     /// The heap has already been initialized.
     AlreadyInitialized,
     /// The heap has not been initialized.
@@ -623,6 +625,9 @@ impl LockedHeap {
     ///
     /// Returns the underlying allocator allocation error.
     pub fn allocate(&self, layout: Layout) -> Result<*mut u8, HeapError> {
+        if crate::interrupt::in_interrupt_context() {
+            return Err(HeapError::InterruptContextAllocationForbidden);
+        }
         self.with_lock(|heap| heap.allocate(layout))
     }
 
@@ -636,6 +641,9 @@ impl LockedHeap {
     ///
     /// The pointer and layout must describe an allocation returned by this heap.
     pub unsafe fn deallocate(&self, pointer: *mut u8, layout: Layout) -> Result<(), HeapError> {
+        if crate::interrupt::in_interrupt_context() {
+            return Err(HeapError::InterruptContextAllocationForbidden);
+        }
         self.with_lock(|heap| heap.deallocate(pointer, layout))
     }
 
@@ -670,10 +678,16 @@ impl LockedHeap {
 // allocator returns null on every unsupported or exhausted request and never allocates internally.
 unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if crate::interrupt::in_interrupt_context() {
+            return null_mut();
+        }
         self.allocate(layout).unwrap_or(null_mut())
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        if crate::interrupt::in_interrupt_context() {
+            return;
+        }
         // SAFETY: GlobalAlloc requires callers to provide a pointer/layout pair originating from
         // this allocator; the checked implementation still rejects malformed ranges.
         let _ = unsafe { self.deallocate(pointer, layout) };
@@ -873,5 +887,33 @@ mod tests {
             allocator.check_invariants(),
             Err(HeapError::CorruptHeapState)
         );
+    }
+
+    #[test]
+    #[allow(clippy::large_stack_arrays)]
+    fn locked_heap_rejects_interrupt_context_before_lock() {
+        use crate::interrupt::InterruptContextGuard;
+        let mut storage = [0_u8; 65_536];
+        let heap = LockedHeap::empty();
+        let start = storage.as_mut_ptr() as usize;
+        heap.initialize(start, start + storage.len()).unwrap();
+        let layout = Layout::from_size_align(32, 8).unwrap();
+        let pointer = heap.allocate(layout).unwrap();
+        let before = heap.stats();
+        let guard = InterruptContextGuard::enter().unwrap();
+        assert_eq!(
+            heap.allocate(layout),
+            Err(HeapError::InterruptContextAllocationForbidden)
+        );
+        assert_eq!(
+            unsafe { heap.deallocate(pointer, layout) },
+            Err(HeapError::InterruptContextAllocationForbidden)
+        );
+        assert_eq!(heap.stats().allocated_bytes, before.allocated_bytes);
+        drop(guard);
+        unsafe {
+            heap.deallocate(pointer, layout).unwrap();
+        }
+        assert!(heap.check_invariants().is_ok());
     }
 }

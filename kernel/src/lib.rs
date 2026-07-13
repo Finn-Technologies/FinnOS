@@ -11,6 +11,7 @@
 pub mod arch;
 pub mod boot_validation;
 pub mod framebuffer;
+pub mod interrupt;
 pub mod memory;
 
 /// The human-readable name of the `FinnOS` kernel.

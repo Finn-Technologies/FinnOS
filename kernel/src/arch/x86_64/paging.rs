@@ -209,6 +209,16 @@ impl MappingPermissions {
             cache_disable: true,
         }
     }
+    /// Supervisor-only writable, non-executable, uncached MMIO.
+    pub const fn kernel_mmio_rw_nx() -> Self {
+        Self {
+            writable: true,
+            executable: false,
+            user: false,
+            write_through: true,
+            cache_disable: true,
+        }
+    }
     pub const fn validate(self) -> Result<(), PagingError> {
         if self.user {
             return Err(PagingError::UserMappingForbidden);

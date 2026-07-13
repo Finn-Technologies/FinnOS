@@ -1,4 +1,4 @@
-.PHONY: help doctor build check test format format-check lint test-heap
+.PHONY: help doctor build check test format format-check lint test-heap test-timer-interrupts
 
 help:
 	./tools/finn help
@@ -53,6 +53,9 @@ test-page-tables:
 
 test-heap:
 	./tools/finn test-heap
+
+test-timer-interrupts:
+	./tools/finn test-timer-interrupts
 
 check-all:
 	./tools/finn check-all

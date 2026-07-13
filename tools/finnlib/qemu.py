@@ -7,7 +7,7 @@ MARKERS = (
     "FINNOS:KERNEL:ENTRY", "FINNOS:KERNEL:GDT_OK", "FINNOS:KERNEL:TSS_OK", "FINNOS:KERNEL:IDT_OK",
     "FINNOS:KERNEL:EXCEPTIONS_READY", "FINNOS:KERNEL:BOOTINFO_OK", "FINNOS:KERNEL:MEMORY_MAP_OK",
     "FINNOS:KERNEL:MEMORY_MAP_PARSED", "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED", "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
-    "FINNOS:KERNEL:PAGE_TABLES_BUILT", "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING", "FINNOS:KERNEL:PAGE_TABLES_ACTIVE", "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED", "FINNOS:KERNEL:HEAP_MAPPED", "FINNOS:KERNEL:HEAP_READY", "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT", "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING", "FINNOS:KERNEL:PAGE_TABLES_ACTIVE", "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED", "FINNOS:KERNEL:HEAP_MAPPED", "FINNOS:KERNEL:HEAP_READY", "FINNOS:KERNEL:INTERRUPT_IDT_READY", "FINNOS:KERNEL:PIC_REMAPPED", "FINNOS:KERNEL:PIC_MASKED", "FINNOS:KERNEL:LOCAL_APIC_MAPPED", "FINNOS:KERNEL:LOCAL_APIC_READY", "FINNOS:KERNEL:TIMER_CALIBRATED", "FINNOS:KERNEL:TIMER_STARTED", "FINNOS:KERNEL:INTERRUPTS_ENABLED", "FINNOS:KERNEL:TIMER_READY", "FINNOS:KERNEL:FRAMEBUFFER_OK", "FINNOS:KERNEL:FIRST_BOOT_COMPLETE",
 )
 
 PAGE_TABLE_MARKERS = MARKERS + (
@@ -147,6 +147,44 @@ HEAP_MARKERS = MARKERS + (
     "FINNOS:TEST:HEAP:STATS_OK", "FINNOS:TEST:HEAP:INVARIANTS_OK",
     "FINNOS:TEST:HEAP:PASS",
 )
+
+TIMER_MARKERS = MARKERS + (
+    "FINNOS:TEST:TIMER_INTERRUPTS:BEGIN", "FINNOS:TEST:TIMER_INTERRUPTS:PIC_MASK_OK", "FINNOS:TEST:TIMER_INTERRUPTS:APIC_MODE_OK", "FINNOS:TEST:TIMER_INTERRUPTS:IDT_GATES_OK", "FINNOS:TEST:TIMER_INTERRUPTS:IF_ENABLED_OK", "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_BEGIN",
+    "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_OK", "FINNOS:TEST:TIMER_INTERRUPTS:FREQUENCY_OK", "FINNOS:TEST:TIMER_INTERRUPTS:MONOTONIC_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:EOI_OK", "FINNOS:TEST:TIMER_INTERRUPTS:SPURIOUS_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:INTERRUPT_CONTEXT_OK", "FINNOS:TEST:TIMER_INTERRUPTS:HEAP_INTERRUPT_GUARD_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:PASS",
+)
+
+def validate_timer(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in TIMER_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing timer marker(s)")
+    if positions != sorted(position for position in positions if position >= 0): errors.append("timer markers are out of order")
+    if output.count("FINNOS:KERNEL:TIMER_READY") != 1: errors.append("expected exactly one TIMER_READY")
+    if output.count("FINNOS:TEST:TIMER_INTERRUPTS:PASS") != 1: errors.append("expected exactly one timer PASS")
+    if "FINNOS:INTERRUPTS:PIC_MASTER_MASK=0xff" not in output or "FINNOS:INTERRUPTS:PIC_SLAVE_MASK=0xff" not in output:
+        errors.append("PIC masks were not verified as 0xff")
+    for marker in ("FINNOS:APIC:PHYSICAL_BASE=", "FINNOS:APIC:VIRTUAL_BASE=0x0000300000000000", "FINNOS:APIC:ID=", "FINNOS:APIC:VERSION=", "FINNOS:TIMER:APIC_CALIBRATION_ELAPSED_COUNTS=", "FINNOS:TIMER:APIC_INITIAL_COUNT=", "FINNOS:TIMER:FREQUENCY_WINDOW_MS=50", "FINNOS:TIMER:FREQUENCY_WINDOW_TICKS=", "FINNOS:INTERRUPTS:CALL_ALIGNMENT=0"):
+        if marker not in output: errors.append(f"missing numeric hardware evidence: {marker}")
+    import re
+    numeric = {key: int(value) for key, value in re.findall(r"FINNOS:TIMER:(FREQUENCY_HZ|TICK_MILLISECONDS|PIT_REFERENCE_COUNT|APIC_CALIBRATION_ELAPSED_COUNTS|APIC_INITIAL_COUNT|FREQUENCY_WINDOW_TICKS)=(\d+)", output)}
+    if numeric.get("FREQUENCY_HZ") != 100: errors.append("frequency is not 100 Hz")
+    if numeric.get("TICK_MILLISECONDS") != 10: errors.append("tick duration is not 10 ms")
+    if numeric.get("PIT_REFERENCE_COUNT") not in (11931, 11932): errors.append("invalid PIT reference count")
+    if numeric.get("APIC_INITIAL_COUNT", 0) == 0: errors.append("APIC initial count is zero")
+    if numeric.get("APIC_CALIBRATION_ELAPSED_COUNTS", 0) == 0: errors.append("APIC calibration elapsed count is zero")
+    if not 3 <= numeric.get("FREQUENCY_WINDOW_TICKS", 0) <= 7: errors.append("frequency window is outside 3..7 ticks")
+    values = {key: int(value) for key, value in re.findall(r"FINNOS:TIMER:(TEST_START_TICKS|TEST_END_TICKS|TEST_ELAPSED_TICKS|TEST_UPTIME_MS)=(\d+)", output)}
+    if values.get("TEST_END_TICKS", 0) <= values.get("TEST_START_TICKS", 0): errors.append("timer ticks did not increase")
+    if values.get("TEST_ELAPSED_TICKS", 0) < 8: errors.append("fewer than eight elapsed ticks")
+    if values.get("TEST_ELAPSED_TICKS", 0) != values.get("TEST_END_TICKS", 0) - values.get("TEST_START_TICKS", 0): errors.append("elapsed tick value is inconsistent")
+    if values.get("TEST_UPTIME_MS", 0) != values.get("TEST_END_TICKS", 0) * 10: errors.append("uptime conversion is inconsistent")
+    forbidden = ("FINNOS:KERNEL:INTERRUPT_ERROR", "FINNOS:KERNEL:TIMER_ERROR", "FINNOS:INTERRUPT:UNEXPECTED", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:KERNEL:PANIC")
+    for marker in forbidden:
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
+    return errors
 
 def validate_heap(status: int, output: str) -> list[str]:
     errors: list[str] = []

@@ -123,3 +123,8 @@ No external interrupt controller is initialized. The IDT contains only CPU excep
 - `./tools/finn test-boot` verifies that normal First Boot still reaches `FINNOS:KERNEL:FIRST_BOOT_COMPLETE`.
 - `./tools/finn test-exceptions` builds a separate image with the `qemu-test-exceptions` feature and verifies controlled breakpoint and invalid-opcode behavior, exiting with status 33.
 Exception delivery continues under the FinnOS-owned identity map. The page-table test reserves a single expected non-present supervisor read state; unrelated faults remain fatal.
+# External interrupt relationship
+
+CPU exception vectors remain 0x00–0x1f. Hardware timer and spurious delivery
+use separate ring-0 interrupt gates at 0x40 and 0xff, preserving the existing
+exception entries and tests.

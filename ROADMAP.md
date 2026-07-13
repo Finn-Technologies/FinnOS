@@ -44,6 +44,15 @@ invariants.
 Non-goal: interrupt-context allocation, per-CPU heaps, user heaps,
 automatic growth, or general-purpose virtual-memory management.
 
+### 3.6 x86-64 interrupt and timer foundation — Complete for x86-64 QEMU
+
+Objective: install kernel interrupt entry, take ownership of the BSP
+local APIC, mask the legacy PIC, calibrate a 100 Hz periodic local APIC
+timer, and expose monotonic kernel ticks with real QEMU interrupt tests.
+
+Non-goal: IOAPIC routing, device IRQs, SMP, scheduler policy,
+preemption, user-mode interrupt delivery, or wall-clock time.
+
 Further Kernel Core scheduling, interrupt, process, and IPC work remains planned.
 
 ## 4. First User Space — Planned

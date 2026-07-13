@@ -265,6 +265,53 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     heap_stats.allocated_bytes,
                     heap_stats.free_region_count,
                 );
+                if !interrupts_disabled() {
+                    failure();
+                }
+                // SAFETY: IF is still clear and the resident IDT is already loaded.
+                unsafe {
+                    finn_kernel::arch::x86_64::interrupts::install();
+                }
+                if !finn_kernel::arch::x86_64::interrupts::validate() {
+                    failure();
+                }
+                finn_kernel::serial_log!("FINNOS:KERNEL:INTERRUPT_IDT_READY\n");
+                let (master_mask, slave_mask) =
+                    finn_kernel::arch::x86_64::pic::initialize().unwrap_or_else(|_| failure());
+                finn_kernel::serial_log!(
+                    "FINNOS:KERNEL:PIC_REMAPPED\nFINNOS:KERNEL:PIC_MASKED\nFINNOS:INTERRUPTS:PIC_MASTER_MASK={master_mask:#x}\nFINNOS:INTERRUPTS:PIC_SLAVE_MASK={slave_mask:#x}\n"
+                );
+                let width = paging::cpu_paging_info()
+                    .unwrap_or_else(|_| failure())
+                    .physical_address_width;
+                let local_apic = finn_kernel::arch::x86_64::apic::LocalApic::initialize(
+                    &mut address_space,
+                    width,
+                )
+                .unwrap_or_else(|_| failure());
+                let apic_id = local_apic.id().unwrap_or_else(|_| failure());
+                let apic_version = local_apic.version().unwrap_or_else(|_| failure());
+                finn_kernel::serial_log!(
+                    "FINNOS:KERNEL:LOCAL_APIC_MAPPED\nFINNOS:APIC:PHYSICAL_BASE={:#x}\nFINNOS:APIC:VIRTUAL_BASE=0x0000300000000000\nFINNOS:KERNEL:LOCAL_APIC_READY\nFINNOS:APIC:ID={apic_id}\nFINNOS:APIC:VERSION={:#x}\nFINNOS:APIC:MODE=xapic\nFINNOS:INTERRUPTS:SPURIOUS_VECTOR=0xff\n",
+                    local_apic.physical_base(),
+                    apic_version
+                );
+                let (pit_reference, apic_elapsed, apic_initial) =
+                    finn_kernel::arch::x86_64::timer::initialize(local_apic)
+                        .unwrap_or_else(|_| failure());
+                finn_kernel::serial_log!(
+                    "FINNOS:KERNEL:TIMER_CALIBRATED\nFINNOS:TIMER:FREQUENCY_HZ=100\nFINNOS:TIMER:TICK_MILLISECONDS=10\nFINNOS:TIMER:PIT_REFERENCE_COUNT={pit_reference}\nFINNOS:TIMER:APIC_CALIBRATION_ELAPSED_COUNTS={apic_elapsed}\nFINNOS:TIMER:APIC_INITIAL_COUNT={apic_initial}\nFINNOS:TIMER:APIC_DIVIDE=16\nFINNOS:KERNEL:TIMER_STARTED\nFINNOS:INTERRUPTS:TIMER_VECTOR=0x40\n"
+                );
+                finn_kernel::arch::x86_64::cpu::enable_interrupts();
+                if interrupts_disabled() {
+                    failure();
+                }
+                finn_kernel::serial_log!("FINNOS:KERNEL:INTERRUPTS_ENABLED\n");
+                let target = finn_kernel::arch::x86_64::timer::ticks().saturating_add(1);
+                while finn_kernel::arch::x86_64::timer::ticks() < target {
+                    finn_kernel::arch::x86_64::cpu::halt_once();
+                }
+                finn_kernel::serial_log!("FINNOS:KERNEL:TIMER_READY\n");
                 #[cfg(feature = "qemu-test-page-tables")]
                 {
                     draw(info);
@@ -317,7 +364,20 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         }
     }
 
-    qemu::exit(0x10)
+    #[cfg(feature = "qemu-test-timer-interrupts")]
+    run_timer_interrupt_test();
+
+    #[cfg(feature = "qemu-test-exit")]
+    qemu::exit(0x10);
+    #[cfg(not(feature = "qemu-test-exit"))]
+    {
+        if !finn_kernel::arch::x86_64::cpu::interrupts_enabled()
+            || !finn_kernel::arch::x86_64::timer::is_initialized()
+        {
+            failure();
+        }
+        finn_kernel::arch::x86_64::cpu::interruptible_idle_loop()
+    }
 }
 
 fn interrupts_disabled() -> bool {
@@ -327,6 +387,153 @@ fn interrupts_disabled() -> bool {
         core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
     }
     flags & (1 << 9) == 0
+}
+
+#[cfg(feature = "qemu-test-timer-interrupts")]
+fn run_timer_interrupt_test() -> ! {
+    use core::alloc::Layout;
+    use finn_kernel::arch::x86_64::{apic, pic, pit, timer};
+    use finn_kernel::interrupt::{
+        InterruptContextGuard, in_interrupt_context, interrupt_context_faulted, interrupt_depth,
+    };
+    let (master_mask, slave_mask) = pic::masks();
+    if master_mask != 0xff || slave_mask != 0xff {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:TIMER_INTERRUPTS:BEGIN\nFINNOS:TEST:TIMER_INTERRUPTS:PIC_MASK_OK\n"
+    );
+    let width = finn_kernel::arch::x86_64::paging::cpu_paging_info()
+        .unwrap_or_else(|_| failure())
+        .physical_address_width;
+    if !apic::runtime_mode_valid(width) {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:TIMER_INTERRUPTS:APIC_MODE_OK\n");
+    if !finn_kernel::arch::x86_64::interrupts::validate() {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:TIMER_INTERRUPTS:IDT_GATES_OK\n");
+    if !finn_kernel::arch::x86_64::cpu::interrupts_enabled()
+        || in_interrupt_context()
+        || interrupt_depth() != 0
+    {
+        failure();
+    }
+    if finn_kernel::arch::x86_64::interrupts::call_site_alignment() != 0 {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:TIMER_INTERRUPTS:IF_ENABLED_OK\nFINNOS:INTERRUPTS:CALL_ALIGNMENT=0\nFINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_BEGIN\n"
+    );
+    finn_kernel::arch::x86_64::cpu::disable_interrupts();
+    let start = timer::ticks();
+    let start_deliveries = timer::real_deliveries();
+    let start_eois = apic::eoi_count();
+    finn_kernel::arch::x86_64::cpu::enable_interrupts();
+    let target = start.saturating_add(8);
+    while timer::ticks() < target {
+        finn_kernel::arch::x86_64::cpu::halt_once();
+    }
+    let end = timer::ticks();
+    finn_kernel::arch::x86_64::cpu::disable_interrupts();
+    let end_deliveries = timer::real_deliveries();
+    let end_eois = apic::eoi_count();
+    finn_kernel::arch::x86_64::cpu::enable_interrupts();
+    if end < target
+        || end_deliveries.saturating_sub(start_deliveries) < 8
+        || end_eois.saturating_sub(start_eois) < 8
+    {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:TIMER:TEST_START_TICKS={start}\nFINNOS:TIMER:TEST_END_TICKS={end}\nFINNOS:TIMER:TEST_ELAPSED_TICKS={}\nFINNOS:TIMER:TEST_DELIVERY_DELTA={}\nFINNOS:TIMER:TEST_EOI_DELTA={}\nFINNOS:TIMER:TEST_UPTIME_MS={}\nFINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_OK\n",
+        end - start,
+        end_deliveries - start_deliveries,
+        end_eois - start_eois,
+        timer::uptime_milliseconds()
+    );
+    let window_start = timer::ticks();
+    let pit_count = pit::duration_count(50).unwrap_or_else(|_| failure());
+    let window_end = pit::wait_reference(50).unwrap_or_else(|_| failure());
+    let window_ticks = timer::ticks().saturating_sub(window_start);
+    finn_kernel::serial_log!(
+        "FINNOS:TIMER:FREQUENCY_WINDOW_MS=50\nFINNOS:TIMER:FREQUENCY_WINDOW_PIT_COUNT={pit_count}\nFINNOS:TIMER:FREQUENCY_WINDOW_TICKS={window_ticks}\n"
+    );
+    if window_end != pit_count || !timer::frequency_window_valid(window_ticks) {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:TIMER_INTERRUPTS:FREQUENCY_OK\nFINNOS:TEST:TIMER_INTERRUPTS:MONOTONIC_OK\n"
+    );
+    if apic::timer_in_service() {
+        failure();
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:TIMER_INTERRUPTS:EOI_OK\nFINNOS:TEST:TIMER_INTERRUPTS:SPURIOUS_BEGIN\n"
+    );
+    let before = timer::spurious_count();
+    let before_eoi = apic::eoi_count();
+    // SAFETY: This software interrupt exercises only the spurious return path.
+    unsafe {
+        core::arch::asm!("int 0xff");
+    }
+    if timer::spurious_count() != before + 1
+        || apic::eoi_count() != before_eoi
+        || !finn_kernel::arch::x86_64::cpu::interrupts_enabled()
+        || in_interrupt_context()
+        || interrupt_depth() != 0
+    {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:TIMER_INTERRUPTS:SPURIOUS_OK\n");
+    if !timer::context_observed()
+        || in_interrupt_context()
+        || interrupt_depth() != 0
+        || interrupt_context_faulted()
+        || timer::real_deliveries() < 8
+    {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:TEST:TIMER_INTERRUPTS:INTERRUPT_CONTEXT_OK\n");
+    let layout = Layout::from_size_align(32, 8).unwrap_or_else(|_| failure());
+    let pointer = GLOBAL_HEAP.allocate(layout).unwrap_or_else(|_| failure());
+    let baseline = GLOBAL_HEAP.stats();
+    let guard = InterruptContextGuard::enter().unwrap_or_else(|_| failure());
+    if GLOBAL_HEAP.allocate(layout)
+        != Err(finn_kernel::memory::heap::HeapError::InterruptContextAllocationForbidden)
+    {
+        failure();
+    }
+    let null = unsafe { core::alloc::GlobalAlloc::alloc(&GLOBAL_HEAP, layout) };
+    if !null.is_null() {
+        failure();
+    }
+    if unsafe { GLOBAL_HEAP.deallocate(pointer, layout) }
+        != Err(finn_kernel::memory::heap::HeapError::InterruptContextAllocationForbidden)
+    {
+        failure();
+    }
+    if GLOBAL_HEAP.stats() != baseline {
+        failure();
+    }
+    drop(guard);
+    if in_interrupt_context() || interrupt_depth() != 0 {
+        failure();
+    }
+    unsafe {
+        GLOBAL_HEAP
+            .deallocate(pointer, layout)
+            .unwrap_or_else(|_| failure());
+    }
+    if GLOBAL_HEAP.stats().free_bytes != baseline.free_bytes + baseline.allocated_bytes {
+        failure();
+    }
+    GLOBAL_HEAP.check_invariants().unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!(
+        "FINNOS:TEST:TIMER_INTERRUPTS:HEAP_INTERRUPT_GUARD_OK\nFINNOS:TEST:TIMER_INTERRUPTS:PASS\n"
+    );
+    qemu::exit(0x10)
 }
 
 #[cfg(feature = "qemu-test-heap")]
