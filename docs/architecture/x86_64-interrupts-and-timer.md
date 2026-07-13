@@ -40,3 +40,10 @@ deliveries. It does not execute `int 0x40`. The only software interrupt in the
 test is `int 0xff`, solely to verify the spurious return path; that path sends
 no EOI. MADT parsing, IOAPIC routing, device IRQs, x2APIC, SMP, IPIs,
 scheduling, preemption, user mode, and wall-clock time remain future work.
+# Preemption-ready return path
+
+The ring-0 external frame is 20 eight-byte fields. Since the current gates use
+IST zero and remain in CPL0, the CPU does not append an old RSP or SS. The
+dispatcher receives the frame pointer and returns the pointer to restore. The
+100 Hz timer records a snapshot and sends EOI, but always resumes the interrupted
+task; timer-driven scheduling is the next milestone.

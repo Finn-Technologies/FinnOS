@@ -22,3 +22,9 @@ monotonic ticks. See [x86-64 interrupts and timer](x86_64-interrupts-and-timer.m
 The current x86-64 Kernel Core includes a single-BSP xAPIC periodic timer and
 monotonic ticks. General external IRQ routing, IOAPIC/MADT support, SMP,
 scheduling, preemption, user mode, and device drivers remain future work.
+# Preemption boundary
+
+Asynchronous interrupt contexts remain separate from cooperative task contexts.
+The dispatcher can select a return frame, but this milestone always selects the
+same frame. Timer requests are deferred until ordinary context and are not
+consumed by the ISR.

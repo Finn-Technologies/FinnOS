@@ -18,6 +18,7 @@ from .qemu import (
     validate_memory_map,
     validate_page_allocator,
     validate_page_tables,
+    validate_preemption_context,
     validate_heap,
     validate_timer,
     validate_cooperative_tasks,
@@ -46,7 +47,7 @@ def doctor() -> int:
 def command(name: str) -> int:
     if name == "help":
         print("FinnOS developer wrapper for the x86-64 UEFI First Boot milestone.")
-        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map test-page-allocator test-page-tables test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
+        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map test-page-allocator test-page-tables test-heap test-timer-interrupts test-cooperative-tasks test-preemption-context check-all clean")
         return 0
     if name == "doctor": return doctor()
     if name == "build": cargo(ROOT, ["build", "--workspace"]); return 0
@@ -60,7 +61,7 @@ def command(name: str) -> int:
         boot, kernel = build_boot(ROOT); stage_esp(ROOT / "build" / "out" / "x86_64-qemu", boot, kernel); return 0
     if name == "image":
         out = ROOT / "build" / "out" / "x86_64-qemu"; boot, kernel = build_boot(ROOT); esp = stage_esp(out, boot, kernel); make_image(esp, out / "finnos-x86_64-uefi.img"); return 0
-    if name in ("run", "run-headless", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks"):
+    if name in ("run", "run-headless", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks", "test-preemption-context"):
         test = name == "test-boot"
         exceptions = name == "test-exceptions"
         memory_map = name == "test-memory-map"
@@ -69,14 +70,17 @@ def command(name: str) -> int:
         heap = name == "test-heap"
         timer = name == "test-timer-interrupts"
         cooperative_tasks = name == "test-cooperative-tasks"
-        out = ROOT / "build" / "out" / ("x86_64-qemu-cooperative-tasks" if cooperative_tasks else "x86_64-qemu-timer-interrupts" if timer else "x86_64-qemu-heap" if heap else "x86_64-qemu-page-tables" if page_tables else "x86_64-qemu-page-allocator" if page_allocator else "x86_64-qemu-memory-map" if memory_map else "x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
-        boot, kernel = build_boot(ROOT, test=test, exceptions=exceptions, memory_map=memory_map, page_allocator=page_allocator, page_tables=page_tables, heap=heap, timer=timer, cooperative_tasks=cooperative_tasks); esp = stage_esp(out, boot, kernel); image = make_image(esp, out / "finnos-x86_64-uefi.img"); firmware = find_ovmf(); qemu = find_tool("qemu-system-x86_64")
+        preemption_context = name == "test-preemption-context"
+        out = ROOT / "build" / "out" / ("x86_64-qemu-preemption-context" if preemption_context else "x86_64-qemu-cooperative-tasks" if cooperative_tasks else "x86_64-qemu-timer-interrupts" if timer else "x86_64-qemu-heap" if heap else "x86_64-qemu-page-tables" if page_tables else "x86_64-qemu-page-allocator" if page_allocator else "x86_64-qemu-memory-map" if memory_map else "x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
+        boot, kernel = build_boot(ROOT, test=test, exceptions=exceptions, memory_map=memory_map, page_allocator=page_allocator, page_tables=page_tables, heap=heap, timer=timer, cooperative_tasks=cooperative_tasks, preemption_context=preemption_context); esp = stage_esp(out, boot, kernel); image = make_image(esp, out / "finnos-x86_64-uefi.img"); firmware = find_ovmf(); qemu = find_tool("qemu-system-x86_64")
         if not firmware or not qemu: raise RuntimeError("QEMU and OVMF are required")
-        args = qemu_command(qemu, str(firmware), image, headless=name != "run", test_exit=test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks); print("$ " + " ".join(args), flush=True)
-        if test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks:
+        args = qemu_command(qemu, str(firmware), image, headless=name != "run", test_exit=test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks or preemption_context); print("$ " + " ".join(args), flush=True)
+        if test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks or preemption_context:
             result = subprocess.run(args, capture_output=True, text=True, timeout=float(os.environ.get("FINNOS_BOOT_TIMEOUT_SECONDS", "45")), check=False); output = result.stdout + result.stderr; print(output)
             print(f"qemu status: {result.returncode}")
-            if cooperative_tasks:
+            if preemption_context:
+                errors = validate_preemption_context(result.returncode, output)
+            elif cooperative_tasks:
                 errors = validate_cooperative_tasks(result.returncode, output)
             elif exceptions:
                 errors = validate_exceptions(result.returncode, output)
@@ -98,7 +102,7 @@ def command(name: str) -> int:
         subprocess.run(args, check=True); return 0
     if name == "test-python": subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools/tests", "-p", "test_*.py"], cwd=ROOT, check=True); return 0
     if name == "check-all":
-        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks"))
+        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks", "test-preemption-context"))
     if name == "clean":
         for path in (ROOT / "target", ROOT / "build" / "out"):
             if path.exists() and ROOT in path.parents: print(f"removing {path}"); shutil.rmtree(path)

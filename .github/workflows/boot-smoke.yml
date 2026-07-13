@@ -31,3 +31,5 @@ jobs:
         run: ./tools/finn test-timer-interrupts
       - name: Run cooperative task integration test
         run: ./tools/finn test-cooperative-tasks
+      - name: Run preemption-context integration test
+        run: ./tools/finn test-preemption-context

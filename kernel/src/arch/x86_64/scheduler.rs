@@ -51,6 +51,8 @@ pub enum SchedulerError {
     },
     /// Runtime ownership is preserved but scheduling is disabled after cleanup failure.
     Poisoned,
+    /// The bounded preemption guard faulted while preparing a transition.
+    PreemptionFault,
 }
 
 /// One side of a scheduler rollback failure.
@@ -142,6 +144,8 @@ pub fn initialize(
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> Result<(TaskId, TaskId), SchedulerError> {
     reject_interrupt_context()?;
+    let _preemption_guard =
+        crate::preemption::PreemptionGuard::enter().map_err(|_| SchedulerError::PreemptionFault)?;
     // SAFETY: initialization is BSP-only and cannot race an interrupt handler.
     let cell = unsafe { &mut *RUNTIME.0.get() };
     // SAFETY: initialization is BSP-only and serialized with this access.
@@ -185,6 +189,20 @@ pub fn initialize(
         context,
         stack: Some(stack),
     };
+    super::interrupts::publish_task_stack(
+        idle,
+        runtime.slots[idle.slot()]
+            .stack
+            .as_ref()
+            .ok_or(SchedulerError::InvalidEntry)?
+            .virtual_start(),
+        runtime.slots[idle.slot()]
+            .stack
+            .as_ref()
+            .ok_or(SchedulerError::InvalidEntry)?
+            .virtual_end(),
+    )
+    .map_err(|_| SchedulerError::InvalidEntry)?;
     if let Err(error) = runtime.policy.check_invariants() {
         let mut owned = runtime.slots[idle.slot()].stack.take().ok_or(
             SchedulerError::InitializationRollbackFailed {
@@ -220,6 +238,8 @@ pub fn spawn(
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> Result<TaskId, SchedulerError> {
     reject_interrupt_context()?;
+    let _preemption_guard =
+        crate::preemption::PreemptionGuard::enter().map_err(|_| SchedulerError::PreemptionFault)?;
     if entry as usize == 0 {
         return Err(SchedulerError::InvalidEntry);
     }
@@ -290,6 +310,12 @@ pub fn spawn(
         context,
         stack: Some(stack),
     };
+    let published = runtime.slots[id.slot()]
+        .stack
+        .as_ref()
+        .ok_or(SchedulerError::InvalidEntry)?;
+    super::interrupts::publish_task_stack(id, published.virtual_start(), published.virtual_end())
+        .map_err(|_| SchedulerError::InvalidEntry)?;
     Ok(id)
 }
 
@@ -468,6 +494,8 @@ pub fn reap(
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> Result<(), SchedulerError> {
     reject_interrupt_context()?;
+    let _preemption_guard =
+        crate::preemption::PreemptionGuard::enter().map_err(|_| SchedulerError::PreemptionFault)?;
     let runtime = runtime_mut()?;
     let prepared = runtime.policy.prepare_reap(id)?;
     let slot = &mut runtime.slots[id.slot()];
@@ -477,6 +505,7 @@ pub fn reap(
         return Err(error.into());
     }
     *slot = RuntimeSlot::EMPTY;
+    super::interrupts::unpublish_task_stack(id.slot());
     runtime.policy.commit_reap(prepared);
     Ok(())
 }
@@ -494,6 +523,7 @@ pub fn park_bootstrap_and_run_idle() -> ! {
         fatal_scheduler();
     }
     let plan = (|| {
+        let _preemption_guard = crate::preemption::PreemptionGuard::enter().ok()?;
         let runtime = runtime_mut().ok()?;
         let old = runtime.policy.current();
         let mut candidate = runtime.policy;
@@ -523,6 +553,8 @@ pub fn probe_idle_once() -> Result<(), SchedulerError> {
         return Err(SchedulerError::Reentrant);
     }
     let result: Result<(*mut u64, u64), SchedulerError> = (|| {
+        let _preemption_guard = crate::preemption::PreemptionGuard::enter()
+            .map_err(|_| SchedulerError::PreemptionFault)?;
         let runtime = runtime_mut()?;
         let old = runtime.policy.current();
         let mut candidate = runtime.policy;
@@ -544,6 +576,8 @@ fn prepare_yield() -> Result<Option<(*mut u64, u64)>, SchedulerError> {
         return Err(SchedulerError::Reentrant);
     }
     let result = (|| {
+        let _preemption_guard = crate::preemption::PreemptionGuard::enter()
+            .map_err(|_| SchedulerError::PreemptionFault)?;
         let runtime = runtime_mut()?;
         let old = runtime.policy.current();
         let mut candidate = runtime.policy;
@@ -571,6 +605,7 @@ pub fn exit_current() -> ! {
         fatal_scheduler();
     }
     let plan = (|| {
+        let _preemption_guard = crate::preemption::PreemptionGuard::enter().ok()?;
         let runtime = runtime_mut().ok()?;
         let old = runtime.policy.current();
         let mut candidate = runtime.policy;

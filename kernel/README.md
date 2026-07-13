@@ -7,3 +7,9 @@ The crate exposes kernel name and version metadata, boot-information validation,
 
 Run `cargo check --workspace` and `cargo test --workspace`. See [kernel architecture](../docs/architecture/kernel.md).
 The x86-64 kernel constructs its own four-level page tables, bounded physical allocator, guarded 1 MiB heap, xAPIC, and 100 Hz timer. It now also provides eight generation-tagged cooperative task slots, guarded 64 KiB task stacks, real SysV64 context switching, deferred stack reclamation, and a dedicated idle task. IOAPIC routing, device IRQs, preemption, user mode, drivers, Peony, and ARM64 remain unimplemented.
+# Preemption-ready interrupt contexts
+
+The kernel now validates a fixed 160-byte ring-0 interrupt frame, attributes
+interrupts by published stack ranges, and returns through the dispatcher’s
+selected frame pointer. The timer still resumes the same task; nested
+preemption guards only defer a bounded reschedule request.

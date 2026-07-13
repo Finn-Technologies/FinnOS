@@ -1,5 +1,11 @@
 # FinnOS
 
+## Kernel interrupt contexts
+
+The x86-64 kernel validates complete ring-0 interrupt-return frames and
+stack-derived task attribution. Preemption requests are bounded and deferred;
+the timer does not switch tasks in this milestone.
+
 ## What is FinnOS?
 
 FinnOS is an original operating system project. It is not a Linux distribution and is not UNIX-like by design. Its long-term architecture is capability-based and intended for x86-64 and ARM64 computers, tablets, and phones.

@@ -170,6 +170,7 @@ pub fn handle_tick() {
     if old.is_err() {
         TICK_OVERFLOW.store(true, Ordering::Release);
     }
+    crate::preemption::on_timer_tick();
     apic::timer_eoi();
 }
 

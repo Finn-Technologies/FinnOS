@@ -212,6 +212,79 @@ COOPERATIVE_TASK_MARKERS = MARKERS[:-2] + (
     "FINNOS:TEST:COOPERATIVE_TASKS:SLOT_REUSE_OK", "FINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK", "FINNOS:TEST:COOPERATIVE_TASKS:TIMER_CONTINUITY_OK", "FINNOS:TEST:COOPERATIVE_TASKS:INVARIANTS_OK", "FINNOS:TEST:COOPERATIVE_TASKS:PASS",
 )
 
+PREEMPTION_CONTEXT_MARKERS = MARKERS + (
+    "FINNOS:TEST:PREEMPTION_CONTEXT:BEGIN",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:FRAME_LAYOUT_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_BEGIN",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:ALL_GPRS_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RIP_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:EXACT_RSP_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_BEGIN",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:TASK_ATTRIBUTION_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:IDLE_ATTRIBUTION_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:REQUEST_DEFERRED_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:REQUEST_CONSUMED_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:NO_SWITCH_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:INVARIANTS_OK",
+    "FINNOS:TEST:PREEMPTION_CONTEXT:PASS",
+)
+def validate_preemption_context(status: int, output: str) -> list[str]:
+    import re
+    errors: list[str] = []
+    if status != 33: errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in PREEMPTION_CONTEXT_MARKERS]
+    if any(position < 0 for position in positions): errors.append("missing preemption-context marker(s)")
+    if positions != sorted(position for position in positions if position >= 0): errors.append("preemption-context markers are out of order")
+    for marker in dict.fromkeys(PREEMPTION_CONTEXT_MARKERS):
+        if output.count(marker) != 1: errors.append(f"expected exactly one marker: {marker}")
+    numeric_keys = (
+        "FRAME_SIZE", "SOFTWARE_FRAME", "SOFTWARE_RETURN_FRAME", "SOFTWARE_SAVED_RIP", "SOFTWARE_EXPECTED_RIP",
+        "SOFTWARE_INTERRUPTED_RSP", "SOFTWARE_EXPECTED_RSP", "SOFTWARE_POST_RSP", "TIMER_FRAME", "TIMER_RETURN_FRAME",
+        "TIMER_SAVED_RIP", "TIMER_LOOP_START", "TIMER_LOOP_END", "TIMER_INTERRUPTED_RSP", "TIMER_EXPECTED_RSP", "TIMER_POST_RSP", "IDLE_FRAME", "IDLE_INTERRUPTED_RSP",
+        "BOOTSTRAP_SLOT", "BOOTSTRAP_GENERATION", "WORKER_SLOT", "WORKER_GENERATION", "IDLE_SLOT", "IDLE_GENERATION",
+        "DEPTH_NESTED", "DEPTH_INNER_DROPPED", "DEPTH_OUTER_DROPPED", "REQUEST_WHILE_NESTED", "REQUEST_AFTER_INNER_DROP",
+        "REQUEST_AFTER_OUTER_DROP", "REQUEST_TAKEN", "REQUEST_AFTER_TAKE", "TICK_DELTA", "DELIVERY_DELTA", "EOI_DELTA",
+        "SWITCHES_BEFORE", "SWITCHES_AFTER", "CR3_BEFORE", "CR3_AFTER", "IF_ENABLED", "INTERRUPT_DEPTH", "FAULTED",
+    )
+    values: dict[str, int] = {}
+    for key in numeric_keys:
+        matches = re.findall(rf"(?m)^FINNOS:PREEMPT:{key}=((?:0x)?[0-9a-fA-F]+)$", output)
+        if len(matches) != 1:
+            errors.append(f"expected exactly one numeric field {key}")
+        else:
+            try: values[key] = int(matches[0], 0)
+            except ValueError: errors.append(f"invalid numeric field {key}")
+    if values.get("FRAME_SIZE") != 160: errors.append("frame size is not 160")
+    if values.get("SOFTWARE_FRAME") != values.get("SOFTWARE_RETURN_FRAME"): errors.append("software frame pointer changed")
+    if values.get("SOFTWARE_SAVED_RIP") != values.get("SOFTWARE_EXPECTED_RIP"): errors.append("software RIP mismatch")
+    if not (values.get("SOFTWARE_INTERRUPTED_RSP") == values.get("SOFTWARE_EXPECTED_RSP") and values.get("SOFTWARE_POST_RSP") == values.get("SOFTWARE_EXPECTED_RSP", 0) + 24): errors.append("software RSP mismatch")
+    if values.get("TIMER_FRAME") != values.get("TIMER_RETURN_FRAME"): errors.append("timer frame pointer changed")
+    if not (values.get("TIMER_LOOP_START", 0) <= values.get("TIMER_SAVED_RIP", 0) < values.get("TIMER_LOOP_END", 0)): errors.append("timer RIP is outside spin loop")
+    if not (values.get("TIMER_INTERRUPTED_RSP") == values.get("TIMER_EXPECTED_RSP") and values.get("TIMER_POST_RSP") == values.get("TIMER_EXPECTED_RSP", 0) + 24): errors.append("timer RSP mismatch")
+    if values.get("BOOTSTRAP_SLOT") != 0 or values.get("BOOTSTRAP_GENERATION", 0) == 0: errors.append("invalid bootstrap identity")
+    if values.get("WORKER_SLOT", 0) < 2 or values.get("WORKER_GENERATION", 0) == 0: errors.append("invalid worker identity")
+    if values.get("IDLE_SLOT") != 1 or values.get("IDLE_GENERATION", 0) == 0: errors.append("invalid idle identity")
+    if (values.get("DEPTH_NESTED"), values.get("DEPTH_INNER_DROPPED"), values.get("DEPTH_OUTER_DROPPED")) != (2, 1, 0): errors.append("invalid depth transition")
+    if [values.get(key) for key in ("REQUEST_WHILE_NESTED", "REQUEST_AFTER_INNER_DROP", "REQUEST_AFTER_OUTER_DROP", "REQUEST_TAKEN", "REQUEST_AFTER_TAKE")] != [1, 1, 1, 1, 0]: errors.append("invalid request transition")
+    if values.get("TICK_DELTA", 0) <= 0 or values.get("DELIVERY_DELTA", 0) <= 0 or values.get("EOI_DELTA") != values.get("DELIVERY_DELTA"): errors.append("invalid timer deltas")
+    if values.get("SWITCHES_BEFORE") != values.get("SWITCHES_AFTER"): errors.append("context switch count changed")
+    if values.get("CR3_BEFORE") != values.get("CR3_AFTER"): errors.append("CR3 changed")
+    if values.get("IF_ENABLED") != 1 or values.get("INTERRUPT_DEPTH") != 0 or values.get("FAULTED") != 0: errors.append("interrupt safety state invalid")
+    register_keys = tuple(f"{phase}_R{index}" for phase in ("SOFTWARE_SAVED", "SOFTWARE_POST", "TIMER_SAVED", "TIMER_POST") for index in range(15))
+    for key in register_keys:
+        matches = re.findall(rf"(?m)^FINNOS:PREEMPT:{key}=((?:0x)?[0-9a-fA-F]+)$", output)
+        if len(matches) != 1: errors.append(f"expected exactly one register field {key}")
+    patterns = [0x1111111111111111, 0x2222222222222222, 0x3333333333333333, 0x4444444444444444, 0x5555555555555555, 0x6666666666666666, 0x7777777777777777, 0x8888888888888888, 0x9999999999999999, 0xaaaaaaaaaaaaaaaa, 0xbbbbbbbbbbbbbbbb, 0xcccccccccccccccc, 0xdddddddddddddddd, 0xeeeeeeeeeeeeeeee, 0xffffffffffffffff]
+    for phase in ("SOFTWARE_SAVED", "SOFTWARE_POST", "TIMER_SAVED", "TIMER_POST"):
+        for index, expected in enumerate(patterns):
+            match = re.findall(rf"(?m)^FINNOS:PREEMPT:{phase}_R{index}=((?:0x)?[0-9a-fA-F]+)$", output)
+            if match and int(match[0], 0) != expected: errors.append(f"wrong register field {phase}_R{index}")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:INTERRUPT:UNEXPECTED", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:EXCEPTION:UNHANDLED", "FINNOS:KERNEL:PREEMPTION_ERROR", "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR", "FINNOS:KERNEL:TASK_ATTRIBUTION_ERROR"):
+        if marker in output: errors.append(f"forbidden marker found: {marker}")
+    return errors
+
 def validate_cooperative_tasks(status: int, output: str) -> list[str]:
     errors: list[str] = []
     if status != 33: errors.append(f"expected QEMU status 33, got {status}")

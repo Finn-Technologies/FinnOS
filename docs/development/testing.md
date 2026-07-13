@@ -28,3 +28,9 @@ simulated interrupt context. It never executes `int 0x40`; `int 0xff` is used
 only for the spurious-dispatch test.
 
 `./tools/finn test-cooperative-tasks` uses real guarded worker stacks and validates FIFO order, stack persistence, callee-saved registers, exit, reclamation, stale-ID rejection, idle execution, and timer continuity.
+# Kernel preemption-context coverage
+
+The host suite checks frame layout, contract validation, publication boundaries,
+overlap rejection, and preemption nesting. The dedicated QEMU suite adds real
+interrupts and timer delivery; it does not replace the existing cooperative
+task test.

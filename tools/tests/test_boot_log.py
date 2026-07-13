@@ -1,8 +1,33 @@
 import unittest
 
-from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
+from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, PREEMPTION_CONTEXT_MARKERS, TIMER_MARKERS, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_preemption_context, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
+    def test_preemption_context_markers_are_strict(self):
+        numeric = {
+            "FRAME_SIZE": 160, "SOFTWARE_FRAME": 0x1000, "SOFTWARE_RETURN_FRAME": 0x1000,
+            "SOFTWARE_SAVED_RIP": 0x2000, "SOFTWARE_EXPECTED_RIP": 0x2000,
+            "SOFTWARE_INTERRUPTED_RSP": 0x3000, "SOFTWARE_EXPECTED_RSP": 0x3000, "SOFTWARE_POST_RSP": 0x3018,
+            "TIMER_FRAME": 0x4000, "TIMER_RETURN_FRAME": 0x4000, "TIMER_SAVED_RIP": 0x5000,
+            "TIMER_LOOP_START": 0x4fff, "TIMER_LOOP_END": 0x5001, "TIMER_INTERRUPTED_RSP": 0x6000,
+            "TIMER_EXPECTED_RSP": 0x6000, "TIMER_POST_RSP": 0x6018, "IDLE_FRAME": 0x7000,
+            "IDLE_INTERRUPTED_RSP": 0x7100, "BOOTSTRAP_SLOT": 0, "BOOTSTRAP_GENERATION": 1,
+            "WORKER_SLOT": 2, "WORKER_GENERATION": 1, "IDLE_SLOT": 1, "IDLE_GENERATION": 1,
+            "DEPTH_NESTED": 2, "DEPTH_INNER_DROPPED": 1, "DEPTH_OUTER_DROPPED": 0,
+            "REQUEST_WHILE_NESTED": 1, "REQUEST_AFTER_INNER_DROP": 1, "REQUEST_AFTER_OUTER_DROP": 1,
+            "REQUEST_TAKEN": 1, "REQUEST_AFTER_TAKE": 0, "TICK_DELTA": 1, "DELIVERY_DELTA": 1,
+            "EOI_DELTA": 1, "SWITCHES_BEFORE": 4, "SWITCHES_AFTER": 4, "CR3_BEFORE": 0x1000,
+            "CR3_AFTER": 0x1000, "IF_ENABLED": 1, "INTERRUPT_DEPTH": 0, "FAULTED": 0,
+        }
+        lines = ["\n".join(PREEMPTION_CONTEXT_MARKERS)]
+        lines.extend(f"FINNOS:PREEMPT:{key}={value:#x}" if key.endswith(("FRAME", "RIP", "RSP", "CR3", "LOOP_START", "LOOP_END")) else f"FINNOS:PREEMPT:{key}={value}" for key, value in numeric.items())
+        patterns = [0x1111111111111111, 0x2222222222222222, 0x3333333333333333, 0x4444444444444444, 0x5555555555555555, 0x6666666666666666, 0x7777777777777777, 0x8888888888888888, 0x9999999999999999, 0xAAAAAAAAAAAAAAAA, 0xBBBBBBBBBBBBBBBB, 0xCCCCCCCCCCCCCCCC, 0xDDDDDDDDDDDDDDDD, 0xEEEEEEEEEEEEEEEE, 0xFFFFFFFFFFFFFFFF]
+        for phase in ("SOFTWARE_SAVED", "SOFTWARE_POST", "TIMER_SAVED", "TIMER_POST"):
+            lines.extend(f"FINNOS:PREEMPT:{phase}_R{index}=0x{value:x}" for index, value in enumerate(patterns))
+        log = "\n".join(lines)
+        self.assertEqual(validate_preemption_context(33, log), [])
+        self.assertTrue(validate_preemption_context(0, log))
+        self.assertTrue(validate_preemption_context(33, log + "\n" + PREEMPTION_CONTEXT_MARKERS[-1]))
     def cooperative_log(self):
         evidence = [f"FINNOS:TASKS:EVENT_{index}={value}" for index, value in enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))]
         evidence += [

@@ -65,6 +65,14 @@ Non-goal: timer-driven preemption, priorities, sleeping, SMP, user
 processes, separate address spaces, system calls, or IPC. Preemption,
 process, user-mode, and IPC foundations remain planned.
 
+### 3.8 Preemption-ready interrupt task contexts — Complete for x86-64 QEMU
+
+Objective: preserve and validate complete ring-0 interrupt task state, return
+through dispatcher-selected interrupt frames, and defer reschedule requests
+through bounded preemption-disable nesting. Non-goal: selecting or switching
+to another task from interrupt context; timer-driven kernel-task preemption is
+the following milestone.
+
 ## 4. First User Space — Planned
 
 Objective: start isolated services and a minimal runtime. Completion requires service startup and failure diagnostics. Non-goal: desktop applications.

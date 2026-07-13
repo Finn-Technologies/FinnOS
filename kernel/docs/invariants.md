@@ -19,3 +19,10 @@ The timer handler uses only atomics and volatile APIC EOI; it never allocates or
 acquires the heap lock. Heap operations reject interrupt context before lock
 acquisition. IF is enabled only after IDT gates, PIC masks, APIC mapping,
 calibration, and periodic timer programming have been validated.
+# Preemption-context invariants
+
+External entries save fifteen GPRs followed by vector, synthetic error code,
+RIP, CS, and RFLAGS. CPL0/IST0 does not push RSP/SS; diagnostics derive the
+interrupted stack address from the fixed frame contract. Published task stacks
+use per-slot release/acquire metadata and generation-tagged IDs. Interrupt
+dispatch never borrows scheduler runtime or mutates runnable policy.

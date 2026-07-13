@@ -21,8 +21,8 @@ pub const IDLE_SLOT: usize = 1;
 /// A stable task identity made from a slot and a non-zero generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TaskId {
-    slot: u8,
-    generation: u32,
+    pub(crate) slot: u8,
+    pub(crate) generation: u32,
 }
 
 impl TaskId {
