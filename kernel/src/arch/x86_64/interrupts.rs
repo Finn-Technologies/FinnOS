@@ -143,6 +143,7 @@ pub enum Ring0FrameLayout {
 impl Ring0FrameLayout {
     /// Returns the validated bytes occupied from the raw frame pointer through
     /// the saved-RSP boundary.
+    #[must_use]
     pub const fn footprint_size(self) -> u64 {
         match self {
             Self::Aligned => KernelInterruptFrame::SIZE,
@@ -152,6 +153,7 @@ impl Ring0FrameLayout {
         }
     }
     /// Returns the alignment-gap size for this layout.
+    #[must_use]
     pub const fn gap_size(self) -> u64 {
         match self {
             Self::Aligned => 0,
@@ -745,6 +747,10 @@ impl KernelInterruptFrame {
         Ok((saved_rsp, layout))
     }
     /// Validates the raw frame and returns its saved RSP.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation error as [`Self::validate_with_layout`].
     pub fn validate(&self, frame_pointer: u64) -> Result<u64, FrameValidationError> {
         Ok(self.validate_with_layout(frame_pointer)?.0)
     }
@@ -929,7 +935,7 @@ extern "C" fn rust_interrupt_dispatch(
     };
     if frame_pointer < publication.start || frame_end > publication.end {
         return reject_frame(Some(frame_ref), AttributionError::FrameOutsideStack.name());
-    };
+    }
     let task_id = publication.task_id;
     match u8::try_from(frame_ref.vector).unwrap_or(u8::MAX) {
         TIMER_VECTOR => timer::handle_tick(),
