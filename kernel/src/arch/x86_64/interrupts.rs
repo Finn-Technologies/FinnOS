@@ -811,15 +811,15 @@ mod tests {
     #[test]
     fn attribution_uses_published_stack_boundaries() {
         let id = TaskId::new(2, 7).unwrap();
-        publish_task_stack(id, 0x1000, 0x2000).unwrap();
-        assert_eq!(attribute_interrupted_rsp(0x1001), Ok(id));
-        assert_eq!(attribute_interrupted_rsp(0x2000), Ok(id));
+        publish_task_stack(id, 0x10_000, 0x11_000).unwrap();
+        assert_eq!(attribute_interrupted_rsp(0x10_001), Ok(id));
+        assert_eq!(attribute_interrupted_rsp(0x10_fff), Ok(id));
         assert_eq!(
-            attribute_interrupted_rsp(0x1000),
+            attribute_interrupted_rsp(0x10_000),
             Err(AttributionError::NoMatch)
         );
         assert_eq!(
-            attribute_interrupted_rsp(0x0fff),
+            attribute_interrupted_rsp(0x0f_ff),
             Err(AttributionError::NoMatch)
         );
         assert_eq!(
@@ -927,17 +927,17 @@ mod tests {
     #[test]
     fn complete_frame_bounds_use_the_hardware_footprint() {
         let id = TaskId::new(6, 3).unwrap();
-        publish_task_stack(id, 0x1000, 0x2000).unwrap();
+        publish_task_stack(id, 0x20_000, 0x21_000).unwrap();
         assert_eq!(
-            validate_frame_stack(0x1000, 0x1000 + KernelInterruptFrame::SIZE),
+            validate_frame_stack(0x20_000, 0x20_000 + KernelInterruptFrame::SIZE),
             Ok(PublishedStackInfo {
                 task_id: id,
-                start: 0x1000,
-                end: 0x2000,
+                start: 0x20_000,
+                end: 0x21_000,
             })
         );
         assert_eq!(
-            validate_frame_stack(0x1f00, 0x1f00),
+            validate_frame_stack(0x20_f80, 0x20_f80),
             Err(AttributionError::FrameOutsideStack)
         );
         unpublish_task_stack(id.slot());
