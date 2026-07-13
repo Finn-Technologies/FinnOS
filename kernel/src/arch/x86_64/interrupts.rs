@@ -60,6 +60,8 @@ pub enum AttributionError {
     UnstablePublication,
     /// The mirrored generation was invalid.
     InvalidGeneration,
+    /// A live publication already occupies the task slot.
+    AlreadyPublished,
     /// The frame does not fit entirely in the selected stack.
     FrameOutsideStack,
     /// The interrupt frame pointer or its complete-frame arithmetic is invalid.
@@ -92,6 +94,25 @@ pub enum FrameValidationError {
     InvalidFields,
     /// The derived interrupted RSP was not canonical.
     NoncanonicalRsp,
+    /// The saved RSP does not follow the complete frame footprint.
+    SavedRspMismatch,
+}
+
+/// Errors from phase-scoped interrupt capture ownership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CaptureError {
+    /// Another capture phase is still active.
+    AlreadyActive,
+    /// The task identity cannot be used for capture.
+    InvalidTask,
+    /// The capture generation no longer owns the phase.
+    StaleToken,
+}
+
+/// Ownership token for one phase-scoped capture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureToken {
+    generation: u64,
 }
 
 /// A copy of all general-purpose registers saved by an interrupt entry.
@@ -197,6 +218,8 @@ static SNAPSHOT: SnapshotCell = SnapshotCell(UnsafeCell::new(InterruptedTaskSnap
 }));
 static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static CAPTURE_READY: AtomicBool = AtomicBool::new(false);
+static CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static CAPTURED: AtomicBool = AtomicBool::new(false);
 static CAPTURE_VECTOR: AtomicU8 = AtomicU8::new(u8::MAX);
 static CAPTURE_TASK_SLOT: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -215,12 +238,17 @@ pub static PREEMPTION_TIMER_OBSERVED: AtomicBool = AtomicBool::new(false);
 /// # Errors
 ///
 /// Returns [`AttributionError::InvalidGeneration`] when the task identity or
-/// stack bounds cannot be represented by the publication table.
+/// stack bounds cannot be represented by the publication table, or
+/// [`AttributionError::AlreadyPublished`] when the slot still has a live
+/// publication.
 pub fn publish_task_stack(id: TaskId, start: u64, end: u64) -> Result<(), AttributionError> {
     if id.generation() == 0 || id.slot() >= MAX_PUBLISHED_STACKS || start >= end {
         return Err(AttributionError::InvalidGeneration);
     }
     let slot = &PUBLISHED_STACKS[id.slot()];
+    if slot.active.load(Ordering::Acquire) {
+        return Err(AttributionError::AlreadyPublished);
+    }
     slot.active.store(false, Ordering::Release);
     slot.start.store(start, Ordering::Relaxed);
     slot.end.store(end, Ordering::Relaxed);
@@ -264,7 +292,7 @@ fn find_published_stack(interrupted_rsp: u64) -> Result<PublishedStackInfo, Attr
         if !stable {
             return Err(AttributionError::UnstablePublication);
         }
-        if start < interrupted_rsp && interrupted_rsp <= end {
+        if start < interrupted_rsp && interrupted_rsp < end {
             let slot_index =
                 u8::try_from(slot_index).map_err(|_| AttributionError::InvalidGeneration)?;
             let id = TaskId::new(slot_index, generation)
@@ -343,13 +371,15 @@ fn record_snapshot(
     let expected_vector = CAPTURE_VECTOR.load(Ordering::Acquire);
     let expected_slot = CAPTURE_TASK_SLOT.load(Ordering::Acquire);
     let expected_generation = CAPTURE_TASK_GENERATION.load(Ordering::Acquire);
-    if !CAPTURE_ACTIVE.load(Ordering::Acquire)
+    if !CAPTURE_READY.load(Ordering::Acquire)
+        || !CAPTURE_ACTIVE.load(Ordering::Acquire)
         || expected_vector != u8::try_from(frame.vector).unwrap_or(u8::MAX)
         || expected_slot != id.slot()
         || expected_generation != id.generation()
     {
         return false;
     }
+    CAPTURE_READY.store(false, Ordering::Release);
     if CAPTURE_ACTIVE
         .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -417,7 +447,10 @@ fn snapshot_copy() -> Option<InterruptedTaskSnapshot> {
         if before == 0 || !before.is_multiple_of(2) {
             continue;
         }
-        // SAFETY: sequence validation rejects a concurrent interrupt write.
+        // SAFETY: callers reject interrupt-context reads, the BSP is the sole
+        // writer, and target builds mask local interrupts around this fixed
+        // ordinary-context copy. The sequence only validates the bounded copy;
+        // it is not the synchronization primitive that makes UnsafeCell sound.
         let copy = unsafe { *SNAPSHOT.0.get() };
         if before == SNAPSHOT_SEQUENCE.load(Ordering::Acquire) {
             return Some(copy);
@@ -426,30 +459,51 @@ fn snapshot_copy() -> Option<InterruptedTaskSnapshot> {
     None
 }
 /// Starts the bounded real-timer preservation observation phase.
-pub fn begin_capture(vector: u8, task_id: TaskId) {
+pub fn begin_capture(vector: u8, task_id: TaskId) -> Result<CaptureToken, CaptureError> {
+    if task_id.generation() == 0 {
+        return Err(CaptureError::InvalidTask);
+    }
+    if CAPTURE_ACTIVE.load(Ordering::Acquire)
+        || CAPTURE_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+    {
+        return Err(CaptureError::AlreadyActive);
+    }
+    CAPTURE_READY.store(false, Ordering::Release);
     SNAPSHOT_SEQUENCE.store(0, Ordering::Release);
     CAPTURED.store(false, Ordering::Release);
+    let generation = CAPTURE_GENERATION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
     CAPTURE_VECTOR.store(vector, Ordering::Release);
     CAPTURE_TASK_SLOT.store(task_id.slot(), Ordering::Release);
     CAPTURE_TASK_GENERATION.store(task_id.generation(), Ordering::Release);
-    CAPTURE_ACTIVE.store(true, Ordering::Release);
+    CAPTURE_READY.store(true, Ordering::Release);
+    Ok(CaptureToken { generation })
 }
 
 /// Ends a phase-specific capture without permitting later interrupts to overwrite it.
-pub fn end_capture() {
+pub fn end_capture(token: CaptureToken) -> Result<(), CaptureError> {
+    if CAPTURE_GENERATION.load(Ordering::Acquire) != token.generation {
+        return Err(CaptureError::StaleToken);
+    }
+    CAPTURE_READY.store(false, Ordering::Release);
     CAPTURE_ACTIVE.store(false, Ordering::Release);
+    Ok(())
 }
 
 /// Starts the bounded real-timer preservation observation phase.
-pub fn begin_timer_test(task_id: TaskId) {
+pub fn begin_timer_test(task_id: TaskId) -> Result<CaptureToken, CaptureError> {
     PREEMPTION_TIMER_OBSERVED.store(false, Ordering::Release);
+    let token = begin_capture(TIMER_VECTOR, task_id)?;
     PREEMPTION_TIMER_PHASE.store(true, Ordering::Release);
-    begin_capture(TIMER_VECTOR, task_id);
+    Ok(token)
 }
 /// Ends the bounded real-timer preservation observation phase.
-pub fn end_timer_test() {
+pub fn end_timer_test(token: CaptureToken) -> Result<(), CaptureError> {
     PREEMPTION_TIMER_PHASE.store(false, Ordering::Release);
-    end_capture();
+    end_capture(token)
 }
 /// Returns whether a real timer was observed during the phase.
 #[must_use]
@@ -556,6 +610,10 @@ impl KernelInterruptFrame {
         if !super::paging::is_canonical(frame_end.saturating_sub(1)) {
             return Err(FrameValidationError::NoncanonicalFrame);
         }
+        let saved_rsp = self.interrupted_rsp()?;
+        if frame_end != saved_rsp {
+            return Err(FrameValidationError::SavedRspMismatch);
+        }
         let vector = u8::try_from(self.vector).ok();
         if !matches!(
             vector,
@@ -569,7 +627,7 @@ impl KernelInterruptFrame {
         {
             return Err(FrameValidationError::InvalidFields);
         }
-        self.interrupted_rsp()
+        Ok(saved_rsp)
     }
     /// Validates a frame using its own address.
     #[must_use]
@@ -735,10 +793,27 @@ extern "C" fn rust_interrupt_dispatch(
     // SAFETY: the entry stubs pass a canonical, aligned pointer to their
     // complete fixed frame; validation below precedes all field use.
     let frame_ref = unsafe { &*frame };
-    let Ok(interrupted_rsp) = frame_ref.validate(frame_pointer) else {
-        return core::ptr::null_mut();
+    let contract_frame_pointer = match frame_ref.validate(frame_pointer) {
+        Ok(_) => frame_pointer,
+        Err(FrameValidationError::SavedRspMismatch) => {
+            // Same-CPL delivery can leave one alignment word before the
+            // measured tail. Normalize that raw base to the strict supported
+            // 184-byte contract before stack attribution.
+            let Some(normalized) = frame_pointer.checked_sub(8) else {
+                return core::ptr::null_mut();
+            };
+            if frame_ref.validate(normalized).is_err() {
+                return core::ptr::null_mut();
+            }
+            normalized
+        }
+        Err(_) => return core::ptr::null_mut(),
     };
-    let Ok(publication) = validate_frame_stack(frame_pointer, interrupted_rsp) else {
+    let interrupted_rsp = match frame_ref.validate(contract_frame_pointer) {
+        Ok(rsp) => rsp,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let Ok(publication) = validate_frame_stack(contract_frame_pointer, interrupted_rsp) else {
         return core::ptr::null_mut();
     };
     let task_id = publication.task_id;
@@ -812,6 +887,10 @@ mod tests {
     fn attribution_uses_published_stack_boundaries() {
         let id = TaskId::new(2, 7).unwrap();
         publish_task_stack(id, 0x10_000, 0x11_000).unwrap();
+        assert_eq!(
+            publish_task_stack(id, 0x10_000, 0x11_000),
+            Err(AttributionError::AlreadyPublished)
+        );
         assert_eq!(attribute_interrupted_rsp(0x10_001), Ok(id));
         assert_eq!(attribute_interrupted_rsp(0x10_fff), Ok(id));
         assert_eq!(
@@ -870,10 +949,11 @@ mod tests {
             rip: 0x1000,
             cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
             rflags: 2,
-            saved_rsp: 0x1100,
+            saved_rsp: 0,
             saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
             hardware_alignment: 0,
         };
+        frame.saved_rsp = core::ptr::from_ref(&frame) as u64 + KernelInterruptFrame::SIZE;
         assert!(frame.valid());
         frame.cs |= 3;
         assert!(!frame.valid());
@@ -911,15 +991,23 @@ mod tests {
             rip: 0x2000,
             cs: u64::from(crate::arch::x86_64::gdt::KERNEL_CODE_SELECTOR),
             rflags: 2,
-            saved_rsp: 0x8000,
+            saved_rsp: 0,
             saved_ss: u64::from(crate::arch::x86_64::gdt::KERNEL_DATA_SELECTOR),
             hardware_alignment: 0,
         };
-        assert_eq!(frame.interrupted_rsp(), Ok(0x8000));
+        frame.saved_rsp = core::ptr::from_ref(&frame) as u64 + KernelInterruptFrame::SIZE;
+        let expected_rsp = frame.saved_rsp;
+        assert_eq!(frame.interrupted_rsp(), Ok(expected_rsp));
         assert!(frame.valid());
         frame.saved_rsp = 0x0001_0000_0000_0000;
         assert!(!frame.valid());
-        frame.saved_rsp = 0x8000;
+        frame.saved_rsp = expected_rsp;
+        frame.saved_rsp -= 8;
+        assert_eq!(
+            frame.validate(core::ptr::from_ref(&frame) as u64),
+            Err(FrameValidationError::SavedRspMismatch)
+        );
+        frame.saved_rsp = expected_rsp;
         frame.saved_ss = 0;
         assert!(!frame.valid());
     }
@@ -946,8 +1034,15 @@ mod tests {
     #[test]
     fn phase_capture_is_frozen_until_explicitly_started_again() {
         let id = TaskId::new(7, 4).unwrap();
-        begin_capture(PREEMPTION_TEST_VECTOR, id);
-        end_capture();
+        let token = begin_capture(PREEMPTION_TEST_VECTOR, id).unwrap();
+        assert_eq!(
+            begin_capture(PREEMPTION_TEST_VECTOR, id),
+            Err(CaptureError::AlreadyActive)
+        );
+        end_capture(token).unwrap();
+        let replacement = begin_capture(PREEMPTION_TEST_VECTOR, id).unwrap();
+        assert_eq!(end_capture(token), Err(CaptureError::StaleToken));
+        end_capture(replacement).unwrap();
         assert!(snapshot().is_none());
     }
 }

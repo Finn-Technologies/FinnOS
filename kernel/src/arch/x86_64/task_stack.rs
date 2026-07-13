@@ -64,7 +64,7 @@ pub enum TaskStackLayoutError {
 }
 
 /// Fixed, heap-free ownership metadata for one mapped task stack.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskStackMapping {
     slot: u8,
     virtual_start: u64,
@@ -387,6 +387,85 @@ pub fn reclaim_task_stack(
     allocator.copy_state_from(prospective);
     *mapping = empty;
     Ok(())
+}
+
+/// Restores a stack mapping after a transactional reclaim must be undone.
+///
+/// # Errors
+///
+/// Returns an error if any original leaf cannot be remapped or if the address
+/// space and allocator do not return to their supplied baselines.
+pub fn restore_task_stack(
+    original: &TaskStackMapping,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    allocator_baseline: &EarlyPhysicalPageAllocator,
+    mapped_baseline: u64,
+) -> Result<(), TaskStackError> {
+    let result = (|| {
+        if original.owned_count != TASK_STACK_PAGE_COUNT
+            || original.mapped_count != TASK_STACK_PAGE_COUNT
+        {
+            return Err(TaskStackError::CorruptMapping);
+        }
+        let mut mapped = 0usize;
+        for index in 0..TASK_STACK_PAGE_COUNT {
+            let virtual_page = VirtualPage::new(
+                original
+                    .virtual_start
+                    .checked_add((index as u64) * PAGE_SIZE)
+                    .ok_or(TaskStackLayoutError::AddressOverflow)?,
+            )?;
+            let physical_frame =
+                PhysicalFrame::new(original.physical_pages[index], address_space.width())?;
+            let map_error = match address_space.map_page(
+                virtual_page,
+                physical_frame,
+                MappingPermissions::kernel_rw_nx(),
+            ) {
+                Ok(MapOutcome::Created) => {
+                    mapped += 1;
+                    None
+                }
+                Ok(MapOutcome::AlreadyPresent) => Some(PagingError::AlreadyMapped),
+                Err(error) => Some(error),
+            };
+            if let Some(map_error) = map_error {
+                let mut rollback_ok = true;
+                for rollback_index in (0..mapped).rev() {
+                    let page = VirtualPage::new(
+                        original.virtual_start + (rollback_index as u64) * PAGE_SIZE,
+                    )?;
+                    rollback_ok &= address_space.unmap_page(page).is_ok();
+                }
+                if !rollback_ok || address_space.mapped_pages() != mapped_baseline {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+                return Err(TaskStackError::Paging(map_error));
+            }
+        }
+        let expected_mapped = mapped_baseline
+            .checked_add(TASK_STACK_PAGE_COUNT as u64)
+            .ok_or(TaskStackError::RollbackFailed)?;
+        if address_space.mapped_pages() != expected_mapped {
+            return Err(TaskStackError::RollbackFailed);
+        }
+        if let Err(error) = validate_task_stack(original, address_space) {
+            for index in (0..TASK_STACK_PAGE_COUNT).rev() {
+                let page = VirtualPage::new(original.virtual_start + (index as u64) * PAGE_SIZE)?;
+                if address_space.unmap_page(page).is_err() {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    // Preserve allocator ownership metadata even when remapping fails. The
+    // caller retains the original mapping metadata and poisons the runtime if
+    // the page-table restoration itself was incomplete.
+    allocator.copy_state_from(allocator_baseline);
+    result
 }
 
 fn prevalidate_leaf_objects(

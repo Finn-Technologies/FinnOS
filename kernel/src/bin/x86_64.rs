@@ -669,10 +669,12 @@ fn run_preemption_context_test(
     );
     let bootstrap_id = scheduler::current_task().unwrap_or_else(|_| failure());
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:SOFTWARE_INTERRUPT_BEGIN\n");
-    interrupts::begin_capture(interrupts::PREEMPTION_TEST_VECTOR, bootstrap_id);
+    let software_capture =
+        interrupts::begin_capture(interrupts::PREEMPTION_TEST_VECTOR, bootstrap_id)
+            .unwrap_or_else(|_| failure());
     let software_ok = unsafe { finnos_preemption_software_test() } != 0;
     let software = interrupts::snapshot().unwrap_or_else(|| failure());
-    interrupts::end_capture();
+    interrupts::end_capture(software_capture).unwrap_or_else(|_| failure());
     let patterns = [
         0x1111_1111_1111_1111,
         0x2222_2222_2222_2222,
@@ -756,13 +758,13 @@ fn run_preemption_context_test(
         software.saved_ss
     );
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_BEGIN\n");
-    interrupts::begin_timer_test(bootstrap_id);
+    let timer_capture = interrupts::begin_timer_test(bootstrap_id).unwrap_or_else(|_| failure());
     let timer_start = timer::ticks();
     let deliveries_start = timer::real_deliveries();
     let eoi_start = apic::eoi_count();
     let cr3_before = paging::current_cr3();
     let timer_ok = unsafe { finnos_preemption_timer_test() } != 0;
-    interrupts::end_timer_test();
+    interrupts::end_timer_test(timer_capture).unwrap_or_else(|_| failure());
     let timer_snapshot = interrupts::snapshot().unwrap_or_else(|| failure());
     let timer_saved = [
         timer_snapshot.registers.rax,
@@ -842,9 +844,9 @@ fn run_preemption_context_test(
     scheduler::yield_now().unwrap_or_else(|_| failure());
     scheduler::reap(worker_id, address_space, allocator).unwrap_or_else(|_| failure());
     let idle_id = scheduler::idle_task_id().unwrap_or_else(|_| failure());
-    interrupts::begin_timer_test(idle_id);
+    let idle_capture = interrupts::begin_timer_test(idle_id).unwrap_or_else(|_| failure());
     scheduler::probe_idle_once().unwrap_or_else(|_| failure());
-    interrupts::end_timer_test();
+    interrupts::end_timer_test(idle_capture).unwrap_or_else(|_| failure());
     let idle_snapshot = interrupts::snapshot().unwrap_or_else(|| failure());
     if idle_snapshot.vector != 0x40 || idle_snapshot.task_id != idle_id {
         failure();
@@ -964,14 +966,16 @@ fn preemption_worker() {
         u64::from(id.generation()),
         core::sync::atomic::Ordering::Release,
     );
-    finn_kernel::arch::x86_64::interrupts::begin_capture(
+    let software_capture = finn_kernel::arch::x86_64::interrupts::begin_capture(
         finn_kernel::arch::x86_64::interrupts::PREEMPTION_TEST_VECTOR,
         id,
-    );
+    )
+    .unwrap_or_else(|_| failure());
     let software_ok = unsafe { finnos_preemption_software_test() } != 0;
     let software_snapshot =
         finn_kernel::arch::x86_64::interrupts::snapshot().unwrap_or_else(|| failure());
-    finn_kernel::arch::x86_64::interrupts::end_capture();
+    finn_kernel::arch::x86_64::interrupts::end_capture(software_capture)
+        .unwrap_or_else(|_| failure());
     if !software_ok || software_snapshot.task_id != id {
         failure();
     }
@@ -983,7 +987,8 @@ fn preemption_worker() {
         software_snapshot.interrupted_rsp,
         software_snapshot.saved_ss
     );
-    finn_kernel::arch::x86_64::interrupts::begin_timer_test(id);
+    let timer_capture =
+        finn_kernel::arch::x86_64::interrupts::begin_timer_test(id).unwrap_or_else(|_| failure());
     let timer_ok = unsafe { finnos_preemption_timer_test() } != 0;
     let timer_snapshot =
         finn_kernel::arch::x86_64::interrupts::snapshot().unwrap_or_else(|| failure());
@@ -998,7 +1003,8 @@ fn preemption_worker() {
         timer_snapshot.interrupted_rsp,
         timer_snapshot.saved_ss
     );
-    finn_kernel::arch::x86_64::interrupts::end_timer_test();
+    finn_kernel::arch::x86_64::interrupts::end_timer_test(timer_capture)
+        .unwrap_or_else(|_| failure());
     PREEMPTION_WORKER_DONE.store(true, core::sync::atomic::Ordering::Release);
     while !PREEMPTION_WORKER_RELEASE.load(core::sync::atomic::Ordering::Acquire) {
         scheduler::yield_now().unwrap_or_else(|_| failure());

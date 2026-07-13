@@ -28,5 +28,7 @@ validates the canonical 184-byte frame and saved RSP/SS tail, and finishes with
 `iretq`. Snapshot reads reject interrupt context, mask IF only around the fixed
 copy, and restore the prior IF state; phase tokens freeze the first matching
 vector/task capture so unrelated interrupts cannot overwrite evidence. The
-snapshot never owns a raw interrupted-frame pointer. No interrupt path allocates,
-writes CR3, or calls cooperative context switching.
+sequence counter detects an incomplete copy but is not, by itself, a
+soundness mechanism for concurrent `UnsafeCell` access. The snapshot never
+owns a raw interrupted-frame pointer. No interrupt path allocates, writes
+CR3, or calls cooperative context switching.

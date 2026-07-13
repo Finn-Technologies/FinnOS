@@ -10,7 +10,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::context::{ContextError, TaskContext, initialize_context, switch};
 use super::task_stack::{
-    TaskStackError, TaskStackMapping, map_task_stack, reclaim_task_stack, validate_task_stack,
+    TaskStackError, TaskStackMapping, map_task_stack, reclaim_task_stack, restore_task_stack,
+    validate_task_stack,
 };
 use crate::arch::x86_64::paging::ActiveAddressSpace;
 use crate::memory::EarlyPhysicalPageAllocator;
@@ -31,6 +32,8 @@ pub enum SchedulerError {
     Task(TaskError),
     /// Task-stack management failed.
     Stack(TaskStackError),
+    /// Stack publication failed.
+    Publication(super::interrupts::AttributionError),
     /// Initial context construction failed.
     Context(ContextError),
     /// A task entry was missing or invalid.
@@ -64,8 +67,34 @@ pub enum RollbackCause {
     Stack(TaskStackError),
     /// Initial-context construction failure.
     Context(ContextError),
+    /// Stack publication failure.
+    Publication(super::interrupts::AttributionError),
     /// Runtime bookkeeping was inconsistent.
     Runtime,
+    /// Two independent cleanup operations failed.
+    Combined {
+        /// First cleanup failure.
+        first: RollbackLeaf,
+        /// Second cleanup failure.
+        second: RollbackLeaf,
+    },
+}
+
+/// One leaf of a combined rollback failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RollbackLeaf {
+    /// Bounded task-policy failure.
+    Task(TaskError),
+    /// Stack ownership or paging failure.
+    Stack(TaskStackError),
+    /// Runtime bookkeeping was inconsistent.
+    Runtime,
+}
+
+impl From<super::interrupts::AttributionError> for SchedulerError {
+    fn from(error: super::interrupts::AttributionError) -> Self {
+        Self::Publication(error)
+    }
 }
 impl From<TaskError> for SchedulerError {
     fn from(error: TaskError) -> Self {
@@ -100,6 +129,28 @@ struct Runtime {
     policy: Scheduler,
     slots: [RuntimeSlot; MAX_TASKS],
     poisoned: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SpawnRollbackReport {
+    publication_inactive: bool,
+    stack_reclaimed: bool,
+    stack_retained: bool,
+    policy_aborted: bool,
+    slot_empty: bool,
+}
+
+impl SpawnRollbackReport {
+    fn is_consistent(self) -> bool {
+        if !self.publication_inactive {
+            return false;
+        }
+        if self.slot_empty {
+            self.stack_reclaimed && self.policy_aborted && !self.stack_retained
+        } else {
+            !self.policy_aborted && (self.stack_retained || !self.stack_reclaimed)
+        }
+    }
 }
 
 struct SchedulerCell(UnsafeCell<Option<Runtime>>);
@@ -163,7 +214,20 @@ pub fn initialize(
     };
     let idle = runtime.policy.idle_id();
     let mut stack = TaskStackMapping::empty(idle.slot()).map_err(TaskStackError::Layout)?;
-    map_task_stack(&mut stack, address_space, allocator)?;
+    if let Err(error) = map_task_stack(&mut stack, address_space, allocator) {
+        if stack.is_empty() {
+            return Err(error.into());
+        }
+        runtime.slots[idle.slot()].stack = Some(stack);
+        return Err(rollback_initialization(
+            &mut runtime,
+            idle,
+            address_space,
+            allocator,
+            failed_stack,
+            RollbackCause::Stack(error),
+        ));
+    }
     let context = match initialize_context(
         stack.virtual_start(),
         stack.virtual_end(),
@@ -172,16 +236,15 @@ pub fn initialize(
     ) {
         Ok(context) => context,
         Err(error) => {
-            return match reclaim_task_stack(&mut stack, address_space, allocator) {
-                Ok(()) => Err(error.into()),
-                Err(cleanup) => {
-                    *failed_stack = Some(stack);
-                    Err(SchedulerError::InitializationRollbackFailed {
-                        original: RollbackCause::Context(error),
-                        cleanup: RollbackCause::Stack(cleanup),
-                    })
-                }
-            };
+            runtime.slots[idle.slot()].stack = Some(stack);
+            return Err(rollback_initialization(
+                &mut runtime,
+                idle,
+                address_space,
+                allocator,
+                failed_stack,
+                RollbackCause::Context(error),
+            ));
         }
     };
     runtime.slots[idle.slot()] = RuntimeSlot {
@@ -189,7 +252,7 @@ pub fn initialize(
         context,
         stack: Some(stack),
     };
-    super::interrupts::publish_task_stack(
+    let publication = super::interrupts::publish_task_stack(
         idle,
         runtime.slots[idle.slot()]
             .stack
@@ -201,30 +264,181 @@ pub fn initialize(
             .as_ref()
             .ok_or(SchedulerError::InvalidEntry)?
             .virtual_end(),
-    )
-    .map_err(|_| SchedulerError::InvalidEntry)?;
+    );
+    if let Err(error) = publication {
+        return Err(rollback_initialization(
+            &mut runtime,
+            idle,
+            address_space,
+            allocator,
+            failed_stack,
+            RollbackCause::Publication(error),
+        ));
+    }
     if let Err(error) = runtime.policy.check_invariants() {
-        super::interrupts::unpublish_task_stack(idle.slot());
-        let mut owned = runtime.slots[idle.slot()].stack.take().ok_or(
-            SchedulerError::InitializationRollbackFailed {
-                original: RollbackCause::Task(error),
-                cleanup: RollbackCause::Runtime,
-            },
-        )?;
-        return match reclaim_task_stack(&mut owned, address_space, allocator) {
-            Ok(()) => Err(error.into()),
-            Err(cleanup) => {
-                *failed_stack = Some(owned);
-                Err(SchedulerError::InitializationRollbackFailed {
-                    original: RollbackCause::Task(error),
-                    cleanup: RollbackCause::Stack(cleanup),
-                })
-            }
-        };
+        return Err(rollback_initialization(
+            &mut runtime,
+            idle,
+            address_space,
+            allocator,
+            failed_stack,
+            RollbackCause::Task(error),
+        ));
     }
     let bootstrap = runtime.policy.bootstrap_id();
     *cell = Some(runtime);
     Ok((bootstrap, idle))
+}
+
+fn rollback_initialization(
+    runtime: &mut Runtime,
+    idle: TaskId,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    failed_stack: &mut Option<TaskStackMapping>,
+    original: RollbackCause,
+) -> SchedulerError {
+    super::interrupts::unpublish_task_stack(idle.slot());
+    let Some(mut stack) = runtime.slots[idle.slot()].stack.take() else {
+        runtime.slots[idle.slot()] = RuntimeSlot::EMPTY;
+        return SchedulerError::InitializationRollbackFailed {
+            original,
+            cleanup: RollbackCause::Runtime,
+        };
+    };
+    runtime.slots[idle.slot()] = RuntimeSlot::EMPTY;
+    match reclaim_task_stack(&mut stack, address_space, allocator) {
+        Ok(()) => initialization_cleanup_result(original, Ok(())),
+        Err(cleanup) => {
+            *failed_stack = Some(stack);
+            initialization_cleanup_result(original, Err(cleanup))
+        }
+    }
+}
+
+fn initialization_cleanup_result(
+    original: RollbackCause,
+    cleanup: Result<(), TaskStackError>,
+) -> SchedulerError {
+    match cleanup {
+        Ok(()) => match original {
+            RollbackCause::Task(error) => SchedulerError::Task(error),
+            RollbackCause::Stack(error) => SchedulerError::Stack(error),
+            RollbackCause::Context(error) => SchedulerError::Context(error),
+            RollbackCause::Publication(error) => SchedulerError::Publication(error),
+            RollbackCause::Runtime | RollbackCause::Combined { .. } => {
+                SchedulerError::InitializationRollbackFailed {
+                    original,
+                    cleanup: RollbackCause::Runtime,
+                }
+            }
+        },
+        Err(cleanup) => SchedulerError::InitializationRollbackFailed {
+            original,
+            cleanup: RollbackCause::Stack(cleanup),
+        },
+    }
+}
+
+struct SpawnRollbackOutcome {
+    error: SchedulerError,
+    report: SpawnRollbackReport,
+}
+
+fn rollback_spawn_publication(
+    id: TaskId,
+    runtime: &mut Runtime,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    original: super::interrupts::AttributionError,
+) -> SpawnRollbackOutcome {
+    // Publication is made inactive before ownership moves. Policy abort is
+    // attempted only after reclaim succeeds; a failed reclaim therefore keeps
+    // the live policy entry paired with retained stack metadata.
+    super::interrupts::unpublish_task_stack(id.slot());
+    let publication_inactive = !super::interrupts::task_stack_published(id);
+    let Some(mut owned) = runtime.slots[id.slot()].stack.take() else {
+        runtime.poisoned = true;
+        return SpawnRollbackOutcome {
+            error: SchedulerError::SpawnRollbackFailed {
+                original: RollbackCause::Publication(original),
+                cleanup: RollbackCause::Runtime,
+            },
+            report: SpawnRollbackReport {
+                publication_inactive,
+                stack_reclaimed: false,
+                stack_retained: false,
+                policy_aborted: false,
+                slot_empty: false,
+            },
+        };
+    };
+    let original_stack = owned.clone();
+    let allocator_before = allocator.clone();
+    let mapped_before = address_space.mapped_pages();
+    let reclaim = reclaim_task_stack(&mut owned, address_space, allocator);
+    let Err(reclaim_error) = reclaim else {
+        let policy = runtime.policy.abort_spawn(id);
+        let Err(policy_error) = policy else {
+            runtime.slots[id.slot()] = RuntimeSlot::EMPTY;
+            return SpawnRollbackOutcome {
+                error: SchedulerError::Publication(original),
+                report: SpawnRollbackReport {
+                    publication_inactive,
+                    stack_reclaimed: true,
+                    stack_retained: false,
+                    policy_aborted: true,
+                    slot_empty: true,
+                },
+            };
+        };
+        let restore = restore_task_stack(
+            &original_stack,
+            address_space,
+            allocator,
+            &allocator_before,
+            mapped_before,
+        );
+        runtime.slots[id.slot()].stack = Some(original_stack);
+        runtime.poisoned = true;
+        return SpawnRollbackOutcome {
+            error: match restore {
+                Ok(()) => SchedulerError::SpawnRollbackFailed {
+                    original: RollbackCause::Publication(original),
+                    cleanup: RollbackCause::Task(policy_error),
+                },
+                Err(restore_error) => SchedulerError::SpawnRollbackFailed {
+                    original: RollbackCause::Publication(original),
+                    cleanup: RollbackCause::Combined {
+                        first: RollbackLeaf::Task(policy_error),
+                        second: RollbackLeaf::Stack(restore_error),
+                    },
+                },
+            },
+            report: SpawnRollbackReport {
+                publication_inactive,
+                stack_reclaimed: true,
+                stack_retained: true,
+                policy_aborted: false,
+                slot_empty: false,
+            },
+        };
+    };
+    runtime.slots[id.slot()].stack = Some(owned);
+    runtime.poisoned = true;
+    SpawnRollbackOutcome {
+        error: SchedulerError::SpawnRollbackFailed {
+            original: RollbackCause::Publication(original),
+            cleanup: RollbackCause::Stack(reclaim_error),
+        },
+        report: SpawnRollbackReport {
+            publication_inactive,
+            stack_reclaimed: false,
+            stack_retained: true,
+            policy_aborted: false,
+            slot_empty: false,
+        },
+    }
 }
 
 /// Creates an ordinary task with a fully mapped stack and initial context.
@@ -315,26 +529,15 @@ pub fn spawn(
         .stack
         .as_ref()
         .ok_or(SchedulerError::InvalidEntry)?;
-    if super::interrupts::publish_task_stack(id, published.virtual_start(), published.virtual_end())
-        .is_err()
-    {
-        let mut owned = runtime.slots[id.slot()]
-            .stack
-            .take()
-            .ok_or(SchedulerError::InvalidEntry)?;
-        let cleanup = reclaim_task_stack(&mut owned, address_space, allocator);
-        let policy_cleanup = runtime.policy.abort_spawn(id);
-        if cleanup.is_err() || policy_cleanup.is_err() {
-            runtime.poisoned = true;
-            return Err(SchedulerError::SpawnRollbackFailed {
-                original: RollbackCause::Runtime,
-                cleanup: cleanup.err().map_or_else(
-                    || RollbackCause::Task(policy_cleanup.unwrap_err()),
-                    RollbackCause::Stack,
-                ),
-            });
-        }
-        return Err(SchedulerError::InvalidEntry);
+    if let Err(error) = super::interrupts::publish_task_stack(
+        id,
+        published.virtual_start(),
+        published.virtual_end(),
+    ) {
+        let outcome = rollback_spawn_publication(id, runtime, address_space, allocator, error);
+        debug_assert!(outcome.report.publication_inactive);
+        debug_assert!(outcome.report.is_consistent());
+        return Err(outcome.error);
     }
     Ok(id)
 }
@@ -430,10 +633,8 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
     for slot_index in 0..MAX_TASKS {
         let (_, state) = runtime.policy.slot_snapshot(slot_index)?;
         let slot = &runtime.slots[slot_index];
+        validate_slot_metadata(slot_index, state, slot)?;
         if slot_index == 0 {
-            if slot.entry.is_some() || slot.stack.is_some() {
-                return Err(SchedulerError::InvalidEntry);
-            }
             if !super::interrupts::task_stack_published(runtime.policy.bootstrap_id()) {
                 return Err(SchedulerError::InvalidEntry);
             }
@@ -441,9 +642,6 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
         }
         match state {
             TaskState::Vacant => {
-                if slot.entry.is_some() || slot.context.rsp != 0 || slot.stack.is_some() {
-                    return Err(SchedulerError::InvalidEntry);
-                }
                 if super::interrupts::task_stack_published(
                     TaskId::new(
                         u8::try_from(slot_index).map_err(|_| SchedulerError::InvalidEntry)?,
@@ -456,10 +654,7 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
             }
             TaskState::Ready | TaskState::Running | TaskState::Exited => {
                 let stack = slot.stack.as_ref().ok_or(SchedulerError::InvalidEntry)?;
-                if slot.entry.is_none()
-                    || slot.context.rsp == 0
-                    || !stack.contains(slot.context.rsp)
-                {
+                if !stack.contains(slot.context.rsp) {
                     return Err(SchedulerError::InvalidEntry);
                 }
                 let id = runtime.policy.slot_snapshot(slot_index)?.0;
@@ -507,6 +702,27 @@ pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<()
         }
     }
     Ok(())
+}
+
+fn validate_slot_metadata(
+    slot_index: usize,
+    state: TaskState,
+    slot: &RuntimeSlot,
+) -> Result<(), SchedulerError> {
+    let valid = if slot_index == 0 {
+        slot.entry.is_none() && slot.stack.is_none()
+    } else {
+        match state {
+            TaskState::Vacant => {
+                slot.entry.is_none() && slot.context.rsp == 0 && slot.stack.is_none()
+            }
+            TaskState::Ready | TaskState::Running | TaskState::Exited => {
+                slot.entry.is_some() && slot.context.rsp != 0 && slot.stack.is_some()
+            }
+            TaskState::Blocked => false,
+        }
+    };
+    valid.then_some(()).ok_or(SchedulerError::InvalidEntry)
 }
 
 /// Cooperatively yields to the next ready task, if any.
@@ -769,6 +985,84 @@ mod tests {
             slots: [const { RuntimeSlot::EMPTY }; MAX_TASKS],
             poisoned: false,
         }
+    }
+
+    fn test_entry() {}
+
+    #[test]
+    fn runtime_metadata_detects_vacant_nonempty_slot() {
+        let mut runtime = empty_runtime(Scheduler::new());
+        runtime.slots[2].entry = Some(test_entry);
+        assert_eq!(
+            validate_slot_metadata(2, TaskState::Vacant, &runtime.slots[2]),
+            Err(SchedulerError::InvalidEntry)
+        );
+
+        runtime.slots[2] = RuntimeSlot::EMPTY;
+        runtime.slots[2].context.rsp = 1;
+        assert_eq!(
+            validate_slot_metadata(2, TaskState::Vacant, &runtime.slots[2]),
+            Err(SchedulerError::InvalidEntry)
+        );
+    }
+
+    #[test]
+    fn initialization_rollback_preserves_original_or_reports_cleanup() {
+        let publication = RollbackCause::Publication(
+            super::super::interrupts::AttributionError::AlreadyPublished,
+        );
+        assert_eq!(
+            initialization_cleanup_result(publication, Ok(())),
+            SchedulerError::Publication(
+                super::super::interrupts::AttributionError::AlreadyPublished
+            )
+        );
+        let cleanup = TaskStackError::CorruptMapping;
+        assert_eq!(
+            initialization_cleanup_result(publication, Err(cleanup)),
+            SchedulerError::InitializationRollbackFailed {
+                original: publication,
+                cleanup: RollbackCause::Stack(cleanup),
+            }
+        );
+    }
+
+    #[test]
+    fn worker_publication_rollback_reports_keep_slot_and_policy_agreeing() {
+        let cases = [
+            SpawnRollbackReport {
+                publication_inactive: true,
+                stack_reclaimed: true,
+                stack_retained: false,
+                policy_aborted: true,
+                slot_empty: true,
+            },
+            SpawnRollbackReport {
+                publication_inactive: true,
+                stack_reclaimed: false,
+                stack_retained: true,
+                policy_aborted: false,
+                slot_empty: false,
+            },
+            SpawnRollbackReport {
+                publication_inactive: true,
+                stack_reclaimed: true,
+                stack_retained: true,
+                policy_aborted: false,
+                slot_empty: false,
+            },
+        ];
+        assert!(cases.into_iter().all(SpawnRollbackReport::is_consistent));
+        assert!(
+            !SpawnRollbackReport {
+                publication_inactive: true,
+                stack_reclaimed: true,
+                stack_retained: true,
+                policy_aborted: true,
+                slot_empty: true,
+            }
+            .is_consistent()
+        );
     }
 
     #[test]

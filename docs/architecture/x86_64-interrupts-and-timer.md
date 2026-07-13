@@ -45,8 +45,11 @@ no EOI. MADT parsing, IOAPIC routing, device IRQs, x2APIC, SMP, IPIs,
 scheduling, preemption, user mode, and wall-clock time remain future work.
 # Preemption-ready return path
 
-The ring-0 external frame is 20 eight-byte fields. Since the current gates use
-IST zero and remain in CPL0, the CPU does not append an old RSP or SS. The
-dispatcher receives the frame pointer and returns the pointer to restore. The
-100 Hz timer records a snapshot and sends EOI, but always resumes the interrupted
-task; timer-driven scheduling is the next milestone.
+The current proven QEMU contract is a 184-byte ring-0/IST-0 frame: the
+160-byte saved-register/software prefix is followed by saved RSP, saved SS,
+and one alignment slot. The dispatcher receives and returns the complete frame
+pointer, validates `frame + 184 == saved_rsp`, and `iretq` consumes the return
+fields through offset `+176`. This is an integration-tested FinnOS contract;
+future CPL3 and alternate-IST layouts remain unsupported and require separate
+frame types. The 100 Hz timer records a snapshot and sends EOI, but always
+resumes the interrupted task; timer-driven scheduling is the next milestone.
