@@ -1,9 +1,30 @@
 //! Virtual layout calculations for guarded cooperative-task stacks.
+#![allow(unsafe_code)]
+
+use core::cell::UnsafeCell;
 
 use crate::arch::x86_64::paging::{
-    ActiveAddressSpace, MappingPermissions, PagingError, PhysicalFrame, VirtualPage, is_canonical,
+    ActiveAddressSpace, MapOutcome, MappingPermissions, PagingError, PhysicalFrame, VirtualPage,
+    is_canonical,
 };
 use crate::memory::{EarlyPhysicalPageAllocator, PAGE_SIZE, PageAllocationError, PageRange};
+
+struct AllocatorTransactionCell(UnsafeCell<EarlyPhysicalPageAllocator>);
+// SAFETY: task-stack mutation is BSP-only and scheduler entry is non-reentrant.
+unsafe impl Sync for AllocatorTransactionCell {}
+static ALLOCATOR_TRANSACTION: AllocatorTransactionCell = AllocatorTransactionCell(UnsafeCell::new(
+    EarlyPhysicalPageAllocator::empty_transaction(),
+));
+
+fn allocator_transaction(
+    allocator: &EarlyPhysicalPageAllocator,
+) -> &'static mut EarlyPhysicalPageAllocator {
+    // SAFETY: all callers run on the BSP under the scheduler's non-reentrant
+    // mutation contract, so only one transaction can use this scratch state.
+    let prospective = unsafe { &mut *ALLOCATOR_TRANSACTION.0.get() };
+    prospective.copy_state_from(allocator);
+    prospective
+}
 
 /// Base of the virtual region reserved for non-bootstrap task stacks.
 pub const TASK_STACK_REGION_BASE: u64 = 0x0000_2800_0000_0000;
@@ -43,7 +64,7 @@ pub enum TaskStackLayoutError {
 }
 
 /// Fixed, heap-free ownership metadata for one mapped task stack.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct TaskStackMapping {
     slot: u8,
     virtual_start: u64,
@@ -71,33 +92,38 @@ impl TaskStackMapping {
 
     /// Returns the task-table slot that owns the mapping.
     #[must_use]
-    pub const fn slot(self) -> usize {
+    pub const fn slot(&self) -> usize {
         self.slot as usize
     }
     /// Returns the first mapped virtual stack address.
     #[must_use]
-    pub const fn virtual_start(self) -> u64 {
+    pub const fn virtual_start(&self) -> u64 {
         self.virtual_start
     }
     /// Returns the exclusive mapped virtual stack end.
     #[must_use]
-    pub const fn virtual_end(self) -> u64 {
+    pub const fn virtual_end(&self) -> u64 {
         self.virtual_end
     }
     /// Returns the number of currently mapped leaves.
     #[must_use]
-    pub const fn mapped_count(self) -> usize {
+    pub const fn mapped_count(&self) -> usize {
         self.mapped_count
     }
     /// Returns whether no physical frame is owned.
     #[must_use]
-    pub const fn is_empty(self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.mapped_count == 0
     }
     /// Returns a recorded physical frame for a mapped page.
     #[must_use]
-    pub fn physical_page(self, index: usize) -> Option<u64> {
+    pub fn physical_page(&self, index: usize) -> Option<u64> {
         (index < self.mapped_count).then(|| self.physical_pages[index])
+    }
+    /// Returns whether an address lies inside the mapped stack range.
+    #[must_use]
+    pub const fn contains(&self, address: u64) -> bool {
+        self.virtual_start <= address && address < self.virtual_end
     }
 }
 
@@ -170,34 +196,68 @@ pub fn map_task_stack(
         };
         let Some(virtual_address) = layout.stack_start.checked_add((index as u64) * PAGE_SIZE)
         else {
-            let _ = allocator.deallocate(
-                PageRange::new(page.start_address(), 1).map_err(TaskStackError::Physical)?,
-            );
-            return rollback(
+            return rollback_with_unmapped_page(
                 mapping,
                 address_space,
                 allocator,
+                page.start_address(),
                 free_baseline,
                 mapped_baseline,
                 TaskStackError::Layout(TaskStackLayoutError::AddressOverflow),
             );
         };
-        if let Err(error) = address_space.map_page(
-            VirtualPage::new(virtual_address)?,
-            PhysicalFrame::new(page.start_address(), address_space.width())?,
-            MappingPermissions::kernel_rw_nx(),
-        ) {
-            let _ = allocator.deallocate(
-                PageRange::new(page.start_address(), 1).map_err(TaskStackError::Physical)?,
-            );
-            return rollback(
-                mapping,
-                address_space,
-                allocator,
-                free_baseline,
-                mapped_baseline,
-                TaskStackError::Paging(error),
-            );
+        let virtual_page = match VirtualPage::new(virtual_address) {
+            Ok(page) => page,
+            Err(error) => {
+                return rollback_with_unmapped_page(
+                    mapping,
+                    address_space,
+                    allocator,
+                    page.start_address(),
+                    free_baseline,
+                    mapped_baseline,
+                    TaskStackError::Paging(error),
+                );
+            }
+        };
+        let frame = match PhysicalFrame::new(page.start_address(), address_space.width()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return rollback_with_unmapped_page(
+                    mapping,
+                    address_space,
+                    allocator,
+                    page.start_address(),
+                    free_baseline,
+                    mapped_baseline,
+                    TaskStackError::Paging(error),
+                );
+            }
+        };
+        match address_space.map_page(virtual_page, frame, MappingPermissions::kernel_rw_nx()) {
+            Ok(MapOutcome::Created) => {}
+            Ok(MapOutcome::AlreadyPresent) => {
+                return rollback_with_unmapped_page(
+                    mapping,
+                    address_space,
+                    allocator,
+                    page.start_address(),
+                    free_baseline,
+                    mapped_baseline,
+                    TaskStackError::AlreadyMapped,
+                );
+            }
+            Err(error) => {
+                return rollback_with_unmapped_page(
+                    mapping,
+                    address_space,
+                    allocator,
+                    page.start_address(),
+                    free_baseline,
+                    mapped_baseline,
+                    TaskStackError::Paging(error),
+                );
+            }
         }
         mapping.physical_pages[index] = page.start_address();
         mapping.mapped_count += 1;
@@ -209,7 +269,7 @@ pub fn map_task_stack(
     unsafe {
         core::ptr::write_bytes(layout.stack_start as *mut u8, 0, TASK_STACK_SIZE);
     }
-    if validate_task_stack(*mapping, address_space).is_err() {
+    if validate_task_stack(mapping, address_space).is_err() {
         return rollback(
             mapping,
             address_space,
@@ -228,7 +288,7 @@ pub fn map_task_stack(
 ///
 /// Returns an error when metadata and active page tables disagree.
 pub fn validate_task_stack(
-    mapping: TaskStackMapping,
+    mapping: &TaskStackMapping,
     address_space: &ActiveAddressSpace,
 ) -> Result<(), TaskStackError> {
     if mapping.mapped_count != TASK_STACK_PAGE_COUNT {
@@ -252,11 +312,20 @@ pub fn validate_task_stack(
     }
     if address_space.translate(layout.lower_guard)?.is_some()
         || address_space.translate(layout.upper_guard)?.is_some()
-        || address_space
-            .translate(layout.upper_guard + PAGE_SIZE)?
-            .is_some()
     {
         return Err(TaskStackError::CorruptMapping);
+    }
+    let mut padding = layout
+        .upper_guard
+        .checked_add(PAGE_SIZE)
+        .ok_or(TaskStackLayoutError::AddressOverflow)?;
+    while padding < layout.slot_end {
+        if address_space.translate(padding)?.is_some() {
+            return Err(TaskStackError::CorruptMapping);
+        }
+        padding = padding
+            .checked_add(PAGE_SIZE)
+            .ok_or(TaskStackLayoutError::AddressOverflow)?;
     }
     Ok(())
 }
@@ -272,24 +341,91 @@ pub fn reclaim_task_stack(
     address_space: &mut ActiveAddressSpace,
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> Result<(), TaskStackError> {
-    validate_task_stack(*mapping, address_space)?;
+    validate_task_stack(mapping, address_space)?;
     let layout = TaskStackLayout::for_slot(mapping.slot())?;
+    let prospective = allocator_transaction(allocator);
+    for address in mapping.physical_pages {
+        prospective.deallocate(PageRange::new(address, 1)?)?;
+    }
+    prospective.check_invariants()?;
+    let mapped_baseline = address_space.mapped_pages();
+    let mut unmapped = 0usize;
     for index in 0..TASK_STACK_PAGE_COUNT {
         let address = layout.stack_start + (index as u64) * PAGE_SIZE;
-        let returned = address_space.unmap_page(VirtualPage::new(address)?)?;
+        let returned = match address_space.unmap_page(VirtualPage::new(address)?) {
+            Ok(frame) => frame,
+            Err(error) => {
+                if restore_unmapped(mapping, address_space, unmapped).is_err()
+                    || address_space.mapped_pages() != mapped_baseline
+                {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+                return Err(TaskStackError::Paging(error));
+            }
+        };
         if returned.address() != mapping.physical_pages[index] {
+            let restore_current = address_space.map_page(
+                VirtualPage::new(address)?,
+                returned,
+                MappingPermissions::kernel_rw_nx(),
+            );
+            if restore_current != Ok(MapOutcome::Created)
+                || restore_unmapped(mapping, address_space, unmapped).is_err()
+                || address_space.mapped_pages() != mapped_baseline
+            {
+                return Err(TaskStackError::RollbackFailed);
+            }
             return Err(TaskStackError::CorruptMapping);
         }
-        allocator.deallocate(PageRange::new(returned.address(), 1)?)?;
+        unmapped += 1;
     }
     if address_space.translate(layout.lower_guard)?.is_some()
         || address_space.translate(layout.upper_guard)?.is_some()
     {
         return Err(TaskStackError::CorruptMapping);
     }
+    allocator.copy_state_from(prospective);
     *mapping = TaskStackMapping::empty(mapping.slot())?;
-    allocator.check_invariants()?;
     Ok(())
+}
+
+fn restore_unmapped(
+    mapping: &TaskStackMapping,
+    address_space: &mut ActiveAddressSpace,
+    count: usize,
+) -> Result<(), TaskStackError> {
+    for index in 0..count {
+        let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
+        let outcome = address_space.map_page(
+            VirtualPage::new(address)?,
+            PhysicalFrame::new(mapping.physical_pages[index], address_space.width())?,
+            MappingPermissions::kernel_rw_nx(),
+        )?;
+        if outcome != MapOutcome::Created {
+            return Err(TaskStackError::RollbackFailed);
+        }
+    }
+    Ok(())
+}
+
+fn rollback_with_unmapped_page(
+    mapping: &mut TaskStackMapping,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    page: u64,
+    free_baseline: u64,
+    mapped_baseline: u64,
+    original: TaskStackError,
+) -> Result<(), TaskStackError> {
+    rollback_with_extra_page(
+        mapping,
+        address_space,
+        allocator,
+        Some(page),
+        free_baseline,
+        mapped_baseline,
+        original,
+    )
 }
 
 fn rollback(
@@ -300,31 +436,82 @@ fn rollback(
     mapped_baseline: u64,
     original: TaskStackError,
 ) -> Result<(), TaskStackError> {
-    let mut failed = false;
-    for index in (0..mapping.mapped_count).rev() {
-        let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
-        match address_space.unmap_page(VirtualPage::new(address).map_err(TaskStackError::Paging)?) {
-            Ok(frame) if frame.address() == mapping.physical_pages[index] => {
-                if allocator
-                    .deallocate(
-                        PageRange::new(frame.address(), 1).map_err(TaskStackError::Physical)?,
-                    )
-                    .is_err()
-                {
-                    failed = true;
-                }
-            }
-            _ => failed = true,
-        }
+    rollback_with_extra_page(
+        mapping,
+        address_space,
+        allocator,
+        None,
+        free_baseline,
+        mapped_baseline,
+        original,
+    )
+}
+
+fn rollback_with_extra_page(
+    mapping: &mut TaskStackMapping,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    extra_page: Option<u64>,
+    free_baseline: u64,
+    mapped_baseline: u64,
+    original: TaskStackError,
+) -> Result<(), TaskStackError> {
+    let prospective = allocator_transaction(allocator);
+    if let Some(page) = extra_page {
+        prospective
+            .deallocate(PageRange::new(page, 1)?)
+            .map_err(|_| TaskStackError::RollbackFailed)?;
     }
-    *mapping = TaskStackMapping::empty(mapping.slot())?;
-    if failed
-        || allocator.free_pages() != free_baseline
-        || address_space.mapped_pages() != mapped_baseline
-        || allocator.check_invariants().is_err()
-    {
+    for index in 0..mapping.mapped_count {
+        prospective
+            .deallocate(PageRange::new(mapping.physical_pages[index], 1)?)
+            .map_err(|_| TaskStackError::RollbackFailed)?;
+    }
+    prospective
+        .check_invariants()
+        .map_err(|_| TaskStackError::RollbackFailed)?;
+    if prospective.free_pages() != free_baseline {
         return Err(TaskStackError::RollbackFailed);
     }
+
+    let mut unmapped = 0usize;
+    for index in 0..mapping.mapped_count {
+        let address = mapping.virtual_start + (index as u64) * PAGE_SIZE;
+        let returned = match address_space.unmap_page(VirtualPage::new(address)?) {
+            Ok(frame) => frame,
+            Err(_) => {
+                if restore_unmapped(mapping, address_space, unmapped).is_err()
+                    || address_space.mapped_pages() != mapped_baseline
+                {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+                return Err(original);
+            }
+        };
+        if returned.address() != mapping.physical_pages[index] {
+            let restored_current = address_space.map_page(
+                VirtualPage::new(address)?,
+                returned,
+                MappingPermissions::kernel_rw_nx(),
+            );
+            if restored_current != Ok(MapOutcome::Created)
+                || restore_unmapped(mapping, address_space, unmapped).is_err()
+                || address_space.mapped_pages() != mapped_baseline
+            {
+                return Err(TaskStackError::RollbackFailed);
+            }
+            return Err(TaskStackError::CorruptMapping);
+        }
+        unmapped += 1;
+    }
+    if address_space.mapped_pages() != mapped_baseline {
+        if restore_unmapped(mapping, address_space, unmapped).is_err() {
+            return Err(TaskStackError::RollbackFailed);
+        }
+        return Err(TaskStackError::RollbackFailed);
+    }
+    allocator.copy_state_from(prospective);
+    *mapping = TaskStackMapping::empty(mapping.slot())?;
     Err(original)
 }
 

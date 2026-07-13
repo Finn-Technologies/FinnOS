@@ -155,6 +155,12 @@ impl RunnableQueue {
         (0..self.len).any(|offset| self.ids[(self.head + offset) % MAX_TASKS] == Some(id))
     }
 
+    fn count(&self, id: TaskId) -> usize {
+        (0..self.len)
+            .filter(|offset| self.ids[(self.head + offset) % MAX_TASKS] == Some(id))
+            .count()
+    }
+
     fn remove(&mut self, id: TaskId) -> Result<(), TaskError> {
         if !self.contains(id) {
             return Err(TaskError::QueueEmpty);
@@ -262,6 +268,21 @@ impl Scheduler {
     pub fn state(&self, id: TaskId) -> Result<TaskState, TaskError> {
         Ok(self.entry(id)?.state)
     }
+    /// Returns the current generation-tagged identity and state for a slot.
+    pub fn slot_snapshot(&self, slot: usize) -> Result<(TaskId, TaskState), TaskError> {
+        let entry = self.entries.get(slot).ok_or(TaskError::InvalidTaskId)?;
+        Ok((
+            TaskId::new(
+                u8::try_from(slot).map_err(|_| TaskError::InvalidTaskId)?,
+                entry.generation,
+            )?,
+            entry.state,
+        ))
+    }
+    /// Returns whether an identity is currently queued.
+    pub fn is_queued(&self, id: TaskId) -> bool {
+        self.queue.contains(id)
+    }
     /// Reserves the lowest vacant ordinary slot and appends it to the runnable FIFO.
     pub fn spawn(&mut self) -> Result<TaskId, TaskError> {
         ensure_not_interrupt_context()?;
@@ -269,9 +290,11 @@ impl Scheduler {
             .find(|&slot| self.entries[slot].state == TaskState::Vacant)
             .ok_or(TaskError::CapacityExhausted)?;
         let id = TaskId::new(slot as u8, self.entries[slot].generation)?;
+        let mut queue = self.queue;
+        queue.push(id)?;
         self.entries[slot].state = TaskState::Ready;
-        self.queue.push(id)?;
-        self.created = self.created.checked_add(1).ok_or(TaskError::CorruptState)?;
+        self.queue = queue;
+        self.created = self.created.saturating_add(1);
         Ok(id)
     }
     /// Cancels a newly created, not-yet-running worker after resource setup failed.
@@ -285,13 +308,19 @@ impl Scheduler {
         if id.slot() < 2 || self.state(id)? != TaskState::Ready {
             return Err(TaskError::InvalidTransition);
         }
-        self.queue.remove(id)?;
-        let entry = self.entry_mut(id)?;
-        entry.state = TaskState::Vacant;
-        entry.generation = entry
+        let next_generation = self
+            .entry(id)?
             .generation
             .checked_add(1)
             .ok_or(TaskError::GenerationOverflow)?;
+        let next_created = self.created.checked_sub(1).ok_or(TaskError::CorruptState)?;
+        let mut queue = self.queue;
+        queue.remove(id)?;
+        let entry = self.entry_mut(id)?;
+        entry.state = TaskState::Vacant;
+        entry.generation = next_generation;
+        self.queue = queue;
+        self.created = next_created;
         Ok(())
     }
     /// Performs deterministic policy for a cooperative yield and returns the selected peer.
@@ -299,22 +328,23 @@ impl Scheduler {
     pub fn yield_current(&mut self) -> Result<Option<TaskId>, TaskError> {
         ensure_not_interrupt_context()?;
         if self.current.slot() == IDLE_SLOT {
-            return Ok(self.select_from_idle());
+            return self.select_from_idle();
         }
         if self.queue.is_empty() {
             return Ok(None);
         }
         let previous = self.current;
+        self.entry(previous)?;
+        let mut queue = self.queue;
+        queue.push(previous)?;
+        let next = queue.pop()?;
+        self.entry(next)?;
         self.entry_mut(previous)?.state = TaskState::Ready;
-        self.queue.push(previous)?;
-        let next = self.queue.pop()?;
         self.entry_mut(next)?.state = TaskState::Running;
+        self.queue = queue;
         self.current = next;
-        self.yields = self.yields.checked_add(1).ok_or(TaskError::CorruptState)?;
-        self.switches = self
-            .switches
-            .checked_add(1)
-            .ok_or(TaskError::CorruptState)?;
+        self.yields = self.yields.saturating_add(1);
+        self.switches = self.switches.saturating_add(1);
         Ok(Some(next))
     }
     /// Marks the current ordinary task exited and selects a peer or idle.
@@ -323,18 +353,19 @@ impl Scheduler {
         if self.current.slot() < 2 {
             return Err(TaskError::ReservedTask);
         }
+        let mut queue = self.queue;
+        let next = if queue.is_empty() {
+            self.idle_id()
+        } else {
+            queue.pop()?
+        };
+        self.entry(next)?;
         self.entry_mut(self.current)?.state = TaskState::Exited;
-        self.completed = self
-            .completed
-            .checked_add(1)
-            .ok_or(TaskError::CorruptState)?;
-        let next = self.queue.pop().unwrap_or_else(|_| self.idle_id());
         self.entry_mut(next)?.state = TaskState::Running;
+        self.queue = queue;
         self.current = next;
-        self.switches = self
-            .switches
-            .checked_add(1)
-            .ok_or(TaskError::CorruptState)?;
+        self.completed = self.completed.saturating_add(1);
+        self.switches = self.switches.saturating_add(1);
         Ok(next)
     }
     /// Reclaims an exited ordinary task, invalidating its former identity.
@@ -346,16 +377,18 @@ impl Scheduler {
         if id == self.current {
             return Err(TaskError::InvalidTransition);
         }
-        let entry = self.entry_mut(id)?;
+        let entry = self.entry(id)?;
         if entry.state != TaskState::Exited {
             return Err(TaskError::InvalidTransition);
         }
-        entry.state = TaskState::Vacant;
-        entry.generation = entry
+        let generation = entry
             .generation
             .checked_add(1)
             .ok_or(TaskError::GenerationOverflow)?;
-        self.reaped = self.reaped.checked_add(1).ok_or(TaskError::CorruptState)?;
+        let entry = self.entry_mut(id)?;
+        entry.state = TaskState::Vacant;
+        entry.generation = generation;
+        self.reaped = self.reaped.saturating_add(1);
         Ok(())
     }
     /// Blocks bootstrap permanently and selects the dedicated idle task.
@@ -372,13 +405,11 @@ impl Scheduler {
         {
             return Err(TaskError::InvalidTransition);
         }
+        let switches = self.switches.saturating_add(1);
         self.entries[BOOTSTRAP_SLOT].state = TaskState::Blocked;
         self.entries[IDLE_SLOT].state = TaskState::Running;
         self.current = self.idle_id();
-        self.switches = self
-            .switches
-            .checked_add(1)
-            .ok_or(TaskError::CorruptState)?;
+        self.switches = switches;
         Ok(self.current)
     }
 
@@ -397,14 +428,13 @@ impl Scheduler {
             return Err(TaskError::InvalidTransition);
         }
         let bootstrap = self.bootstrap_id();
+        let mut queue = self.queue;
+        queue.push(bootstrap)?;
         self.entries[BOOTSTRAP_SLOT].state = TaskState::Ready;
-        self.queue.push(bootstrap)?;
+        self.queue = queue;
         self.entries[IDLE_SLOT].state = TaskState::Running;
         self.current = self.idle_id();
-        self.switches = self
-            .switches
-            .checked_add(1)
-            .ok_or(TaskError::CorruptState)?;
+        self.switches = self.switches.saturating_add(1);
         Ok(self.current)
     }
     /// Checks the bounded task-table and queue invariants.
@@ -423,6 +453,13 @@ impl Scheduler {
                     .contains(TaskId::new(slot as u8, entry.generation)?)
             {
                 return Err(TaskError::CorruptState);
+            }
+            if slot >= 2 {
+                let id = TaskId::new(slot as u8, entry.generation)?;
+                let expected = usize::from(entry.state == TaskState::Ready);
+                if self.queue.count(id) != expected {
+                    return Err(TaskError::CorruptState);
+                }
             }
         }
         if running != 1 || self.state(self.current)? != TaskState::Running {
@@ -469,13 +506,19 @@ impl Scheduler {
         }
         stats
     }
-    fn select_from_idle(&mut self) -> Option<TaskId> {
-        let next = self.queue.pop().ok()?;
+    fn select_from_idle(&mut self) -> Result<Option<TaskId>, TaskError> {
+        if self.queue.is_empty() {
+            return Ok(None);
+        }
+        let mut queue = self.queue;
+        let next = queue.pop()?;
+        self.entry(next)?;
         self.entries[IDLE_SLOT].state = TaskState::Ready;
-        self.entry_mut(next).ok()?.state = TaskState::Running;
+        self.entry_mut(next)?.state = TaskState::Running;
+        self.queue = queue;
         self.current = next;
         self.switches = self.switches.saturating_add(1);
-        Some(next)
+        Ok(Some(next))
     }
     fn entry(&self, id: TaskId) -> Result<&Entry, TaskError> {
         let entry = self
@@ -565,5 +608,56 @@ mod tests {
             Err(TaskError::InterruptContextForbidden)
         );
         drop(guard);
+    }
+
+    #[test]
+    fn saturating_counters_do_not_abort_committed_transitions() {
+        let mut scheduler = Scheduler::new();
+        let worker = scheduler.spawn().unwrap();
+        scheduler.switches = u64::MAX;
+        scheduler.yields = u64::MAX;
+        assert_eq!(scheduler.yield_current(), Ok(Some(worker)));
+        assert_eq!(
+            scheduler.yield_current(),
+            Ok(Some(scheduler.bootstrap_id()))
+        );
+        assert_eq!(scheduler.switches, u64::MAX);
+        assert_eq!(scheduler.yields, u64::MAX);
+        scheduler.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn generation_overflow_preserves_exited_slot() {
+        let mut scheduler = Scheduler::new();
+        scheduler.entries[2] = Entry {
+            generation: u32::MAX,
+            state: TaskState::Exited,
+        };
+        let id = TaskId::new(2, u32::MAX).unwrap();
+        let reaped = scheduler.reaped;
+        assert_eq!(scheduler.reap(id), Err(TaskError::GenerationOverflow));
+        assert_eq!(scheduler.entries[2].state, TaskState::Exited);
+        assert_eq!(scheduler.entries[2].generation, u32::MAX);
+        assert_eq!(scheduler.reaped, reaped);
+    }
+
+    #[test]
+    fn abort_generation_overflow_preserves_ready_queue_entry() {
+        let mut scheduler = Scheduler::new();
+        let id = TaskId::new(2, u32::MAX).unwrap();
+        scheduler.entries[2] = Entry {
+            generation: u32::MAX,
+            state: TaskState::Ready,
+        };
+        scheduler.queue.push(id).unwrap();
+        scheduler.created = 1;
+        assert_eq!(
+            scheduler.abort_spawn(id),
+            Err(TaskError::GenerationOverflow)
+        );
+        assert_eq!(scheduler.entries[2].state, TaskState::Ready);
+        assert!(scheduler.queue.contains(id));
+        assert_eq!(scheduler.created, 1);
+        scheduler.check_invariants().unwrap();
     }
 }

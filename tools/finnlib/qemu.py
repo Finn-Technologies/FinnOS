@@ -218,16 +218,51 @@ def validate_cooperative_tasks(status: int, output: str) -> list[str]:
     positions = [output.find(marker) for marker in COOPERATIVE_TASK_MARKERS]
     if any(position < 0 for position in positions): errors.append("missing cooperative-task marker(s): " + ", ".join(marker for marker, position in zip(COOPERATIVE_TASK_MARKERS, positions) if position < 0))
     if positions != sorted(position for position in positions if position >= 0): errors.append("cooperative-task markers are out of order")
-    if output.count("FINNOS:KERNEL:SCHEDULER_READY") != 1: errors.append("expected exactly one SCHEDULER_READY")
-    if output.count("FINNOS:TEST:COOPERATIVE_TASKS:PASS") != 1: errors.append("expected exactly one cooperative-task PASS")
+    for marker in COOPERATIVE_TASK_MARKERS:
+        if output.count(marker) != 1: errors.append(f"expected exactly one cooperative-task marker: {marker}")
     import re
     events = [(int(index), int(value)) for index, value in re.findall(r"FINNOS:TASKS:EVENT_(\d+)=(\d+)", output)]
     if events != list(enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))): errors.append("worker event order is not A1/B1/C1/A2/B2/C2/A3/B3/C3")
     if "FINNOS:TASKS:EVENT_COUNT=9" not in output: errors.append("worker event count is not nine")
-    generations = {key: int(value) for key, value in re.findall(r"FINNOS:TASKS:(OLD_GENERATION|NEW_GENERATION)=(\d+)", output)}
-    if generations.get("NEW_GENERATION", 0) <= generations.get("OLD_GENERATION", 0): errors.append("task slot generation did not advance")
-    ticks = {key: int(value) for key, value in re.findall(r"FINNOS:TASKS:(TIMER_START_TICKS|TIMER_END_TICKS)=(\d+)", output)}
-    if ticks.get("TIMER_END_TICKS", 0) <= ticks.get("TIMER_START_TICKS", 0): errors.append("timer ticks did not advance across task switches")
+    numeric_keys = (
+        "A_STACK_START", "A_STACK_END", "A_SENTINEL", "B_STACK_START", "B_STACK_END", "B_SENTINEL",
+        "C_STACK_START", "C_STACK_END", "C_SENTINEL", "IDLE_STACK_START", "IDLE_STACK_END", "IDLE_RSP",
+        "COMPLETED_DELTA", "EXITED_BEFORE_REAP", "QUEUE_LENGTH_BEFORE_REAP", "PHYSICAL_FREE_BASELINE",
+        "PHYSICAL_FREE_AFTER_REAP", "MAPPED_BASELINE", "MAPPED_AFTER_REAP", "VACANT_BASELINE",
+        "VACANT_AFTER_REAP", "REAPED_DELTA", "REUSED_SLOT", "OLD_GENERATION", "NEW_GENERATION",
+        "STALE_ID_REJECTED", "REUSE_RUNS", "IDLE_TICK_DELTA", "TIMER_START_TICKS", "TIMER_END_TICKS",
+        "TICK_DELTA", "DELIVERY_DELTA", "EOI_DELTA", "CR3_BEFORE", "CR3_AFTER", "SCHEDULER_ISR_ENTRIES",
+    )
+    values: dict[str, int] = {}
+    for key in numeric_keys:
+        matches = re.findall(rf"FINNOS:TASKS:{key}=(0x[0-9a-fA-F]+|\d+)", output)
+        if len(matches) != 1:
+            errors.append(f"expected exactly one numeric field {key}")
+        else:
+            try:
+                values[key] = int(matches[0], 0)
+                if values[key] > (1 << 64) - 1: errors.append(f"numeric field {key} exceeds u64")
+            except ValueError: errors.append(f"invalid numeric field {key}")
+    for name in ("A", "B", "C"):
+        if not values.get(f"{name}_STACK_START", 0) <= values.get(f"{name}_SENTINEL", 0) < values.get(f"{name}_STACK_END", 0): errors.append(f"{name} sentinel is outside its stack")
+    ranges = [(values.get(f"{name}_STACK_START", 0), values.get(f"{name}_STACK_END", 0)) for name in ("A", "B", "C")]
+    if any(start >= end for start, end in ranges): errors.append("worker stack range is empty or reversed")
+    if any(a_start < b_end and b_start < a_end for index, (a_start, a_end) in enumerate(ranges) for b_start, b_end in ranges[index + 1:]): errors.append("worker stack ranges overlap")
+    idle_range = (values.get("IDLE_STACK_START", 0), values.get("IDLE_STACK_END", 0))
+    if idle_range[0] >= idle_range[1]: errors.append("idle stack range is empty or reversed")
+    if any(start < idle_range[1] and idle_range[0] < end for start, end in ranges): errors.append("idle stack overlaps a worker stack")
+    if not idle_range[0] <= values.get("IDLE_RSP", 0) < idle_range[1]: errors.append("idle RSP is outside idle stack")
+    expected = {"COMPLETED_DELTA": 4, "EXITED_BEFORE_REAP": 4, "QUEUE_LENGTH_BEFORE_REAP": 0, "REAPED_DELTA": 4, "REUSED_SLOT": 2, "STALE_ID_REJECTED": 1, "REUSE_RUNS": 1, "SCHEDULER_ISR_ENTRIES": 0}
+    for key, value in expected.items():
+        if values.get(key) != value: errors.append(f"unexpected {key}")
+    for before, after, label in (("PHYSICAL_FREE_BASELINE", "PHYSICAL_FREE_AFTER_REAP", "physical pages"), ("MAPPED_BASELINE", "MAPPED_AFTER_REAP", "mapped leaves"), ("VACANT_BASELINE", "VACANT_AFTER_REAP", "vacant slots")):
+        if values.get(before) != values.get(after): errors.append(f"{label} baseline was not restored")
+    if values.get("NEW_GENERATION") != values.get("OLD_GENERATION", 0) + 1: errors.append("task slot generation did not advance exactly once")
+    if values.get("TIMER_END_TICKS", 0) <= values.get("TIMER_START_TICKS", 0) or values.get("TICK_DELTA", 0) <= 0: errors.append("timer ticks did not advance across task switches")
+    if values.get("TICK_DELTA") != values.get("TIMER_END_TICKS", 0) - values.get("TIMER_START_TICKS", 0): errors.append("timer tick delta is inconsistent")
+    if values.get("DELIVERY_DELTA", 0) <= 0 or values.get("EOI_DELTA") != values.get("DELIVERY_DELTA"): errors.append("timer delivery and EOI deltas are inconsistent")
+    if values.get("IDLE_TICK_DELTA", 0) <= 0: errors.append("idle did not observe a timer tick")
+    if values.get("CR3_BEFORE") != values.get("CR3_AFTER"): errors.append("CR3 changed across cooperative scheduling")
     for marker in ("FINNOS:KERNEL:SCHEDULER_ERROR", "FINNOS:KERNEL:TASK_STACK_ERROR", "FINNOS:TASK:CONTEXT_ERROR", "FINNOS:INTERRUPT:UNEXPECTED", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", "FINNOS:EXCEPTION:UNHANDLED", "FINNOS:KERNEL:PANIC"):
         if marker in output: errors.append(f"forbidden marker found: {marker}")
     return errors

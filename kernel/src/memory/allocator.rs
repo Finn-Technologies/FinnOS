@@ -156,6 +156,7 @@ pub enum PageAllocationError {
 }
 
 /// A deterministic, allocation-free first-fit allocator for physical pages.
+#[derive(Clone)]
 pub struct EarlyPhysicalPageAllocator {
     managed: [Extent; MAX_MANAGED_EXTENTS],
     managed_count: usize,
@@ -166,20 +167,36 @@ pub struct EarlyPhysicalPageAllocator {
 }
 
 impl EarlyPhysicalPageAllocator {
-    /// Build an allocator from the normalized classified memory map.
-    pub fn from_memory_regions(table: &RegionTable) -> Result<Self, PageAllocationError> {
+    /// Returns empty storage suitable for a fixed transaction scratch buffer.
+    pub(crate) const fn empty_transaction() -> Self {
         let empty = Extent {
             start: 0,
             page_count: 0,
         };
-        let mut allocator = Self {
+        Self {
             managed: [empty; MAX_MANAGED_EXTENTS],
             managed_count: 0,
             free: [empty; MAX_FREE_EXTENTS],
             free_count: 0,
             total_pages: 0,
             free_pages: 0,
-        };
+        }
+    }
+
+    /// Copies bounded allocator state without constructing a large stack temporary.
+    #[cfg(target_os = "none")]
+    pub(crate) const fn copy_state_from(&mut self, source: &Self) {
+        self.managed.copy_from_slice(&source.managed);
+        self.managed_count = source.managed_count;
+        self.free.copy_from_slice(&source.free);
+        self.free_count = source.free_count;
+        self.total_pages = source.total_pages;
+        self.free_pages = source.free_pages;
+    }
+
+    /// Build an allocator from the normalized classified memory map.
+    pub fn from_memory_regions(table: &RegionTable) -> Result<Self, PageAllocationError> {
+        let mut allocator = Self::empty_transaction();
         let mut previous_end = 0;
         let mut has_previous = false;
         for region in table.as_slice() {

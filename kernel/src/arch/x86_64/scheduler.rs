@@ -6,10 +6,12 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::context::{ContextError, TaskContext, initialize_context, switch};
-use super::task_stack::{TaskStackError, TaskStackMapping, map_task_stack, reclaim_task_stack};
+use super::task_stack::{
+    TaskStackError, TaskStackMapping, map_task_stack, reclaim_task_stack, validate_task_stack,
+};
 use crate::arch::x86_64::paging::ActiveAddressSpace;
 use crate::memory::EarlyPhysicalPageAllocator;
 use crate::task::{MAX_TASKS, Scheduler, TaskError, TaskId, TaskState};
@@ -33,6 +35,35 @@ pub enum SchedulerError {
     Context(ContextError),
     /// A task entry was missing or invalid.
     InvalidEntry,
+    /// Cleanup after failed initialization could not restore stack resources.
+    InitializationRollbackFailed {
+        /// Failure that triggered cleanup.
+        original: RollbackCause,
+        /// Failure encountered while restoring ownership.
+        cleanup: RollbackCause,
+    },
+    /// Cleanup after failed task creation could not restore policy and resources.
+    SpawnRollbackFailed {
+        /// Failure that triggered cleanup.
+        original: RollbackCause,
+        /// Failure encountered while restoring ownership.
+        cleanup: RollbackCause,
+    },
+    /// Runtime ownership is preserved but scheduling is disabled after cleanup failure.
+    Poisoned,
+}
+
+/// One side of a scheduler rollback failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RollbackCause {
+    /// Bounded task-policy failure.
+    Task(TaskError),
+    /// Stack ownership or paging failure.
+    Stack(TaskStackError),
+    /// Initial-context construction failure.
+    Context(ContextError),
+    /// Runtime bookkeeping was inconsistent.
+    Runtime,
 }
 impl From<TaskError> for SchedulerError {
     fn from(error: TaskError) -> Self {
@@ -50,7 +81,6 @@ impl From<ContextError> for SchedulerError {
     }
 }
 
-#[derive(Clone, Copy)]
 struct RuntimeSlot {
     entry: Option<fn()>,
     context: TaskContext,
@@ -67,6 +97,7 @@ impl RuntimeSlot {
 struct Runtime {
     policy: Scheduler,
     slots: [RuntimeSlot; MAX_TASKS],
+    poisoned: bool,
 }
 
 struct SchedulerCell(UnsafeCell<Option<Runtime>>);
@@ -75,7 +106,30 @@ struct SchedulerCell(UnsafeCell<Option<Runtime>>);
 // touch the scheduler.
 unsafe impl Sync for SchedulerCell {}
 static RUNTIME: SchedulerCell = SchedulerCell(UnsafeCell::new(None));
+struct FailedInitializationCell(UnsafeCell<Option<TaskStackMapping>>);
+// SAFETY: initialization and its failure path are BSP-only; the retained value
+// is never copied or exposed and exists solely to preserve ownership metadata.
+unsafe impl Sync for FailedInitializationCell {}
+static FAILED_INITIALIZATION_STACK: FailedInitializationCell =
+    FailedInitializationCell(UnsafeCell::new(None));
 static SWITCHING: AtomicBool = AtomicBool::new(false);
+static IDLE_RSP: AtomicU64 = AtomicU64::new(0);
+static INTERRUPT_CONTEXT_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// Copyable diagnostic snapshot for one task slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TaskDiagnostics {
+    /// Current lifecycle state.
+    pub state: TaskState,
+    /// Whether the task appears in the runnable queue.
+    pub queued: bool,
+    /// Saved stack pointer.
+    pub rsp: u64,
+    /// Dynamic stack start, or zero for bootstrap/vacant slots.
+    pub stack_start: u64,
+    /// Dynamic stack end, or zero for bootstrap/vacant slots.
+    pub stack_end: u64,
+}
 
 /// Initializes bootstrap bookkeeping and maps the dedicated idle stack.
 ///
@@ -90,28 +144,65 @@ pub fn initialize(
     reject_interrupt_context()?;
     // SAFETY: initialization is BSP-only and cannot race an interrupt handler.
     let cell = unsafe { &mut *RUNTIME.0.get() };
+    // SAFETY: initialization is BSP-only and serialized with this access.
+    let failed_stack = unsafe { &mut *FAILED_INITIALIZATION_STACK.0.get() };
+    if failed_stack.is_some() {
+        return Err(SchedulerError::Poisoned);
+    }
     if cell.is_some() {
         return Err(SchedulerError::AlreadyInitialized);
     }
     let mut runtime = Runtime {
         policy: Scheduler::new(),
-        slots: [RuntimeSlot::EMPTY; MAX_TASKS],
+        slots: [const { RuntimeSlot::EMPTY }; MAX_TASKS],
+        poisoned: false,
     };
     let idle = runtime.policy.idle_id();
     let mut stack = TaskStackMapping::empty(idle.slot()).map_err(TaskStackError::Layout)?;
     map_task_stack(&mut stack, address_space, allocator)?;
-    let context = initialize_context(
+    let context = match initialize_context(
         stack.virtual_start(),
         stack.virtual_end(),
         task_trampoline as *const () as usize as u64,
         fatal_trampoline_return as *const () as usize as u64,
-    )?;
+    ) {
+        Ok(context) => context,
+        Err(error) => {
+            return match reclaim_task_stack(&mut stack, address_space, allocator) {
+                Ok(()) => Err(error.into()),
+                Err(cleanup) => {
+                    *failed_stack = Some(stack);
+                    Err(SchedulerError::InitializationRollbackFailed {
+                        original: RollbackCause::Context(error),
+                        cleanup: RollbackCause::Stack(cleanup),
+                    })
+                }
+            };
+        }
+    };
     runtime.slots[idle.slot()] = RuntimeSlot {
         entry: Some(idle_task),
         context,
         stack: Some(stack),
     };
-    runtime.policy.check_invariants()?;
+    if let Err(error) = runtime.policy.check_invariants() {
+        let mut owned = runtime.slots[idle.slot()].stack.take().ok_or(
+            SchedulerError::InitializationRollbackFailed {
+                original: RollbackCause::Task(error),
+                cleanup: RollbackCause::Runtime,
+            },
+        )?;
+        return match reclaim_task_stack(&mut owned, address_space, allocator) {
+            Ok(()) => Err(error.into()),
+            Err(cleanup) => {
+                *failed_stack = Some(owned);
+                Err(SchedulerError::InitializationRollbackFailed {
+                    original: RollbackCause::Task(error),
+                    cleanup: RollbackCause::Stack(cleanup),
+                })
+            }
+        };
+    }
     let bootstrap = runtime.policy.bootstrap_id();
     *cell = Some(runtime);
     Ok((bootstrap, idle))
@@ -134,9 +225,35 @@ pub fn spawn(
     }
     let runtime = runtime_mut()?;
     let id = runtime.policy.spawn()?;
-    let mut stack = TaskStackMapping::empty(id.slot()).map_err(TaskStackError::Layout)?;
+    let mut stack = match TaskStackMapping::empty(id.slot()).map_err(TaskStackError::Layout) {
+        Ok(stack) => stack,
+        Err(error) => {
+            if runtime.policy.abort_spawn(id).is_err() {
+                runtime.poisoned = true;
+                return Err(SchedulerError::SpawnRollbackFailed {
+                    original: RollbackCause::Stack(error),
+                    cleanup: RollbackCause::Runtime,
+                });
+            }
+            return Err(error.into());
+        }
+    };
     if let Err(error) = map_task_stack(&mut stack, address_space, allocator) {
-        runtime.policy.abort_spawn(id)?;
+        if !stack.is_empty() {
+            runtime.slots[id.slot()].stack = Some(stack);
+            runtime.poisoned = true;
+            return Err(SchedulerError::SpawnRollbackFailed {
+                original: RollbackCause::Stack(error),
+                cleanup: RollbackCause::Stack(error),
+            });
+        }
+        if let Err(cleanup) = runtime.policy.abort_spawn(id) {
+            runtime.poisoned = true;
+            return Err(SchedulerError::SpawnRollbackFailed {
+                original: RollbackCause::Stack(error),
+                cleanup: RollbackCause::Task(cleanup),
+            });
+        }
         return Err(error.into());
     }
     let context = match initialize_context(
@@ -147,8 +264,24 @@ pub fn spawn(
     ) {
         Ok(context) => context,
         Err(error) => {
-            reclaim_task_stack(&mut stack, address_space, allocator)?;
-            runtime.policy.abort_spawn(id)?;
+            if let Err(cleanup) = reclaim_task_stack(&mut stack, address_space, allocator) {
+                runtime.slots[id.slot()].stack = Some(stack);
+                runtime.poisoned = true;
+                let policy_cleanup = runtime.policy.abort_spawn(id);
+                return Err(SchedulerError::SpawnRollbackFailed {
+                    original: RollbackCause::Context(error),
+                    cleanup: policy_cleanup
+                        .err()
+                        .map_or(RollbackCause::Stack(cleanup), RollbackCause::Task),
+                });
+            }
+            if let Err(cleanup) = runtime.policy.abort_spawn(id) {
+                runtime.poisoned = true;
+                return Err(SchedulerError::SpawnRollbackFailed {
+                    original: RollbackCause::Context(error),
+                    cleanup: RollbackCause::Task(cleanup),
+                });
+            }
             return Err(error.into());
         }
     };
@@ -178,6 +311,39 @@ pub fn task_state(id: TaskId) -> Result<TaskState, SchedulerError> {
     runtime_ref()?.policy.state(id).map_err(Into::into)
 }
 
+/// Returns non-owning task diagnostics for integration validation.
+pub fn task_diagnostics(id: TaskId) -> Result<TaskDiagnostics, SchedulerError> {
+    let runtime = runtime_ref()?;
+    let state = runtime.policy.state(id)?;
+    let slot = &runtime.slots[id.slot()];
+    let (stack_start, stack_end) = slot
+        .stack
+        .as_ref()
+        .map_or((0, 0), |stack| (stack.virtual_start(), stack.virtual_end()));
+    Ok(TaskDiagnostics {
+        state,
+        queued: runtime.policy.is_queued(id),
+        rsp: slot.context.rsp,
+        stack_start,
+        stack_end,
+    })
+}
+
+/// Returns allocation-free scheduler statistics.
+pub fn stats() -> Result<crate::task::SchedulerStats, SchedulerError> {
+    Ok(runtime_ref()?.policy.stats())
+}
+
+/// Returns the most recent stack pointer captured inside idle.
+pub fn idle_rsp() -> u64 {
+    IDLE_RSP.load(Ordering::Relaxed)
+}
+
+/// Returns attempts to enter scheduler mutation from interrupt context.
+pub fn interrupt_context_entry_count() -> u64 {
+    INTERRUPT_CONTEXT_ENTRIES.load(Ordering::Relaxed)
+}
+
 /// Validates the live task-policy invariants without allocating.
 ///
 /// # Errors
@@ -186,6 +352,81 @@ pub fn task_state(id: TaskId) -> Result<TaskState, SchedulerError> {
 /// task bookkeeping is inconsistent.
 pub fn check_invariants() -> Result<(), SchedulerError> {
     runtime_ref()?.policy.check_invariants().map_err(Into::into)
+}
+
+/// Validates policy state together with live entries, contexts, and stack ownership.
+///
+/// # Errors
+///
+/// Returns an error when any runtime resource disagrees with task policy or
+/// active page-table mappings.
+pub fn check_runtime_invariants(address_space: &ActiveAddressSpace) -> Result<(), SchedulerError> {
+    let runtime = runtime_ref()?;
+    runtime.policy.check_invariants()?;
+    for slot_index in 0..MAX_TASKS {
+        let (_, state) = runtime.policy.slot_snapshot(slot_index)?;
+        let slot = &runtime.slots[slot_index];
+        if slot_index == 0 {
+            if slot.entry.is_some() || slot.stack.is_some() {
+                return Err(SchedulerError::InvalidEntry);
+            }
+            continue;
+        }
+        match state {
+            TaskState::Vacant => {
+                if slot.entry.is_some() || slot.context.rsp != 0 || slot.stack.is_some() {
+                    return Err(SchedulerError::InvalidEntry);
+                }
+            }
+            TaskState::Ready | TaskState::Running | TaskState::Exited => {
+                let stack = slot.stack.as_ref().ok_or(SchedulerError::InvalidEntry)?;
+                if slot.entry.is_none()
+                    || slot.context.rsp == 0
+                    || !stack.contains(slot.context.rsp)
+                {
+                    return Err(SchedulerError::InvalidEntry);
+                }
+                validate_task_stack(stack, address_space)?;
+            }
+            TaskState::Blocked => return Err(SchedulerError::InvalidEntry),
+        }
+    }
+    for left in 1..MAX_TASKS {
+        let Some(left_stack) = runtime.slots[left].stack.as_ref() else {
+            continue;
+        };
+        for right in (left + 1)..MAX_TASKS {
+            let Some(right_stack) = runtime.slots[right].stack.as_ref() else {
+                continue;
+            };
+            if left_stack.virtual_start() < right_stack.virtual_end()
+                && right_stack.virtual_start() < left_stack.virtual_end()
+            {
+                return Err(SchedulerError::InvalidEntry);
+            }
+            for left_page in 0..super::task_stack::TASK_STACK_PAGE_COUNT {
+                for right_page in 0..super::task_stack::TASK_STACK_PAGE_COUNT {
+                    if left_stack.physical_page(left_page) == right_stack.physical_page(right_page)
+                    {
+                        return Err(SchedulerError::InvalidEntry);
+                    }
+                }
+            }
+        }
+    }
+    let bootstrap_rsp = runtime.slots[0].context.rsp;
+    if bootstrap_rsp != 0 {
+        for slot in 1..MAX_TASKS {
+            if runtime.slots[slot]
+                .stack
+                .as_ref()
+                .is_some_and(|stack| stack.contains(bootstrap_rsp))
+            {
+                return Err(SchedulerError::InvalidEntry);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Cooperatively yields to the next ready task, if any.
@@ -228,7 +469,10 @@ pub fn reap(
     }
     let slot = &mut runtime.slots[id.slot()];
     let mut stack = slot.stack.take().ok_or(SchedulerError::InvalidEntry)?;
-    reclaim_task_stack(&mut stack, address_space, allocator)?;
+    if let Err(error) = reclaim_task_stack(&mut stack, address_space, allocator) {
+        slot.stack = Some(stack);
+        return Err(error.into());
+    }
     *slot = RuntimeSlot::EMPTY;
     runtime.policy.reap(id)?;
     Ok(())
@@ -353,8 +597,16 @@ pub fn exit_current() -> ! {
 }
 fn idle_task() {
     loop {
+        let rsp: u64;
+        // SAFETY: reading RSP has no side effects and records only diagnostic state.
+        unsafe {
+            core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, preserves_flags));
+        }
+        IDLE_RSP.store(rsp, Ordering::Relaxed);
         super::cpu::halt_once();
-        let _ = yield_now();
+        if yield_now().is_err() {
+            fatal_scheduler();
+        }
     }
 }
 fn fatal_trampoline_return() -> ! {
@@ -369,6 +621,7 @@ fn fatal_scheduler() -> ! {
 
 fn reject_interrupt_context() -> Result<(), SchedulerError> {
     if crate::interrupt::in_interrupt_context() {
+        INTERRUPT_CONTEXT_ENTRIES.fetch_add(1, Ordering::Relaxed);
         Err(SchedulerError::InterruptContextForbidden)
     } else {
         Ok(())
@@ -377,16 +630,26 @@ fn reject_interrupt_context() -> Result<(), SchedulerError> {
 fn runtime_ref() -> Result<&'static Runtime, SchedulerError> {
     reject_interrupt_context()?;
     unsafe {
-        (&*RUNTIME.0.get())
+        let runtime = (&*RUNTIME.0.get())
             .as_ref()
-            .ok_or(SchedulerError::NotInitialized)
+            .ok_or(SchedulerError::NotInitialized)?;
+        if runtime.poisoned {
+            Err(SchedulerError::Poisoned)
+        } else {
+            Ok(runtime)
+        }
     }
 }
 fn runtime_mut() -> Result<&'static mut Runtime, SchedulerError> {
     reject_interrupt_context()?;
     unsafe {
-        (&mut *RUNTIME.0.get())
+        let runtime = (&mut *RUNTIME.0.get())
             .as_mut()
-            .ok_or(SchedulerError::NotInitialized)
+            .ok_or(SchedulerError::NotInitialized)?;
+        if runtime.poisoned {
+            Err(SchedulerError::Poisoned)
+        } else {
+            Ok(runtime)
+        }
     }
 }
