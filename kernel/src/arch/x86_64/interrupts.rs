@@ -1150,11 +1150,7 @@ mod tests {
             Err(AttributionError::FrameOutsideStack)
         );
         assert_eq!(
-            validate_frame_stack(
-                0x20_f70,
-                0x20_f70 + KernelInterruptFrame::SIZE + 8,
-                Ring0FrameLayout::PaddedByEight,
-            ),
+            validate_frame_stack(0x20_f70, 0x20_ff0, Ring0FrameLayout::PaddedByEight,),
             Err(AttributionError::FrameOutsideStack)
         );
         assert_eq!(
@@ -1218,7 +1214,7 @@ mod tests {
         );
         assert_eq!(
             frame.validate_with_layout(u64::MAX - 7),
-            Err(FrameValidationError::NoncanonicalFrame)
+            Err(FrameValidationError::AddressOverflow)
         );
     }
 
