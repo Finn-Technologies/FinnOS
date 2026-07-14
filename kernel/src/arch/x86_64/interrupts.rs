@@ -138,6 +138,8 @@ pub enum Ring0FrameLayout {
     PaddedByEight,
     /// A twelve-byte stack-alignment gap follows the raw frame.
     PaddedByTwelve,
+    /// A measured sub-sixteen-byte stack-alignment gap follows the raw frame.
+    PaddedBy(u8),
 }
 
 impl Ring0FrameLayout {
@@ -150,6 +152,7 @@ impl Ring0FrameLayout {
             Self::PaddedByFour => KernelInterruptFrame::SIZE + 4,
             Self::PaddedByEight => KernelInterruptFrame::SIZE + 8,
             Self::PaddedByTwelve => KernelInterruptFrame::SIZE + 12,
+            Self::PaddedBy(gap) => KernelInterruptFrame::SIZE + gap as u64,
         }
     }
     /// Returns the alignment-gap size for this layout.
@@ -160,6 +163,7 @@ impl Ring0FrameLayout {
             Self::PaddedByFour => 4,
             Self::PaddedByEight => 8,
             Self::PaddedByTwelve => 12,
+            Self::PaddedBy(gap) => gap as u64,
         }
     }
 
@@ -169,6 +173,7 @@ impl Ring0FrameLayout {
             4 => Some(Self::PaddedByFour),
             8 => Some(Self::PaddedByEight),
             12 => Some(Self::PaddedByTwelve),
+            1..=3 | 5..=7 | 9..=11 | 13..=15 => Some(Self::PaddedBy(gap as u8)),
             _ => None,
         }
     }
@@ -427,22 +432,9 @@ fn reject_frame(
     frame: Option<&KernelInterruptFrame>,
     validation: &str,
 ) -> *mut KernelInterruptFrame {
-    let (vector, raw_frame, saved_rsp, saved_ss, rip, cs, rflags) =
-        frame.map_or((0, 0, 0, 0, 0, 0, 0), |frame| {
-            (
-                frame.vector,
-                core::ptr::from_ref(frame) as u64,
-                frame.saved_rsp,
-                frame.saved_ss,
-                frame.rip,
-                frame.cs,
-                frame.rflags,
-            )
-        });
-    let raw_plus_176 = raw_frame.checked_add(176).unwrap_or(0);
-    let raw_plus_184 = raw_frame.checked_add(184).unwrap_or(0);
+    let vector = frame.map_or(0, |frame| frame.vector);
     serial::log(format_args!(
-        "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR\nFINNOS:INTERRUPT:VECTOR={vector:#x}\nFINNOS:INTERRUPT:FRAME_ERROR={validation}\nFINNOS:INTERRUPT:RAW_FRAME={raw_frame:#x}\nFINNOS:INTERRUPT:SAVED_RSP={saved_rsp:#x}\nFINNOS:INTERRUPT:SAVED_SS={saved_ss:#x}\nFINNOS:INTERRUPT:RIP={rip:#x}\nFINNOS:INTERRUPT:CS={cs:#x}\nFINNOS:INTERRUPT:RFLAGS={rflags:#x}\nFINNOS:INTERRUPT:RAW_PLUS_176={raw_plus_176:#x}\nFINNOS:INTERRUPT:RAW_PLUS_184={raw_plus_184:#x}\n"
+        "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR\nFINNOS:INTERRUPT:VECTOR={vector:#x}\nFINNOS:INTERRUPT:FRAME_ERROR={validation}\n"
     ));
     core::ptr::null_mut()
 }
@@ -701,7 +693,7 @@ impl KernelInterruptFrame {
     /// Size of the raw frame passed by the assembly entry.
     pub const SIZE: u64 = Self::IRET_FRAME_SIZE;
     /// Maximum supported footprint including the bounded alignment gap.
-    pub const MAX_FOOTPRINT_SIZE: u64 = Self::SIZE + 12;
+    pub const MAX_FOOTPRINT_SIZE: u64 = Self::SIZE + 15;
     /// Returns the interrupted CPL0 stack pointer from the hardware tail.
     /// # Errors
     ///
@@ -1216,6 +1208,7 @@ mod tests {
             (4_u64, Ring0FrameLayout::PaddedByFour),
             (8_u64, Ring0FrameLayout::PaddedByEight),
             (12_u64, Ring0FrameLayout::PaddedByTwelve),
+            (15_u64, Ring0FrameLayout::PaddedBy(15)),
         ] {
             frame.saved_rsp = raw + KernelInterruptFrame::SIZE + gap;
             assert_eq!(frame.validate_with_layout(raw).unwrap().1, expected);

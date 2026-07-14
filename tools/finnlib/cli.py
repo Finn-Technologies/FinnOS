@@ -120,12 +120,4 @@ def main() -> int:
     try: return command(sys.argv[1] if len(sys.argv) > 1 else "help")
     except KeyboardInterrupt: print("\nInterrupted.", file=sys.stderr); return 130
     except subprocess.CalledProcessError as error: return error.returncode or 1
-    except subprocess.TimeoutExpired as error:
-        partial = error.stdout or error.stderr or ""
-        if isinstance(partial, bytes):
-            partial = partial.decode(errors="replace")
-        if partial:
-            print(partial)
-        print(f"QEMU timed out after {error.timeout}s", file=sys.stderr)
-        return 1
     except (OSError, RuntimeError) as error: print(f"error: {error}", file=sys.stderr); return 1

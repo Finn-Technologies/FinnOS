@@ -31,7 +31,7 @@ only for the spurious-dispatch test.
 # Kernel preemption-context coverage
 
 The host suite checks the 136-byte saved-register/software prefix, 176-byte raw
-frame, bounded 0/4/8/12-byte alignment slack (188-byte maximum footprint), saved
+frame, bounded 0–15-byte alignment slack (191-byte maximum footprint), saved
 RSP/SS tail, checked frame bounds, publication boundaries, overlap rejection,
 phase capture freezing, and preemption nesting.
 The dedicated QEMU suite adds real interrupts and timer delivery; it does not

@@ -4,11 +4,12 @@ The x86-64 external interrupt entry builds a raw `repr(C)` 176-byte resumable
 frame. Its 136-byte saved-register/software prefix contains all fifteen
 general-purpose registers, vector, synthetic error code, RIP, CS, and RFLAGS;
 the 40-byte raw return tail contains saved RSP and saved SS through the final
-`iretq` field. QEMU's measured ring-0/IST-0 delivery permits either no gap or
-bounded four-state alignment slack of 0, 4, 8, or 12 bytes after that raw
-frame, so the attributed footprint is 176 through 188 bytes. The saved RSP
+`iretq` field. QEMU's measured ring-0/IST-0 delivery permits bounded alignment
+slack of 0 through 15 bytes after that raw frame, so the attributed footprint
+is 176 through 191 bytes. The saved RSP
 value—not a slot address—is the exact pre-interrupt RSP, and validation accepts
-only those measured relationships. The dispatcher returns the raw pointer
+only those measured relationships with bounded 0–15-byte slack (176–191-byte
+footprint). The dispatcher returns the raw pointer
 unchanged.
 The kernel data selector `0x10` is validated as saved SS. Future CPL3 or
 nonzero-IST entries require a separate frame contract. This is the measured

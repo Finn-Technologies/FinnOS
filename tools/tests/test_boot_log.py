@@ -5,7 +5,7 @@ from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, 
 class BootLogTests(unittest.TestCase):
     def test_preemption_context_markers_are_strict(self):
         numeric = {
-            "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 188,
+            "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 191,
             "SOFTWARE_LAYOUT": 8, "TIMER_LAYOUT": 8, "IDLE_LAYOUT": 0,
             "WORKER_SOFTWARE_LAYOUT": 8, "WORKER_TIMER_LAYOUT": 8,
             "SOFTWARE_FRAME": 0x1000, "SOFTWARE_RETURN_FRAME": 0x1000, "SOFTWARE_VECTOR": 0x41, "SOFTWARE_CS": 0x8, "SOFTWARE_RFLAGS": 0x202,
@@ -192,7 +192,7 @@ class BootLogTests(unittest.TestCase):
 
     def test_preemption_rejects_layout_and_pointer_contract_violations(self):
         numeric = {
-            "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 188,
+            "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 191,
             "SOFTWARE_LAYOUT": 8, "TIMER_LAYOUT": 8, "IDLE_LAYOUT": 0,
             "WORKER_SOFTWARE_LAYOUT": 8, "WORKER_TIMER_LAYOUT": 8,
             "SOFTWARE_FRAME": 0x1000, "SOFTWARE_RETURN_FRAME": 0x1000, "SOFTWARE_VECTOR": 0x41, "SOFTWARE_CS": 0x8, "SOFTWARE_RFLAGS": 0x202,

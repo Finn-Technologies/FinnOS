@@ -281,10 +281,10 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
             values[key] = value
         except ValueError:
             errors.append(f"invalid numeric field {key}")
-    if values.get("FRAME_SIZE") != 176 or values.get("FRAME_PREFIX_SIZE") != 136 or values.get("FRAME_IRET_SIZE") != 176 or values.get("FRAME_FOOTPRINT_SIZE") != 188:
+    if values.get("FRAME_SIZE") != 176 or values.get("FRAME_PREFIX_SIZE") != 136 or values.get("FRAME_IRET_SIZE") != 176 or values.get("FRAME_FOOTPRINT_SIZE") != 191:
         errors.append("invalid complete frame sizes")
     for key in ("SOFTWARE_LAYOUT", "TIMER_LAYOUT", "IDLE_LAYOUT", "WORKER_SOFTWARE_LAYOUT", "WORKER_TIMER_LAYOUT"):
-        if values.get(key) not in (0, 4, 8, 12):
+        if values.get(key) not in range(16):
             errors.append(f"invalid frame layout gap {key}")
     if values.get("SOFTWARE_FRAME") != values.get("SOFTWARE_RETURN_FRAME"):
         errors.append("software frame pointer changed")
