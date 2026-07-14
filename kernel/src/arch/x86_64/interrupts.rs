@@ -139,7 +139,7 @@ pub enum Ring0FrameLayout {
     /// A twelve-byte stack-alignment gap follows the raw frame.
     PaddedByTwelve,
     /// A measured sub-sixteen-byte stack-alignment gap follows the raw frame.
-    PaddedBy(u8),
+    PaddedBy(u64),
 }
 
 impl Ring0FrameLayout {
@@ -152,7 +152,7 @@ impl Ring0FrameLayout {
             Self::PaddedByFour => KernelInterruptFrame::SIZE + 4,
             Self::PaddedByEight => KernelInterruptFrame::SIZE + 8,
             Self::PaddedByTwelve => KernelInterruptFrame::SIZE + 12,
-            Self::PaddedBy(gap) => KernelInterruptFrame::SIZE + gap as u64,
+            Self::PaddedBy(gap) => KernelInterruptFrame::SIZE + gap,
         }
     }
     /// Returns the alignment-gap size for this layout.
@@ -163,7 +163,7 @@ impl Ring0FrameLayout {
             Self::PaddedByFour => 4,
             Self::PaddedByEight => 8,
             Self::PaddedByTwelve => 12,
-            Self::PaddedBy(gap) => gap as u64,
+            Self::PaddedBy(gap) => gap,
         }
     }
 
@@ -173,7 +173,7 @@ impl Ring0FrameLayout {
             4 => Some(Self::PaddedByFour),
             8 => Some(Self::PaddedByEight),
             12 => Some(Self::PaddedByTwelve),
-            1..=3 | 5..=7 | 9..=11 | 13..=15 => Some(Self::PaddedBy(gap as u8)),
+            1..=3 | 5..=7 | 9..=11 | 13..=15 => Some(Self::PaddedBy(gap)),
             _ => None,
         }
     }
