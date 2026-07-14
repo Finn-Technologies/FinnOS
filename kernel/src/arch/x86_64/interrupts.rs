@@ -427,9 +427,22 @@ fn reject_frame(
     frame: Option<&KernelInterruptFrame>,
     validation: &str,
 ) -> *mut KernelInterruptFrame {
-    let vector = frame.map_or(0, |frame| frame.vector);
+    let (vector, raw_frame, saved_rsp, saved_ss, rip, cs, rflags) =
+        frame.map_or((0, 0, 0, 0, 0, 0, 0), |frame| {
+            (
+                frame.vector,
+                core::ptr::from_ref(frame) as u64,
+                frame.saved_rsp,
+                frame.saved_ss,
+                frame.rip,
+                frame.cs,
+                frame.rflags,
+            )
+        });
+    let raw_plus_176 = raw_frame.checked_add(176).unwrap_or(0);
+    let raw_plus_184 = raw_frame.checked_add(184).unwrap_or(0);
     serial::log(format_args!(
-        "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR\nFINNOS:INTERRUPT:VECTOR={vector:#x}\nFINNOS:INTERRUPT:FRAME_ERROR={validation}\n"
+        "FINNOS:KERNEL:INTERRUPT_FRAME_ERROR\nFINNOS:INTERRUPT:VECTOR={vector:#x}\nFINNOS:INTERRUPT:FRAME_ERROR={validation}\nFINNOS:INTERRUPT:RAW_FRAME={raw_frame:#x}\nFINNOS:INTERRUPT:SAVED_RSP={saved_rsp:#x}\nFINNOS:INTERRUPT:SAVED_SS={saved_ss:#x}\nFINNOS:INTERRUPT:RIP={rip:#x}\nFINNOS:INTERRUPT:CS={cs:#x}\nFINNOS:INTERRUPT:RFLAGS={rflags:#x}\nFINNOS:INTERRUPT:RAW_PLUS_176={raw_plus_176:#x}\nFINNOS:INTERRUPT:RAW_PLUS_184={raw_plus_184:#x}\n"
     ));
     core::ptr::null_mut()
 }
