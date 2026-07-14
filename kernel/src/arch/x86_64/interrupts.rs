@@ -1199,7 +1199,7 @@ mod tests {
         assert_eq!(layout.gap_size(), 8);
         assert_eq!(layout.footprint_size(), KernelInterruptFrame::SIZE + 8);
         assert_eq!(
-            Ring0FrameLayout::PaddedByTwelve.footprint_size(),
+            Ring0FrameLayout::PaddedBy(15).footprint_size(),
             KernelInterruptFrame::MAX_FOOTPRINT_SIZE
         );
         assert_eq!(raw, core::ptr::from_ref(&frame) as u64);
