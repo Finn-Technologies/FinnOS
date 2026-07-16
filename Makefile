@@ -1,4 +1,4 @@
-.PHONY: help doctor build check test format format-check lint test-heap test-timer-interrupts test-cooperative-tasks
+.PHONY: help doctor build check test format format-check lint agent-check test-heap test-timer-interrupts test-cooperative-tasks
 
 help:
 	./tools/finn help
@@ -23,6 +23,9 @@ format-check:
 
 lint:
 	./tools/finn lint
+
+agent-check:
+	python3 .agents/scripts/validate.py --all
 
 boot:
 	./tools/finn build-boot

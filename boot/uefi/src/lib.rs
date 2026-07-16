@@ -140,8 +140,7 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
         flags: 0,
     }; 32];
     let mut count = 0usize;
-    let mut executable_start = u64::MAX;
-    let mut executable_end = 0u64;
+    let mut entry_is_executable = false;
     for index in 0..phnum {
         let offset = phoff
             .checked_add(index.checked_mul(phentsize).ok_or(ElfError::Overflow)?)
@@ -182,8 +181,7 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
             }
         }
         if flags & PF_X != 0 {
-            executable_start = executable_start.min(address);
-            executable_end = executable_end.max(address_end);
+            entry_is_executable |= entry >= address && entry < address_end;
         }
         segments[count] = LoadSegment {
             address,
@@ -197,7 +195,7 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
     if count == 0 {
         return Err(ElfError::NoLoadSegments);
     }
-    if entry < executable_start || entry >= executable_end {
+    if !entry_is_executable {
         return Err(ElfError::EntryOutsideExecutable);
     }
     let load_start = segments[..count]
@@ -274,6 +272,24 @@ mod tests {
         assert_eq!(validate_elf(&e), Err(ElfError::NoLoadSegments));
         let mut e = fixture();
         e[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        assert_eq!(validate_elf(&e), Err(ElfError::EntryOutsideExecutable));
+    }
+    #[test]
+    fn rejects_entry_in_gap_between_executable_segments() {
+        let mut e = fixture();
+        e.resize(184, 0);
+        e[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
+        e[56..58].copy_from_slice(&2u16.to_le_bytes());
+        e[72..80].copy_from_slice(&176u64.to_le_bytes());
+
+        e[120..124].copy_from_slice(&PT_LOAD.to_le_bytes());
+        e[124..128].copy_from_slice(&PF_X.to_le_bytes());
+        e[128..136].copy_from_slice(&180u64.to_le_bytes());
+        e[144..152].copy_from_slice(&0x3000u64.to_le_bytes());
+        e[152..160].copy_from_slice(&4u64.to_le_bytes());
+        e[160..168].copy_from_slice(&8u64.to_le_bytes());
+        e[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
+
         assert_eq!(validate_elf(&e), Err(ElfError::EntryOutsideExecutable));
     }
 }

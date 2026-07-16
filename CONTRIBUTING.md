@@ -1,16 +1,33 @@
 # Contributing
 
-> Status: Contribution guidance
-> Implementation: Applies to the current scaffold
+FinnOS is an early kernel project. Read [STATUS.md](STATUS.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [ROADMAP.md](ROADMAP.md) before proposing implementation. Documentation and filenames are not proof that a feature exists.
 
-## Prerequisites
+Coding agents must also follow [`.agents/README.md`](.agents/README.md), select skills through [`.agents/MANIFEST.md`](.agents/MANIFEST.md), and leave the required structured handoff.
 
-Install Git, Rust stable, Cargo, rustfmt, Clippy, and Python 3. QEMU is optional because no bootable image exists.
+## Setup and checks
 
-## Workflow
+Install Git, Rust stable with rustfmt/Clippy and the two x86 targets, Python 3, QEMU x86-64, `qemu-img`, OVMF, and the platform image tools listed in [BUILDING.md](BUILDING.md).
 
-Run `./tools/finn doctor`, then `./tools/finn build`, `./tools/finn test`, `./tools/finn format-check`, and `./tools/finn lint`. Keep documentation accurate about implementation status.
+```bash
+./tools/finn doctor
+./tools/finn check
+./tools/finn test-boot
+python3 .agents/scripts/validate.py --all
+```
 
-Use focused branches such as `kernel/capability-table`, `docs/process-lifecycle`, `build/arm64-target`, and `peony/scene-protocol`. Commit subjects should follow `area: imperative summary`, for example `kernel: add capability table design`, `docs: document process lifecycle`, `build: add ARM64 target metadata`, or `peony: define scene protocol proposal`.
+Run the integration mode for every subsystem changed. `./tools/finn check-all` is the complete current x86 gate. Preserve serial logs for boot failures.
 
-Pull requests should explain motivation, testing, security and compatibility impact, and documentation changes. New public system calls, kernel objects, stable IPC protocols, application package changes, security-model changes, and on-disk format changes require an RFC. Unsafe code is forbidden in the initial crate; future unsafe blocks require a `SAFETY:` explanation and review. Security reports follow [SECURITY.md](SECURITY.md).
+## Changes
+
+- Keep changes focused and preserve current bounded invariants unless an accepted design replaces them.
+- Use `area: imperative summary` commit subjects, such as `kernel: validate user mappings`.
+- Add host tests for pure policy and QEMU tests for architecture/runtime behavior.
+- Update status, architecture, acceptance criteria, and limitations in the same change.
+- Never describe planned capabilities as implemented.
+- Document every unsafe block with a specific `SAFETY:` argument and review affected invariants in `kernel/docs/unsafe-code.md`.
+
+Public syscalls, kernel objects, IPC protocols, package/on-disk formats, security boundaries, and major cross-architecture abstractions require an RFC or ADR before compatibility assumptions form.
+
+Pull requests must state motivation, current/desired behavior, scope/non-goals, architecture impact, security and compatibility impact, exact tests, documentation changes, and rollback implications. Link the roadmap/issue acceptance criteria and include evidence that they pass.
+
+Use private reporting for vulnerabilities as described in [SECURITY.md](SECURITY.md). By contributing, you agree that your contribution is available under the repository’s MIT OR Apache-2.0 terms.
