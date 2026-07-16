@@ -1,0 +1,29 @@
+name: Architecture proposal
+description: Propose a cross-cutting or compatibility-sensitive design change
+title: "architecture: "
+labels: ["status:needs-rfc"]
+body:
+  - type: textarea
+    id: problem
+    attributes: {label: Problem and evidence, description: "Current behavior, affected files, and why existing design is insufficient"}
+    validations: {required: true}
+  - type: textarea
+    id: proposal
+    attributes: {label: Proposed design, description: "Interfaces, invariants, ownership, lifecycle, failure behavior, and compatibility"}
+    validations: {required: true}
+  - type: textarea
+    id: alternatives
+    attributes: {label: Alternatives and tradeoffs}
+    validations: {required: true}
+  - type: textarea
+    id: security
+    attributes: {label: Security and architecture impact, description: "Trust boundaries, x86-64/ARM64 differences, resource limits, and unsafe code"}
+    validations: {required: true}
+  - type: textarea
+    id: migration
+    attributes: {label: Migration and rollback}
+    validations: {required: true}
+  - type: textarea
+    id: verification
+    attributes: {label: Acceptance and verification}
+    validations: {required: true}

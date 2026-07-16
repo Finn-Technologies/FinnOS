@@ -4,4 +4,4 @@ platform = "qemu"
 firmware = "uefi"
 status = "planned"
 bootable = false
-note = "Eventually expected to include serial console, virtual block storage, basic input, and virtual display."
+note = "Planned only: roadmap R3 serial-first boot precedes R4 kernel parity and M4 virtual devices."

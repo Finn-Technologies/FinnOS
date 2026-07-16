@@ -1,0 +1,32 @@
+name: Driver request
+description: Propose support for a device or virtual hardware class
+title: "driver: "
+labels: ["type:feature", "area:drivers"]
+body:
+  - type: markdown
+    attributes:
+      value: FinnOS supports no physical hardware today. Include exact identifiers and a maintainable test strategy.
+  - type: input
+    id: device
+    attributes: {label: Device, description: "Vendor, model, revision, and PCI/USB/ACPI/DT identifiers"}
+    validations: {required: true}
+  - type: textarea
+    id: docs
+    attributes: {label: Public documentation, description: "Specifications and existing open implementations"}
+    validations: {required: true}
+  - type: textarea
+    id: use
+    attributes: {label: Use case and architecture, description: "Why this belongs in the support plan; x86-64, ARM64, emulator, or physical hardware"}
+    validations: {required: true}
+  - type: textarea
+    id: resources
+    attributes: {label: Resources and security, description: "MMIO, ports, IRQ/MSI, DMA/IOMMU, firmware, reset, power, and isolation requirements"}
+    validations: {required: true}
+  - type: textarea
+    id: verification
+    attributes: {label: Verification, description: "Automated emulator/hardware tests, fault injection, restart, and teardown criteria"}
+    validations: {required: true}
+  - type: textarea
+    id: non_goals
+    attributes: {label: Non-goals and dependencies}
+    validations: {required: true}

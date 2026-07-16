@@ -1,0 +1,51 @@
+issues:
+  - id: R1
+    title: "build: drive target and profile selection from one configuration"
+    milestone: "M0 Reproducible Build"
+    labels: ["priority:P0", "type:maintenance", "area:tooling", "arch:all", "complexity:M"]
+    body_source: "ROADMAP.md#r1-p0-unify-targetprofile-build-orchestration"
+  - id: R2
+    title: "boot: harden ELF entry and handoff validation"
+    milestone: "M0 Reproducible Build"
+    labels: ["priority:P0", "type:maintenance", "area:boot", "type:security", "complexity:M"]
+    body_source: "ROADMAP.md#r2-p0-harden-the-uefi-loader-and-protocol"
+  - id: R3
+    title: "arm64: establish QEMU UEFI serial first boot"
+    milestone: "M1 Dual-Architecture Boot"
+    labels: ["priority:P0", "type:feature", "area:boot", "arch:arm64", "complexity:L"]
+    body_source: "ROADMAP.md#r3-p0-establish-arm64-serial-first-boot"
+  - id: R4
+    title: "arch: complete x86-64 and ARM64 boot parity"
+    milestone: "M1 Dual-Architecture Boot"
+    labels: ["priority:P0", "type:feature", "area:kernel", "arch:all", "complexity:XL"]
+    body_source: "ROADMAP.md#r4-p0-complete-architecture-boot-parity"
+  - id: R5
+    title: "platform: discover topology and route device interrupts"
+    milestone: "M2 Core Kernel"
+    labels: ["priority:P1", "type:feature", "area:drivers", "arch:all", "complexity:L"]
+    body_source: "ROADMAP.md#r5-p1-add-platform-discovery-and-interrupt-routing"
+  - id: R6
+    title: "kernel: implement preemptible blocking threads"
+    milestone: "M2 Core Kernel"
+    labels: ["priority:P1", "type:feature", "area:kernel", "arch:all", "complexity:XL"]
+    body_source: "ROADMAP.md#r6-p1-implement-preemptible-blocking-threads"
+  - id: R7
+    title: "kernel: add user address spaces and syscall ABI"
+    milestone: "M2 Core Kernel"
+    labels: ["priority:P1", "type:feature", "area:kernel", "type:security", "complexity:XL"]
+    body_source: "ROADMAP.md#r7-p1-create-user-address-spaces-and-syscall-abi"
+  - id: R8
+    title: "ipc: implement rights-bearing handles and bounded endpoints"
+    milestone: "M2 Core Kernel"
+    labels: ["priority:P1", "type:feature", "area:ipc", "type:security", "complexity:XL"]
+    body_source: "ROADMAP.md#r8-p1-implement-kernel-objects-handles-and-minimal-ipc"
+  - id: R9
+    title: "userspace: boot init, services, runtime, and diagnostic shell"
+    milestone: "M3 Userspace Foundation"
+    labels: ["priority:P1", "type:feature", "area:userspace", "arch:all", "complexity:XL"]
+    body_source: "ROADMAP.md#r9-p1-boot-init-runtime-and-diagnostic-shell"
+  - id: R10
+    title: "drivers: add resource broker and VirtIO baseline"
+    milestone: "M4 Devices and Storage"
+    labels: ["priority:P1", "type:feature", "area:drivers", "arch:all", "complexity:XL"]
+    body_source: "ROADMAP.md#r10-p1-define-driver-resource-broker-and-virtio-baseline"

@@ -1,64 +1,81 @@
 # FinnOS
 
-## What is FinnOS?
+FinnOS is an experimental, non-UNIX operating-system project written primarily in Rust. The intended architecture is a capability-oriented hybrid microkernel with a native graphical platform named Peony. That architecture is a design direction, not the current implementation.
 
-FinnOS is an original operating system project. It is not a Linux distribution and is not UNIX-like by design. Its long-term architecture is capability-based and intended for x86-64 and ARM64 computers, tablets, and phones.
+## Current maturity
 
-## What is Peony?
+FinnOS is an x86-64 UEFI kernel prototype for QEMU. It is not yet a functional general-purpose OS.
 
-Peony is the native user-interface and application platform: Peony Display, Peony Shell, Peony Framework, rendering, input, accessibility, and adaptive environments.
+Verified on 2026-07-16:
 
-## Project status
+- The debug and release Rust workspaces build on an Apple ARM64 host.
+- A 64 MiB FAT32 x86-64 UEFI image boots under QEMU `q35` with OVMF.
+- The loader validates and loads an ELF64 kernel and passes a UEFI memory map, GOP framebuffer, and ACPI RSDP.
+- The kernel installs GDT/TSS/IDT state, classifies memory, allocates physical pages, activates private W^X page tables, maps a guarded 1 MiB heap, starts a 100 Hz xAPIC timer, and runs bounded cooperative ring-0 tasks.
+- All 63 Rust tests, 33 Python tests, and eight QEMU integration scenarios pass.
 
-FinnOS now boots a separate kernel in x86-64 QEMU through UEFI. The boot manager loads and validates the kernel ELF, hands off the memory map and GOP framebuffer, and the kernel installs its own GDT, TSS, IDT, and exception handlers before completing First Boot. There is no usable desktop, mobile environment, or application runtime yet.
+Not implemented:
 
-## Intended platforms
+- ARM64 boot or kernel code
+- user mode, processes, system calls, IPC, or capability enforcement
+- device discovery, device IRQ routing, and general drivers
+- block storage, filesystems, persistent data, or a shell
+- networking, audio, USB, input, GPU acceleration, or power management
+- compositor, window system, fonts, toolkit, desktop, or applications
+- installation, packaging, updates, recovery, or supported physical hardware
 
-x86-64 QEMU is the intended first boot target; ARM64 QEMU is the intended second architecture target. Real hardware and phone support are long-term goals.
+The colored GOP framebuffer diagnostic is not a graphical environment. The firmware-backed boot FAT image is not an OS storage stack.
 
-## Architectural direction
+## Supported targets
 
-The project is pursuing a hybrid microkernel direction with typed IPC and explicit capabilities. Compatibility environments may be added later, but will not define native FinnOS architecture.
+| Target | Build | Boot | Support status |
+|---|---|---|---|
+| x86-64 QEMU `q35` + UEFI/OVMF | Verified | Verified | Development target |
+| x86-64 physical hardware | Unverified | Unverified | Unsupported |
+| ARM64 QEMU `virt` + UEFI | No implementation | No | Planned |
+| ARM64 physical hardware | No implementation | No | Unsupported |
 
-## Repository status
+See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWARE_SUPPORT.md).
 
-FinnOS currently builds a bootable x86-64 UEFI image for QEMU. Automated tests verify the BSP xAPIC timer and a bounded cooperative kernel scheduler with guarded stacks, real context switches, task exit, reclamation, and scheduler-backed idle. FinnOS still does not have IOAPIC routing, device IRQs, preemption, user space, drivers, or Peony.
-
-## Building the current scaffold
+## Build and run
 
 ```bash
 ./tools/finn doctor
-./tools/finn build
-./tools/finn test
 ./tools/finn check
-./tools/finn build-boot
 ./tools/finn image
-./tools/finn run
 ./tools/finn test-boot
-./tools/finn test-exceptions
-./tools/finn test-memory-map
-./tools/finn test-page-allocator
-./tools/finn test-page-tables
-./tools/finn test-heap
-./tools/finn check-all
 ```
 
-## Repository layout
+Use `./tools/finn run` for an interactive QEMU window. The current system does not accept input; the window only displays the framebuffer diagnostic. Detailed prerequisites and commands are in [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md).
 
-The current layout is documented in [the repository layout guide](docs/development/repository-layout.md).
+## Repository map
 
-## Documentation
+- `boot/protocol/`: versioned loader/kernel handoff ABI
+- `boot/uefi/`: x86-64 UEFI loader
+- `kernel/`: architecture-independent memory/task policy and x86-64 kernel code
+- `tools/`: build, image, QEMU, and log-validation tooling
+- `tests/`: test policy
+- `docs/architecture/`: canonical architecture documentation
+- `docs/proposals/adr/`: accepted architecture decisions
+- `docs/audit/`: evidence-backed project audit and detailed plan
+- `docs/github-planning/`: proposed repository planning metadata
+- `.agents/`: mandatory agent operating procedures, skills, validation, and handoff system
 
-Start with [the documentation index](docs/README.md), [architecture](docs/architecture/README.md), and [building](docs/development/building.md).
+## Project documents
 
-## Contributing
+- [Current status and completion matrix](STATUS.md)
+- [Technical architecture](ARCHITECTURE.md)
+- [Roadmap and critical path](ROADMAP.md)
+- [Complete audit](docs/audit/2026-07-16.md)
+- [Known issues and risks](docs/audit/2026-07-16.md#known-issues)
+- [UI and design-system plan](UI_GUIDELINES.md)
+- [Porting and ARM64 plan](PORTING.md)
+- [Security policy and hardening plan](SECURITY.md)
+- [Contributing](CONTRIBUTING.md)
+- [Agent operating system](.agents/README.md)
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [ROADMAP.md](ROADMAP.md).
+## Warning
 
-## Security
+FinnOS can panic, hang, lose data once storage is introduced, and expose all code at kernel privilege. Do not use it for production workloads or sensitive information. No OS release or compatibility guarantee currently exists.
 
-FinnOS is experimental. See [SECURITY.md](SECURITY.md).
-
-## Licensing
-
-Contributors may use the project under either the MIT License or Apache License 2.0; see [the licensing note](docs/project/licensing.md).
+FinnOS is available under either MIT or Apache-2.0; see [the licensing note](docs/project/licensing.md).
