@@ -160,6 +160,7 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
         if memory_size == 0
             || file_size > memory_size
             || (align != 0 && !align.is_power_of_two())
+            || (align > 1 && address % align != file_offset % align)
             || address < 0x1000
         {
             return Err(ElfError::InvalidSegment);
@@ -241,9 +242,23 @@ mod tests {
         e[88..96].copy_from_slice(&0x1000u64.to_le_bytes());
         e[96..104].copy_from_slice(&4u64.to_le_bytes());
         e[104..112].copy_from_slice(&8u64.to_le_bytes());
-        e[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
+        e[112..120].copy_from_slice(&1u64.to_le_bytes());
         e.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         e
+    }
+
+    fn add_second_segment(e: &mut Vec<u8>, address: u64) {
+        e.resize(184, 0);
+        e[56..58].copy_from_slice(&2u16.to_le_bytes());
+        e[72..80].copy_from_slice(&176u64.to_le_bytes());
+
+        e[120..124].copy_from_slice(&PT_LOAD.to_le_bytes());
+        e[124..128].copy_from_slice(&PF_X.to_le_bytes());
+        e[128..136].copy_from_slice(&180u64.to_le_bytes());
+        e[144..152].copy_from_slice(&address.to_le_bytes());
+        e[152..160].copy_from_slice(&4u64.to_le_bytes());
+        e[160..168].copy_from_slice(&8u64.to_le_bytes());
+        e[168..176].copy_from_slice(&1u64.to_le_bytes());
     }
     #[test]
     fn accepts_valid_fixture() {
@@ -277,19 +292,59 @@ mod tests {
     #[test]
     fn rejects_entry_in_gap_between_executable_segments() {
         let mut e = fixture();
-        e.resize(184, 0);
         e[24..32].copy_from_slice(&0x2000u64.to_le_bytes());
-        e[56..58].copy_from_slice(&2u16.to_le_bytes());
-        e[72..80].copy_from_slice(&176u64.to_le_bytes());
-
-        e[120..124].copy_from_slice(&PT_LOAD.to_le_bytes());
-        e[124..128].copy_from_slice(&PF_X.to_le_bytes());
-        e[128..136].copy_from_slice(&180u64.to_le_bytes());
-        e[144..152].copy_from_slice(&0x3000u64.to_le_bytes());
-        e[152..160].copy_from_slice(&4u64.to_le_bytes());
-        e[160..168].copy_from_slice(&8u64.to_le_bytes());
-        e[168..176].copy_from_slice(&0x1000u64.to_le_bytes());
+        add_second_segment(&mut e, 0x3000);
 
         assert_eq!(validate_elf(&e), Err(ElfError::EntryOutsideExecutable));
+    }
+
+    #[test]
+    fn rejects_overlapping_load_segments() {
+        let mut e = fixture();
+        add_second_segment(&mut e, 0x1004);
+        assert_eq!(validate_elf(&e), Err(ElfError::Overlap));
+    }
+
+    #[test]
+    fn rejects_overflowing_header_and_load_ranges() {
+        let mut e = fixture();
+        e[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(validate_elf(&e), Err(ElfError::Overflow));
+
+        let mut e = fixture();
+        e[88..96].copy_from_slice(&(u64::MAX - 3).to_le_bytes());
+        assert_eq!(validate_elf(&e), Err(ElfError::Overflow));
+    }
+
+    #[test]
+    fn rejects_invalid_segment_alignment() {
+        let mut e = fixture();
+        e[112..120].copy_from_slice(&3u64.to_le_bytes());
+        assert_eq!(validate_elf(&e), Err(ElfError::InvalidSegment));
+
+        let mut e = fixture();
+        e[112..120].copy_from_slice(&0x1000u64.to_le_bytes());
+        assert_eq!(validate_elf(&e), Err(ElfError::InvalidSegment));
+    }
+
+    #[test]
+    fn deterministic_mutation_corpus_never_panics() {
+        let original = fixture();
+
+        for length in 0..=original.len() {
+            let input = &original[..length];
+            assert_eq!(validate_elf(input), validate_elf(input));
+        }
+
+        for index in 0..original.len() {
+            let mut input = original.clone();
+            input[index] ^= 0xff;
+            let first = validate_elf(&input);
+            assert_eq!(first, validate_elf(&input));
+            if let Ok(validated) = first {
+                assert!(validated.load_start < validated.load_end);
+                assert!((1..=32).contains(&validated.segment_count));
+            }
+        }
     }
 }
