@@ -270,7 +270,12 @@ def validate_skills() -> list[str]:
         cwd=ROOT, text=True, capture_output=True, check=False,
     )
     if result.returncode != 0:
-        errors.append(f"verification base commit does not exist: {SKILLS[0]['verified_commit']}")
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"], cwd=ROOT,
+            text=True, capture_output=True, check=False,
+        )
+        if shallow.returncode != 0 or shallow.stdout.strip() != "true":
+            errors.append(f"verification base commit does not exist: {SKILLS[0]['verified_commit']}")
     return errors
 
 

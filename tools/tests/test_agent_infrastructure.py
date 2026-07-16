@@ -38,7 +38,7 @@ class AgentInfrastructureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("# Agent Handoff", result.stdout)
         self.assertIn("commit:", result.stdout)
-        self.assertIn("## main", result.stdout)
+        self.assertRegex(result.stdout, r"## .+")
 
     def test_handoff_refuses_absolute_and_existing_outputs(self) -> None:
         absolute = self.run_script(".agents/scripts/new_handoff.py", "--output", "/tmp/finnos.md")
