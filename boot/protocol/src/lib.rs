@@ -88,7 +88,7 @@ impl Default for FramebufferInfo {
     }
 }
 
-/// Version-one firmware-to-kernel handoff.
+/// Version-two firmware-to-kernel handoff.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BootInfo {
@@ -113,7 +113,7 @@ pub struct BootInfo {
 }
 
 impl BootInfo {
-    /// Create an explicitly empty version-one structure.
+    /// Create an explicitly empty version-two structure.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -156,7 +156,7 @@ pub enum BootInfoError {
     BadMagic,
     /// Protocol version is unsupported.
     UnsupportedVersion,
-    /// Structure size does not match version one.
+    /// Structure size does not match version two.
     UnexpectedStructureSize,
     /// Required memory-map metadata is absent.
     MissingMemoryMap,
@@ -170,7 +170,7 @@ pub enum BootInfoError {
 ///
 /// # Errors
 ///
-/// Returns a structured error when the version-one invariants are not met.
+/// Returns a structured error when the version-two invariants are not met.
 pub fn validate(info: &BootInfo) -> Result<(), BootInfoError> {
     if info.magic != BOOT_INFO_MAGIC {
         return Err(BootInfoError::BadMagic);
