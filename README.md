@@ -12,7 +12,7 @@ Verified on 2026-07-16:
 - A 64 MiB FAT32 x86-64 UEFI image boots under QEMU `q35` with OVMF.
 - The loader validates and loads an ELF64 kernel and passes a UEFI memory map, GOP framebuffer, and ACPI RSDP.
 - The kernel installs GDT/TSS/IDT state, classifies memory, allocates physical pages, activates private W^X page tables, maps a guarded 1 MiB heap, starts a 100 Hz xAPIC timer, and runs bounded cooperative ring-0 tasks.
-- All 63 Rust tests, 33 Python tests, and eight QEMU integration scenarios pass.
+- The Rust and Python host suites and all eight debug QEMU integration scenarios pass.
 
 Not implemented:
 
@@ -44,6 +44,7 @@ See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWAR
 ./tools/finn check
 ./tools/finn image
 ./tools/finn test-boot
+./tools/finn test-boot --profile release
 ```
 
 Use `./tools/finn run` for an interactive QEMU window. The current system does not accept input; the window only displays the framebuffer diagnostic. Detailed prerequisites and commands are in [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md).

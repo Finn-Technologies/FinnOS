@@ -132,6 +132,12 @@ def render_skill(spec: dict) -> str:
     ]
     action_lines = "\n".join(f"{i}. {action}" for i, action in enumerate(spec["actions"], 1))
     example_trigger = spec["triggers"][0]
+    verification_basis = (
+        f'base commit `{spec["verified_commit"]}` plus the dirty worktree context '
+        f'"{spec["verified_context"]}"'
+        if spec["verified_dirty"]
+        else f'clean revision `{spec["verified_commit"]}` with context "{spec["verified_context"]}"'
+    )
 
     body = f"""
 # {spec['title']}
@@ -176,7 +182,7 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 {spec['current']}
 
-Registry verification used base commit `{spec['verified_commit']}` plus the dirty worktree context "{spec['verified_context']}" on {spec['verified_date']}. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used {verification_basis} on {spec['verified_date']}. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 

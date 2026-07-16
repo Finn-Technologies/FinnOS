@@ -1,7 +1,7 @@
 ---
 name: "qemu-boot-testing"
 title: "QEMU Boot Testing"
-version: 1
+version: 2
 status: "active"
 owners: []
 triggers: ["QEMU","boot smoke","serial marker"]
@@ -11,7 +11,7 @@ category: "Foundations"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build","M1 Dual-Architecture Boot"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"cc828ec","date":"2026-07-16","worktree_dirty":false,"context":"R1 publication branch locally verified; integration CI pending"}
 description: "Use when working on QEMU, boot smoke, serial marker; provides the FinnOS-specific qemu boot testing workflow and evidence gates."
 ---
 # QEMU Boot Testing
@@ -58,9 +58,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-x86 QEMU q35/OVMF has eight debug integration modes; debug-exit success is host status 33. ARM QEMU is absent.
+x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used clean revision `cc828ec` with context "R1 publication branch locally verified; integration CI pending" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -100,7 +100,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: x86 QEMU q35/OVMF has eight debug integration modes; debug-exit success is host status 33. ARM QEMU is absent. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -133,7 +133,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: x86 QEMU q35/OVMF has eight debug integration modes; debug-exit success is host status 33. ARM QEMU is absent.
+- Ignoring this skill's current constraint: x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

@@ -9,14 +9,22 @@ from pathlib import Path
 
 from .toolchain import find_tool
 
-def stage_esp(root: Path, boot_manager: Path, kernel: Path) -> Path:
+def stage_esp(
+    root: Path,
+    boot_manager: Path,
+    kernel: Path,
+    boot_filename: str = "BOOTX64.EFI",
+    kernel_filename: str = "KERNEL.ELF",
+) -> Path:
     esp = root / "esp"
+    if esp.exists():
+        shutil.rmtree(esp)
     boot_path = esp / "EFI" / "BOOT"
     kernel_path = esp / "EFI" / "FINNOS"
     boot_path.mkdir(parents=True, exist_ok=True)
     kernel_path.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(boot_manager, boot_path / "BOOTX64.EFI")
-    shutil.copyfile(kernel, kernel_path / "KERNEL.ELF")
+    shutil.copyfile(boot_manager, boot_path / boot_filename)
+    shutil.copyfile(kernel, kernel_path / kernel_filename)
     return esp
 
 def make_image(esp: Path, output: Path) -> Path:

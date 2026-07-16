@@ -7,31 +7,20 @@ status = "foundation"
 default_target = "x86_64-qemu"
 
 [targets.x86_64-qemu]
-architecture = "x86_64"
-platform = "qemu"
-firmware = "uefi"
 configuration = "build/targets/x86_64-qemu.toml"
-status = "first-boot"
-bootable = true
-boot_manager = "build/out/x86_64-qemu/esp/EFI/BOOT/BOOTX64.EFI"
-kernel = "build/out/x86_64-qemu/esp/EFI/FINNOS/KERNEL.ELF"
-esp = "build/out/x86_64-qemu/esp"
-image = "build/out/x86_64-qemu/finnos-x86_64-uefi.img"
 
 [targets.arm64-qemu]
-architecture = "arm64"
-platform = "qemu"
-firmware = "uefi"
 configuration = "build/targets/arm64-qemu.toml"
-bootable = false
-status = "planned"
 
 [profiles.development]
+## Cargo's development artifact directory is named `debug`.
+cargo_profile = "debug"
 optimization = 0
 debug_symbols = true
 assertions = true
 
 [profiles.release]
+cargo_profile = "release"
 optimization = 3
 debug_symbols = true
 assertions = false

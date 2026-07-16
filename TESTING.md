@@ -12,9 +12,10 @@
 ./tools/finn test-heap
 ./tools/finn test-timer-interrupts
 ./tools/finn test-cooperative-tasks
+./tools/finn test-boot --target x86_64-qemu --profile release
 ```
 
-`./tools/finn check-all` runs the doctor, quality gates, image build, and all eight QEMU modes. A QEMU success status is 33 because `isa-debug-exit` encodes the guest success value `0x10`.
+`./tools/finn check-all` runs the doctor, quality gates, development image build, and all eight development-profile QEMU modes. Release first boot is a separate required CI check. A QEMU success status is 33 because `isa-debug-exit` encodes the guest success value `0x10`. Each bounded QEMU command preserves `serial.log`, the image, staged ELFs, and `manifest.txt` under its `build/out/` directory.
 
 ## Verified results
 
@@ -27,8 +28,8 @@ Current tests deeply cover one QEMU `q35`/OVMF/BSP path. They do not cover ARM64
 ## CI plan
 
 1. Preserve formatting, Clippy `-D warnings`, Rust/Python tests, cross-builds, and current boot modes as required checks.
-2. Upload serial logs, manifests, ELF files, and images on failure; add workflow concurrency and explicit least-privilege permissions.
-3. Pin actions and supported toolchain/container versions; test the declared minimum Rust version.
+2. Preserve the current failure-artifact upload, workflow concurrency, and explicit least-privilege permissions.
+3. Keep actions pinned; additionally pin supported runner/toolchain/container versions and test the declared minimum Rust version.
 4. Add loader/protocol fuzzing and malformed handoff/property tests before accepting untrusted boot inputs.
 5. Add ARM64 build and serial-first-boot jobs as soon as code exists.
 6. Add SMP, alternate QEMU CPU/firmware, VirtIO device, userspace isolation, syscall, IPC, and fault-injection suites as milestones land.

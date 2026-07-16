@@ -6,8 +6,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
-from .build import build_boot, cargo
+from .build import BootMode, build_boot, cargo, output_directory
+from .config import ConfigurationError, load_configuration
 from .image import make_image, stage_esp
 from .qemu import (
     EXCEPTION_MARKERS,
@@ -27,75 +29,114 @@ from .toolchain import find_command, find_ovmf, find_tool, rust_target_installed
 
 ROOT = Path(__file__).resolve().parents[2]
 
-def doctor() -> int:
+BOOT_MODES = {
+    "test-boot": BootMode.FIRST_BOOT,
+    "test-exceptions": BootMode.EXCEPTIONS,
+    "test-memory-map": BootMode.MEMORY_MAP,
+    "test-page-allocator": BootMode.PAGE_ALLOCATOR,
+    "test-page-tables": BootMode.PAGE_TABLES,
+    "test-heap": BootMode.HEAP,
+    "test-timer-interrupts": BootMode.TIMER,
+    "test-cooperative-tasks": BootMode.COOPERATIVE_TASKS,
+}
+BUILD_OPTION_COMMANDS = {"build", "build-boot", "image", "run", "run-headless", *BOOT_MODES}
+
+
+def doctor(target_name: Optional[str] = None) -> int:
+    target, _profile = load_configuration(ROOT).select(target_name, "development")
     required = ("git", "cargo", "rustc", "rustfmt", "python3")
-    first_boot = ("qemu-system-x86_64", "qemu-img")
+    first_boot = (target.qemu_system, "qemu-img")
     missing = [tool for tool in required if not find_command(tool)]
     for tool in required: print(f"[{'ok' if tool not in missing else 'missing'}] {tool}")
     for tool in first_boot: print(f"[{'ok' if find_tool(tool) else 'missing'}] {tool}")
-    for target in ("x86_64-unknown-none", "x86_64-unknown-uefi"):
-        present = rust_target_installed(target)
-        print(f"[{'ok' if present else 'missing'}] rust target: {target}")
-        if not present: print(f"      install: rustup target add {target}")
-    for relative in ("Cargo.toml", "Finnfile.toml", "boot/protocol/Cargo.toml", "boot/uefi/Cargo.toml", "kernel/Cargo.toml", "kernel/arch/x86_64/linker.ld"):
+    cargo_targets = (target.kernel_cargo_target, target.boot_cargo_target)
+    for cargo_target in cargo_targets:
+        present = rust_target_installed(cargo_target)
+        print(f"[{'ok' if present else 'missing'}] rust target: {cargo_target}")
+        if not present: print(f"      install: rustup target add {cargo_target}")
+    for relative in ("Cargo.toml", "Finnfile.toml", "boot/protocol/Cargo.toml", "boot/uefi/Cargo.toml", "kernel/Cargo.toml"):
         print(f"[{'ok' if (ROOT / relative).is_file() else 'missing'}] repository file: {relative}")
     firmware = find_ovmf()
     print(f"[{'ok' if firmware else 'missing'}] OVMF firmware{': ' + str(firmware) if firmware else ''}")
-    return 1 if missing or any(not find_tool(tool) for tool in first_boot) or not firmware or any(not rust_target_installed(target) for target in ("x86_64-unknown-none", "x86_64-unknown-uefi")) else 0
+    return 1 if missing or any(not find_tool(tool) for tool in first_boot) or not firmware or any(not rust_target_installed(cargo_target) for cargo_target in cargo_targets) else 0
 
-def command(name: str) -> int:
+def command(
+    name: str,
+    target_name: Optional[str] = None,
+    profile_name: Optional[str] = None,
+) -> int:
     if name == "help":
         print("FinnOS developer wrapper for the x86-64 UEFI First Boot milestone.")
         print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map test-page-allocator test-page-tables test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
+        print("Build options: --target TARGET --profile development|release")
         return 0
+    if (target_name or profile_name) and name not in BUILD_OPTION_COMMANDS:
+        raise ConfigurationError(f"{name!r} does not accept --target or --profile")
     if name == "doctor": return doctor()
-    if name == "build": cargo(ROOT, ["build", "--workspace"]); return 0
+    if name == "build":
+        _target, profile = load_configuration(ROOT).select(target_name, profile_name)
+        cargo(ROOT, ["build", "--workspace", *profile.cargo_args])
+        return 0
     if name == "test": cargo(ROOT, ["test", "--workspace"]); return 0
     if name == "format": cargo(ROOT, ["fmt", "--all"]); return 0
     if name == "format-check": cargo(ROOT, ["fmt", "--all", "--", "--check"]); return 0
     if name == "lint": cargo(ROOT, ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]); return 0
     if name == "check":
         return run_steps(("format-check", "build", "lint", "test", "test-python"))
-    if name == "build-boot":
-        boot, kernel = build_boot(ROOT); stage_esp(ROOT / "build" / "out" / "x86_64-qemu", boot, kernel); return 0
-    if name == "image":
-        out = ROOT / "build" / "out" / "x86_64-qemu"; boot, kernel = build_boot(ROOT); esp = stage_esp(out, boot, kernel); make_image(esp, out / "finnos-x86_64-uefi.img"); return 0
-    if name in ("run", "run-headless", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks"):
-        test = name == "test-boot"
-        exceptions = name == "test-exceptions"
-        memory_map = name == "test-memory-map"
-        page_allocator = name == "test-page-allocator"
-        page_tables = name == "test-page-tables"
-        heap = name == "test-heap"
-        timer = name == "test-timer-interrupts"
-        cooperative_tasks = name == "test-cooperative-tasks"
-        out = ROOT / "build" / "out" / ("x86_64-qemu-cooperative-tasks" if cooperative_tasks else "x86_64-qemu-timer-interrupts" if timer else "x86_64-qemu-heap" if heap else "x86_64-qemu-page-tables" if page_tables else "x86_64-qemu-page-allocator" if page_allocator else "x86_64-qemu-memory-map" if memory_map else "x86_64-qemu-exceptions" if exceptions else "x86_64-qemu-test" if test else "x86_64-qemu")
-        boot, kernel = build_boot(ROOT, test=test, exceptions=exceptions, memory_map=memory_map, page_allocator=page_allocator, page_tables=page_tables, heap=heap, timer=timer, cooperative_tasks=cooperative_tasks); esp = stage_esp(out, boot, kernel); image = make_image(esp, out / "finnos-x86_64-uefi.img"); firmware = find_ovmf(); qemu = find_tool("qemu-system-x86_64")
-        if not firmware or not qemu: raise RuntimeError("QEMU and OVMF are required")
-        args = qemu_command(qemu, str(firmware), image, headless=name != "run", test_exit=test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks); print("$ " + " ".join(args), flush=True)
-        if test or exceptions or memory_map or page_allocator or page_tables or heap or timer or cooperative_tasks:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=float(os.environ.get("FINNOS_BOOT_TIMEOUT_SECONDS", "45")), check=False); output = result.stdout + result.stderr; print(output)
+    if name in ("build-boot", "image", "run", "run-headless", *BOOT_MODES):
+        target, profile = load_configuration(ROOT).select(target_name, profile_name)
+        mode = BOOT_MODES.get(name, BootMode.NORMAL)
+        out = output_directory(ROOT, target, profile, mode)
+        boot, kernel = build_boot(ROOT, target, profile, mode)
+        esp = stage_esp(out, boot, kernel, target.boot_filename, target.kernel_filename)
+        if name == "build-boot":
+            return 0
+        image = make_image(esp, out / target.image_filename)
+        if name == "image":
+            return 0
+        firmware = find_ovmf()
+        qemu = find_tool(target.qemu_system)
+        if not firmware or not qemu:
+            raise RuntimeError(f"{target.qemu_system} and OVMF are required")
+        args = qemu_command(
+            qemu, str(firmware), image, headless=name != "run",
+            test_exit=mode.test_exit, machine=target.qemu_machine,
+        )
+        print("$ " + " ".join(args), flush=True)
+        if mode.test_exit:
+            try:
+                result = subprocess.run(
+                    args, capture_output=True, text=True,
+                    timeout=float(os.environ.get("FINNOS_BOOT_TIMEOUT_SECONDS", "45")),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                partial = _captured_text(error.stdout) + _captured_text(error.stderr)
+                (out / "serial.log").write_text(partial, encoding="utf-8")
+                print(f"serial log: {out / 'serial.log'}", file=sys.stderr)
+                raise
+            output = result.stdout + result.stderr
+            (out / "serial.log").write_text(output, encoding="utf-8")
+            print(output)
             print(f"qemu status: {result.returncode}")
-            if cooperative_tasks:
-                errors = validate_cooperative_tasks(result.returncode, output)
-            elif exceptions:
-                errors = validate_exceptions(result.returncode, output)
-            elif memory_map:
-                errors = validate_memory_map(result.returncode, output)
-            elif page_allocator:
-                errors = validate_page_allocator(result.returncode, output)
-            elif page_tables:
-                errors = validate_page_tables(result.returncode, output)
-            elif heap:
-                errors = validate_heap(result.returncode, output)
-            elif timer:
-                errors = validate_timer(result.returncode, output)
-            else:
-                errors = validate_smoke(result.returncode, output)
+            validator = {
+                BootMode.COOPERATIVE_TASKS: validate_cooperative_tasks,
+                BootMode.EXCEPTIONS: validate_exceptions,
+                BootMode.MEMORY_MAP: validate_memory_map,
+                BootMode.PAGE_ALLOCATOR: validate_page_allocator,
+                BootMode.PAGE_TABLES: validate_page_tables,
+                BootMode.HEAP: validate_heap,
+                BootMode.TIMER: validate_timer,
+                BootMode.FIRST_BOOT: validate_smoke,
+            }[mode]
+            errors = validator(result.returncode, output)
             if errors:
-                print("smoke test failure:"); print("\n".join(f"- {error}" for error in errors)); print("serial log:"); print(output)
+                print("smoke test failure:")
+                print("\n".join(f"- {error}" for error in errors))
+                print(f"serial log: {out / 'serial.log'}")
             return 1 if errors else 0
-        subprocess.run(args, check=True); return 0
+        subprocess.run(args, check=True)
+        return 0
     if name == "test-python": subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools/tests", "-p", "test_*.py"], cwd=ROOT, check=True); return 0
     if name == "check-all":
         return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks"))
@@ -113,8 +154,64 @@ def run_steps(steps: tuple[str, ...]) -> int:
     return 0
 
 def main() -> int:
-    try: return command(sys.argv[1] if len(sys.argv) > 1 else "help")
+    try:
+        name, target_name, profile_name = parse_arguments(sys.argv[1:])
+        return command(name, target_name, profile_name)
     except KeyboardInterrupt: print("\nInterrupted.", file=sys.stderr); return 130
-    except subprocess.CalledProcessError as error: return error.returncode or 1
+    except subprocess.CalledProcessError as error:
+        print(f"error: command failed ({error.returncode}): {_command_text(error.cmd)}", file=sys.stderr)
+        _print_captured("stdout", error.stdout)
+        _print_captured("stderr", error.stderr)
+        return error.returncode or 1
     except subprocess.TimeoutExpired as error: print(f"QEMU timed out after {error.timeout}s", file=sys.stderr); return 1
     except (OSError, RuntimeError) as error: print(f"error: {error}", file=sys.stderr); return 1
+
+
+def parse_arguments(arguments: list[str]) -> tuple[str, Optional[str], Optional[str]]:
+    if not arguments:
+        return "help", None, None
+    name = arguments[0]
+    target_name: Optional[str] = None
+    profile_name: Optional[str] = None
+    index = 1
+    while index < len(arguments):
+        option = arguments[index]
+        if option not in ("--target", "--profile"):
+            raise ConfigurationError(f"unknown argument {option!r}")
+        if index + 1 >= len(arguments):
+            raise ConfigurationError(f"{option} requires a value")
+        value = arguments[index + 1]
+        if option == "--target":
+            if target_name is not None:
+                raise ConfigurationError("--target may be provided only once")
+            target_name = value
+        else:
+            if profile_name is not None:
+                raise ConfigurationError("--profile may be provided only once")
+            profile_name = value
+        index += 2
+    return name, target_name, profile_name
+
+
+def _command_text(command_value: object) -> str:
+    if isinstance(command_value, (list, tuple)):
+        return " ".join(str(part) for part in command_value)
+    return str(command_value)
+
+
+def _print_captured(label: str, value: object) -> None:
+    if not value:
+        return
+    if isinstance(value, bytes):
+        rendered = value.decode(errors="replace")
+    else:
+        rendered = str(value)
+    print(f"{label}:\n{rendered.rstrip()}", file=sys.stderr)
+
+
+def _captured_text(value: object) -> str:
+    if not value:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return str(value)
