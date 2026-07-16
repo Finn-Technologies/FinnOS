@@ -25,6 +25,11 @@ class AgentInfrastructureTests(unittest.TestCase):
         result = self.run_script(".agents/scripts/render_skills.py", "--check")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_clean_skill_verification_does_not_claim_dirty_worktree(self) -> None:
+        content = (ROOT / ".agents" / "skills" / "roadmap-execution" / "SKILL.md").read_text()
+        self.assertIn("clean revision `cc828ec`", content)
+        self.assertNotIn("dirty worktree context", content)
+
     def test_local_markdown_links_validate(self) -> None:
         result = self.run_script(".agents/scripts/check_links.py")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

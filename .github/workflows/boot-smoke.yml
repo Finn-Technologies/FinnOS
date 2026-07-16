@@ -7,16 +7,25 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - name: Install boot test tools
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf mtools dosfstools
       - name: Run first-boot smoke test
         run: ./tools/finn test-boot
+      - name: Run release first-boot smoke test
+        run: ./tools/finn test-boot --target x86_64-qemu --profile release
       - name: Run exception foundation test
         run: ./tools/finn test-exceptions
       - name: Run memory-map integration test
@@ -31,3 +40,11 @@ jobs:
         run: ./tools/finn test-timer-interrupts
       - name: Run cooperative task integration test
         run: ./tools/finn test-cooperative-tasks
+      - name: Preserve boot evidence on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: x86-64-boot-failure-${{ github.run_attempt }}
+          path: build/out/
+          if-no-files-found: warn
+          retention-days: 14

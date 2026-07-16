@@ -4,6 +4,7 @@ FinnOS has no OS releases. This file records repository milestones; Git history 
 
 ## Unreleased
 
+- Added validated target/profile build orchestration, x86-64 release-image boot testing, preserved QEMU evidence, and hardened CI workflow permissions/action pinning.
 - Added the repository-local `.agents/` operating system with 87 FinnOS-specific skills, dependency validation, entry/checklist/templates, state capture, and handoff tooling.
 - Added an evidence-backed status, architecture, build/test, platform, porting, hardware, UI, security, release, audit, roadmap, and GitHub-planning documentation set.
 - Fixed ELF validation so an entry in a gap between executable segments is rejected.

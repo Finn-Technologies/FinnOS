@@ -11,7 +11,7 @@ category: "Foundations"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build","M8 Stable 1.0"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"cc828ec","date":"2026-07-16","worktree_dirty":false,"context":"R1 publication branch locally verified; integration CI pending"}
 description: "Use when working on roadmap, milestone, critical path; provides the FinnOS-specific roadmap execution workflow and evidence gates."
 ---
 # Roadmap Execution
@@ -57,9 +57,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-M0 is current; R1/R2 and active preemption-context review are immediate priorities.
+M0 is current; R1 is locally verified pending CI/integration, while R2 and active preemption-context review are immediate priorities.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used clean revision `cc828ec` with context "R1 publication branch locally verified; integration CI pending" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -98,7 +98,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: M0 is current; R1/R2 and active preemption-context review are immediate priorities. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: M0 is current; R1 is locally verified pending CI/integration, while R2 and active preemption-context review are immediate priorities. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -131,7 +131,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: M0 is current; R1/R2 and active preemption-context review are immediate priorities.
+- Ignoring this skill's current constraint: M0 is current; R1 is locally verified pending CI/integration, while R2 and active preemption-context review are immediate priorities.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

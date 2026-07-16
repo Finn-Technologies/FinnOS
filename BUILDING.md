@@ -23,25 +23,27 @@ Environment overrides:
 ## Commands
 
 ```bash
-./tools/finn build        # debug host workspace
+./tools/finn build        # development host workspace
 ./tools/finn check        # format, build, Clippy, Rust and Python tests
-./tools/finn build-boot   # debug kernel + UEFI loader + staged ESP
+./tools/finn build-boot   # development kernel + UEFI loader + staged ESP
 ./tools/finn image        # 64 MiB FAT32 image
 ./tools/finn run          # graphical QEMU, no functional input
 ./tools/finn run-headless # serial QEMU until manually stopped
 ```
 
-Release-profile compilation is available directly through Cargo:
+Build commands accept validated target and profile selections:
 
 ```bash
-cargo build --workspace --release
-cargo build -p finn-kernel --bin finn-kernel-x86_64 \
-  --features kernel-bin --target x86_64-unknown-none --release
-cargo build -p finn-boot-uefi --bin finn-boot-x86_64 \
-  --features uefi-app --target x86_64-unknown-uefi --release
+./tools/finn build --profile release
+./tools/finn build-boot --target x86_64-qemu --profile release
+./tools/finn image --target x86_64-qemu --profile release
+./tools/finn test-boot --target x86_64-qemu --profile release
 ```
 
-The wrapper currently hard-codes debug artifacts, so there is no release-profile image or release boot test. ARM64 commands do not exist.
+`development` is the default profile. `Finnfile.toml` selects a target configuration under
+`build/targets/`; target metadata supplies Cargo targets, artifact names, and QEMU details.
+`arm64-qemu` remains planned and non-bootable, so selecting it fails clearly rather than
+implying ARM64 support.
 
 ## Outputs
 
@@ -54,11 +56,16 @@ build/out/x86_64-qemu/finnos-x86_64-uefi.img
 build/out/x86_64-qemu/manifest.txt
 ```
 
+Release output uses `build/out/x86_64-qemu-release/`; feature-specific tests insert their
+mode before the profile, such as `build/out/x86_64-qemu-test-release/`. Every bounded QEMU
+test writes `serial.log` beside its image and manifest.
+
 `manifest.txt` hashes the kernel and loader but not the final image and does not record the source revision, compiler, dependencies, or provenance. Builds are not claimed reproducible.
 
 ## Known setup failures
 
 - `doctor` exits nonzero if a Rust target, QEMU tool, or OVMF cannot be found.
 - OVMF paths vary by distribution; set `OVMF_CODE` when discovery fails.
-- The target TOML files and `Finnfile.toml` are descriptive; the Python tool does not consume them.
+- Configuration errors name unknown targets/profiles, metadata drift, and planned targets.
+- Failed host image commands report the command and captured output.
 - A successful build only proves compilation. Run QEMU tests to verify kernel behavior.

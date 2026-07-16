@@ -68,10 +68,11 @@ skill("task-planning", "Task Planning", "Convert a request into bounded work wit
       ["ROADMAP.md", ".agents/templates/task-plan-template.md"], ["M0 Reproducible Build"], ["repository-orientation"],
       ["plan task", "acceptance criteria", "scope"])
 skill("roadmap-execution", "Roadmap Execution", "Select and advance critical-path work without premature later-phase implementation.",
-      "M0 is current; R1/R2 and active preemption-context review are immediate priorities.",
+      "M0 is current; R1 is locally verified pending CI/integration, while R2 and active preemption-context review are immediate priorities.",
       ["Identify current maturity gate", "Confirm predecessor evidence", "Split one reviewable outcome", "Map acceptance to issue and tests", "Update state only after evidence"],
       ["ROADMAP.md", "STATUS.md", "docs/github-planning/issues.yml"], ["M0 Reproducible Build", "M8 Stable 1.0"],
-      ["task-planning", "evidence-status-reporting"], ["roadmap", "milestone", "critical path"])
+      ["task-planning", "evidence-status-reporting"], ["roadmap", "milestone", "critical path"],
+      verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
 skill("evidence-status-reporting", "Evidence and Status Reporting", "Classify implementation state with reproducible evidence and calibrated confidence.",
       "The audit distinguishes verified x86 paths from absent ARM64/product subsystems.",
       ["Name the claim and scope", "Collect source, build, runtime, hardware, and CI evidence", "Assign one classification", "Record confidence/unknowns", "Update canonical status only when justified"],
@@ -86,18 +87,20 @@ skill("build-environment-management", "Build Environment Management", "Provision
       ["./tools/finn doctor", "rustup target add x86_64-unknown-none x86_64-unknown-uefi", "rustc --version --verbose", "qemu-system-x86_64 --version"],
       "ARM64 host does not imply ARM64 guest support; future AAVMF setup requires an implemented target.")
 skill("build-orchestration", "Build Orchestration", "Change workspace, target/profile, image, and CI build flow coherently.",
-      "Python tooling hard-codes x86/debug while Finnfile and target TOMLs are descriptive; release components compile but no release image boots.",
+      "Tooling validates Finnfile target/profile data; development and release x86 images boot locally while ARM64 remains explicitly non-bootable.",
       ["Trace CLI to build/image/QEMU functions", "Define target-profile artifact contract", "Reject unsupported combinations", "Keep feature-specific target isolation", "Compare clean local commands with CI"],
       ["BUILDING.md", "Finnfile.toml", "tools/finnlib/build.py", "tools/finnlib/image.py", ".github/workflows/ci.yml"], ["M0 Reproducible Build"],
       ["build-environment-management", "test-strategy"], ["build script", "target profile", "image"],
-      ["./tools/finn build", "./tools/finn image", "cargo build --workspace --release"])
+      ["./tools/finn build", "./tools/finn image --profile release", "./tools/finn test-boot --profile release"],
+      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
 skill("qemu-boot-testing", "QEMU Boot Testing", "Build, boot, capture, and classify bounded emulator evidence.",
-      "x86 QEMU q35/OVMF has eight debug integration modes; debug-exit success is host status 33. ARM QEMU is absent.",
+      "x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.",
       ["Build exact feature/profile image", "Record firmware and full QEMU command", "Capture ordered serial markers and return status", "Locate first missing/forbidden marker", "Preserve image, manifest, ELF, and log on failure"],
       ["TESTING.md", "docs/development/qemu.md", "tools/finnlib/qemu.py", ".agents/runbooks/x86_64-debug-boot.md"], ["M0 Reproducible Build", "M1 Dual-Architecture Boot"],
       ["build-orchestration", "debugging-investigation"], ["QEMU", "boot smoke", "serial marker"],
       ["./tools/finn test-boot", "FINNOS_BOOT_TIMEOUT_SECONDS=90 ./tools/finn test-boot"],
-      "Use q35/OVMF only for current x86 claims; future ARM uses virt/AAVMF and a distinct marker contract.")
+      "Use q35/OVMF only for current x86 claims; future ARM uses virt/AAVMF and a distinct marker contract.",
+      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
 skill("test-strategy", "Test Strategy", "Choose layered regression evidence and protect CI gates.",
       "63 Rust and 33 Python tests plus eight x86 QEMU modes passed at the audit snapshot; counts are historical, not permanent assertions.",
       ["Make the defect observable", "Put pure policy in host tests and hardware behavior in QEMU", "Isolate feature artifacts", "Add malformed/exhaustion/teardown cases", "Run narrow then aggregate gates and document gaps"],
@@ -502,11 +505,12 @@ skill("vulnerability-response", "Vulnerability Response", "Privately receive, tr
 # Quality, performance, release, and documentation skills.
 category("Quality, release, and docs")
 skill("ci-maintenance", "CI Maintenance", "Maintain required checks, architecture/profile matrices, QEMU evidence, artifacts, caching, and branch protection.",
-      "CI runs fmt/check/Clippy/tests/x86 cross-build and eight x86 QEMU modes; no ARM, release boot, artifact upload, or pinned environment matrix.",
+      "Workflows pin actions, use least privilege/concurrency, build both x86 profiles, boot release, and retain failure evidence; CI execution is pending integration and ARM remains absent.",
       ["Match local commands exactly", "Set explicit least-privilege permissions/concurrency", "Retain logs/manifests/ELFs/images on failure", "Add target/profile matrix without feature contamination", "Verify protected check names and diagnose CI-only divergence"],
       [".github/workflows/ci.yml", ".github/workflows/boot-smoke.yml", "TESTING.md"], ["M0 Reproducible Build", "M8 Stable 1.0"],
       ["build-orchestration", "qemu-boot-testing", "test-strategy"], ["CI", "GitHub Actions", "required check", "artifact retention"],
-      ["./tools/finn check", "./tools/finn test-boot", "python3 .agents/scripts/validate.py --all"])
+      ["./tools/finn check", "./tools/finn test-boot --profile release", "python3 .agents/scripts/validate.py --all"],
+      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
 skill("performance-engineering", "Performance Engineering", "Measure reproducible boot, scheduling, memory, IPC, storage, network, rendering, and input regressions before optimizing.",
       "Only UI proposal targets exist; no stable benchmark suite or baseline hardware is defined.",
       ["Define workload/environment/metric and warmup", "Capture distributions and resource counters", "Profile before code changes", "Set evidence-based regression threshold", "Compare x86/ARM semantics without assuming equal hardware"],

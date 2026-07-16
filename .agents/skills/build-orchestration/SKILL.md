@@ -1,7 +1,7 @@
 ---
 name: "build-orchestration"
 title: "Build Orchestration"
-version: 1
+version: 2
 status: "active"
 owners: []
 triggers: ["build script","target profile","image"]
@@ -11,7 +11,7 @@ category: "Foundations"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"cc828ec","date":"2026-07-16","worktree_dirty":false,"context":"R1 publication branch locally verified; integration CI pending"}
 description: "Use when working on build script, target profile, image; provides the FinnOS-specific build orchestration workflow and evidence gates."
 ---
 # Build Orchestration
@@ -59,9 +59,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-Python tooling hard-codes x86/debug while Finnfile and target TOMLs are descriptive; release components compile but no release image boots.
+Tooling validates Finnfile target/profile data; development and release x86 images boot locally while ARM64 remains explicitly non-bootable.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used clean revision `cc828ec` with context "R1 publication branch locally verified; integration CI pending" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -88,8 +88,8 @@ An evidence-backed build orchestration result with scoped artifacts, tests, docu
 
 ```bash
 ./tools/finn build
-./tools/finn image
-cargo build --workspace --release
+./tools/finn image --profile release
+./tools/finn test-boot --profile release
 ```
 
 Run commands from the repository root. A command listed here is a baseline/gate, not evidence that absent future functionality has a runnable target.
@@ -102,7 +102,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: Python tooling hard-codes x86/debug while Finnfile and target TOMLs are descriptive; release components compile but no release image boots. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: Tooling validates Finnfile target/profile data; development and release x86 images boot locally while ARM64 remains explicitly non-bootable. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -135,7 +135,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: Python tooling hard-codes x86/debug while Finnfile and target TOMLs are descriptive; release components compile but no release image boots.
+- Ignoring this skill's current constraint: Tooling validates Finnfile target/profile data; development and release x86 images boot locally while ARM64 remains explicitly non-bootable.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

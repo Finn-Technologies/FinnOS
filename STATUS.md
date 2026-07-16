@@ -2,6 +2,8 @@
 
 Audit snapshot: 2026-07-16 at `3539a35` (`main`). Percentages estimate completion toward a minimally functional implementation of each subsystem, not lines of code. Confidence is High only when the relevant path was built and executed.
 
+Post-audit branch evidence based on `cc828ec`: R1 target/profile tooling builds and boots both x86-64 development and release images locally. Its CI matrix and failure-artifact workflow are implemented but remain unverified until integration.
+
 ## Overall status
 
 FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development target and partially satisfies **Level 1: Bootable**. It does not satisfy Level 1 across both promised architectures because ARM64 is metadata-only. It does not satisfy Level 2 because no userspace, storage, input, networking, or application execution exists.
@@ -10,7 +12,7 @@ FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development
 
 | Subsystem | Completion | Confidence | Verified | Current maturity | Key evidence | Main blocker | Next task |
 |---|---:|---|---|---|---|---|---|
-| Build/tooling | 75% | High | macOS + CI Linux | Integrated x86 workflow | `tools/finnlib/`, local `check`, CI | Hard-coded x86/debug; not hermetic | Make target/profile data drive builds |
+| Build/tooling | 75% | High | macOS local; prior CI Linux | Locally verified R1 change | validated target/profile tooling, both x86 profiles | Pending CI/integration; not hermetic | Verify R1 CI, then reproducibility comparison |
 | x86 UEFI loader | 80% | High | QEMU/OVMF | Working prototype | `boot/uefi/`; eight boots | Trusted pointers/mappings; no signatures | Add malformed-input fuzzing |
 | Boot protocol | 75% | High | Loader/kernel v2 | Integrated ABI | `boot/protocol/` tests and boot | Compatibility/fuzz suite | Specify compatibility and fuzz inputs |
 | Exceptions | 70% | High | Vectors/test faults | Kernel foundation | `exceptions.rs`; exception tests | No user exceptions/recovery policy | Define user fault delivery |
@@ -36,18 +38,18 @@ FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development
 | Checkpoint | x86-64 debug | x86-64 release | ARM64 debug | ARM64 release |
 |---|---|---|---|---|
 | Compiles | Yes | Yes | Unsupported | Unsupported |
-| Boot image generated | Yes | Wrapper is debug-only | No | No |
-| UEFI loader starts | Yes | Not boot-tested | No | No |
-| Kernel entry reached | Yes | Not boot-tested | No | No |
-| Memory management initialized | Yes | Not boot-tested | No | No |
-| Interrupts/timer initialized | Yes | Not boot-tested | No | No |
-| Kernel tasks run | Yes | Not boot-tested | No | No |
+| Boot image generated | Yes | Yes (local branch) | No | No |
+| UEFI loader starts | Yes | Yes (local branch) | No | No |
+| Kernel entry reached | Yes | Yes (local branch) | No | No |
+| Memory management initialized | Yes | Yes (local branch) | No | No |
+| Interrupts/timer initialized | Yes | Yes (local branch) | No | No |
+| Kernel tasks run | Yes | Yes (local branch) | No | No |
 | Userspace starts | No | No | No | No |
 | Shell / GUI | No / No | No / No | No / No |
 | Keyboard / pointer | No / No | No / No | No / No |
 | Persistent storage read/write | No / No | No / No | No / No |
 | Applications execute | No | No | No | No |
-| Clean shutdown/reboot | Test-only QEMU exit; no production path | Unknown | No | No |
+| Clean shutdown/reboot | Test-only QEMU exit; no production path | Test-only QEMU exit; no production path | No | No |
 
 ## Maturity levels
 

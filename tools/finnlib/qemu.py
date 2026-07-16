@@ -267,10 +267,17 @@ def validate_cooperative_tasks(status: int, output: str) -> list[str]:
         if marker in output: errors.append(f"forbidden marker found: {marker}")
     return errors
 
-def qemu_command(qemu: str, firmware: str, image: Path, headless: bool = False, test_exit: bool = False) -> list[str]:
+def qemu_command(
+    qemu: str,
+    firmware: str,
+    image: Path,
+    headless: bool = False,
+    test_exit: bool = False,
+    machine: str = "q35",
+) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
-    command = [qemu, "-machine", "q35", "-m", "256M", "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}", "-drive", f"if=ide,format=raw,file={image}", "-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"]
+    command = [qemu, "-machine", machine, "-m", "256M", "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}", "-drive", f"if=ide,format=raw,file={image}", "-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"]
     if headless: command.extend(["-display", "none"])
     if test_exit: command.extend(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
     return command

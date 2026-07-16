@@ -22,7 +22,9 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 ### R1 [P0] Unify target/profile build orchestration
 
-**Description/current:** `Finnfile.toml` and target TOMLs are descriptive while Python hard-codes x86/debug. **Desired/reason:** one validated target model must produce debug/release artifacts and prevent ARM/config drift. **Dependencies:** none. **Architecture:** shared tooling, x86 and ARM. **Complexity:** M. **Acceptance:** CLI accepts target/profile; normal x86 tests remain green; release image is generated and boot-tested; invalid combinations fail clearly. **Verification:** Python unit tests, both x86 profiles, CI matrix. **Files:** `tools/finnlib/`, `Finnfile.toml`, `build/targets/`. **Milestone:** M0. **Labels:** `priority:P0`, `type:maintenance`, `area:tooling`, `arch:all`, `complexity:M`.
+**Description/current:** the R1 implementation uses `Finnfile.toml` to select one authoritative target file and profile, while Python consumes the validated result for build/image/QEMU paths. **Desired/reason:** one validated target model must produce debug/release artifacts and prevent ARM/config drift. **Dependencies:** none. **Architecture:** shared tooling, x86 and ARM. **Complexity:** M. **Acceptance:** CLI accepts target/profile; normal x86 tests remain green; release image is generated and boot-tested; invalid combinations fail clearly. **Verification:** Python unit tests, both x86 profiles, CI matrix. **Files:** `tools/finnlib/`, `Finnfile.toml`, `build/targets/`. **Milestone:** M0. **Labels:** `priority:P0`, `type:maintenance`, `area:tooling`, `arch:all`, `complexity:M`.
+
+**Implementation status:** locally verified on the publication branch based on `cc828ec`; development and release first boot pass, negative configuration tests pass, and CI matrix/evidence changes are present. R1 remains incomplete until the updated workflows pass after integration.
 
 ### R2 [P0] Harden the UEFI loader and protocol
 
@@ -120,8 +122,8 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 1. Add loader/protocol property and fuzz tests, building on the fixed ELF entry regression.
 2. Resolve and merge or revise the preemption-context work in issue #16/PR #17 without claiming preemption.
-3. Make target/profile configuration drive build and image output; add release boot testing.
-4. Preserve QEMU serial logs and artifacts in CI and pin CI permissions/actions/toolchain policy.
+3. Integrate R1 and verify its development/release CI matrix and failure artifacts.
+4. Pin the remaining runner/toolchain environment and add a reproducible artifact comparison.
 5. Define the architecture-neutral trap, timer, and context contracts needed by ARM64.
 6. Bring ARM64 QEMU to UEFI serial kernel entry.
 7. Parse/validate ACPI MADT on x86 and establish interrupt-resource ownership.
