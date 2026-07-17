@@ -8,6 +8,9 @@ remain standalone operational documents.
 VERIFIED_COMMIT = "d21a477"
 VERIFIED_DATE = "2026-07-16"
 VERIFIED_CONTEXT = "base commit plus uncommitted audit and agent-system worktree"
+R3_VERIFIED_COMMIT = "df5cf62"
+R3_VERIFIED_DATE = "2026-07-17"
+R3_VERIFIED_CONTEXT = "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"
 
 SKILLS = []
 CURRENT_CATEGORY = None
@@ -51,56 +54,69 @@ def skill(name, title, purpose, current, actions, docs, milestones, prerequisite
 category("Foundations")
 skill("finnos-operating-rules", "FinnOS Operating Rules",
       "Apply non-negotiable evidence, scope, architecture, safety, and handoff policy to every task.",
-      "FinnOS is an x86-64 QEMU kernel prototype; all later product layers remain absent or planned.",
+      "FinnOS is an x86-64 QEMU kernel prototype with a locally verified ARM64 serial-entry slice; later product layers remain absent or planned.",
       ["Read .agents/STATE.md and authority order", "Classify every claim by executed evidence", "Stop at named roadmap dependencies", "Preserve commands/logs and leave a handoff"],
       ["STATUS.md", "ROADMAP.md", "ARCHITECTURE.md"], ["M0 Reproducible Build", "M8 Stable 1.0"], [],
       ["any FinnOS task", "universal rules"], ["python3 .agents/scripts/capture_state.py"],
-      "Never infer ARM64 from x86-64 or hardware from QEMU.")
+      "Never infer ARM64 from x86-64 or hardware from QEMU.",
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("repository-orientation", "Repository Orientation", "Establish a fresh, evidence-backed task context before edits.",
-      "The worktree may contain the audit and loader regression changes; issue #16/PR #17 are active.",
+      "Main integrates R1/R2; issue #16/PR #17 remain active and the current R3 worktree is locally verified but not integrated.",
       ["Read agent entry and state", "Inspect status, log, tree, source, tests, docs, issues, and PRs", "Locate supported targets and last passing evidence", "Write an initial context report"],
       ["README.md", "STATUS.md", "ROADMAP.md", "docs/README.md"], ["M0 Reproducible Build"],
       ["finnos-operating-rules"], ["enter repository", "new agent", "orientation"],
-      ["git status --short --branch", "git log --oneline -10", "./tools/finn doctor"])
+      ["git status --short --branch", "git log --oneline -10", "./tools/finn doctor"],
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("task-planning", "Task Planning", "Convert a request into bounded work with dependencies, non-goals, acceptance, and verification.",
-      "Roadmap work is dependency-ordered; M0 precedes ARM64, userspace, devices, and Peony.",
+      "Roadmap work is dependency-ordered; R3 serial entry is locally verified while R4 parity precedes userspace, devices, and Peony.",
       ["Restate observed problem", "Select minimum skills", "Trace dependencies and active overlap", "Define measurable acceptance and commands", "Name non-goals, rollback, docs, and blockers"],
       ["ROADMAP.md", ".agents/templates/task-plan-template.md"], ["M0 Reproducible Build"], ["repository-orientation"],
-      ["plan task", "acceptance criteria", "scope"])
+      ["plan task", "acceptance criteria", "scope"],
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("roadmap-execution", "Roadmap Execution", "Select and advance critical-path work without premature later-phase implementation.",
-      "M0 is current; R1 is locally verified pending CI/integration, while R2 and active preemption-context review are immediate priorities.",
+      "R1/R2 are integrated; R3 is locally verified with CI pending, while R4 parity and active preemption-context review are next critical work.",
       ["Identify current maturity gate", "Confirm predecessor evidence", "Split one reviewable outcome", "Map acceptance to issue and tests", "Update state only after evidence"],
       ["ROADMAP.md", "STATUS.md", "docs/github-planning/issues.yml"], ["M0 Reproducible Build", "M8 Stable 1.0"],
       ["task-planning", "evidence-status-reporting"], ["roadmap", "milestone", "critical path"],
-      verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("evidence-status-reporting", "Evidence and Status Reporting", "Classify implementation state with reproducible evidence and calibrated confidence.",
-      "The audit distinguishes verified x86 paths from absent ARM64/product subsystems.",
+      "Status distinguishes the verified x86 foundation, locally verified ARM64 serial entry, and absent ARM64 parity/product subsystems.",
       ["Name the claim and scope", "Collect source, build, runtime, hardware, and CI evidence", "Assign one classification", "Record confidence/unknowns", "Update canonical status only when justified"],
       ["STATUS.md", "docs/audit/2026-07-16.md"], ["M0 Reproducible Build", "M8 Stable 1.0"],
       ["repository-orientation"], ["status", "completion percentage", "verified"],
-      outputs="A claim table using verified complete, implemented-unverified, partial, prototype, stub, planned, broken, blocked, or unknown.")
+      outputs="A claim table using verified complete, implemented-unverified, partial, prototype, stub, planned, broken, blocked, or unknown.",
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("build-environment-management", "Build Environment Management", "Provision and capture a reproducible FinnOS host toolchain without hiding host differences.",
-      "macOS ARM64 and Linux CI build x86; Rust x86 bare-metal/UEFI targets, QEMU, qemu-img, and OVMF are required.",
+      "Local macOS builds x86 and ARM64; Rust bare-metal/UEFI targets, architecture-matched QEMU/firmware, and qemu-img are required.",
       ["Run doctor before installation", "Capture host/Rust/Python/QEMU/firmware versions", "Install only documented targets/tools", "Distinguish macOS hdiutil from Linux mtools/dosfstools", "Re-run doctor and record unresolved dependencies"],
       ["BUILDING.md", "rust-toolchain.toml", "tools/finnlib/toolchain.py"], ["M0 Reproducible Build"],
       ["task-planning"], ["toolchain", "OVMF", "AAVMF", "cross compiler"],
-      ["./tools/finn doctor", "rustup target add x86_64-unknown-none x86_64-unknown-uefi", "rustc --version --verbose", "qemu-system-x86_64 --version"],
-      "ARM64 host does not imply ARM64 guest support; future AAVMF setup requires an implemented target.")
+      ["./tools/finn doctor", "./tools/finn doctor --target arm64-qemu", "rustc --version --verbose", "qemu-system-aarch64 --version"],
+      "ARM64 host does not imply ARM64 guest support; record guest target, QEMU machine, and OVMF/AAVMF separately.",
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("build-orchestration", "Build Orchestration", "Change workspace, target/profile, image, and CI build flow coherently.",
-      "Tooling validates Finnfile target/profile data; development and release x86 images boot locally while ARM64 remains explicitly non-bootable.",
+      "Tooling validates target/profile data; x86 development/release and ARM64 R3 development artifacts build, while ARM64 post-R3 modes fail clearly.",
       ["Trace CLI to build/image/QEMU functions", "Define target-profile artifact contract", "Reject unsupported combinations", "Keep feature-specific target isolation", "Compare clean local commands with CI"],
       ["BUILDING.md", "Finnfile.toml", "tools/finnlib/build.py", "tools/finnlib/image.py", ".github/workflows/ci.yml"], ["M0 Reproducible Build"],
       ["build-environment-management", "test-strategy"], ["build script", "target profile", "image"],
       ["./tools/finn build", "./tools/finn image --profile release", "./tools/finn test-boot --profile release"],
-      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
+      version=3, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("qemu-boot-testing", "QEMU Boot Testing", "Build, boot, capture, and classify bounded emulator evidence.",
-      "x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.",
+      "x86 q35/OVMF has eight development modes plus release first boot; ARM64 virt/AAVMF has a distinct locally verified R3 serial-entry test.",
       ["Build exact feature/profile image", "Record firmware and full QEMU command", "Capture ordered serial markers and return status", "Locate first missing/forbidden marker", "Preserve image, manifest, ELF, and log on failure"],
       ["TESTING.md", "docs/development/qemu.md", "tools/finnlib/qemu.py", ".agents/runbooks/x86_64-debug-boot.md"], ["M0 Reproducible Build", "M1 Dual-Architecture Boot"],
       ["build-orchestration", "debugging-investigation"], ["QEMU", "boot smoke", "serial marker"],
-      ["./tools/finn test-boot", "FINNOS_BOOT_TIMEOUT_SECONDS=90 ./tools/finn test-boot"],
-      "Use q35/OVMF only for current x86 claims; future ARM uses virt/AAVMF and a distinct marker contract.",
-      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
+      ["./tools/finn test-boot", "./tools/finn test-boot --target arm64-qemu"],
+      "Use q35/OVMF plus isa-debug-exit only for x86; ARM uses virt/AAVMF, PL011, semihosting status 0, and a distinct marker contract.",
+      version=3, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("test-strategy", "Test Strategy", "Choose layered regression evidence and protect CI gates.",
       "63 Rust and 33 Python tests plus eight x86 QEMU modes passed at the audit snapshot; counts are historical, not permanent assertions.",
       ["Make the defect observable", "Put pure policy in host tests and hardware behavior in QEMU", "Isolate feature artifacts", "Add malformed/exhaustion/teardown cases", "Run narrow then aggregate gates and document gaps"],
@@ -157,19 +173,22 @@ skill("x86-64-platform-development", "x86-64 Platform Development", "Modify x86 
       "Do not leak x86 descriptor/vector/CR3 semantics into shared interfaces.",
       conditional_skills=["interrupt-exception-handling for trap/APIC/IRQ work", "virtual-memory for page-table work", "scheduler-thread-development for context work"])
 skill("arm64-platform-development", "ARM64 Platform Development", "Bring up AArch64 UEFI/QEMU mechanisms while maintaining semantic parity with x86.",
-      "ARM64 has no executable implementation: no BOOTAA64.EFI, kernel entry, MMU, vectors, GIC, timer, UART, context, image, QEMU command, or CI.",
+      "R3 BOOTAA64, AAPCS64 entry, PL011, image/QEMU command, ordered smoke validation, and CI workflow are implemented; local runtime passes and CI is pending.",
       ["Clear R1: target/profile data must drive build, image, run/test, artifacts, invalid-combination errors, and local/CI parity", "For R3 add BOOTAA64, matching kernel/linker/entry/UART, QEMU virt plus AAVMF resolution, and bounded ordered loader/kernel-entry markers", "End R3 at deterministic serial kernel entry with retained manifest/artifacts/log and existing x86 gates green", "For R4 only, add exception vectors, MMU/MAIR/TCR/TTBR, GIC, generic timer, and AAPCS64 task context parity", "Define ARM-specific timeout/termination evidence and environment overrides rather than copying x86 isa-debug-exit or OVMF variables"],
       ["PORTING.md", "build/targets/arm64-qemu.toml", "Finnfile.toml"], ["M1 Dual-Architecture Boot"],
       ["build-orchestration", "uefi-bootloader-development", "cross-architecture-design", "qemu-boot-testing", "unsafe-rust-low-level-safety"], ["arm64", "aarch64", "AAVMF", "GIC", "exception vectors"],
-      ["python3 .agents/scripts/validate.py --all", "./tools/finn check"],
+      ["./tools/finn test-boot --target arm64-qemu", "python3 .agents/scripts/validate.py --all", "./tools/finn check"],
       "Use AAPCS64, EL0/EL1, VBAR, translation-table, GIC, and barrier semantics; never transliterate x86 registers.",
-      blocked="R3 serial first boot is blocked by roadmap R1 build target/profile orchestration; no ARM command, qemu-system-aarch64/AAVMF resolver, ARM override, or marker/termination contract exists. R4 parity starts only after R3 serial entry is verified.")
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("cross-architecture-design", "Cross-Architecture Design", "Separate semantic policy from x86/ARM mechanisms and define parity contracts without premature abstraction.",
-      "Shared code covers protocol, memory classification/allocation, heap policy, tasks, and interrupt depth; executable architecture dispatch is x86-only.",
+      "Shared code covers protocol and x86 kernel policy; ARM64 now has executable serial entry but not memory, trap, timer, or context parity.",
       ["Extract existing semantic invariant from source", "Map independently to x86 and ARM mechanisms", "Choose the smallest shared contract", "Document intentional differences", "Add contract tests before migrating callers"],
       ["ARCHITECTURE.md", "PORTING.md", "kernel/src/arch/mod.rs"], ["M1 Dual-Architecture Boot", "M2 Core Kernel"],
       ["task-planning"], ["architecture abstraction", "platform interface", "parity"],
-      architecture="Avoid both x86-shaped traits and lowest-common-denominator APIs; retain target-specific types behind explicit adapters.")
+      architecture="Avoid both x86-shaped traits and lowest-common-denominator APIs; retain target-specific types behind explicit adapters.",
+      version=2, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("cpu-early-initialization", "CPU and Early Initialization", "Maintain initialization ordering before heap, interrupts, and secondary CPUs are safe.",
       "Only the x86 BSP initializes; early serial, exception state, memory, paging, heap, timer, scheduler occur in a fixed sequence; no SMP.",
       ["Write an initialization dependency graph", "Mark heap/interrupt/CPU-local availability at each stage", "Fail through allocation-free serial/panic paths", "Initialize exception readiness before risky dereference", "Add secondary-CPU protocol only after BSP contracts stabilize"],
@@ -505,12 +524,13 @@ skill("vulnerability-response", "Vulnerability Response", "Privately receive, tr
 # Quality, performance, release, and documentation skills.
 category("Quality, release, and docs")
 skill("ci-maintenance", "CI Maintenance", "Maintain required checks, architecture/profile matrices, QEMU evidence, artifacts, caching, and branch protection.",
-      "Workflows pin actions, use least privilege/concurrency, build both x86 profiles, boot release, and retain failure evidence; CI execution is pending integration and ARM remains absent.",
+      "Workflows pin actions, build both x86 profiles and ARM64 R3, boot x86 release and ARM serial entry, and retain failure evidence; ARM CI execution is pending integration.",
       ["Match local commands exactly", "Set explicit least-privilege permissions/concurrency", "Retain logs/manifests/ELFs/images on failure", "Add target/profile matrix without feature contamination", "Verify protected check names and diagnose CI-only divergence"],
       [".github/workflows/ci.yml", ".github/workflows/boot-smoke.yml", "TESTING.md"], ["M0 Reproducible Build", "M8 Stable 1.0"],
       ["build-orchestration", "qemu-boot-testing", "test-strategy"], ["CI", "GitHub Actions", "required check", "artifact retention"],
       ["./tools/finn check", "./tools/finn test-boot --profile release", "python3 .agents/scripts/validate.py --all"],
-      version=2, verified_commit="cc828ec", verified_context="R1 publication branch locally verified; integration CI pending", verified_dirty=False)
+      version=3, verified_commit=R3_VERIFIED_COMMIT, verified_date=R3_VERIFIED_DATE,
+      verified_context=R3_VERIFIED_CONTEXT)
 skill("performance-engineering", "Performance Engineering", "Measure reproducible boot, scheduling, memory, IPC, storage, network, rendering, and input regressions before optimizing.",
       "Only UI proposal targets exist; no stable benchmark suite or baseline hardware is defined.",
       ["Define workload/environment/metric and warmup", "Capture distributions and resource counters", "Profile before code changes", "Set evidence-based regression threshold", "Compare x86/ARM semantics without assuming equal hardware"],

@@ -40,6 +40,7 @@ class BuildTarget:
     image_filename: str
     qemu_system: str
     qemu_machine: str
+    qemu_cpu: str
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ def _target(name: str, metadata: dict[str, Any], data: dict[str, Any], path: Pat
         image_filename=_string(data, "image_filename", context, required=bootable),
         qemu_system=_string(data, "qemu_system", context, required=bootable),
         qemu_machine=_string(data, "qemu_machine", context, required=bootable),
+        qemu_cpu=_string(data, "qemu_cpu", context, required=False),
     )
     for field_name in ("boot_filename", "kernel_filename", "image_filename"):
         value = getattr(target, field_name)

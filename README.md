@@ -4,7 +4,7 @@ FinnOS is an experimental, non-UNIX operating-system project written primarily i
 
 ## Current maturity
 
-FinnOS is an x86-64 UEFI kernel prototype for QEMU. It is not yet a functional general-purpose OS.
+FinnOS is an x86-64 UEFI kernel prototype for QEMU with a minimal ARM64 serial-entry port. It is not yet a functional general-purpose OS.
 
 Verified on 2026-07-16:
 
@@ -14,9 +14,13 @@ Verified on 2026-07-16:
 - The kernel installs GDT/TSS/IDT state, classifies memory, allocates physical pages, activates private W^X page tables, maps a guarded 1 MiB heap, starts a 100 Hz xAPIC timer, and runs bounded cooperative ring-0 tasks.
 - The Rust and Python host suites and all eight debug QEMU integration scenarios pass.
 
+Locally verified on the 2026-07-17 R3 worktree: AAVMF loads `BOOTAA64.EFI`
+in QEMU `virt` and reaches a minimal AArch64 PL011 kernel marker. CI and all
+architecture-parity kernel facilities remain pending.
+
 Not implemented:
 
-- ARM64 boot or kernel code
+- ARM64 memory, exception, interrupt, timer, task, or shutdown parity
 - user mode, processes, system calls, IPC, or capability enforcement
 - device discovery, device IRQ routing, and general drivers
 - block storage, filesystems, persistent data, or a shell
@@ -32,7 +36,7 @@ The colored GOP framebuffer diagnostic is not a graphical environment. The firmw
 |---|---|---|---|
 | x86-64 QEMU `q35` + UEFI/OVMF | Verified | Verified | Development target |
 | x86-64 physical hardware | Unverified | Unverified | Unsupported |
-| ARM64 QEMU `virt` + UEFI | No implementation | No | Planned |
+| ARM64 QEMU `virt` + UEFI | Serial-first-boot worktree | Local only | R3 locally verified; CI and R4 parity pending |
 | ARM64 physical hardware | No implementation | No | Unsupported |
 
 See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWARE_SUPPORT.md).
@@ -52,7 +56,7 @@ Use `./tools/finn run` for an interactive QEMU window. The current system does n
 ## Repository map
 
 - `boot/protocol/`: versioned loader/kernel handoff ABI
-- `boot/uefi/`: x86-64 UEFI loader
+- `boot/uefi/`: x86-64/ARM64 UEFI loader
 - `kernel/`: architecture-independent memory/task policy and x86-64 kernel code
 - `tools/`: build, image, QEMU, and log-validation tooling
 - `tests/`: test policy

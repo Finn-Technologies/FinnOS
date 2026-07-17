@@ -1,7 +1,7 @@
 ---
 name: "cross-architecture-design"
 title: "Cross-Architecture Design"
-version: 1
+version: 2
 status: "active"
 owners: []
 triggers: ["architecture abstraction","platform interface","parity"]
@@ -11,7 +11,7 @@ category: "Boot and kernel"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M1 Dual-Architecture Boot","M2 Core Kernel"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"df5cf62","date":"2026-07-17","worktree_dirty":true,"context":"R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"}
 description: "Use when working on architecture abstraction, platform interface, parity; provides the FinnOS-specific cross-architecture design workflow and evidence gates."
 ---
 # Cross-Architecture Design
@@ -56,9 +56,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-Shared code covers protocol, memory classification/allocation, heap policy, tasks, and interrupt depth; executable architecture dispatch is x86-only.
+Shared code covers protocol and x86 kernel policy; ARM64 now has executable serial entry but not memory, trap, timer, or context parity.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used base commit `df5cf62` plus the dirty worktree context "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending" on 2026-07-17. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -97,7 +97,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: Shared code covers protocol, memory classification/allocation, heap policy, tasks, and interrupt depth; executable architecture dispatch is x86-only. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: Shared code covers protocol and x86 kernel policy; ARM64 now has executable serial entry but not memory, trap, timer, or context parity. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -130,7 +130,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: Shared code covers protocol, memory classification/allocation, heap policy, tasks, and interrupt depth; executable architecture dispatch is x86-only.
+- Ignoring this skill's current constraint: Shared code covers protocol and x86 kernel policy; ARM64 now has executable serial entry but not memory, trap, timer, or context parity.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

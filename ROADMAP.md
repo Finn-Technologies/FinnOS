@@ -32,7 +32,9 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 ### R3 [P0] Establish ARM64 serial first boot
 
-**Description/current:** ARM64 is metadata-only. **Desired/reason:** AArch64 UEFI loader and kernel entry reach a deterministic serial marker in QEMU `virt`; early porting prevents x86 interfaces from hardening accidentally. **Dependencies:** R1. **Architecture:** ARM64. **Complexity:** L. **Acceptance:** `BOOTAA64.EFI`, linker/entry/panic/UART, image/QEMU command, bounded smoke test and CI. **Verification:** AAVMF QEMU status/ordered markers on clean CI. **Files:** new ARM boot/kernel arch code, tooling, workflows. **Milestone:** M1. **Labels:** `priority:P0`, `type:feature`, `area:boot`, `arch:arm64`, `complexity:L`.
+**Description/current:** the R3 worktree produces `BOOTAA64.EFI` and a minimal AArch64 kernel, then reaches an ordered serial-ready marker in local QEMU `virt`/AAVMF. **Desired/reason:** AArch64 UEFI loader and kernel entry reach a deterministic serial marker in QEMU `virt`; early porting prevents x86 interfaces from hardening accidentally. **Dependencies:** R1. **Architecture:** ARM64. **Complexity:** L. **Acceptance:** `BOOTAA64.EFI`, linker/entry/panic/UART, image/QEMU command, bounded smoke test and CI. **Verification:** AAVMF QEMU status/ordered markers on clean CI. **Files:** new ARM boot/kernel arch code, tooling, workflows. **Milestone:** M1. **Labels:** `priority:P0`, `type:feature`, `area:boot`, `arch:arm64`, `complexity:L`.
+
+**Implementation status:** locally verified on 2026-07-17 at the R3 worktree: the development image returned ARM semihosting status 0 after all required loader and kernel serial markers. The added CI job is implemented but unverified until integration; R4 memory, exception, GIC, timer, context, and shutdown parity remain absent.
 
 ### R4 [P0] Complete architecture boot parity
 

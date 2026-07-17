@@ -32,6 +32,13 @@ required-features = ["kernel-bin"]
 test = false
 bench = false
 
+[[bin]]
+name = "finn-kernel-aarch64"
+path = "src/bin/aarch64.rs"
+required-features = ["kernel-bin"]
+test = false
+bench = false
+
 [build-dependencies]
 finn-boot-protocol = { path = "../boot/protocol" }
 

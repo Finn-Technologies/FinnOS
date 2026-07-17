@@ -1,7 +1,25 @@
 #![cfg_attr(target_os = "uefi", no_std)]
 #![deny(missing_docs)]
 
-//! Host-testable ELF64 x86-64 validation used by the `FinnOS` boot manager.
+//! Host-testable ELF64 validation used by the `FinnOS` boot manager.
+
+/// Executable-machine identity accepted by the loader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ElfMachine {
+    /// AMD64/System V executable (`EM_X86_64`).
+    X86_64,
+    /// AArch64/AAPCS64 executable (`EM_AARCH64`).
+    Aarch64,
+}
+
+impl ElfMachine {
+    const fn elf_value(self) -> u16 {
+        match self {
+            Self::X86_64 => 62,
+            Self::Aarch64 => 183,
+        }
+    }
+}
 
 /// ELF validation failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,7 +34,7 @@ pub enum ElfError {
     WrongEndian,
     /// ELF version is unsupported.
     WrongVersion,
-    /// Machine is not x86-64.
+    /// Machine does not match the selected boot target.
     WrongMachine,
     /// File is not executable.
     WrongType,
@@ -89,13 +107,16 @@ fn read_u64(data: &[u8], offset: usize) -> Result<u64, ElfError> {
     ))
 }
 
-/// Validate an ELF64 x86-64 executable and its loadable segments.
+/// Validate an ELF64 executable and its loadable segments for one machine.
 ///
 /// # Errors
 ///
 /// Returns a structured error for malformed headers, segments, ranges, or entry points.
 #[allow(clippy::too_many_lines)]
-pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
+pub fn validate_elf_for_machine(
+    data: &[u8],
+    machine: ElfMachine,
+) -> Result<ValidatedElf, ElfError> {
     if data.len() < ELF_HEADER {
         return Err(ElfError::TruncatedHeader);
     }
@@ -114,7 +135,7 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
     if read_u16(data, 16)? != 2 {
         return Err(ElfError::WrongType);
     }
-    if read_u16(data, 18)? != 62 {
+    if read_u16(data, 18)? != machine.elf_value() {
         return Err(ElfError::WrongMachine);
     }
     let entry = read_u64(data, 24)?;
@@ -221,6 +242,15 @@ pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
     })
 }
 
+/// Validate an ELF64 x86-64 executable for compatibility with the original API.
+///
+/// # Errors
+///
+/// Returns a structured error for malformed headers, segments, ranges, or entry points.
+pub fn validate_elf(data: &[u8]) -> Result<ValidatedElf, ElfError> {
+    validate_elf_for_machine(data, ElfMachine::X86_64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +293,19 @@ mod tests {
     #[test]
     fn accepts_valid_fixture() {
         assert_eq!(validate_elf(&fixture()).unwrap().entry, 0x1000);
+    }
+
+    #[test]
+    fn accepts_aarch64_only_when_selected() {
+        let mut executable = fixture();
+        executable[18..20].copy_from_slice(&183u16.to_le_bytes());
+        assert_eq!(
+            validate_elf_for_machine(&executable, ElfMachine::Aarch64)
+                .unwrap()
+                .entry,
+            0x1000
+        );
+        assert_eq!(validate_elf(&executable), Err(ElfError::WrongMachine));
     }
     #[test]
     fn rejects_truncated_and_magic() {

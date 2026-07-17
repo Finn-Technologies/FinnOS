@@ -15,11 +15,28 @@ OVMF_CANDIDATES = (
     "/usr/share/qemu/edk2-x86_64-code.fd",
 )
 
+AAVMF_CANDIDATES = (
+    "/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd",
+    "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+    "/usr/local/share/qemu/edk2-aarch64-code.fd",
+    "/usr/share/AAVMF/AAVMF_CODE.fd",
+    "/usr/share/AAVMF/AAVMF_CODE.ms.fd",
+    "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+)
+
 QEMU_CANDIDATES = (
     "/opt/homebrew/bin/qemu-system-x86_64",
     "/opt/homebrew/opt/qemu/bin/qemu-system-x86_64",
     "/usr/local/bin/qemu-system-x86_64",
     "/usr/local/opt/qemu/bin/qemu-system-x86_64",
+)
+
+QEMU_AARCH64_CANDIDATES = (
+    "/opt/homebrew/bin/qemu-system-aarch64",
+    "/opt/homebrew/opt/qemu/bin/qemu-system-aarch64",
+    "/usr/local/bin/qemu-system-aarch64",
+    "/usr/local/opt/qemu/bin/qemu-system-aarch64",
 )
 
 QEMU_IMG_CANDIDATES = (
@@ -34,14 +51,26 @@ def find_command(name: str) -> str | None:
 
 def find_tool(name: str, environ: dict[str, str] | None = None) -> str | None:
     env = os.environ if environ is None else environ
-    override_name = {"qemu-system-x86_64": "FINNOS_QEMU_X86_64", "qemu-img": "FINNOS_QEMU_IMG"}.get(name)
+    override_name = {
+        "qemu-system-x86_64": "FINNOS_QEMU_X86_64",
+        "qemu-system-aarch64": "FINNOS_QEMU_AARCH64",
+        "qemu-img": "FINNOS_QEMU_IMG",
+    }.get(name)
     if override_name and env.get(override_name):
         path = Path(env[override_name])
         return str(path) if path.is_file() and path.stat().st_mode & 0o111 else None
     direct = shutil.which(name)
     if direct:
         return direct
-    candidates = QEMU_CANDIDATES if name == "qemu-system-x86_64" else QEMU_IMG_CANDIDATES if name == "qemu-img" else ()
+    candidates = (
+        QEMU_CANDIDATES
+        if name == "qemu-system-x86_64"
+        else QEMU_AARCH64_CANDIDATES
+        if name == "qemu-system-aarch64"
+        else QEMU_IMG_CANDIDATES
+        if name == "qemu-img"
+        else ()
+    )
     for candidate in candidates:
         path = Path(candidate)
         if path.is_file() and path.stat().st_mode & 0o111:
@@ -58,6 +87,31 @@ def find_ovmf(environ: dict[str, str] | None = None, candidates: tuple[str, ...]
         path = Path(candidate)
         if path.is_file():
             return path
+    return None
+
+def find_aavmf(
+    environ: dict[str, str] | None = None,
+    candidates: tuple[str, ...] = AAVMF_CANDIDATES,
+) -> Path | None:
+    env = os.environ if environ is None else environ
+    override = env.get("FINNOS_AAVMF_CODE")
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_file():
+            return path
+    return None
+
+def find_firmware(
+    architecture: str,
+    environ: dict[str, str] | None = None,
+) -> Path | None:
+    if architecture == "x86_64":
+        return find_ovmf(environ)
+    if architecture == "arm64":
+        return find_aavmf(environ)
     return None
 
 def rust_target_installed(target: str, rustup: str = "rustup") -> bool:

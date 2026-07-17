@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from tools.finnlib.build import BootMode, output_directory
-from tools.finnlib.cli import main, parse_arguments
+from tools.finnlib.cli import command, main, parse_arguments
 from tools.finnlib.config import ConfigurationError, load_configuration
 from tools.finnlib.image import stage_esp
 
@@ -31,10 +31,15 @@ class BuildConfigurationTests(unittest.TestCase):
             "x86_64-qemu-test-release",
         )
 
-    def test_planned_and_unknown_targets_fail_clearly(self):
+    def test_arm64_and_unknown_targets_are_classified(self):
         configuration = load_configuration(ROOT)
-        with self.assertRaisesRegex(ConfigurationError, "not bootable"):
-            configuration.select("arm64-qemu", "development")
+        arm64, _profile = configuration.select("arm64-qemu", "development")
+        self.assertEqual(arm64.boot_filename, "BOOTAA64.EFI")
+        self.assertEqual(arm64.kernel_cargo_target, "aarch64-unknown-none")
+        self.assertEqual(arm64.boot_cargo_target, "aarch64-unknown-uefi")
+        self.assertEqual(arm64.qemu_system, "qemu-system-aarch64")
+        self.assertEqual(arm64.qemu_machine, "virt")
+        self.assertEqual(arm64.qemu_cpu, "cortex-a72")
         with self.assertRaisesRegex(ConfigurationError, "unknown target"):
             configuration.select("missing", "development")
         with self.assertRaisesRegex(ConfigurationError, "unknown profile"):
@@ -51,6 +56,10 @@ class BuildConfigurationTests(unittest.TestCase):
             parse_arguments(["image", "--target"])
         with self.assertRaisesRegex(ConfigurationError, "unknown argument"):
             parse_arguments(["image", "--fast"])
+
+    def test_arm64_rejects_post_r3_boot_modes(self):
+        with self.assertRaisesRegex(ConfigurationError, "R3 supports serial first boot only"):
+            command("test-exceptions", "arm64-qemu", "development")
 
     def test_target_metadata_drift_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

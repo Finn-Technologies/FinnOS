@@ -1,6 +1,18 @@
 """QEMU command and smoke-log interpretation."""
 from __future__ import annotations
 
+from pathlib import Path
+
+ARM64_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+)
+
 MARKERS = (
     "FINNOS:BOOTLOADER:START", "FINNOS:BOOTLOADER:KERNEL_FOUND", "FINNOS:BOOTLOADER:KERNEL_VALID",
     "FINNOS:BOOTLOADER:KERNEL_LOADED", "FINNOS:BOOTLOADER:FRAMEBUFFER_READY", "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
@@ -71,6 +83,28 @@ def validate_smoke(status: int, output: str) -> list[str]:
     if positions != sorted(position for position in positions if position >= 0): errors.append("boot markers are out of order")
     if "FINNOS:BOOTLOADER:ERROR:" in output: errors.append("bootloader error marker found")
     if "FINNOS:KERNEL:PANIC" in output: errors.append("kernel panic marker found")
+    return errors
+
+def validate_arm64_smoke(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in ARM64_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append(
+            "missing ARM64 marker(s): "
+            + ", ".join(
+                marker for marker, position in zip(ARM64_MARKERS, positions) if position < 0
+            )
+        )
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 boot markers are out of order")
+    for marker in ARM64_MARKERS:
+        if output.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 marker: {marker}")
+    for marker in ("FINNOS:BOOTLOADER:ERROR:", "FINNOS:KERNEL:PANIC"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
     return errors
 
 def validate_memory_map(status: int, output: str) -> list[str]:
@@ -274,10 +308,29 @@ def qemu_command(
     headless: bool = False,
     test_exit: bool = False,
     machine: str = "q35",
+    architecture: str = "x86_64",
+    cpu: str = "",
 ) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
-    command = [qemu, "-machine", machine, "-m", "256M", "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}", "-drive", f"if=ide,format=raw,file={image}", "-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"]
+    command = [qemu, "-machine", machine]
+    if cpu:
+        command.extend(["-cpu", cpu])
+    command.extend([
+        "-m", "256M",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
+    ])
+    if architecture == "arm64":
+        command.extend([
+            "-drive", f"if=none,format=raw,file={image},id=finnos-esp",
+            "-device", "virtio-blk-pci,drive=finnos-esp",
+        ])
+    else:
+        command.extend(["-drive", f"if=ide,format=raw,file={image}"])
+    command.extend(["-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"])
     if headless: command.extend(["-display", "none"])
-    if test_exit: command.extend(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+    if test_exit and architecture == "arm64":
+        command.extend(["-semihosting-config", "enable=on,target=native"])
+    elif test_exit:
+        command.extend(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
     return command

@@ -1,6 +1,7 @@
 import unittest
+from pathlib import Path
 
-from tools.finnlib.qemu import COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
+from tools.finnlib.qemu import ARM64_MARKERS, COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, qemu_command, validate_arm64_smoke, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
     def cooperative_log(self):
@@ -77,6 +78,30 @@ class BootLogTests(unittest.TestCase):
 
     def test_status_zero_is_not_success(self):
         self.assertTrue(validate_smoke(0, "\n".join(MARKERS)))
+
+    def test_arm64_markers_and_semihosting_status(self):
+        output = "\n".join(ARM64_MARKERS)
+        self.assertEqual(validate_arm64_smoke(0, output), [])
+        self.assertTrue(validate_arm64_smoke(1, output))
+        self.assertTrue(validate_arm64_smoke(0, "\n".join(ARM64_MARKERS[:-1])))
+        self.assertTrue(validate_arm64_smoke(0, output + "\n" + ARM64_MARKERS[-1]))
+
+    def test_arm64_qemu_command_uses_virtio_and_semihosting(self):
+        command = qemu_command(
+            "qemu-system-aarch64",
+            "/firmware/AAVMF_CODE.fd",
+            Path("/images/finnos.img"),
+            headless=True,
+            test_exit=True,
+            machine="virt",
+            architecture="arm64",
+            cpu="cortex-a72",
+        )
+        rendered = " ".join(str(part) for part in command)
+        self.assertIn("-cpu cortex-a72", rendered)
+        self.assertIn("virtio-blk-pci", rendered)
+        self.assertIn("-semihosting-config enable=on,target=native", rendered)
+        self.assertNotIn("isa-debug-exit", rendered)
 
     def test_page_allocator_markers(self):
         self.assertEqual(validate_page_allocator(33, "\n".join(PAGE_ALLOCATOR_MARKERS)), [])

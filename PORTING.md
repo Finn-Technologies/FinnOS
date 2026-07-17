@@ -6,13 +6,13 @@ An architecture port must provide a loader target, kernel entry and linker layou
 
 ## ARM64 status
 
-ARM64 is 0% at executable level. `build/targets/arm64-qemu.toml` and `Finnfile.toml` only mark intent. There is no AArch64 UEFI binary, kernel binary, linker script, exception vector, MMU, GIC, generic timer, context switch, UART, image flow, QEMU command, CI job, or test.
+ARM64 R3 serial first boot is locally verified: the build produces `BOOTAA64.EFI` and a minimal AArch64 kernel, stages a FAT image, boots it with QEMU `virt` and AAVMF, writes through the PL011, and exits the bounded test through AArch64 semihosting. The CI job is implemented but pending integration evidence. There is still no exception vector, FinnOS-owned MMU, GIC, generic timer, context switch, memory initialization, or production shutdown path; those are R4 work.
 
 ## Parity matrix
 
 | Capability | x86-64 | ARM64 requirement |
 |---|---|---|
-| Boot | UEFI ELF loader verified | `BOOTAA64.EFI`, AArch64 ELF validation and handoff |
+| Boot | UEFI ELF loader verified | `BOOTAA64.EFI`, AArch64 ELF validation and handoff locally verified |
 | CPU init | Long mode inherited; feature checks | EL selection, feature registers, FP/SIMD policy |
 | Page tables | 4-level 4 KiB, private CR3 | Translation regime, MAIR/TCR/TTBR, barriers, W^X |
 | Exceptions | GDT/TSS/IDT + assembly stubs | VBAR vector table and normalized trap frame |
@@ -22,14 +22,14 @@ ARM64 is 0% at executable level. `build/targets/arm64-qemu.toml` and `Finnfile.t
 | SMP | Not implemented | Defer on both; design shared topology interface first |
 | System calls/userspace | Not implemented | Shared ABI semantics with architecture entry glue |
 | Device discovery | ACPI RSDP only, unparsed | Device tree and/or ACPI policy must be explicit |
-| Emulator | QEMU `q35` + OVMF | QEMU `virt` + AAVMF/EDK2 |
+| Emulator | QEMU `q35` + OVMF | QEMU `virt` + AAVMF/EDK2 locally verified for serial entry |
 | Hardware | None | None until an explicit reference board is selected |
 
 ## Ordered ARM64 bring-up
 
-1. Refactor the build wrapper so target/profile metadata selects artifacts without changing x86 behavior.
-2. Add an AArch64 UEFI loader and protocol round-trip host tests.
-3. Add linker script, entry assembly, early stack, UART, panic path, and serial marker in QEMU `virt`.
+1. **Done locally:** target/profile metadata selects architecture-specific artifacts without changing the external ESP contract.
+2. **Done locally:** the UEFI loader validates the selected ELF machine and hands off `BootInfo` with AAPCS64.
+3. **Done locally, CI pending:** linker script, entry assembly, early stack, PL011, panic path, and serial marker run in QEMU `virt`.
 4. Normalize exception frames behind a shared trap API.
 5. Classify the UEFI memory map using existing shared code.
 6. Implement MMU mappings matching x86 supervisor W^X/guard invariants.

@@ -1,7 +1,7 @@
 ---
 name: "qemu-boot-testing"
 title: "QEMU Boot Testing"
-version: 2
+version: 3
 status: "active"
 owners: []
 triggers: ["QEMU","boot smoke","serial marker"]
@@ -11,7 +11,7 @@ category: "Foundations"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build","M1 Dual-Architecture Boot"]
-last_verified: {"base_commit":"cc828ec","date":"2026-07-16","worktree_dirty":false,"context":"R1 publication branch locally verified; integration CI pending"}
+last_verified: {"base_commit":"df5cf62","date":"2026-07-17","worktree_dirty":true,"context":"R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"}
 description: "Use when working on QEMU, boot smoke, serial marker; provides the FinnOS-specific qemu boot testing workflow and evidence gates."
 ---
 # QEMU Boot Testing
@@ -58,9 +58,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.
+x86 q35/OVMF has eight development modes plus release first boot; ARM64 virt/AAVMF has a distinct locally verified R3 serial-entry test.
 
-Registry verification used clean revision `cc828ec` with context "R1 publication branch locally verified; integration CI pending" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used base commit `df5cf62` plus the dirty worktree context "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending" on 2026-07-17. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -87,20 +87,20 @@ An evidence-backed qemu boot testing result with scoped artifacts, tests, docume
 
 ```bash
 ./tools/finn test-boot
-FINNOS_BOOT_TIMEOUT_SECONDS=90 ./tools/finn test-boot
+./tools/finn test-boot --target arm64-qemu
 ```
 
 Run commands from the repository root. A command listed here is a baseline/gate, not evidence that absent future functionality has a runnable target.
 
 ## 12. Architecture considerations
 
-Use q35/OVMF only for current x86 claims; future ARM uses virt/AAVMF and a distinct marker contract.
+Use q35/OVMF plus isa-debug-exit only for x86; ARM uses virt/AAVMF, PL011, semihosting status 0, and a distinct marker contract.
 
 State guest architecture separately from host architecture and emulator model. Maintain a parity row for changed semantics and document intentional differences.
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: x86 q35/OVMF has eight development modes plus release first boot; ARM64 virt/AAVMF has a distinct locally verified R3 serial-entry test. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -133,7 +133,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: x86 QEMU q35/OVMF has eight development modes plus release first boot; bounded runs preserve serial logs. ARM QEMU is absent.
+- Ignoring this skill's current constraint: x86 q35/OVMF has eight development modes plus release first boot; ARM64 virt/AAVMF has a distinct locally verified R3 serial-entry test.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 
