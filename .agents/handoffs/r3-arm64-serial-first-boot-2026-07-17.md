@@ -22,6 +22,7 @@
   - `python3 .agents/scripts/check_links.py`: passed, 235 local references at time of execution.
   - `git diff --check`: passed.
 - Integration evidence: PR #21 commit `0207dbc` passed CI run 137 and UEFI boot smoke run 73, including the ARM64 serial-first-boot job and the complete x86-64 regression suite.
+- Required-check compatibility: the existing x86-64 workflow job retains the `smoke` id expected by branch protection; ARM64 runs as the additional `arm64-serial-first-boot` check.
 - Results and evidence classification: R3 source/build/runtime is locally verified on macOS ARM64 using software-emulated AArch64 QEMU `virt` and integration-verified on GitHub's Ubuntu runners. No physical-hardware or R4 parity claim is made.
 - Documentation/status changes: `ROADMAP.md`, `STATUS.md`, `PORTING.md`, build/test/architecture/support docs, generated skill guidance, and `.agents/STATE.md` distinguish bounded R3 evidence from absent R4 parity; this handoff records the later integration result.
 - Unverified assumptions: ARM release profile was not runtime-tested; physical ARM64 hardware remains outside this milestone.
