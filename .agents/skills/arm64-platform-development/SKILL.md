@@ -1,7 +1,7 @@
 ---
 name: "arm64-platform-development"
 title: "ARM64 Platform Development"
-version: 1
+version: 2
 status: "active"
 owners: []
 triggers: ["arm64","aarch64","AAVMF","GIC","exception vectors"]
@@ -9,16 +9,16 @@ prerequisites: ["build-orchestration","uefi-bootloader-development","cross-archi
 related_docs: ["PORTING.md","build/targets/arm64-qemu.toml","Finnfile.toml"]
 category: "Boot and kernel"
 conditional_skills: []
-implementation_gates: ["R3 serial first boot is blocked by roadmap R1 build target/profile orchestration; no ARM command, qemu-system-aarch64/AAVMF resolver, ARM override, or marker/termination contract exists. R4 parity starts only after R3 serial entry is verified."]
+implementation_gates: []
 related_milestones: ["M1 Dual-Architecture Boot"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"df5cf62","date":"2026-07-17","worktree_dirty":true,"context":"R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"}
 description: "Use when working on arm64, aarch64, AAVMF; provides the FinnOS-specific arm64 platform development workflow and evidence gates."
 ---
 # ARM64 Platform Development
 
 ## 1. Name
 
-`arm64-platform-development` (Boot and kernel; skill maturity: planning-gated).
+`arm64-platform-development` (Boot and kernel; skill maturity: operational).
 
 ## 2. Purpose
 
@@ -30,7 +30,7 @@ Use for requests mentioning `arm64`, `aarch64`, `AAVMF`, `GIC`, `exception vecto
 
 ## 4. When not to use this skill
 
-R3 serial first boot is blocked by roadmap R1 build target/profile orchestration; no ARM command, qemu-system-aarch64/AAVMF resolver, ARM override, or marker/termination contract exists. R4 parity starts only after R3 serial entry is verified. Do not load it only because a future FinnOS document mentions the subsystem.
+Do not use this skill as a substitute for its adjacent subsystem skills or for evidence that the subsystem works. Do not load it only because a future FinnOS document mentions the subsystem.
 
 ## 5. Prerequisite skills
 
@@ -48,7 +48,7 @@ Conditional skills:
 
 Implementation gates are roadmap/runtime conditions, not additional documents to load automatically:
 
-- R3 serial first boot is blocked by roadmap R1 build target/profile orchestration; no ARM command, qemu-system-aarch64/AAVMF resolver, ARM override, or marker/termination contract exists. R4 parity starts only after R3 serial entry is verified.
+- No additional gate beyond the selected roadmap acceptance criteria.
 
 ## 6. Authoritative repository references
 
@@ -60,9 +60,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-ARM64 has no executable implementation: no BOOTAA64.EFI, kernel entry, MMU, vectors, GIC, timer, UART, context, image, QEMU command, or CI.
+R3 BOOTAA64, AAPCS64 entry, PL011, image/QEMU command, ordered smoke validation, and CI workflow are implemented; local runtime passes and CI is pending.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used base commit `df5cf62` plus the dirty worktree context "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending" on 2026-07-17. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -88,6 +88,7 @@ An evidence-backed arm64 platform development result with scoped artifacts, test
 ## 11. Repository-specific commands
 
 ```bash
+./tools/finn test-boot --target arm64-qemu
 python3 .agents/scripts/validate.py --all
 ./tools/finn check
 ```
@@ -102,7 +103,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: ARM64 has no executable implementation: no BOOTAA64.EFI, kernel entry, MMU, vectors, GIC, timer, UART, context, image, QEMU command, or CI. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: R3 BOOTAA64, AAPCS64 entry, PL011, image/QEMU command, ordered smoke validation, and CI workflow are implemented; local runtime passes and CI is pending. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -135,7 +136,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: ARM64 has no executable implementation: no BOOTAA64.EFI, kernel entry, MMU, vectors, GIC, timer, UART, context, image, QEMU command, or CI.
+- Ignoring this skill's current constraint: R3 BOOTAA64, AAPCS64 entry, PL011, image/QEMU command, ordered smoke validation, and CI workflow are implemented; local runtime passes and CI is pending.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 
@@ -145,7 +146,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 - Do not claim ARM64, physical hardware, userspace, Peony, security, or release support without its own acceptance evidence.
 - Do not bypass a named prerequisite by embedding a temporary incompatible abstraction.
 - Do not commit target/, build/out/, firmware, credentials, local paths, or unreviewed generated output.
-- Do not disregard the roadmap/status gate: R3 serial first boot is blocked by roadmap R1 build target/profile orchestration; no ARM command, qemu-system-aarch64/AAVMF resolver, ARM override, or marker/termination contract exists. R4 parity starts only after R3 serial entry is verified.
+- Do not disregard the roadmap/status gate: Do not use this skill as a substitute for its adjacent subsystem skills or for evidence that the subsystem works.
 
 ## 20. Handoff requirements
 

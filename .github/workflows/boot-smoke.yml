@@ -1,4 +1,4 @@
-name: x86-64 UEFI boot smoke test
+name: UEFI boot smoke tests
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  x86-64-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -46,5 +46,23 @@ jobs:
         with:
           name: x86-64-boot-failure-${{ github.run_attempt }}
           path: build/out/
+          if-no-files-found: warn
+          retention-days: 14
+
+  arm64-serial-first-boot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - name: Install ARM64 boot test tools
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 mtools dosfstools
+      - name: Run ARM64 serial first-boot smoke test
+        run: ./tools/finn test-boot --target arm64-qemu
+      - name: Preserve ARM64 boot evidence on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: arm64-serial-boot-failure-${{ github.run_attempt }}
+          path: build/out/arm64-qemu-test/
           if-no-files-found: warn
           retention-days: 14

@@ -24,8 +24,9 @@ from .qemu import (
     validate_timer,
     validate_cooperative_tasks,
     validate_smoke,
+    validate_arm64_smoke,
 )
-from .toolchain import find_command, find_ovmf, find_tool, rust_target_installed
+from .toolchain import find_command, find_firmware, find_tool, rust_target_installed
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,7 +40,7 @@ BOOT_MODES = {
     "test-timer-interrupts": BootMode.TIMER,
     "test-cooperative-tasks": BootMode.COOPERATIVE_TASKS,
 }
-BUILD_OPTION_COMMANDS = {"build", "build-boot", "image", "run", "run-headless", *BOOT_MODES}
+BUILD_OPTION_COMMANDS = {"doctor", "build", "build-boot", "image", "run", "run-headless", *BOOT_MODES}
 
 
 def doctor(target_name: Optional[str] = None) -> int:
@@ -56,8 +57,9 @@ def doctor(target_name: Optional[str] = None) -> int:
         if not present: print(f"      install: rustup target add {cargo_target}")
     for relative in ("Cargo.toml", "Finnfile.toml", "boot/protocol/Cargo.toml", "boot/uefi/Cargo.toml", "kernel/Cargo.toml"):
         print(f"[{'ok' if (ROOT / relative).is_file() else 'missing'}] repository file: {relative}")
-    firmware = find_ovmf()
-    print(f"[{'ok' if firmware else 'missing'}] OVMF firmware{': ' + str(firmware) if firmware else ''}")
+    firmware = find_firmware(target.architecture)
+    firmware_name = "AAVMF" if target.architecture == "arm64" else "OVMF"
+    print(f"[{'ok' if firmware else 'missing'}] {firmware_name} firmware{': ' + str(firmware) if firmware else ''}")
     return 1 if missing or any(not find_tool(tool) for tool in first_boot) or not firmware or any(not rust_target_installed(cargo_target) for cargo_target in cargo_targets) else 0
 
 def command(
@@ -66,13 +68,16 @@ def command(
     profile_name: Optional[str] = None,
 ) -> int:
     if name == "help":
-        print("FinnOS developer wrapper for the x86-64 UEFI First Boot milestone.")
+        print("FinnOS developer wrapper for x86-64 and ARM64 UEFI development targets.")
         print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map test-page-allocator test-page-tables test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
         print("Build options: --target TARGET --profile development|release")
         return 0
     if (target_name or profile_name) and name not in BUILD_OPTION_COMMANDS:
         raise ConfigurationError(f"{name!r} does not accept --target or --profile")
-    if name == "doctor": return doctor()
+    if name == "doctor":
+        if profile_name is not None:
+            raise ConfigurationError("'doctor' does not accept --profile")
+        return doctor(target_name)
     if name == "build":
         _target, profile = load_configuration(ROOT).select(target_name, profile_name)
         cargo(ROOT, ["build", "--workspace", *profile.cargo_args])
@@ -86,6 +91,11 @@ def command(
     if name in ("build-boot", "image", "run", "run-headless", *BOOT_MODES):
         target, profile = load_configuration(ROOT).select(target_name, profile_name)
         mode = BOOT_MODES.get(name, BootMode.NORMAL)
+        if target.architecture == "arm64" and mode not in (BootMode.NORMAL, BootMode.FIRST_BOOT):
+            raise ConfigurationError(
+                f"{name!r} is not implemented for target {target.name!r}; "
+                "R3 supports serial first boot only"
+            )
         out = output_directory(ROOT, target, profile, mode)
         boot, kernel = build_boot(ROOT, target, profile, mode)
         esp = stage_esp(out, boot, kernel, target.boot_filename, target.kernel_filename)
@@ -94,13 +104,15 @@ def command(
         image = make_image(esp, out / target.image_filename)
         if name == "image":
             return 0
-        firmware = find_ovmf()
+        firmware = find_firmware(target.architecture)
         qemu = find_tool(target.qemu_system)
         if not firmware or not qemu:
-            raise RuntimeError(f"{target.qemu_system} and OVMF are required")
+            firmware_name = "AAVMF" if target.architecture == "arm64" else "OVMF"
+            raise RuntimeError(f"{target.qemu_system} and {firmware_name} are required")
         args = qemu_command(
             qemu, str(firmware), image, headless=name != "run",
             test_exit=mode.test_exit, machine=target.qemu_machine,
+            architecture=target.architecture, cpu=target.qemu_cpu,
         )
         print("$ " + " ".join(args), flush=True)
         if mode.test_exit:
@@ -119,7 +131,7 @@ def command(
             (out / "serial.log").write_text(output, encoding="utf-8")
             print(output)
             print(f"qemu status: {result.returncode}")
-            validator = {
+            validator = validate_arm64_smoke if target.architecture == "arm64" else {
                 BootMode.COOPERATIVE_TASKS: validate_cooperative_tasks,
                 BootMode.EXCEPTIONS: validate_exceptions,
                 BootMode.MEMORY_MAP: validate_memory_map,

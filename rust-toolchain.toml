@@ -2,4 +2,9 @@
 channel = "stable"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
-targets = ["x86_64-unknown-none", "x86_64-unknown-uefi"]
+targets = [
+    "aarch64-unknown-none",
+    "aarch64-unknown-uefi",
+    "x86_64-unknown-none",
+    "x86_64-unknown-uefi",
+]

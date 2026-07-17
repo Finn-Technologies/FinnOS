@@ -1,7 +1,7 @@
 ---
 name: "repository-orientation"
 title: "Repository Orientation"
-version: 1
+version: 2
 status: "active"
 owners: []
 triggers: ["enter repository","new agent","orientation"]
@@ -11,7 +11,7 @@ category: "Foundations"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build"]
-last_verified: {"base_commit":"d21a477","date":"2026-07-16","worktree_dirty":true,"context":"base commit plus uncommitted audit and agent-system worktree"}
+last_verified: {"base_commit":"df5cf62","date":"2026-07-17","worktree_dirty":true,"context":"R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"}
 description: "Use when working on enter repository, new agent, orientation; provides the FinnOS-specific repository orientation workflow and evidence gates."
 ---
 # Repository Orientation
@@ -57,9 +57,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-The worktree may contain the audit and loader regression changes; issue #16/PR #17 are active.
+Main integrates R1/R2; issue #16/PR #17 remain active and the current R3 worktree is locally verified but not integrated.
 
-Registry verification used base commit `d21a477` plus the dirty worktree context "base commit plus uncommitted audit and agent-system worktree" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used base commit `df5cf62` plus the dirty worktree context "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending" on 2026-07-17. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -99,7 +99,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: The worktree may contain the audit and loader regression changes; issue #16/PR #17 are active. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: Main integrates R1/R2; issue #16/PR #17 remain active and the current R3 worktree is locally verified but not integrated. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -132,7 +132,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: The worktree may contain the audit and loader regression changes; issue #16/PR #17 are active.
+- Ignoring this skill's current constraint: Main integrates R1/R2; issue #16/PR #17 remain active and the current R3 worktree is locally verified but not integrated.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

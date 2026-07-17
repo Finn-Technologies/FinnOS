@@ -16,9 +16,15 @@ kernel/src/bin/x86_64.rs
   entry stack -> GDT/TSS/IDT -> memory classification -> physical allocator
        -> private page tables -> fixed heap -> PIC mask + xAPIC timer
        -> guarded cooperative tasks -> framebuffer diagnostic -> idle task
+
+AAVMF -> boot/uefi -> validates and loads AArch64 KERNEL.ELF
+                         |
+                         v
+kernel/src/bin/aarch64.rs
+  AAPCS64 entry -> linked early stack -> PL011 serial-ready marker
 ```
 
-The loader and kernel are separate ELF/PE artifacts. The loader runs as an x86-64 UEFI application, loads the kernel at its linked physical addresses, exits boot services, and enters `_start` using SysV64 with a `BootInfo` pointer in `RDI`.
+The loader and kernel are separate ELF/PE artifacts. On x86-64, the loader enters `_start` using SysV64 with `BootInfo` in `RDI`. The R3 ARM64 slice uses AAPCS64 with `BootInfo` in `x0`, switches to its linked early stack, and emits a PL011 marker; it does not continue through the x86 kernel foundation.
 
 ## Boot flow
 
@@ -48,6 +54,10 @@ The loader and kernel are separate ELF/PE artifacts. The loader runs as an x86-6
 ## Code boundaries
 
 Architecture-independent code currently includes the boot protocol, UEFI descriptor decoding/classification, physical extent allocator, heap allocation policy, task state machine, and interrupt-depth concept. x86-specific code includes entry, linker layout, GDT/TSS/IDT, exception assembly, page tables, APIC/PIC/PIT, timer, task stacks, context switching, QEMU exit, and serial I/O.
+
+ARM64-specific R3 code includes its linker/entry stack, PL011 polling, and
+semihosting test exit. Memory classification, exceptions, translation tables,
+GIC, generic timer, and contexts are not yet wired into the ARM executable.
 
 The intended long-term boundary is:
 

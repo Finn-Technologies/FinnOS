@@ -1,9 +1,13 @@
 # Finn Kernel architecture
 
 > Status: Initial architectural direction
-> Implementation: x86-64 first-boot and interrupt/timer foundations exist; kernel core remains in progress
+> Implementation: x86-64 foundations plus ARM64 serial entry exist; kernel core remains in progress
 
 FinnOS is pursuing a hybrid microkernel direction. The privileged kernel is expected to own scheduling, virtual memory, interrupts, timers, IPC primitives, capability enforcement, and typed kernel-object management. Drivers and services should run in user space where practical.
+
+The R3 AArch64 executable currently stops at a linked early stack and PL011
+serial-ready marker. It does not yet consume the shared memory foundations or
+implement exception, MMU, GIC, timer, or task semantics.
 
 The x86-64 exception foundation is now in place: a FinnOS-owned GDT, TSS with a dedicated double-fault IST stack, IDT, and assembly exception-entry stubs dispatch breakpoint, invalid-opcode, double-fault, general-protection, and page-fault exceptions. See [x86-64 exceptions](x86_64-exceptions.md) for details.
 

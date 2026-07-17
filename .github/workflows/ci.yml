@@ -24,16 +24,24 @@ jobs:
       - run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
       - run: python3 .agents/scripts/validate.py --all
       - run: cargo build -p finn-kernel --bin finn-kernel-x86_64 --features kernel-bin --target x86_64-unknown-none
-      - run: cargo build -p finn-boot-uefi --bin finn-boot-x86_64 --features uefi-app --target x86_64-unknown-uefi
+      - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target x86_64-unknown-uefi
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin --target aarch64-unknown-none
+      - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target aarch64-unknown-uefi
 
   target-profile-build:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        profile: [development, release]
+        include:
+          - target: x86_64-qemu
+            profile: development
+          - target: x86_64-qemu
+            profile: release
+          - target: arm64-qemu
+            profile: development
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - name: Build configured target and profile
-        run: ./tools/finn build-boot --target x86_64-qemu --profile ${{ matrix.profile }}
+        run: ./tools/finn build-boot --target ${{ matrix.target }} --profile ${{ matrix.profile }}

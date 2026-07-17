@@ -1,7 +1,7 @@
 ---
 name: "ci-maintenance"
 title: "CI Maintenance"
-version: 2
+version: 3
 status: "active"
 owners: []
 triggers: ["CI","GitHub Actions","required check","artifact retention"]
@@ -11,7 +11,7 @@ category: "Quality, release, and docs"
 conditional_skills: []
 implementation_gates: []
 related_milestones: ["M0 Reproducible Build","M8 Stable 1.0"]
-last_verified: {"base_commit":"cc828ec","date":"2026-07-16","worktree_dirty":false,"context":"R1 publication branch locally verified; integration CI pending"}
+last_verified: {"base_commit":"df5cf62","date":"2026-07-17","worktree_dirty":true,"context":"R3 ARM64 serial-first-boot worktree locally verified; integration CI pending"}
 description: "Use when working on CI, GitHub Actions, required check; provides the FinnOS-specific ci maintenance workflow and evidence gates."
 ---
 # CI Maintenance
@@ -58,9 +58,9 @@ Re-read implementation and tests referenced by those documents. The documents es
 
 ## 7. Current FinnOS context
 
-Workflows pin actions, use least privilege/concurrency, build both x86 profiles, boot release, and retain failure evidence; CI execution is pending integration and ARM remains absent.
+Workflows pin actions, build both x86 profiles and ARM64 R3, boot x86 release and ARM serial entry, and retain failure evidence; ARM CI execution is pending integration.
 
-Registry verification used clean revision `cc828ec` with context "R1 publication branch locally verified; integration CI pending" on 2026-07-16. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
+Registry verification used base commit `df5cf62` plus the dirty worktree context "R3 ARM64 serial-first-boot worktree locally verified; integration CI pending" on 2026-07-17. This is not an integrated-revision claim. Reverify after HEAD, active PRs, or relevant source changes.
 
 ## 8. Required inputs
 
@@ -101,7 +101,7 @@ State guest architecture separately from host architecture and emulator model. M
 
 ## 13. Safety constraints
 
-Preserve the boundary described by the current state: Workflows pin actions, use least privilege/concurrency, build both x86 profiles, boot release, and retain failure evidence; CI execution is pending integration and ARM remains absent. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
+Preserve the boundary described by the current state: Workflows pin actions, build both x86 profiles and ARM64 R3, boot x86 release and ARM serial entry, and retain failure evidence; ARM CI execution is pending integration. Apply `.agents/checklists/pre-change.md`; for kernel, driver, security, architecture, or UI work also apply the matching checklist.
 
 ## 14. Testing requirements
 
@@ -134,7 +134,7 @@ Update the canonical behavior/status document, relevant architecture/reference m
 
 - Starting from an audit statement instead of re-reading changed source and tests.
 - Using a successful compile or marker as evidence for a broader subsystem claim.
-- Ignoring this skill's current constraint: Workflows pin actions, use least privilege/concurrency, build both x86 profiles, boot release, and retain failure evidence; CI execution is pending integration and ARM remains absent.
+- Ignoring this skill's current constraint: Workflows pin actions, build both x86 profiles and ARM64 R3, boot x86 release and ARM serial entry, and retain failure evidence; ARM CI execution is pending integration.
 - Changing shared policy while testing only one architecture or one happy path.
 - Losing the exact failing artifact/log by rebuilding before capture.
 

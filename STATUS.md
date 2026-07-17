@@ -2,11 +2,11 @@
 
 Audit snapshot: 2026-07-16 at `3539a35` (`main`). Percentages estimate completion toward a minimally functional implementation of each subsystem, not lines of code. Confidence is High only when the relevant path was built and executed.
 
-Post-audit branch evidence based on `cc828ec`: R1 target/profile tooling builds and boots both x86-64 development and release images locally. Its CI matrix and failure-artifact workflow are implemented but remain unverified until integration.
+Post-audit evidence: R1 is integrated at `ab9a8d1`. On the current R3 worktree based on `df5cf62`, ARM64 development artifacts build and the QEMU `virt`/AAVMF serial-first-boot test reaches the ordered loader/kernel markers and returns status 0 locally. ARM CI remains unverified until integration.
 
 ## Overall status
 
-FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development target and partially satisfies **Level 1: Bootable**. It does not satisfy Level 1 across both promised architectures because ARM64 is metadata-only. It does not satisfy Level 2 because no userspace, storage, input, networking, or application execution exists.
+FinnOS satisfies **Level 0: Buildable** for x86-64 and locally for the ARM64 serial-first-boot slice, and partially satisfies **Level 1: Bootable**. It does not satisfy Level 1 across both architectures because ARM64 has no memory, exception, interrupt, timer, task, or shutdown parity. It does not satisfy Level 2 because no userspace, storage, input, networking, or application execution exists.
 
 ## Subsystem matrix
 
@@ -30,17 +30,17 @@ FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development
 | Networking | 0% | High | Absent | Not designed | QEMU uses `-net none` | Entire stack and API absent | Defer until process/driver model works |
 | Peony/UI/apps | 0% | High | Absent | Design only | `docs/architecture/peony.md` | Userspace, IPC, input, display absent | Implement only after core service runtime |
 | Security boundary | 5% | Medium | Kernel W^X only | Accidental-fault hardening | NX, WP, guards, null unmapped | Everything executes in ring 0 | User isolation + capability enforcement |
-| ARM64 | 0% | High | No executable | Planned metadata | `arm64-qemu.toml` says non-bootable | No loader, entry, MMU, GIC, timer | Minimal serial first boot in QEMU `virt` |
+| ARM64 | 5% | High | Local QEMU serial entry | R3 locally verified, CI pending | `BOOTAA64.EFI`; ordered AAVMF/QEMU markers; status 0 | No MMU, exceptions, GIC, timer, tasks, or shutdown | Verify R3 CI, then begin R4 parity |
 | Release/update | 0% | High | Absent | Policy outline | `RELEASES.md` | No product artifact/version/signing | Add provenance before preview binaries |
 
 ## Verified boot matrix
 
 | Checkpoint | x86-64 debug | x86-64 release | ARM64 debug | ARM64 release |
 |---|---|---|---|---|
-| Compiles | Yes | Yes | Unsupported | Unsupported |
-| Boot image generated | Yes | Yes (local branch) | No | No |
-| UEFI loader starts | Yes | Yes (local branch) | No | No |
-| Kernel entry reached | Yes | Yes (local branch) | No | No |
+| Compiles | Yes | Yes | Yes (local worktree) | Unverified |
+| Boot image generated | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
+| UEFI loader starts | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
+| Kernel entry reached | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
 | Memory management initialized | Yes | Yes (local branch) | No | No |
 | Interrupts/timer initialized | Yes | Yes (local branch) | No | No |
 | Kernel tasks run | Yes | Yes (local branch) | No | No |
@@ -55,8 +55,8 @@ FinnOS satisfies **Level 0: Buildable** for its declared x86-64 QEMU development
 
 | Level | Measurable exit criteria | Current result |
 |---|---|---|
-| 0 Buildable | Clean documented build; supported targets in CI | Met for x86-64 only; ARM64 and reproducibility evidence missing |
-| 1 Bootable | Both architectures reach stable kernel with logging, memory, interrupts, timer, shutdown | Partial: x86 reaches idle; ARM64 and production shutdown absent |
+| 0 Buildable | Clean documented build; supported targets in CI | Met for x86-64; ARM64 builds locally but its added CI is pending |
+| 1 Bootable | Both architectures reach stable kernel with logging, memory, interrupts, timer, shutdown | Partial: x86 reaches idle; ARM64 reaches serial entry only; production shutdown absent |
 | 2 Core OS functional | Isolated processes, userspace, FS, input, storage, basic network, shell | Not met |
 | 3 Graphical functional | Compositor, input, fonts, windows, toolkit, core GUI apps | Not met |
 | 4 Daily-use alpha | Persistent install, reliable network/storage/settings/apps | Not met |
