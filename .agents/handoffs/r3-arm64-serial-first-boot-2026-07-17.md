@@ -2,7 +2,7 @@
 
 - Objective: Implement the R3 dependency slice from `BOOTAA64.EFI` through a deterministic AArch64 kernel serial marker in QEMU `virt`/AAVMF.
 - Starting commit/worktree: `df5cf62`, clean `main` tracking `origin/main`.
-- Task state: Locally Verified; integration CI remains unverified.
+- Task state: Verified; local runtime evidence and GitHub integration CI are green.
 - Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `evidence-status-reporting`, `roadmap-execution`, `build-environment-management`, `test-strategy`, `build-orchestration`, `debugging-investigation`, `qemu-boot-testing`, `cross-architecture-design`, `unsafe-rust-low-level-safety`, `boot-protocol-evolution`, `uefi-bootloader-development`, `arm64-platform-development`, `ci-maintenance`, `documentation-maintenance`, `git-commit-hygiene`, `agent-handoff`, and `implementing-roadmap-issue`.
 - Scope: ARM target metadata/tool discovery, selected ELF machine validation, `BOOTAA64.EFI`, minimal AAPCS64 kernel/linker/stack/PL011/panic path, ARM image/QEMU command, semihosting test exit, ordered marker validation, CI job, documentation, and agent-state updates.
 - Non-goals: R4 handoff consumption, FinnOS-owned MMU, exception vectors, GIC, generic timer, task contexts, production shutdown, SMP, userspace, physical hardware, and release qualification.
@@ -21,12 +21,13 @@
   - `python3 .agents/scripts/validate.py --all`: passed, 87 skills and no dependency cycles.
   - `python3 .agents/scripts/check_links.py`: passed, 235 local references at time of execution.
   - `git diff --check`: passed.
-- Results and evidence classification: R3 source/build/runtime is locally verified on macOS ARM64 using software-emulated AArch64 QEMU `virt`; the workflow changes are implemented-unverified until GitHub CI runs. No physical-hardware or R4 parity claim is made.
-- Documentation/status changes: `ROADMAP.md`, `STATUS.md`, `PORTING.md`, build/test/architecture/support docs, generated skill guidance, and `.agents/STATE.md` distinguish local R3 evidence from pending CI and absent R4 parity.
-- Unverified assumptions: Ubuntu `qemu-efi-aarch64` exposes one of the documented AAVMF candidates in a pflash-compatible size; GitHub Actions can run the ARM job within its timeout; ARM release profile was not runtime-tested.
-- Remaining work: Run and diagnose integration CI, preserve its evidence, then begin R4 with handoff consumption and an architecture-neutral exception/trap contract before MMU/GIC/timer/context work.
-- Blockers: No local blocker. CI execution requires publication/integration.
+- Integration evidence: PR #21 commit `0207dbc` passed CI run 137 and UEFI boot smoke run 73, including the ARM64 serial-first-boot job and the complete x86-64 regression suite.
+- Results and evidence classification: R3 source/build/runtime is locally verified on macOS ARM64 using software-emulated AArch64 QEMU `virt` and integration-verified on GitHub's Ubuntu runners. No physical-hardware or R4 parity claim is made.
+- Documentation/status changes: `ROADMAP.md`, `STATUS.md`, `PORTING.md`, build/test/architecture/support docs, generated skill guidance, and `.agents/STATE.md` distinguish bounded R3 evidence from absent R4 parity; this handoff records the later integration result.
+- Unverified assumptions: ARM release profile was not runtime-tested; physical ARM64 hardware remains outside this milestone.
+- Remaining work: Begin R4 with handoff consumption and an architecture-neutral exception/trap contract before MMU/GIC/timer/context work.
+- Blockers: None for R3.
 - Risks/regressions to watch: AAVMF package path/size differences, firmware console noise, exact-load-address conflicts, inherited mapping assumptions, semihosting behavior differences, and accidental promotion of serial entry to Level 1 parity.
-- Current Git state: Dirty worktree on `main`; no commit, push, PR, or staging performed.
-- Suggested next action: Review and publish this R3 slice, then use the CI run as the acceptance gate before starting R4.
+- Current Git state: PR #21 on `codex/r3-arm64-serial-first-boot`; implementation commit `0207dbc` is pushed and its CI is green. This handoff evidence update is the only subsequent change.
+- Suggested next action: Merge PR #21 after its final head checks pass, then start R4 from updated `main`.
 - Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `evidence-status-reporting`, `roadmap-execution`, `test-strategy`, `qemu-boot-testing`, `cross-architecture-design`, `unsafe-rust-low-level-safety`, `arm64-platform-development`, `ci-maintenance`, `documentation-maintenance`, and `agent-handoff`.
