@@ -654,8 +654,9 @@ mod tests {
 
     const BACKING_PAGES: usize = MAX_PAGE_TABLE_PAGES + TASK_STACK_PAGE_COUNT + 8;
 
+    #[derive(Clone)]
     #[repr(align(4096))]
-    struct AlignedBacking([u8; BACKING_PAGES * 4096]);
+    struct AlignedPage([u8; 4096]);
     #[test]
     fn slots_are_guarded_aligned_and_disjoint() {
         let first = TaskStackLayout::for_slot(1).unwrap();
@@ -686,13 +687,13 @@ mod tests {
 
     #[test]
     fn restore_returns_to_pre_reclaim_mapped_baseline() {
-        let backing = std::boxed::Box::new(AlignedBacking([0; BACKING_PAGES * 4096]));
-        let backing_start = backing.0.as_ptr() as u64;
+        let backing = std::vec![AlignedPage([0; 4096]); BACKING_PAGES].into_boxed_slice();
+        let backing_start = backing[0].0.as_ptr() as u64;
         let mut regions = RegionTable::new();
         regions
             .push(MemoryRegion {
                 start: backing_start,
-                byte_len: u64::try_from(backing.0.len()).unwrap(),
+                byte_len: u64::try_from(backing.len() * 4096).unwrap(),
                 kind: MemoryRegionKind::Usable,
                 source: MemoryRegionSource::FinnOS,
                 attributes: 0,
