@@ -24,6 +24,11 @@ from .qemu import (
     validate_timer,
     validate_cooperative_tasks,
     validate_smoke,
+    validate_arm64_exceptions,
+    validate_arm64_exception_fatal,
+    validate_arm64_memory_map,
+    validate_arm64_page_tables,
+    validate_arm64_gic,
     validate_arm64_smoke,
 )
 from .toolchain import find_command, find_firmware, find_tool, rust_target_installed
@@ -33,9 +38,11 @@ ROOT = Path(__file__).resolve().parents[2]
 BOOT_MODES = {
     "test-boot": BootMode.FIRST_BOOT,
     "test-exceptions": BootMode.EXCEPTIONS,
+    "test-arm64-exception-fatal": BootMode.ARM64_EXCEPTION_FATAL,
     "test-memory-map": BootMode.MEMORY_MAP,
     "test-page-allocator": BootMode.PAGE_ALLOCATOR,
     "test-page-tables": BootMode.PAGE_TABLES,
+    "test-arm64-gic": BootMode.ARM64_GIC,
     "test-heap": BootMode.HEAP,
     "test-timer-interrupts": BootMode.TIMER,
     "test-cooperative-tasks": BootMode.COOPERATIVE_TASKS,
@@ -69,7 +76,7 @@ def command(
 ) -> int:
     if name == "help":
         print("FinnOS developer wrapper for x86-64 and ARM64 UEFI development targets.")
-        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-memory-map test-page-allocator test-page-tables test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
+        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-arm64-exception-fatal test-memory-map test-page-allocator test-page-tables test-arm64-gic test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
         print("Build options: --target TARGET --profile development|release")
         return 0
     if (target_name or profile_name) and name not in BUILD_OPTION_COMMANDS:
@@ -91,11 +98,24 @@ def command(
     if name in ("build-boot", "image", "run", "run-headless", *BOOT_MODES):
         target, profile = load_configuration(ROOT).select(target_name, profile_name)
         mode = BOOT_MODES.get(name, BootMode.NORMAL)
-        if target.architecture == "arm64" and mode not in (BootMode.NORMAL, BootMode.FIRST_BOOT):
+        if target.architecture == "arm64" and mode not in (
+            BootMode.NORMAL,
+            BootMode.FIRST_BOOT,
+            BootMode.EXCEPTIONS,
+            BootMode.ARM64_EXCEPTION_FATAL,
+            BootMode.MEMORY_MAP,
+            BootMode.PAGE_TABLES,
+            BootMode.ARM64_GIC,
+        ):
             raise ConfigurationError(
                 f"{name!r} is not implemented for target {target.name!r}; "
-                "R3 supports serial first boot only"
+                "this mode is not implemented for ARM64"
             )
+        if target.architecture != "arm64" and mode in (
+            BootMode.ARM64_EXCEPTION_FATAL,
+            BootMode.ARM64_GIC,
+        ):
+            raise ConfigurationError(f"{name!r} is implemented only for arm64-qemu")
         out = output_directory(ROOT, target, profile, mode)
         boot, kernel = build_boot(ROOT, target, profile, mode)
         esp = stage_esp(out, boot, kernel, target.boot_filename, target.kernel_filename)
@@ -131,7 +151,20 @@ def command(
             (out / "serial.log").write_text(output, encoding="utf-8")
             print(output)
             print(f"qemu status: {result.returncode}")
-            validator = validate_arm64_smoke if target.architecture == "arm64" else {
+            validator = (
+                validate_arm64_gic
+                if target.architecture == "arm64" and mode == BootMode.ARM64_GIC
+                else validate_arm64_page_tables
+                if target.architecture == "arm64" and mode == BootMode.PAGE_TABLES
+                else validate_arm64_memory_map
+                if target.architecture == "arm64" and mode == BootMode.MEMORY_MAP
+                else validate_arm64_exception_fatal
+                if target.architecture == "arm64" and mode == BootMode.ARM64_EXCEPTION_FATAL
+                else validate_arm64_exceptions
+                if target.architecture == "arm64" and mode == BootMode.EXCEPTIONS
+                else validate_arm64_smoke
+                if target.architecture == "arm64"
+                else {
                 BootMode.COOPERATIVE_TASKS: validate_cooperative_tasks,
                 BootMode.EXCEPTIONS: validate_exceptions,
                 BootMode.MEMORY_MAP: validate_memory_map,
@@ -140,7 +173,8 @@ def command(
                 BootMode.HEAP: validate_heap,
                 BootMode.TIMER: validate_timer,
                 BootMode.FIRST_BOOT: validate_smoke,
-            }[mode]
+                }[mode]
+            )
             errors = validator(result.returncode, output)
             if errors:
                 print("smoke test failure:")

@@ -38,7 +38,7 @@ class BuildConfigurationTests(unittest.TestCase):
         self.assertEqual(arm64.kernel_cargo_target, "aarch64-unknown-none")
         self.assertEqual(arm64.boot_cargo_target, "aarch64-unknown-uefi")
         self.assertEqual(arm64.qemu_system, "qemu-system-aarch64")
-        self.assertEqual(arm64.qemu_machine, "virt")
+        self.assertEqual(arm64.qemu_machine, "virt,gic-version=2,secure=off")
         self.assertEqual(arm64.qemu_cpu, "cortex-a72")
         with self.assertRaisesRegex(ConfigurationError, "unknown target"):
             configuration.select("missing", "development")
@@ -57,9 +57,56 @@ class BuildConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigurationError, "unknown argument"):
             parse_arguments(["image", "--fast"])
 
-    def test_arm64_rejects_post_r3_boot_modes(self):
-        with self.assertRaisesRegex(ConfigurationError, "R3 supports serial first boot only"):
-            command("test-exceptions", "arm64-qemu", "development")
+    def test_arm64_rejects_modes_not_yet_implemented(self):
+        with self.assertRaisesRegex(ConfigurationError, "not implemented for ARM64"):
+            command("test-page-allocator", "arm64-qemu", "development")
+
+    def test_x86_rejects_arm64_only_modes(self):
+        for mode in ("test-arm64-exception-fatal", "test-arm64-gic"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(
+                ConfigurationError, "implemented only for arm64-qemu"
+            ):
+                command(mode, "x86_64-qemu", "development")
+
+    def test_arm64_exception_output_is_feature_isolated(self):
+        configuration = load_configuration(ROOT)
+        target, profile = configuration.select("arm64-qemu", "development")
+        self.assertEqual(
+            output_directory(ROOT, target, profile, BootMode.EXCEPTIONS).name,
+            "arm64-qemu-exceptions",
+        )
+        self.assertNotIn("qemu-test-exceptions", BootMode.FIRST_BOOT.kernel_features)
+        self.assertIn("qemu-test-exceptions", BootMode.EXCEPTIONS.kernel_features)
+        self.assertIn(
+            "qemu-test-arm64-exception-fatal",
+            BootMode.ARM64_EXCEPTION_FATAL.kernel_features,
+        )
+        self.assertEqual(
+            output_directory(ROOT, target, profile, BootMode.MEMORY_MAP).name,
+            "arm64-qemu-memory-map",
+        )
+        self.assertIn("qemu-test-memory-map", BootMode.MEMORY_MAP.kernel_features)
+        self.assertNotIn("qemu-test-exceptions", BootMode.MEMORY_MAP.kernel_features)
+        self.assertEqual(
+            output_directory(ROOT, target, profile, BootMode.PAGE_TABLES).name,
+            "arm64-qemu-page-tables",
+        )
+        self.assertIn("qemu-test-page-tables", BootMode.PAGE_TABLES.kernel_features)
+        self.assertNotIn("qemu-test-memory-map", BootMode.PAGE_TABLES.kernel_features)
+        self.assertEqual(
+            output_directory(ROOT, target, profile, BootMode.ARM64_GIC).name,
+            "arm64-qemu-arm64-gic",
+        )
+        self.assertIn("qemu-test-arm64-gic", BootMode.ARM64_GIC.kernel_features)
+        for other in (
+            BootMode.FIRST_BOOT,
+            BootMode.EXCEPTIONS,
+            BootMode.ARM64_EXCEPTION_FATAL,
+            BootMode.MEMORY_MAP,
+            BootMode.PAGE_TABLES,
+        ):
+            with self.subTest(other=other):
+                self.assertNotIn("qemu-test-arm64-gic", other.kernel_features)
 
     def test_target_metadata_drift_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
