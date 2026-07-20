@@ -1,6 +1,6 @@
 # AArch64 GICv2 interrupt foundation
 
-> Implementation: locally verified R4.4 QEMU `virt,gic-version=2,secure=off`, single-BSP worktree slice; integration CI and physical hardware are unverified
+> Implementation: integrated and locally reverified R4.4 QEMU `virt,gic-version=2,secure=off` single-BSP slice; physical hardware is unverified
 
 The supported ARM64 emulator profile pins a legacy MMIO GICv2 with one CPU. FinnOS identity-maps the complete distributor window at `0x0800_0000` and CPU-interface window at `0x0801_0000` as EL1 RW/NX Device-nGnRnE memory before accessing either controller. The fixed layout is part of the QEMU target profile, not a hardware-discovery interface; device-tree/ACPI discovery and GICv3 remain R5 work.
 

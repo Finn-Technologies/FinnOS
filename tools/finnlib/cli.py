@@ -30,6 +30,7 @@ from .qemu import (
     validate_arm64_page_tables,
     validate_arm64_gic,
     validate_arm64_smoke,
+    validate_preemption_context,
 )
 from .toolchain import find_command, find_firmware, find_tool, rust_target_installed
 
@@ -46,6 +47,7 @@ BOOT_MODES = {
     "test-heap": BootMode.HEAP,
     "test-timer-interrupts": BootMode.TIMER,
     "test-cooperative-tasks": BootMode.COOPERATIVE_TASKS,
+    "test-preemption-context": BootMode.PREEMPTION_CONTEXT,
 }
 BUILD_OPTION_COMMANDS = {"doctor", "build", "build-boot", "image", "run", "run-headless", *BOOT_MODES}
 
@@ -76,7 +78,7 @@ def command(
 ) -> int:
     if name == "help":
         print("FinnOS developer wrapper for x86-64 and ARM64 UEFI development targets.")
-        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-arm64-exception-fatal test-memory-map test-page-allocator test-page-tables test-arm64-gic test-heap test-timer-interrupts test-cooperative-tasks check-all clean")
+        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-arm64-exception-fatal test-memory-map test-page-allocator test-page-tables test-arm64-gic test-heap test-timer-interrupts test-cooperative-tasks test-preemption-context check-all clean")
         print("Build options: --target TARGET --profile development|release")
         return 0
     if (target_name or profile_name) and name not in BUILD_OPTION_COMMANDS:
@@ -166,6 +168,7 @@ def command(
                 if target.architecture == "arm64"
                 else {
                 BootMode.COOPERATIVE_TASKS: validate_cooperative_tasks,
+                BootMode.PREEMPTION_CONTEXT: validate_preemption_context,
                 BootMode.EXCEPTIONS: validate_exceptions,
                 BootMode.MEMORY_MAP: validate_memory_map,
                 BootMode.PAGE_ALLOCATOR: validate_page_allocator,
@@ -185,7 +188,7 @@ def command(
         return 0
     if name == "test-python": subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools/tests", "-p", "test_*.py"], cwd=ROOT, check=True); return 0
     if name == "check-all":
-        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks"))
+        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks", "test-preemption-context"))
     if name == "clean":
         for path in (ROOT / "target", ROOT / "build" / "out"):
             if path.exists() and ROOT in path.parents: print(f"removing {path}"); shutil.rmtree(path)

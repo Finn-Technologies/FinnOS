@@ -11,3 +11,10 @@ Scheduler mutation is forbidden in interrupt context. Timer interrupts return to
 The cooperative QEMU test reports and cross-checks real worker and idle stack addresses, worker sentinel locations, exited states before reclamation, exact resource baselines, generation reuse, the RSP captured inside idle, unchanged CR3, and matching timer-delivery/EOI deltas. Success markers are emitted only after the corresponding runtime invariant check.
 
 This is cooperative rather than preemptive, single-BSP, kernel-only, and shared-address-space. Priorities, sleeping, processes, user mode, system calls, IPC, drivers, Peony, and ARM64 remain unimplemented.
+# Relationship to interrupt contexts
+
+`TaskContext` contains only SysV64 call-boundary callee-saved state and remains
+the representation used by cooperative switching. An interrupt can arrive at
+any instruction, so preemption requires the complete `KernelInterruptFrame` and
+stack-derived task attribution; the two representations are intentionally not
+merged.

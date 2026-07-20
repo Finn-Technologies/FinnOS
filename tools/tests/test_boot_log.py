@@ -2,9 +2,59 @@ import unittest
 from pathlib import Path
 import re
 
-from tools.finnlib.qemu import ARM64_EXCEPTION_MARKERS, ARM64_GIC_MARKERS, ARM64_MARKERS, ARM64_MEMORY_MAP_MARKERS, ARM64_PAGE_TABLE_MARKERS, COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, TIMER_MARKERS, qemu_command, validate_arm64_exception_fatal, validate_arm64_exceptions, validate_arm64_gic, validate_arm64_memory_map, validate_arm64_page_tables, validate_arm64_smoke, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_smoke, validate_timer
+from tools.finnlib.qemu import ARM64_EXCEPTION_MARKERS, ARM64_GIC_MARKERS, ARM64_MARKERS, ARM64_MEMORY_MAP_MARKERS, ARM64_PAGE_TABLE_MARKERS, COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, PREEMPTION_CONTEXT_MARKERS, TIMER_MARKERS, qemu_command, validate_arm64_exception_fatal, validate_arm64_exceptions, validate_arm64_gic, validate_arm64_memory_map, validate_arm64_page_tables, validate_arm64_smoke, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_preemption_context, validate_smoke, validate_timer
 
 class BootLogTests(unittest.TestCase):
+    def preemption_context_log(self):
+        numeric = {
+            "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 191,
+            "SOFTWARE_LAYOUT": 8, "TIMER_LAYOUT": 8, "IDLE_LAYOUT": 0,
+            "WORKER_SOFTWARE_LAYOUT": 8, "WORKER_TIMER_LAYOUT": 8,
+            "SOFTWARE_FRAME": 0x1000, "SOFTWARE_RETURN_FRAME": 0x1000, "SOFTWARE_VECTOR": 0x41, "SOFTWARE_CS": 0x8, "SOFTWARE_RFLAGS": 0x202,
+            "SOFTWARE_SAVED_RIP": 0x2000, "SOFTWARE_EXPECTED_RIP": 0x2000, "SOFTWARE_INTERRUPTED_RSP": 0x10b8, "SOFTWARE_EXPECTED_RSP": 0x10b8, "SOFTWARE_POST_RSP": 0x10b8, "SOFTWARE_SAVED_RSP_FIELD": 0x10a0, "SOFTWARE_SAVED_SS": 0x10,
+            "TIMER_FRAME": 0x4000, "TIMER_RETURN_FRAME": 0x4000, "TIMER_VECTOR": 0x40, "TIMER_CS": 0x8, "TIMER_RFLAGS": 0x202, "TIMER_SAVED_RIP": 0x5000, "TIMER_LOOP_START": 0x4fff, "TIMER_LOOP_END": 0x5001, "TIMER_INTERRUPTED_RSP": 0x40b8, "TIMER_EXPECTED_RSP": 0x40b8, "TIMER_POST_RSP": 0x40b8, "TIMER_SAVED_RSP_FIELD": 0x40a0, "TIMER_SAVED_SS": 0x10,
+            "IDLE_FRAME": 0x7000, "IDLE_INTERRUPTED_RSP": 0x70b0, "IDLE_SAVED_RSP_FIELD": 0x70a0, "IDLE_SAVED_SS": 0x10,
+            "TEST_IDLE_SLOT": 1, "TEST_IDLE_GENERATION": 1, "BOOTSTRAP_SLOT": 0, "BOOTSTRAP_GENERATION": 1, "WORKER_SLOT": 2, "WORKER_GENERATION": 1, "IDLE_SLOT": 1, "IDLE_GENERATION": 1,
+            "WORKER_SOFTWARE_FRAME": 0x8000, "WORKER_SOFTWARE_TASK_SLOT": 2, "WORKER_SOFTWARE_GENERATION": 1, "WORKER_SOFTWARE_RSP": 0x80b8, "WORKER_SOFTWARE_SAVED_SS": 0x10,
+            "WORKER_TIMER_FRAME": 0x9000, "WORKER_TIMER_TASK_SLOT": 2, "WORKER_TIMER_GENERATION": 1, "WORKER_TIMER_RSP": 0x90b8, "WORKER_TIMER_SAVED_SS": 0x10,
+            "DEPTH_NESTED": 2, "DEPTH_INNER_DROPPED": 1, "DEPTH_OUTER_DROPPED": 0,
+            "REQUEST_WHILE_NESTED": 1, "REQUEST_AFTER_INNER_DROP": 1, "REQUEST_AFTER_OUTER_DROP": 1, "REQUEST_TAKEN": 1, "REQUEST_AFTER_TAKE": 0,
+            "TICK_DELTA": 1, "DELIVERY_DELTA": 1, "EOI_DELTA": 1, "SWITCHES_BEFORE": 4, "SWITCHES_AFTER": 4, "CR3_BEFORE": 0x1000, "CR3_AFTER": 0x1000,
+            "CURRENT_TASK_BEFORE_SLOT": 0, "CURRENT_TASK_BEFORE_GENERATION": 1, "CURRENT_TASK_AFTER_SLOT": 0, "CURRENT_TASK_AFTER_GENERATION": 1,
+            "IF_ENABLED": 1, "INTERRUPT_DEPTH": 0, "FAULTED": 0, "INTERRUPT_CONTEXT_FAULT": 0, "SCHEDULER_ISR_ENTRIES": 0,
+        }
+        lines = list(PREEMPTION_CONTEXT_MARKERS)
+        lines.extend(f"FINNOS:PREEMPT:{key}={value:#x}" if key.endswith(("FRAME", "RIP", "RSP", "CR3", "LOOP_START", "LOOP_END")) else f"FINNOS:PREEMPT:{key}={value}" for key, value in numeric.items())
+        patterns = [0x1111111111111111 * (index + 1) for index in range(9)] + [0xAAAAAAAAAAAAAAAA, 0xBBBBBBBBBBBBBBBB, 0xCCCCCCCCCCCCCCCC, 0xDDDDDDDDDDDDDDDD, 0xEEEEEEEEEEEEEEEE, 0xFFFFFFFFFFFFFFFF]
+        for phase in ("SOFTWARE_SAVED", "SOFTWARE_POST", "TIMER_SAVED", "TIMER_POST"):
+            lines.extend(f"FINNOS:PREEMPT:{phase}_R{index}=0x{value:x}" for index, value in enumerate(patterns))
+        return "\n".join(lines)
+
+    def test_preemption_context_complete_contract(self):
+        self.assertEqual(validate_preemption_context(33, self.preemption_context_log()), [])
+
+    def test_preemption_context_rejects_marker_spoofs(self):
+        output = self.preemption_context_log()
+        self.assertTrue(validate_preemption_context(0, output))
+        self.assertTrue(validate_preemption_context(33, output + "\n" + PREEMPTION_CONTEXT_MARKERS[-1]))
+        for marker in PREEMPTION_CONTEXT_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertTrue(validate_preemption_context(33, output.replace(marker, marker + "_SPOOF")))
+                self.assertTrue(validate_preemption_context(33, output.replace(marker, " " + marker)))
+
+    def test_preemption_context_rejects_frame_contract_spoofs(self):
+        output = self.preemption_context_log()
+        cases = (
+            ("SOFTWARE_RETURN_FRAME=0x1000", "SOFTWARE_RETURN_FRAME=0x1008"),
+            ("SOFTWARE_LAYOUT=8", "SOFTWARE_LAYOUT=16"),
+            ("SOFTWARE_INTERRUPTED_RSP=0x10b8", "SOFTWARE_INTERRUPTED_RSP=0x10b0"),
+            ("WORKER_SOFTWARE_RSP=0x80b8", "WORKER_SOFTWARE_RSP=0x8100"),
+            ("WORKER_TIMER_SAVED_SS=16", "WORKER_TIMER_SAVED_SS=0"),
+        )
+        for old, new in cases:
+            with self.subTest(field=old):
+                self.assertTrue(validate_preemption_context(33, output.replace(old, new)))
+
     def arm64_gic_log(self):
         numeric = {
             "DISTRIBUTOR_BASE": 0x08000000,

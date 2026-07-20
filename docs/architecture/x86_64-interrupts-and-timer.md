@@ -8,7 +8,11 @@ there are no user-callable gates.
 
 The assembly entries save all general-purpose registers, push a vector and a
 synthetic zero error code, execute `cld`, call the Rust dispatcher with a
-16-byte aligned SysV64 stack, restore the frame, and return with `iretq`.
+16-byte aligned SysV64 stack, restore the raw 176-byte frame, and return with
+`iretq`. The supported ring-0/IST-0 tail has saved RSP at `+160` and saved SS
+at `+168`; bounded 0–15-byte alignment slack may follow the raw frame.
+Validation therefore attributes a 176–191-byte measured footprint and returns
+the raw frame pointer unchanged.
 This milestone assumes ring-0-only execution and therefore does not use
 `swapgs` or save SIMD state.
 
@@ -40,3 +44,14 @@ deliveries. It does not execute `int 0x40`. The only software interrupt in the
 test is `int 0xff`, solely to verify the spurious return path; that path sends
 no EOI. MADT parsing, IOAPIC routing, device IRQs, x2APIC, SMP, IPIs,
 scheduling, preemption, user mode, and wall-clock time remain future work.
+# Preemption-ready return path
+
+The current proven QEMU contract is a raw 176-byte ring-0/IST-0 frame with
+bounded 0–15-byte alignment slack. The 136-byte saved-register/software
+prefix is followed by the 40-byte raw `iretq` tail. The dispatcher receives and
+returns the raw frame pointer, validates one of the measured `raw + 176..191
+== saved RSP` relationships, and `iretq` consumes the return fields. This is an
+integration-tested FinnOS contract;
+future CPL3 and alternate-IST layouts remain unsupported and require separate
+frame types. The 100 Hz timer records a snapshot and sends EOI, but always
+resumes the interrupted task; timer-driven scheduling is the next milestone.

@@ -29,6 +29,11 @@ class BootMode(Enum):
         "kernel-bin,qemu-test-exit,qemu-test-cooperative-tasks",
         True,
     )
+    PREEMPTION_CONTEXT = (
+        "preemption-context",
+        "kernel-bin,qemu-test-preemption-context",
+        True,
+    )
 
     def __init__(self, suffix: str, kernel_features: str, test_exit: bool) -> None:
         self.suffix = suffix

@@ -19,3 +19,4 @@ An ADR records a decision and its tradeoffs. Statuses are Proposed, Accepted, Re
 - [x86-64 BSP local APIC timer](0013-x86_64-local-apic-timer.md)
 - [Cooperative kernel tasks](0014-cooperative-kernel-tasks.md)
 - [Hardened boot protocol version 3](0015-hardened-boot-protocol-v3.md)
+- [Preemption-ready interrupt contexts](0016-preemption-ready-interrupt-contexts.md)

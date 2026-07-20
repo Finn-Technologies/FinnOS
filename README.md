@@ -12,17 +12,20 @@ Verified on 2026-07-16:
 - A 64 MiB FAT32 x86-64 UEFI image boots under QEMU `q35` with OVMF.
 - The loader validates and loads an ELF64 kernel and passes a UEFI memory map, GOP framebuffer, and ACPI RSDP.
 - The kernel installs GDT/TSS/IDT state, classifies memory, allocates physical pages, activates private W^X page tables, maps a guarded 1 MiB heap, starts a 100 Hz xAPIC timer, and runs bounded cooperative ring-0 tasks.
-- The Rust and Python host suites and all eight debug QEMU integration scenarios pass.
+- The Rust and Python host suites and all nine debug x86-64 QEMU integration scenarios pass, including the preemption-context foundation.
 
-R3 ARM64 serial entry is integrated with green local and CI evidence. Locally
-verified on the 2026-07-20 R4.1-R4.4 worktree: AAVMF enters at EL1, installs a
+R3 and the R4.1-R4.4 ARM64 slices are integrated. Locally reverified on
+2026-07-20: AAVMF enters at EL1, installs a
 FinnOS-owned vector table, resumes one controlled `BRK`, and terminates an
-unarmed `BRK` through bounded fatal diagnostics, copies and validates the v2
+unarmed `BRK` through bounded fatal diagnostics, copies and validates the v3
 handoff, classifies the UEFI map, constructs the early physical-page allocator,
 and activates bounded supervisor-only translation tables whose four guarded
 fault cases are exercised on hardware. A pinned single-BSP GICv2 path also
-delivers, acknowledges, and EOIs a real self-SGI. Worktree CI and broader parity
-remain pending.
+delivers, acknowledges, and EOIs a real self-SGI. Broader architecture parity
+remains pending. The x86-64 preemption-context work provides complete ring-0
+interrupt-return frames, stack-derived task attribution, and deferred reschedule
+requests; the timer still returns to the interrupted task and does not perform
+scheduling.
 
 Not implemented:
 
@@ -42,7 +45,7 @@ The colored GOP framebuffer diagnostic is not a graphical environment. The firmw
 |---|---|---|---|
 | x86-64 QEMU `q35` + UEFI/OVMF | Verified | Verified | Development target |
 | x86-64 physical hardware | Unverified | Unverified | Unsupported |
-| ARM64 QEMU `virt` + UEFI | Integrated serial entry plus local R4.1-R4.4 exceptions, memory, owned MMU, and BSP GICv2 SGI | R3 CI; R4.1-R4.4 local | Timer, task, shutdown, discovery, and external IRQ parity pending |
+| ARM64 QEMU `virt` + UEFI | Integrated serial entry, exceptions, memory, owned MMU, and BSP GICv2 SGI | R3-R4.4 integrated and locally reverified | Timer, task, shutdown, discovery, and external IRQ parity pending |
 | ARM64 physical hardware | No implementation | No | Unsupported |
 
 See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWARE_SUPPORT.md).

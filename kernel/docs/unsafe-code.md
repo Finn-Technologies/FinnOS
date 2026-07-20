@@ -21,3 +21,15 @@ Interrupt stubs, `iretq`, port I/O, APIC MSR access, volatile APIC MMIO, and
 IF/HLT instructions are isolated in x86-64 modules. Their comments document
 the ring-0 frame layout, bounded offsets, byte/32-bit widths, and the required
 mapped permissions. No ordinary Rust reference aliases the APIC register page.
+# Interrupt-context unsafe boundary
+
+The assembly entry is the only live-frame boundary: it saves/restores all GPRs,
+validates the canonical 176-byte raw frame plus bounded 0–15-byte slack and
+saved RSP/SS tail, and finishes with
+`iretq`. Snapshot reads reject interrupt context, mask IF only around the fixed
+copy, and restore the prior IF state; phase tokens freeze the first matching
+vector/task capture so unrelated interrupts cannot overwrite evidence. The
+sequence counter detects an incomplete copy but is not, by itself, a
+soundness mechanism for concurrent `UnsafeCell` access. The snapshot never
+owns a raw interrupted-frame pointer. No interrupt path allocates, writes
+CR3, or calls cooperative context switching.

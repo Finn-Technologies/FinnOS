@@ -22,7 +22,7 @@ The kernel now parses and classifies the raw UEFI memory map into architecture-n
 
 The kernel also initializes a fixed-capacity early physical page allocator from the classified usable regions. It performs deterministic first-fit allocation, validated deallocation, and adjacent free-range merging without a heap. See [physical page allocation](physical-page-allocation.md). Both architecture paging layers consume reserved pages from this allocator for fixed-capacity table pools.
 
-The x86-64 path maps a fixed early kernel heap and installs its bounded first-fit global allocator after paging activation. It also runs up to eight generation-tagged cooperative ring-0 tasks on guarded stacks with real SysV64 context switches, exit, reaping, and idle. Exact preemptive scheduler algorithms, syscall numbers, object layouts, and user-memory policies are unresolved. The current implementation contains no preemption, user-space virtual-memory manager, IPC, or automatic heap growth.
+The x86-64 path maps a fixed early kernel heap and installs its bounded first-fit global allocator after paging activation. It also runs up to eight generation-tagged cooperative ring-0 tasks on guarded stacks with real SysV64 context switches, exit, reaping, and idle. Interrupt entry now constructs a complete 176-byte ring-0 return frame, permits the dispatcher to select the validated return-frame pointer, attributes interrupts from published stack ranges, and records deferred reschedule requests behind bounded nesting guards. The timer still returns to the interrupted task: there is no timer-driven switch, blocking scheduler, or user-mode frame support. Exact preemptive scheduler algorithms, syscall numbers, object layouts, and user-memory policies remain unresolved.
 
 Non-goals for this stage are compatibility with another kernel and premature ABI commitments. Open questions include service restart semantics, resource accounting, and the final object model.
 After physical allocation, the x86-64 path builds and activates a FinnOS-owned identity-mapped address space. See [x86-64 virtual memory](x86_64-virtual-memory.md).
@@ -32,4 +32,4 @@ monotonic ticks. See [x86-64 interrupts and timer](x86_64-interrupts-and-timer.m
 
 The current x86-64 Kernel Core includes a single-BSP xAPIC periodic timer and
 monotonic ticks. General external IRQ routing, IOAPIC/MADT support, SMP,
-preemptive scheduling, user mode, and device drivers remain future work.
+preemptive scheduling, user mode, and device drivers remain future work. The current deferred-request boundary is preparation for preemption, not preemption itself.

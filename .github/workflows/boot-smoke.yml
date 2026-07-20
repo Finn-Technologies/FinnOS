@@ -41,6 +41,8 @@ jobs:
         run: ./tools/finn test-timer-interrupts
       - name: Run cooperative task integration test
         run: ./tools/finn test-cooperative-tasks
+      - name: Run preemption-context integration test
+        run: ./tools/finn test-preemption-context
       - name: Preserve boot evidence on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

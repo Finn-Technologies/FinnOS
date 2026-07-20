@@ -32,7 +32,7 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 ### R3 [P0] Establish ARM64 serial first boot
 
-**Description/current:** the R3 worktree produces `BOOTAA64.EFI` and a minimal AArch64 kernel, then reaches an ordered serial-ready marker in local QEMU `virt`/AAVMF. **Desired/reason:** AArch64 UEFI loader and kernel entry reach a deterministic serial marker in QEMU `virt`; early porting prevents x86 interfaces from hardening accidentally. **Dependencies:** R1. **Architecture:** ARM64. **Complexity:** L. **Acceptance:** `BOOTAA64.EFI`, linker/entry/panic/UART, image/QEMU command, bounded smoke test and CI. **Verification:** AAVMF QEMU status/ordered markers on clean CI. **Files:** new ARM boot/kernel arch code, tooling, workflows. **Milestone:** M1. **Labels:** `priority:P0`, `type:feature`, `area:boot`, `arch:arm64`, `complexity:L`.
+**Description/current:** the integrated R3 path produces `BOOTAA64.EFI` and an AArch64 kernel, then reaches an ordered serial-ready marker in QEMU `virt`/AAVMF. **Desired/reason:** AArch64 UEFI loader and kernel entry reach a deterministic serial marker in QEMU `virt`; early porting prevents x86 interfaces from hardening accidentally. **Dependencies:** R1. **Architecture:** ARM64. **Complexity:** L. **Acceptance:** `BOOTAA64.EFI`, linker/entry/panic/UART, image/QEMU command, bounded smoke test and CI. **Verification:** AAVMF QEMU status/ordered markers on clean CI. **Files:** new ARM boot/kernel arch code, tooling, workflows. **Milestone:** M1. **Labels:** `priority:P0`, `type:feature`, `area:boot`, `arch:arm64`, `complexity:L`.
 
 **Implementation status:** integrated at `f74fc49`; the R3 handoff records local QEMU status 0 and green integration CI for the required loader/kernel serial markers. R4 memory, MMU, GIC, timer, context, and shutdown parity remain incomplete.
 
@@ -40,7 +40,7 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 **Description/current:** x86 has MMU/exception/timer/tasks; ARM has locally verified R4.1 exceptions, R4.2 handoff/early allocation, R4.3 owned MMU, and R4.4 pinned BSP GICv2 self-SGI delivery, but no generic timer or tasks; x86 lacks shutdown. **Desired/reason:** both ports meet Level 1 with shared contracts. **Dependencies:** R3. R5 device discovery/routing follows in M2 and is not required for the emulator-only Level 1 baseline. **Architecture:** both. **Complexity:** XL. **Acceptance:** ARM memory map/MMU/guards/GIC/timer/context tests match architecture-neutral semantics; both ports provide emulator shutdown/reboot and fatal diagnostics. **Verification:** parity CI and fault tests. **Files:** `kernel/src/arch/`, QEMU validators. **Milestone:** M1. **Labels:** `priority:P0`, `type:feature`, `area:kernel`, `arch:all`, `complexity:XL`.
 
-**Implementation status:** R4.1 is locally verified on 2026-07-18: AAVMF/QEMU enters at EL1, installs a FinnOS-owned vector table before handoff pointer checking, saves an architecture-specific raw frame, resumes one controlled `BRK`, and emits bounded fatal diagnostics. R4.2 is also locally verified: both kernels copy a strictly validated page-owned v3 handoff; ARM classifies the retained UEFI map, validates protected ranges, constructs the shared allocator, allocates outside protected storage, frees, and restores invariants with status 0. R4.3 is locally verified: ARM transactionally reserves a 64-page table pool, installs a four-level 4 KiB low-48-bit TTBR0 identity regime with supervisor W^X, null and stack guards, Device/Normal-NC attributes, TTBR1 disabled, and exact register readback; an isolated QEMU mode resumes only four precisely armed null-read, guard-read, text-write, and data-execute aborts. R4.4 is locally verified on 2026-07-20: the target pins single-BSP `virt,gic-version=2,secure=off`; owned tables map both controller windows as Device RW/NX; initialization is bounded/readback-checked; and an isolated real SGI 1 reaches current-EL IRQ source 5, preserves the raw frame, acknowledges through IAR, EOIs the exact token once, restores interrupt depth, and exits status 0. CI is pending integration. This is not full parity and does not implement the generic timer, contexts/tasks, external routing/discovery, or shutdown.
+**Implementation status:** R4.1-R4.4 are integrated and locally reverified on 2026-07-20. AAVMF/QEMU enters at EL1, owns synchronous vectors and bounded fatal diagnostics, copies a strictly validated page-owned v3 handoff, classifies memory, constructs the shared allocator, activates a four-level supervisor W^X TTBR0 regime with four precise fault probes, and drives one real SGI 1 through the pinned BSP GICv2 acknowledge/EOI lifecycle. This is not full parity and does not implement the generic timer, contexts/tasks, external routing/discovery, or shutdown.
 
 ### R5 [P1] Add platform discovery and interrupt routing
 
@@ -49,6 +49,8 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 ### R6 [P1] Implement preemptible blocking threads
 
 **Description/current:** cooperative tasks cannot sleep/block and timer never schedules. **Desired/reason:** normalized trap contexts, deferred rescheduling, wait queues, deadlines, and safe allocator/lock rules. **Dependencies:** current #16/#17 decision, timer API. **Architecture:** context-entry glue per port, shared policy. **Complexity:** XL. **Acceptance:** forced preemption under allocation/timer load, sleep/wakeup/cancel tests, no ISR allocation or lock inversion, starvation bounds documented. **Verification:** deterministic QEMU stress on both ports. **Files:** task/scheduler/context/timer/synchronization. **Milestone:** M2. **Labels:** `priority:P1`, `type:feature`, `area:kernel`, `arch:all`, `complexity:XL`.
+
+**Implementation status:** the x86-64 foundation now validates complete ring-0 interrupt-return frames, dispatcher-selected return pointers, stack-derived task attribution, bounded nested preemption-disable guards, and deferred timer reschedule requests. It deliberately performs no switch in the timer ISR and does not yet implement blocking, wait queues, user-mode frames, SMP, or ARM64 context parity; R6 therefore remains in progress.
 
 ### R7 [P1] Create user address spaces and syscall ABI
 
@@ -125,7 +127,7 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 ## Next 10 engineering tasks
 
 1. Add loader/protocol property and fuzz tests, building on the fixed ELF entry regression.
-2. Resolve and merge or revise the preemption-context work in issue #16/PR #17 without claiming preemption.
+2. Extend the integrated preemption-context foundation into actual preemptible blocking threads without scheduling in unsafe interrupt or protected contexts.
 3. Integrate R1 and verify its development/release CI matrix and failure artifacts.
 4. Pin the remaining runner/toolchain environment and add a reproducible artifact comparison.
 5. Define the architecture-neutral trap, timer, and context contracts needed by ARM64.

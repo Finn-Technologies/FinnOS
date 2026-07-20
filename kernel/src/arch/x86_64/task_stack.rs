@@ -64,7 +64,7 @@ pub enum TaskStackLayoutError {
 }
 
 /// Fixed, heap-free ownership metadata for one mapped task stack.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskStackMapping {
     slot: u8,
     virtual_start: u64,
@@ -389,6 +389,85 @@ pub fn reclaim_task_stack(
     Ok(())
 }
 
+/// Restores a stack mapping after a transactional reclaim must be undone.
+///
+/// # Errors
+///
+/// Returns an error if any original leaf cannot be remapped or if the address
+/// space and allocator do not return to their pre-reclaim baselines.
+pub fn restore_task_stack(
+    original: &TaskStackMapping,
+    address_space: &mut ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+    allocator_baseline: &EarlyPhysicalPageAllocator,
+    mapped_baseline: u64,
+) -> Result<(), TaskStackError> {
+    let result = (|| {
+        if original.owned_count != TASK_STACK_PAGE_COUNT
+            || original.mapped_count != TASK_STACK_PAGE_COUNT
+        {
+            return Err(TaskStackError::CorruptMapping);
+        }
+        let mut mapped = 0usize;
+        for index in 0..TASK_STACK_PAGE_COUNT {
+            let virtual_page = VirtualPage::new(
+                original
+                    .virtual_start
+                    .checked_add((index as u64) * PAGE_SIZE)
+                    .ok_or(TaskStackLayoutError::AddressOverflow)?,
+            )?;
+            let physical_frame =
+                PhysicalFrame::new(original.physical_pages[index], address_space.width())?;
+            let map_error = match address_space.map_page(
+                virtual_page,
+                physical_frame,
+                MappingPermissions::kernel_rw_nx(),
+            ) {
+                Ok(MapOutcome::Created) => {
+                    mapped += 1;
+                    None
+                }
+                Ok(MapOutcome::AlreadyPresent) => Some(PagingError::AlreadyMapped),
+                Err(error) => Some(error),
+            };
+            if let Some(map_error) = map_error {
+                let mut rollback_ok = true;
+                for rollback_index in (0..mapped).rev() {
+                    let page = VirtualPage::new(
+                        original.virtual_start + (rollback_index as u64) * PAGE_SIZE,
+                    )?;
+                    rollback_ok &= address_space.unmap_page(page).is_ok();
+                }
+                let reclaimed_baseline = mapped_baseline
+                    .checked_sub(TASK_STACK_PAGE_COUNT as u64)
+                    .ok_or(TaskStackError::RollbackFailed)?;
+                if !rollback_ok || address_space.mapped_pages() != reclaimed_baseline {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+                return Err(TaskStackError::Paging(map_error));
+            }
+        }
+        if address_space.mapped_pages() != mapped_baseline {
+            return Err(TaskStackError::RollbackFailed);
+        }
+        if let Err(error) = validate_task_stack(original, address_space) {
+            for index in (0..TASK_STACK_PAGE_COUNT).rev() {
+                let page = VirtualPage::new(original.virtual_start + (index as u64) * PAGE_SIZE)?;
+                if address_space.unmap_page(page).is_err() {
+                    return Err(TaskStackError::RollbackFailed);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    })();
+    // Preserve allocator ownership metadata even when remapping fails. The
+    // caller retains the original mapping metadata and poisons the runtime if
+    // the page-table restoration itself was incomplete.
+    allocator.copy_state_from(allocator_baseline);
+    result
+}
+
 fn prevalidate_leaf_objects(
     mapping: &TaskStackMapping,
     address_space: &ActiveAddressSpace,
@@ -570,6 +649,14 @@ impl TaskStackLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arch::x86_64::paging::{self, MAX_PAGE_TABLE_PAGES, MappingPlan};
+    use crate::memory::{MemoryRegion, MemoryRegionKind, MemoryRegionSource, RegionTable};
+
+    const BACKING_PAGES: usize = MAX_PAGE_TABLE_PAGES + TASK_STACK_PAGE_COUNT + 8;
+
+    #[derive(Clone)]
+    #[repr(align(4096))]
+    struct AlignedPage([u8; 4096]);
     #[test]
     fn slots_are_guarded_aligned_and_disjoint() {
         let first = TaskStackLayout::for_slot(1).unwrap();
@@ -596,5 +683,73 @@ mod tests {
             TaskStackLayout::for_slot(crate::task::MAX_TASKS),
             Err(TaskStackLayoutError::InvalidSlot)
         );
+    }
+
+    #[test]
+    fn restore_returns_to_pre_reclaim_mapped_baseline() {
+        let backing = std::vec![AlignedPage([0; 4096]); BACKING_PAGES].into_boxed_slice();
+        let backing_start = backing[0].0.as_ptr() as u64;
+        let mut regions = RegionTable::new();
+        regions
+            .push(MemoryRegion {
+                start: backing_start,
+                byte_len: u64::try_from(backing.len() * 4096).unwrap(),
+                kind: MemoryRegionKind::Usable,
+                source: MemoryRegionSource::FinnOS,
+                attributes: 0,
+            })
+            .unwrap();
+
+        let mut allocator = EarlyPhysicalPageAllocator::from_memory_regions(&regions).unwrap();
+        let mut address_space = paging::build(&MappingPlan::new(), &mut allocator, 52).unwrap();
+        let layout = TaskStackLayout::for_slot(2).unwrap();
+        let mut original = TaskStackMapping::empty(2).unwrap();
+
+        for index in 0..TASK_STACK_PAGE_COUNT {
+            let physical = allocator.allocate_page().unwrap().start_address();
+            let virtual_address = layout.stack_start + u64::try_from(index).unwrap() * PAGE_SIZE;
+            original.physical_pages[index] = physical;
+            original.owned_count += 1;
+            assert_eq!(
+                address_space
+                    .map_page(
+                        VirtualPage::new(virtual_address).unwrap(),
+                        PhysicalFrame::new(physical, 52).unwrap(),
+                        MappingPermissions::kernel_rw_nx(),
+                    )
+                    .unwrap(),
+                MapOutcome::Created
+            );
+            original.mapped_count += 1;
+        }
+        validate_task_stack(&original, &address_space).unwrap();
+
+        let allocator_before = allocator.clone();
+        let free_before = allocator.free_pages();
+        let mapped_before = address_space.mapped_pages();
+        let mut reclaimed = original.clone();
+        reclaim_task_stack(&mut reclaimed, &mut address_space, &mut allocator).unwrap();
+        assert!(reclaimed.is_empty());
+        assert_eq!(
+            address_space.mapped_pages() + u64::try_from(TASK_STACK_PAGE_COUNT).unwrap(),
+            mapped_before
+        );
+        assert_eq!(
+            allocator.free_pages(),
+            free_before + u64::try_from(TASK_STACK_PAGE_COUNT).unwrap()
+        );
+
+        restore_task_stack(
+            &original,
+            &mut address_space,
+            &mut allocator,
+            &allocator_before,
+            mapped_before,
+        )
+        .unwrap();
+        assert_eq!(address_space.mapped_pages(), mapped_before);
+        assert_eq!(allocator.free_pages(), free_before);
+        allocator.check_invariants().unwrap();
+        validate_task_stack(&original, &address_space).unwrap();
     }
 }

@@ -49,3 +49,12 @@ synthetic clock is used.
 # Cooperative task evidence
 
 `./tools/finn test-cooperative-tasks` uses isolated target and image directories. Status 33 is accepted only after exact worker ordering, register preservation, reclamation, generation reuse, a real idle probe, and timer continuity validate.
+# Preemption-context test
+
+Run `./tools/finn test-preemption-context` to exercise the real 0x41 software
+interrupt, real APIC timer delivery, bootstrap/worker/idle stack attribution,
+full-GPR preservation, the 176-byte raw frame plus bounded 0–15-byte slack,
+phase-frozen
+snapshots, and deferred request behavior. The validator requires status 33,
+ordered markers, exact pre/saved/post RSP equality, complete-frame evidence,
+unchanged CR3, and no task switch from the timer handler.

@@ -1,6 +1,6 @@
 # FinnOS AArch64 synchronous exceptions
 
-> Implementation: locally verified R4.1 QEMU `virt`/AAVMF slice; CI pending integration
+> Implementation: integrated and locally reverified R4.1 QEMU `virt`/AAVMF slice
 
 The ARM64 kernel measures `CurrentEL` and currently accepts only EL1. Assembly
 masks DAIF before the first Rust/MMIO work, then the kernel installs a resident,

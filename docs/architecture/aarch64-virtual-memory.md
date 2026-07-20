@@ -1,8 +1,8 @@
 # FinnOS AArch64 virtual memory
 
-> Implementation: locally verified R4.3 QEMU `virt`/AAVMF worktree slice; integration CI and physical hardware are unverified
+> Implementation: integrated and locally reverified R4.3 QEMU `virt`/AAVMF slice; physical hardware is unverified
 
-The ARM64 kernel replaces the inherited UEFI translation regime after validating the v2 handoff, classifying physical memory, and constructing the early page allocator. The initial FinnOS-owned address space is a low, identity-mapped, EL1-only regime. It uses four levels of 4 KiB translation tables through `TTBR0_EL1`, supports physical-address widths reported by `ID_AA64MMFR0_EL1` through 48 bits, disables `TTBR1_EL1` walks, and uses page descriptors rather than block mappings.
+The ARM64 kernel replaces the inherited UEFI translation regime after validating the v3 handoff, classifying physical memory, and constructing the early page allocator. The initial FinnOS-owned address space is a low, identity-mapped, EL1-only regime. It uses four levels of 4 KiB translation tables through `TTBR0_EL1`, supports physical-address widths reported by `ID_AA64MMFR0_EL1` through 48 bits, disables `TTBR1_EL1` walks, and uses page descriptors rather than block mappings.
 
 The fixed 64-page translation-table pool is reserved transactionally from classified `Usable` memory. Construction does not publish allocator changes until all address, CPU-capability, alias, descriptor, capacity, inherited-identity, and mapping checks succeed. Once activated, all pool pages remain reserved for the lifetime of this immutable early address space; this slice has no dynamic mapping, reclamation, ASID, or TLB-shootdown API.
 

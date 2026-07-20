@@ -2,7 +2,7 @@
 
 Audit snapshot: 2026-07-16 at `3539a35` (`main`). Percentages estimate completion toward a minimally functional implementation of each subsystem, not lines of code. Confidence is High only when the relevant path was built and executed.
 
-Post-audit evidence: R1 is integrated at `ab9a8d1` and R3 is integrated at `f74fc49`; the R3 handoff records green local and integration CI evidence. In the current R4.1-R4.4 worktree, QEMU `virt`/AAVMF owns EL1 synchronous vectors, strict handoff/physical memory, bounded four-level TTBR0 tables, and a pinned BSP GICv2. Normal, memory, exception, four-fault paging, and real self-SGI modes exit with their expected local status. Worktree CI is unverified until integration.
+Post-audit evidence: R1 through the ARM64 R4.1-R4.4 slices are integrated on `main` at `93ddf9d`. QEMU `virt`/AAVMF owns EL1 synchronous vectors, a strict v3 handoff and physical-memory path, bounded four-level TTBR0 tables, and a pinned BSP GICv2. During PR #17 conflict resolution, all six ARM64 modes and the full nine-mode x86 matrix passed locally. PR #17 additionally validates a preemption-ready x86 interrupt boundary but does not implement timer-driven scheduling.
 
 ## Overall status
 
@@ -12,15 +12,15 @@ FinnOS satisfies **Level 0: Buildable** for the integrated x86-64 and ARM64 deve
 
 | Subsystem | Completion | Confidence | Verified | Current maturity | Key evidence | Main blocker | Next task |
 |---|---:|---|---|---|---|---|---|
-| Build/tooling | 75% | High | macOS local; prior CI Linux | Locally verified R1 change | validated target/profile tooling, both x86 profiles | Pending CI/integration; not hermetic | Verify R1 CI, then reproducibility comparison |
-| x86 UEFI loader | 80% | High | QEMU/OVMF | Working prototype | `boot/uefi/`; eight boots | Trusted pointers/mappings; no signatures | Add malformed-input fuzzing |
-| Boot protocol | 75% | High | Loader/kernel v2 | Integrated ABI | `boot/protocol/` tests and boot | Compatibility/fuzz suite | Specify compatibility and fuzz inputs |
+| Build/tooling | 75% | High | macOS local; CI Linux | Integrated target/profile tooling | validated configuration, both x86 profiles, ARM target | Not hermetic | Add reproducible artifact comparison |
+| x86 UEFI loader | 80% | High | QEMU/OVMF | Working prototype | `boot/uefi/`; nine debug integration modes | No signatures | Add malformed-input fuzzing |
+| Boot protocol | 80% | High | Both loader/kernel paths | Integrated v3 ABI | `boot/protocol/` tests and both-architecture boots | Compatibility/fuzz suite | Specify compatibility and fuzz inputs |
 | Exceptions | 70% | High | x86 vectors/test faults; local ARM `BRK`, aborts, and source-5 IRQ | x86 foundation plus local ARM R4.1/R4.3/R4.4 slices | architecture-specific `exceptions.rs`; QEMU tests | No user exceptions/recovery policy; FIQ/SError remain fatal | Add ARM timer IRQ policy |
 | Physical memory | 65% | High | QEMU tests | Bounded early allocator | `memory/`; allocator tests | Fixed capacity; no firmware reclamation | Define scalable PMM boundary |
 | Virtual memory | 55% | High | x86 and local ARM QEMU fault tests | Kernel-only W^X identity maps | architecture paging modules; CR3/TTBR/fault evidence | No user address spaces or VM objects; ARM space is immutable | Implement address-space object after parity |
 | Kernel heap | 55% | High | QEMU stress test | Fixed early heap | `memory/heap.rs`; heap test | Fixed 1 MiB; single-core lock assumptions | Separate early and runtime allocators |
 | Interrupts/timer | 50% | High | BSP 100 Hz xAPIC; local ARM GICv2 self-SGI | x86 timer foundation plus ARM controller slice | APIC/PIT logs; GIC IAR/EOIR evidence | No ARM timer, discovery, device IRQ routing, MSI, SMP | Add ARM architectural timer |
-| Scheduling | 40% | High | Cooperative BSP tasks | Ring-0 prototype | task/context/scheduler tests | No preemption, blocking, userspace, SMP | Land preemption-ready context design |
+| Scheduling | 45% | High | Cooperative BSP tasks plus x86 preemption-context QEMU | Preemption-ready ring-0 prototype | complete frame/attribution/deferred-request evidence | No actual preemption, blocking, userspace, SMP | Implement safe thread preemption and wait queues |
 | ACPI/platform | 10% | Medium | RSDP passed only | Handoff only | `BootInfo.rsdp_address` | No table validation or parsing | Add ACPI parser and MADT tests |
 | Framebuffer/graphics | 5% | High | Color fill only | Diagnostic | `framebuffer.rs`, boot log | No renderer, text, input, compositor | Define display buffer protocol after IPC |
 | Drivers/device model | 3% | Medium | Serial/APIC/PIT only | Platform primitives | `arch/x86_64/` | No buses, IRQ routing, DMA, isolation | PCI + VirtIO design and resource broker |
@@ -30,18 +30,18 @@ FinnOS satisfies **Level 0: Buildable** for the integrated x86-64 and ARM64 deve
 | Networking | 0% | High | Absent | Not designed | QEMU uses `-net none` | Entire stack and API absent | Defer until process/driver model works |
 | Peony/UI/apps | 0% | High | Absent | Design only | `docs/architecture/peony.md` | Userspace, IPC, input, display absent | Implement only after core service runtime |
 | Security boundary | 5% | Medium | Kernel W^X only | Accidental-fault hardening | NX, WP, guards, null unmapped | Everything executes in ring 0 | User isolation + capability enforcement |
-| ARM64 | 25% | High | Integrated serial entry; local R4.1-R4.4 exception, memory, paging, and GIC tests | R3 integrated; R4.1-R4.4 locally verified, CI pending | VBAR; allocator; owned MMU/faults; GICv2 SGI IAR/EOIR; status 0 | No timer, tasks, shutdown, discovery, or hardware evidence | Add architectural generic timer |
+| ARM64 | 25% | High | Integrated R3-R4.4; local six-mode regression | Exception, memory, paging, and GIC foundation | VBAR; allocator; owned MMU/faults; GICv2 SGI IAR/EOIR; status 0 | No timer, tasks, shutdown, discovery, or hardware evidence | Add architectural generic timer |
 | Release/update | 0% | High | Absent | Policy outline | `RELEASES.md` | No product artifact/version/signing | Add provenance before preview binaries |
 
 ## Verified boot matrix
 
 | Checkpoint | x86-64 debug | x86-64 release | ARM64 debug | ARM64 release |
 |---|---|---|---|---|
-| Compiles | Yes | Yes | Yes (local worktree) | Unverified |
-| Boot image generated | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
-| UEFI loader starts | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
-| Kernel entry reached | Yes | Yes (local branch) | Yes (local worktree) | Unverified |
-| Memory management initialized | Yes | Yes (local branch) | Early physical allocator and owned MMU (local worktree) | No |
+| Compiles | Yes | Yes | Yes | Unverified |
+| Boot image generated | Yes | Yes | Yes | Unverified |
+| UEFI loader starts | Yes | Yes | Yes | Unverified |
+| Kernel entry reached | Yes | Yes | Yes | Unverified |
+| Memory management initialized | Yes | Yes | Early physical allocator and owned MMU | No |
 | Interrupts/timer initialized | Yes | Yes (local branch) | No | No |
 | Kernel tasks run | Yes | Yes (local branch) | No | No |
 | Userspace starts | No | No | No | No |
