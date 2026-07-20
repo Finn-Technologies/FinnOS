@@ -1,6 +1,109 @@
 """QEMU command and smoke-log interpretation."""
 from __future__ import annotations
 
+from pathlib import Path
+import re
+
+ARM64_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+)
+
+ARM64_EXCEPTION_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:ARM64_CURRENT_EL=1",
+    "FINNOS:KERNEL:ARM64_EXCEPTION_VECTORS_READY",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+    "FINNOS:TEST:ARM64_EXCEPTIONS:BEGIN",
+    "FINNOS:TEST:ARM64_EXCEPTIONS:BRK_BEGIN",
+    "FINNOS:EXCEPTION:ARM64_BREAKPOINT",
+    "FINNOS:TEST:ARM64_EXCEPTIONS:BRK_PASS",
+    "FINNOS:TEST:ARM64_EXCEPTIONS:PASS",
+)
+
+ARM64_MEMORY_MAP_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:ARM64_CURRENT_EL=1",
+    "FINNOS:KERNEL:ARM64_EXCEPTION_VECTORS_READY",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:BEGIN",
+    "FINNOS:KERNEL:BOOTINFO_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED",
+    "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED",
+    "FINNOS:KERNEL:MEMORY_MAP_TABLE_VALID",
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:ALLOC_OK",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:PROTECTED_OK",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:FREE_OK",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:INVARIANTS_OK",
+    "FINNOS:TEST:ARM64_MEMORY_MAP:PASS",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+)
+
+ARM64_PAGE_TABLE_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:ARM64_CURRENT_EL=1",
+    "FINNOS:KERNEL:ARM64_EXCEPTION_VECTORS_READY",
+    "FINNOS:KERNEL:BOOTINFO_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED",
+    "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED",
+    "FINNOS:KERNEL:MEMORY_MAP_TABLE_VALID",
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:BEGIN",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVE",
+    "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:PERMISSIONS_OK",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:NULL_UNMAPPED",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:GUARDS_UNMAPPED",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:UART_DEVICE_OK",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:BEGIN",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:NULL_READ_BEGIN",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:NULL_READ_PASS",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:LOW_GUARD_READ_BEGIN",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:LOW_GUARD_READ_PASS",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:TEXT_WRITE_BEGIN",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:TEXT_WRITE_PASS",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:DATA_EXECUTE_BEGIN",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:DATA_EXECUTE_PASS",
+    "FINNOS:TEST:ARM64_PAGE_FAULTS:PASS",
+    "FINNOS:TEST:ARM64_PAGE_TABLES:PASS",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+)
+
+ARM64_GIC_MARKERS = ARM64_MARKERS + (
+    "FINNOS:TEST:ARM64_GIC:BEGIN",
+    "FINNOS:TEST:ARM64_GIC:SPURIOUS_BEFORE_OK",
+    "FINNOS:TEST:ARM64_GIC:SGI_BEGIN",
+    "FINNOS:TEST:ARM64_GIC:SGI_DELIVERED",
+    "FINNOS:TEST:ARM64_GIC:EOI_OK",
+    "FINNOS:TEST:ARM64_GIC:FRAME_OK",
+    "FINNOS:TEST:ARM64_GIC:SPURIOUS_AFTER_OK",
+    "FINNOS:TEST:ARM64_GIC:PASS",
+)
+
 MARKERS = (
     "FINNOS:BOOTLOADER:START", "FINNOS:BOOTLOADER:KERNEL_FOUND", "FINNOS:BOOTLOADER:KERNEL_VALID",
     "FINNOS:BOOTLOADER:KERNEL_LOADED", "FINNOS:BOOTLOADER:FRAMEBUFFER_READY", "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
@@ -71,6 +174,358 @@ def validate_smoke(status: int, output: str) -> list[str]:
     if positions != sorted(position for position in positions if position >= 0): errors.append("boot markers are out of order")
     if "FINNOS:BOOTLOADER:ERROR:" in output: errors.append("bootloader error marker found")
     if "FINNOS:KERNEL:PANIC" in output: errors.append("kernel panic marker found")
+    return errors
+
+def validate_arm64_smoke(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in ARM64_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append(
+            "missing ARM64 marker(s): "
+            + ", ".join(
+                marker for marker, position in zip(ARM64_MARKERS, positions) if position < 0
+            )
+        )
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 boot markers are out of order")
+    for marker in ARM64_MARKERS:
+        if output.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 marker: {marker}")
+    for marker in (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:",
+        "FINNOS:TEST:ARM64_EXCEPTION_FATAL:",
+        "FINNOS:EXCEPTION:ARM64_BREAKPOINT",
+        "FINNOS:TEST:ARM64_PAGE_TABLES:",
+        "FINNOS:TEST:ARM64_PAGE_FAULTS:",
+        "FINNOS:EXCEPTION:ARM64_PAGE_FAULT",
+        "FINNOS:TEST:ARM64_GIC:",
+    ):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_memory_map(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    lines = tuple(output.splitlines())
+    positions = [lines.index(marker) if marker in lines else -1 for marker in ARM64_MEMORY_MAP_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing ARM64 memory-map marker(s)")
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 memory-map markers are out of order")
+    for marker in ARM64_MEMORY_MAP_MARKERS:
+        if lines.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 memory-map marker: {marker}")
+
+    names = (
+        "DESCRIPTORS", "REGIONS", "USABLE_BYTES", "RESERVED_BYTES",
+        "KERNEL_BYTES", "BOOT_INFO_BYTES", "MEMORY_MAP_STORAGE_BYTES",
+        "FRAMEBUFFER_BYTES", "TOTAL_PAGES", "FREE_PAGES",
+        "ALLOCATED_PAGES", "MANAGED_EXTENTS", "FREE_EXTENTS",
+        "TEST_ALLOCATED_PAGE",
+    )
+    values: dict[str, int] = {}
+    for name in names:
+        matches = re.findall(rf"^FINNOS:MEMORY:{name}=0x([0-9a-f]{{16}})$", output, re.MULTILINE)
+        if len(matches) != 1:
+            errors.append(f"expected exactly one fixed-width numeric field: {name}")
+        else:
+            values[name] = int(matches[0], 16)
+    for name in (
+        "DESCRIPTORS", "REGIONS", "USABLE_BYTES", "KERNEL_BYTES",
+        "BOOT_INFO_BYTES", "MEMORY_MAP_STORAGE_BYTES", "TOTAL_PAGES",
+        "FREE_PAGES", "MANAGED_EXTENTS", "FREE_EXTENTS",
+        "TEST_ALLOCATED_PAGE",
+    ):
+        if values.get(name, 0) <= 0:
+            errors.append(f"expected positive ARM64 memory value: {name}")
+    if values.get("ALLOCATED_PAGES") != 0:
+        errors.append("initial ARM64 allocator must have zero allocated pages")
+    if values.get("TOTAL_PAGES") != values.get("FREE_PAGES"):
+        errors.append("initial ARM64 total/free page counts differ")
+    if values.get("MANAGED_EXTENTS") != values.get("FREE_EXTENTS"):
+        errors.append("initial ARM64 managed/free extent counts differ")
+    for marker in (
+        "FINNOS:BOOTLOADER:ERROR:", "FINNOS:KERNEL:PANIC",
+        "FINNOS:KERNEL:MEMORY_MAP_ERROR", "FINNOS:KERNEL:PAGE_ALLOCATOR_ERROR",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:", "FINNOS:TEST:ARM64_EXCEPTION_FATAL:",
+        "FINNOS:TEST:ARM64_GIC:",
+        "FINNOS:EXCEPTION:ARM64_",
+    ):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_page_tables(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    lines = tuple(output.splitlines())
+    positions = [lines.index(marker) if marker in lines else -1 for marker in ARM64_PAGE_TABLE_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing ARM64 page-table marker(s)")
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 page-table markers are out of order")
+    for marker in ARM64_PAGE_TABLE_MARKERS:
+        if lines.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 page-table marker: {marker}")
+    fault_cases = (
+        "NULL_READ",
+        "LOW_GUARD_READ",
+        "TEXT_WRITE",
+        "DATA_EXECUTE",
+    )
+    fault_marker = "FINNOS:EXCEPTION:ARM64_PAGE_FAULT"
+    if lines.count(fault_marker) != len(fault_cases):
+        errors.append("expected exactly four armed ARM64 page faults")
+    for name in fault_cases:
+        begin_marker = f"FINNOS:TEST:ARM64_PAGE_FAULTS:{name}_BEGIN"
+        pass_marker = f"FINNOS:TEST:ARM64_PAGE_FAULTS:{name}_PASS"
+        begin = lines.index(begin_marker) if begin_marker in lines else -1
+        passed = lines.index(pass_marker) if pass_marker in lines else -1
+        observed = next(
+            (index for index in range(begin + 1, len(lines)) if lines[index] == fault_marker),
+            -1,
+        )
+        if begin < 0 or passed < 0 or not begin < observed < passed:
+            errors.append(f"ARM64 {name} fault evidence is out of order")
+
+    names = (
+        "ROOT", "TTBR0", "TTBR1", "TCR", "MAIR", "SCTLR",
+        "TABLE_PAGES_RESERVED", "TABLE_PAGES_USED", "MAPPED_PAGES",
+    )
+    values: dict[str, int] = {}
+    for name in names:
+        matches = re.findall(
+            rf"^FINNOS:PAGING:{name}=0x([0-9a-f]{{16}})$",
+            output,
+            re.MULTILINE,
+        )
+        if len(matches) != 1:
+            errors.append(f"expected exactly one ARM64 paging field: {name}")
+        else:
+            values[name] = int(matches[0], 16)
+    for name in (name for name in names if name != "TTBR1"):
+        if values.get(name, 0) <= 0:
+            errors.append(f"expected positive ARM64 paging value: {name}")
+    if values.get("ROOT") != values.get("TTBR0"):
+        errors.append("ARM64 paging root does not match TTBR0")
+    if values.get("TTBR1") != 0:
+        errors.append("ARM64 TTBR1 is not disabled")
+    if values.get("MAIR") != 0x0044_00FF:
+        errors.append("ARM64 MAIR does not match the owned attribute regime")
+    tcr_required_mask = (
+        0x3F | (0b11 << 8) | (0b11 << 10) | (0b11 << 12)
+        | (0x3F << 16) | (1 << 23) | (0b11 << 30)
+    )
+    tcr_required_value = (
+        16 | (0b01 << 8) | (0b01 << 10) | (0b11 << 12)
+        | (16 << 16) | (1 << 23) | (0b10 << 30)
+    )
+    if values.get("TCR", 0) & tcr_required_mask != tcr_required_value:
+        errors.append("ARM64 TCR does not match the required 4 KiB TTBR0 regime")
+    sctlr_required_bits = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 12) | (1 << 19)
+    if values.get("SCTLR", 0) & sctlr_required_bits != sctlr_required_bits:
+        errors.append("ARM64 SCTLR is missing required MMU, cache, alignment, or WXN bits")
+    if values.get("TABLE_PAGES_USED", 0) > values.get("TABLE_PAGES_RESERVED", 0):
+        errors.append("ARM64 used table pages exceed the reserved table pool")
+    if values.get("TTBR0", 0) & 0xfff:
+        errors.append("ARM64 TTBR0 is not page aligned")
+    forbidden_prefixes = (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:KERNEL:PAGING_ERROR",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:",
+        "FINNOS:TEST:ARM64_EXCEPTION_FATAL:",
+        "FINNOS:TEST:ARM64_MEMORY_MAP:",
+        "FINNOS:TEST:ARM64_GIC:",
+    )
+    for line in lines:
+        if any(line.startswith(prefix) for prefix in forbidden_prefixes):
+            errors.append(f"forbidden marker found: {line}")
+        if line.startswith("FINNOS:EXCEPTION:ARM64_") and line != fault_marker:
+            errors.append(f"forbidden marker found: {line}")
+    return errors
+
+def validate_arm64_gic(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    lines = tuple(output.splitlines())
+    if status != 0:
+        errors.append(f"expected ARM64 GIC semihosting status 0, got {status}")
+
+    positions = [lines.index(marker) if marker in lines else -1 for marker in ARM64_GIC_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing ARM64 GIC lifecycle marker(s)")
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 GIC lifecycle markers are out of order")
+    for marker in ARM64_GIC_MARKERS:
+        if lines.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 GIC marker: {marker}")
+
+    names = (
+        "DISTRIBUTOR_BASE",
+        "CPU_INTERFACE_BASE",
+        "TYPER",
+        "IIDR",
+        "IAR_RAW",
+        "INTID",
+        "DELIVERY_DELTA",
+        "EOI_DELTA",
+        "SPURIOUS_BEFORE",
+        "SPURIOUS_AFTER",
+        "INTERRUPT_DEPTH",
+        "FRAME_SENTINEL",
+        "DAIF_BEFORE",
+        "IRQ_SPSR",
+        "DAIF_AFTER",
+    )
+    values: dict[str, int] = {}
+    for name in names:
+        matches = re.findall(
+            rf"^FINNOS:GIC:{name}=0x([0-9a-f]{{16}})$",
+            output,
+            re.MULTILINE,
+        )
+        if len(matches) != 1:
+            errors.append(f"expected exactly one fixed-width ARM64 GIC field: {name}")
+        else:
+            values[name] = int(matches[0], 16)
+
+    if values.get("DISTRIBUTOR_BASE") != 0x0800_0000:
+        errors.append("ARM64 GIC distributor base does not match the pinned QEMU profile")
+    if values.get("CPU_INTERFACE_BASE") != 0x0801_0000:
+        errors.append("ARM64 GIC CPU-interface base does not match the pinned QEMU profile")
+    for name in ("TYPER", "IIDR"):
+        if values.get(name, 0) == 0:
+            errors.append(f"expected nonzero ARM64 GIC identity field: {name}")
+    if values.get("IAR_RAW", 0) & 0x3ff != 1 or values.get("INTID") != 1:
+        errors.append("ARM64 GIC acknowledge token does not identify the armed SGI")
+    if values.get("DELIVERY_DELTA") != 1:
+        errors.append("ARM64 GIC delivery delta is not exactly one")
+    if values.get("EOI_DELTA") != values.get("DELIVERY_DELTA"):
+        errors.append("ARM64 GIC EOI count does not match delivery count")
+    for name in ("SPURIOUS_BEFORE", "SPURIOUS_AFTER"):
+        if values.get(name) != 1023:
+            errors.append(f"ARM64 GIC {name.lower()} is not the no-pending special ID")
+    if values.get("INTERRUPT_DEPTH") != 0:
+        errors.append("ARM64 interrupt depth was not restored after ERET")
+    if values.get("FRAME_SENTINEL") != 1:
+        errors.append("ARM64 IRQ frame sentinel was not preserved")
+    if values.get("DAIF_BEFORE", 0) & 0x3c0 != 0x3c0 or values.get("DAIF_AFTER", 0) & 0x3c0 != 0x3c0:
+        errors.append("ARM64 IRQ mask was not set around the isolated delivery window")
+    if values.get("IRQ_SPSR", 0) & 0x3c0 != 0x340:
+        errors.append("ARM64 IRQ origin did not preserve D/A/F masking with I unmasked")
+
+    forbidden_prefixes = (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:KERNEL:GIC_ERROR",
+        "FINNOS:INTERRUPT:ARM64_GIC_ERROR",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:",
+        "FINNOS:TEST:ARM64_EXCEPTION_FATAL:",
+        "FINNOS:TEST:ARM64_MEMORY_MAP:",
+        "FINNOS:TEST:ARM64_PAGE_TABLES:",
+        "FINNOS:TEST:ARM64_PAGE_FAULTS:",
+        "FINNOS:EXCEPTION:ARM64_",
+    )
+    for line in lines:
+        if any(line.startswith(prefix) for prefix in forbidden_prefixes):
+            errors.append(f"forbidden marker found: {line}")
+    return errors
+
+def validate_arm64_exceptions(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    lines = tuple(output.splitlines())
+    positions = [lines.index(marker) if marker in lines else -1 for marker in ARM64_EXCEPTION_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append(
+            "missing ARM64 exception marker(s): "
+            + ", ".join(
+                marker
+                for marker, position in zip(ARM64_EXCEPTION_MARKERS, positions)
+                if position < 0
+            )
+        )
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 exception markers are out of order")
+    for marker in ARM64_EXCEPTION_MARKERS:
+        if lines.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 exception marker: {marker}")
+    for marker in (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:EXCEPTION:ARM64_FATAL",
+        "FINNOS:EXCEPTION:ARM64_TEST_STATE_ERROR",
+        "FINNOS:EXCEPTION:ARM64_TEST_NOT_OBSERVED",
+        "FINNOS:EXCEPTION:ARM64_ELR_OVERFLOW",
+        "FINNOS:TEST:ARM64_GIC:",
+    ):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    for line in lines:
+        if line.startswith("FINNOS:EXCEPTION:ARM64_") and line != "FINNOS:EXCEPTION:ARM64_BREAKPOINT":
+            errors.append(f"unexpected ARM64 exception marker found: {line}")
+    return errors
+
+def validate_arm64_exception_fatal(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    static_before = ARM64_MARKERS[:-1] + (
+        "FINNOS:KERNEL:ARM64_CURRENT_EL=1",
+        "FINNOS:KERNEL:ARM64_EXCEPTION_VECTORS_READY",
+        "FINNOS:KERNEL:ARM64_SERIAL_READY",
+        "FINNOS:TEST:ARM64_EXCEPTION_FATAL:BEGIN",
+    )
+    numeric_names = ("SOURCE", "ESR", "ELR", "FAR", "SPSR", "X0")
+    lines = tuple(output.splitlines())
+    if status != 1:
+        errors.append(f"expected ARM64 fatal semihosting status 1, got {status}")
+    numeric_lines: list[str] = []
+    values: dict[str, int] = {}
+    for name in numeric_names:
+        matches = re.findall(
+            rf"^FINNOS:EXCEPTION:ARM64_{name}=0x([0-9a-f]{{16}})$",
+            output,
+            re.MULTILINE,
+        )
+        if len(matches) != 1:
+            errors.append(f"expected exactly one fixed-width ARM64 fatal field: {name}")
+            numeric_lines.append(f"<missing:{name}>")
+        else:
+            values[name] = int(matches[0], 16)
+            numeric_lines.append(f"FINNOS:EXCEPTION:ARM64_{name}=0x{matches[0]}")
+    required = static_before + tuple(numeric_lines) + ("FINNOS:EXCEPTION:ARM64_FATAL",)
+    positions = [lines.index(marker) if marker in lines else -1 for marker in required]
+    if any(position < 0 for position in positions):
+        errors.append("missing ARM64 fatal marker(s)")
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ARM64 fatal markers are out of order")
+    for marker in required:
+        if lines.count(marker) != 1:
+            errors.append(f"expected exactly one ARM64 fatal marker: {marker}")
+    if values.get("SOURCE") != 4:
+        errors.append("ARM64 fatal source must be current-EL SPx synchronous source 4")
+    if values.get("ESR") != 0x00000000F200F101:
+        errors.append("ARM64 fatal ESR must encode the armed BRK #0xf101 syndrome")
+    if values.get("ELR", 0) == 0:
+        errors.append("ARM64 fatal ELR must be nonzero")
+    if values.get("SPSR", 0) & 0x3C0 != 0x3C0:
+        errors.append("ARM64 fatal SPSR must preserve DAIF masking")
+    for marker in (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:EXCEPTION:ARM64_BREAKPOINT",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:PASS",
+        "FINNOS:TEST:ARM64_GIC:",
+    ):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
     return errors
 
 def validate_memory_map(status: int, output: str) -> list[str]:
@@ -237,15 +692,27 @@ PREEMPTION_CONTEXT_MARKERS = MARKERS + (
 def validate_preemption_context(status: int, output: str) -> list[str]:
     import re
     errors: list[str] = []
+    lines = tuple(output.splitlines())
     if status != 33:
         errors.append(f"expected QEMU status 33, got {status}")
-    positions = [output.find(marker) for marker in PREEMPTION_CONTEXT_MARKERS]
+    marker_positions = {
+        marker: tuple(
+            index
+            for index, line in enumerate(lines)
+            if line == marker or line.startswith(marker + " ")
+        )
+        for marker in dict.fromkeys(PREEMPTION_CONTEXT_MARKERS)
+    }
+    positions = [
+        marker_positions[marker][0] if marker_positions[marker] else -1
+        for marker in PREEMPTION_CONTEXT_MARKERS
+    ]
     if any(position < 0 for position in positions):
         errors.append("missing preemption-context marker(s)")
     if positions != sorted(position for position in positions if position >= 0):
         errors.append("preemption-context markers are out of order")
     for marker in dict.fromkeys(PREEMPTION_CONTEXT_MARKERS):
-        if output.count(marker) != 1:
+        if len(marker_positions[marker]) != 1:
             errors.append(f"expected exactly one marker: {marker}")
     required = [
         "FRAME_SIZE", "FRAME_PREFIX_SIZE", "FRAME_IRET_SIZE", "FRAME_FOOTPRINT_SIZE",
@@ -320,6 +787,11 @@ def validate_preemption_context(status: int, output: str) -> list[str]:
         errors.append("idle capture identity mismatch")
     if values.get("WORKER_SOFTWARE_TASK_SLOT") != values.get("WORKER_SLOT") or values.get("WORKER_TIMER_TASK_SLOT") != values.get("WORKER_SLOT") or values.get("WORKER_SOFTWARE_GENERATION") != values.get("WORKER_GENERATION") or values.get("WORKER_TIMER_GENERATION") != values.get("WORKER_GENERATION"):
         errors.append("worker capture identity mismatch")
+    for phase in ("SOFTWARE", "TIMER"):
+        if values.get(f"WORKER_{phase}_RSP") != values.get(f"WORKER_{phase}_FRAME", 0) + 176 + values.get(f"WORKER_{phase}_LAYOUT", 0):
+            errors.append(f"worker {phase.lower()} raw-frame footprint mismatch")
+        if values.get(f"WORKER_{phase}_SAVED_SS") != 0x10:
+            errors.append(f"worker {phase.lower()} saved SS mismatch")
     if (values.get("DEPTH_NESTED"), values.get("DEPTH_INNER_DROPPED"), values.get("DEPTH_OUTER_DROPPED")) != (2, 1, 0):
         errors.append("invalid depth transition")
     if [values.get(key) for key in ("REQUEST_WHILE_NESTED", "REQUEST_AFTER_INNER_DROP", "REQUEST_AFTER_OUTER_DROP", "REQUEST_TAKEN", "REQUEST_AFTER_TAKE")] != [1, 1, 1, 1, 0]:
@@ -405,10 +877,37 @@ def validate_cooperative_tasks(status: int, output: str) -> list[str]:
         if marker in output: errors.append(f"forbidden marker found: {marker}")
     return errors
 
-def qemu_command(qemu: str, firmware: str, image: Path, headless: bool = False, test_exit: bool = False) -> list[str]:
+def qemu_command(
+    qemu: str,
+    firmware: str,
+    image: Path,
+    headless: bool = False,
+    test_exit: bool = False,
+    machine: str = "q35",
+    architecture: str = "x86_64",
+    cpu: str = "",
+) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
-    command = [qemu, "-machine", "q35", "-m", "256M", "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}", "-drive", f"if=ide,format=raw,file={image}", "-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"]
+    command = [qemu, "-machine", machine]
+    if cpu:
+        command.extend(["-cpu", cpu])
+    command.extend([
+        "-m", "256M",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={firmware}",
+    ])
+    if architecture == "arm64":
+        command.extend([
+            "-smp", "1",
+            "-drive", f"if=none,format=raw,file={image},id=finnos-esp",
+            "-device", "virtio-blk-pci,drive=finnos-esp",
+        ])
+    else:
+        command.extend(["-drive", f"if=ide,format=raw,file={image}"])
+    command.extend(["-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"])
     if headless: command.extend(["-display", "none"])
-    if test_exit: command.extend(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+    if test_exit and architecture == "arm64":
+        command.extend(["-semihosting-config", "enable=on,target=native"])
+    elif test_exit:
+        command.extend(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
     return command

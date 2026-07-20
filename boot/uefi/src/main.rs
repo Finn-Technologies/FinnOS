@@ -12,7 +12,7 @@ use finn_boot_protocol::{
     BOOT_FLAG_FRAMEBUFFER_PRESENT, BOOT_FLAG_MEMORY_MAP_PRESENT, BOOT_FLAG_RSDP_PRESENT, BootInfo,
     FramebufferInfo, MemoryMapInfo, PhysicalRange, PixelFormat,
 };
-use finn_boot_uefi::{ElfError, validate_elf};
+use finn_boot_uefi::{ElfError, ElfMachine, validate_elf_for_machine};
 use uefi::Identify;
 use uefi::boot::{self, AllocateType, MemoryType, SearchType};
 use uefi::cstr16;
@@ -26,7 +26,15 @@ use uefi::table::cfg::{ACPI_GUID, ACPI2_GUID};
 const MAX_KERNEL_SIZE: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 
+#[cfg(target_arch = "x86_64")]
 type KernelEntry = unsafe extern "sysv64" fn(*const BootInfo) -> !;
+#[cfg(target_arch = "aarch64")]
+type KernelEntry = unsafe extern "C" fn(*const BootInfo) -> !;
+
+#[cfg(target_arch = "x86_64")]
+const ELF_MACHINE: ElfMachine = ElfMachine::X86_64;
+#[cfg(target_arch = "aarch64")]
+const ELF_MACHINE: ElfMachine = ElfMachine::Aarch64;
 
 #[entry]
 fn main() -> Status {
@@ -41,12 +49,15 @@ fn main() -> Status {
         }
         Err(category) => return fail(category),
     };
-    let validated = match validate_elf(&kernel) {
+    let validated = match validate_elf_for_machine(&kernel, ELF_MACHINE) {
         Ok(value) => {
             serial::line("FINNOS:BOOTLOADER:KERNEL_VALID\n");
             value
         }
         Err(_) => return fail("INVALID_ELF"),
+    };
+    let Ok(entry_address) = usize::try_from(validated.entry) else {
+        return fail("INVALID_ELF");
     };
     let loaded = match load_segments(&kernel) {
         Ok(range) => {
@@ -61,20 +72,23 @@ fn main() -> Status {
         return fail("INVALID_ELF");
     }
 
-    let framebuffer = match framebuffer_info() {
+    let (framebuffer, framebuffer_flag) = match framebuffer_info() {
         Ok(info) => {
             serial::line("FINNOS:BOOTLOADER:FRAMEBUFFER_READY\n");
-            info
+            (info, BOOT_FLAG_FRAMEBUFFER_PRESENT)
         }
-        Err(_) => return fail("FRAMEBUFFER_UNAVAILABLE"),
+        Err(()) if cfg!(target_arch = "aarch64") => (FramebufferInfo::default(), 0),
+        Err(()) => return fail("FRAMEBUFFER_UNAVAILABLE"),
     };
     let rsdp = find_rsdp();
-    let boot_info = match boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1) {
-        Ok(page) => page,
-        Err(_) => return fail("BOOTINFO_ALLOCATION_FAILED"),
+    let Ok(boot_info) = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
+    else {
+        return fail("BOOTINFO_ALLOCATION_FAILED");
     };
     let boot_info_start = boot_info.as_ptr() as u64;
-    let boot_info_len = size_of::<BootInfo>() as u64;
+    let boot_info_len = PAGE_SIZE;
+    // UEFI page allocation guarantees alignment stricter than `BootInfo` requires.
+    #[allow(clippy::cast_ptr_alignment)]
     let info_ptr = boot_info.as_ptr().cast::<BootInfo>();
     // SAFETY: The page was allocated by UEFI as loader data and is retained for kernel entry.
     unsafe {
@@ -83,8 +97,8 @@ fn main() -> Status {
             BootInfo {
                 magic: finn_boot_protocol::BOOT_INFO_MAGIC,
                 version: finn_boot_protocol::BOOT_PROTOCOL_VERSION,
-                structure_size: size_of::<BootInfo>() as u32,
-                flags: BOOT_FLAG_FRAMEBUFFER_PRESENT,
+                structure_size: u32::try_from(size_of::<BootInfo>()).unwrap_or(u32::MAX),
+                flags: framebuffer_flag,
                 memory_map: MemoryMapInfo::default(),
                 framebuffer,
                 kernel_image: loaded,
@@ -94,7 +108,7 @@ fn main() -> Status {
                 },
                 rsdp_address: rsdp,
             },
-        )
+        );
     };
     // SAFETY: The UEFI helper performs the required final-map retry and returns the map whose key exited boot services.
     let memory_map = unsafe { boot::exit_boot_services(MemoryType::LOADER_DATA) };
@@ -115,7 +129,7 @@ fn main() -> Status {
     }
     serial::line("FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES\n");
     // SAFETY: Validation established an executable, loaded entry address and boot services are exited.
-    let entry: KernelEntry = unsafe { core::mem::transmute(validated.entry as usize) };
+    let entry: KernelEntry = unsafe { core::mem::transmute(entry_address) };
     // SAFETY: The kernel ABI receives the persistent BootInfo page and never returns.
     unsafe { entry(info_ptr) }
 }

@@ -1,9 +1,8 @@
 # Kernel invariants
 
-> Status: Preliminary requirements
-> Implementation: Not enforced yet
+> Status: Implemented early-kernel invariants plus planned user/kernel requirements
 
-Planned baseline invariants include validating user-controlled addresses; preventing stale handles from resolving to new objects; avoiding executable and writable mapping overlap by default; forbidding blocking work in interrupt context; reducing capability rights during delegation unless authorized; releasing or revoking resources on process destruction; and documenting ownership and synchronization for kernel data structures.
+Future userspace/object invariants include validating user-controlled addresses; preventing stale handles from resolving to new objects; reducing capability rights during delegation unless authorized; and releasing or revoking resources on process destruction. They are not implemented because userspace, handles, and capabilities do not yet exist. The early-kernel invariants below are implemented and tested for the current single-core x86-64 QEMU scope.
 
 The early physical page allocator additionally validates sorted, non-overlapping
 managed and free extents, inward-aligned full pages, free-range containment,

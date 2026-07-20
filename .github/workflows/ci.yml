@@ -4,16 +4,53 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   foundation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
+      - run: python3 .agents/scripts/validate.py --all
       - run: cargo build -p finn-kernel --bin finn-kernel-x86_64 --features kernel-bin --target x86_64-unknown-none
-      - run: cargo build -p finn-boot-uefi --bin finn-boot-x86_64 --features uefi-app --target x86_64-unknown-uefi
+      - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target x86_64-unknown-uefi
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin --target aarch64-unknown-none -- -D warnings
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-exceptions --target aarch64-unknown-none -- -D warnings
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-exception-fatal --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-memory-map --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-memory-map --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-page-tables --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-page-tables --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-gic --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-gic --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target aarch64-unknown-uefi
+
+  target-profile-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-qemu
+            profile: development
+          - target: x86_64-qemu
+            profile: release
+          - target: arm64-qemu
+            profile: development
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+      - name: Build configured target and profile
+        run: ./tools/finn build-boot --target ${{ matrix.target }} --profile ${{ matrix.profile }}

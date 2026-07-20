@@ -266,7 +266,11 @@ extern "sysv64" fn finnos_cooperative_register_yield() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
+/// # Safety
+///
+/// The firmware loader must pass the initialized, page-owned `BootInfo`
+/// pointer established by the FinnOS boot protocol.
+pub unsafe extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
     finn_kernel::serial_log!("FINNOS:KERNEL:ENTRY\n");
     #[cfg(feature = "qemu-test-panic")]
     {
@@ -279,7 +283,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         finn_kernel::arch::x86_64::exceptions::init_exception_foundation(current_stack_top());
     }
 
-    let info = match validate_pointer(pointer) {
+    // SAFETY: The UEFI loader transfers an initialized, retained BootInfo page
+    // as the kernel entry argument. Validation copies it before further use.
+    let info = match unsafe { validate_pointer(pointer) } {
         Ok(info) => info,
         Err(_) => {
             finn_kernel::serial_log!("FINNOS:KERNEL:BOOTINFO_ERROR\n");
@@ -294,7 +300,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
             info.memory_map.byte_len,
             info.memory_map.descriptor_size
         );
-        match parse_and_classify(info) {
+        // SAFETY: BootInfo validation established the raw map range; UEFI has
+        // exited and the loader-owned backing storage remains reserved.
+        match unsafe { parse_and_classify(&info) } {
             Ok((table, summary)) => {
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_PARSED\n");
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED\n");
@@ -310,6 +318,14 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 );
                 finn_kernel::serial_log!("FINNOS:MEMORY:KERNEL_BYTES={}\n", summary.kernel_bytes);
                 finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:BOOT_INFO_BYTES={}\n",
+                    summary.boot_info_bytes
+                );
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:MEMORY_MAP_STORAGE_BYTES={}\n",
+                    summary.memory_map_storage_bytes
+                );
+                finn_kernel::serial_log!(
                     "FINNOS:MEMORY:FRAMEBUFFER_BYTES={}\n",
                     summary.framebuffer_bytes
                 );
@@ -323,9 +339,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                         finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_KERNEL\n");
                         failure();
                     }
-                    if summary.framebuffer_bytes == 0 {
+                    if summary.boot_info_bytes == 0 || summary.memory_map_storage_bytes == 0 {
                         finn_kernel::serial_log!(
-                            "FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_FRAMEBUFFER\n"
+                            "FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_HANDOFF_STORAGE\n"
                         );
                         failure();
                     }
@@ -396,7 +412,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     );
                 }
                 #[allow(unused_mut)]
-                let mut address_space = match build_page_tables(info, &mut allocator, scratch) {
+                let mut address_space = match build_page_tables(&info, &mut allocator, scratch) {
                     Ok(space) => space,
                     Err(error) => {
                         finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLE_ERROR:{:?}\n", error);
@@ -409,7 +425,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     .unwrap_or(0);
                 finn_kernel::serial_log!("FINNOS:PAGING:OLD_CR3={:#x}\n", old_cr3);
                 log_cpu_transition_state();
-                if validate_required_mappings(&address_space, info).is_err() {
+                if validate_required_mappings(&address_space, &info).is_err() {
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:PAGE_TABLE_ERROR:RequiredMappingMissing\n"
                     );
@@ -441,7 +457,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     "FINNOS:PAGING:MAPPED_PAGES={}\n",
                     address_space.mapped_pages()
                 );
-                if validate_required_mappings(&address_space, info).is_err()
+                if validate_required_mappings(&address_space, &info).is_err()
                     || paging::current_cr3() != address_space.root().address()
                     || paging::current_cr0() & paging::CR0_WP == 0
                     || paging::current_efer() & paging::EFER_NXE == 0
@@ -559,7 +575,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 );
                 #[cfg(feature = "qemu-test-cooperative-tasks")]
                 {
-                    draw(info);
+                    draw(&info);
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
                         info.framebuffer.address,
@@ -571,7 +587,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 }
                 #[cfg(feature = "qemu-test-page-tables")]
                 {
-                    draw(info);
+                    draw(&info);
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\n",
                         info.framebuffer.address,
@@ -588,7 +604,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 }
                 #[cfg(feature = "qemu-test-preemption-context")]
                 {
-                    draw(info);
+                    draw(&info);
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
                         info.framebuffer.address,
@@ -608,7 +624,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_OK absent\n");
     }
     if info.flags & BOOT_FLAG_FRAMEBUFFER_PRESENT != 0 {
-        draw(info);
+        draw(&info);
         finn_kernel::serial_log!(
             "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\n",
             info.framebuffer.address,
@@ -652,11 +668,27 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
 
 #[cfg(feature = "qemu-test-preemption-context")]
 #[allow(unsafe_code)]
+fn timer_evidence_snapshot() -> (u64, u64, u64) {
+    let interrupts_were_enabled = finn_kernel::arch::x86_64::cpu::interrupts_enabled();
+    finn_kernel::arch::x86_64::cpu::disable_interrupts();
+    let snapshot = (
+        finn_kernel::arch::x86_64::timer::ticks(),
+        finn_kernel::arch::x86_64::timer::real_deliveries(),
+        finn_kernel::arch::x86_64::apic::eoi_count(),
+    );
+    if interrupts_were_enabled {
+        finn_kernel::arch::x86_64::cpu::enable_interrupts();
+    }
+    snapshot
+}
+
+#[cfg(feature = "qemu-test-preemption-context")]
+#[allow(unsafe_code)]
 fn run_preemption_context_test(
     address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
     allocator: &mut EarlyPhysicalPageAllocator,
 ) -> ! {
-    use finn_kernel::arch::x86_64::{apic, interrupts, paging, timer};
+    use finn_kernel::arch::x86_64::{interrupts, paging, timer};
     use finn_kernel::preemption::{self, PreemptionGuard};
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:BEGIN\n");
     if core::mem::size_of::<finn_kernel::arch::x86_64::interrupts::KernelInterruptFrame>() != 176
@@ -714,7 +746,7 @@ fn run_preemption_context_test(
     let software_post = unsafe { PREEMPTION_SOFTWARE_REGISTERS };
     log_preemption_registers("SOFTWARE_SAVED", &saved);
     log_preemption_registers("SOFTWARE_POST", &software_post);
-    let expected_rip = software_after_int as *const () as u64;
+    let expected_instruction_pointer = software_after_int as *const () as u64;
     finn_kernel::serial_log!(
         "FINNOS:PREEMPT:SOFTWARE_DEBUG_OK={} VECTOR={} TASK_SLOT={} CS={:#x} FLAGS={:#x} RIP={:#x} EXPECTED_RIP={:#x} RSP={:#x} EXPECTED_RSP={:#x} POST_RSP={:#x} FRAME={:#x} RETURN={:#x}\n",
         software_ok as u8,
@@ -723,7 +755,7 @@ fn run_preemption_context_test(
         software.cs,
         software.rflags,
         software.rip,
-        expected_rip,
+        expected_instruction_pointer,
         software.interrupted_rsp,
         expected_rsp,
         post_rsp,
@@ -735,7 +767,7 @@ fn run_preemption_context_test(
         || software.task_id != bootstrap_id
         || saved != patterns
         || software_post != patterns
-        || software.rip != expected_rip
+        || software.rip != expected_instruction_pointer
         || software.interrupted_rsp != expected_rsp
         || post_rsp != expected_rsp
         || software.saved_ss != u64::from(finn_kernel::arch::x86_64::gdt::KERNEL_DATA_SELECTOR)
@@ -751,7 +783,7 @@ fn run_preemption_context_test(
         software.cs,
         software.rflags,
         software.rip,
-        expected_rip,
+        expected_instruction_pointer,
         software.interrupted_rsp,
         expected_rsp,
         post_rsp,
@@ -760,9 +792,7 @@ fn run_preemption_context_test(
     );
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:REAL_TIMER_BEGIN\n");
     let timer_capture = interrupts::begin_timer_test(bootstrap_id).unwrap_or_else(|_| failure());
-    let timer_start = timer::ticks();
-    let deliveries_start = timer::real_deliveries();
-    let eoi_start = apic::eoi_count();
+    let (timer_start, deliveries_start, eoi_start) = timer_evidence_snapshot();
     let cr3_before = paging::current_cr3();
     let timer_ok = unsafe { finnos_preemption_timer_test() } != 0;
     interrupts::end_timer_test(timer_capture).unwrap_or_else(|_| failure());
@@ -791,9 +821,7 @@ fn run_preemption_context_test(
     log_preemption_registers("TIMER_POST", &timer_post);
     let loop_start = preemption_timer_spin_start as *const () as u64;
     let loop_end = preemption_timer_spin_end as *const () as u64;
-    let timer_end = timer::ticks();
-    let deliveries_end = timer::real_deliveries();
-    let eoi_end = apic::eoi_count();
+    let (timer_end, deliveries_end, eoi_end) = timer_evidence_snapshot();
     let cr3_after = paging::current_cr3();
     if !timer_ok
         || timer_snapshot.vector != 0x40
@@ -865,9 +893,7 @@ fn run_preemption_context_test(
     );
     finn_kernel::serial_log!("FINNOS:TEST:PREEMPTION_CONTEXT:TASK_ATTRIBUTION_OK\n");
     preemption::configure_quantum_ticks(1);
-    let before_ticks = timer::ticks();
-    let before_deliveries = timer::real_deliveries();
-    let before_eois = apic::eoi_count();
+    let (before_ticks, before_deliveries, before_eois) = timer_evidence_snapshot();
     let before_task = scheduler::current_task().unwrap_or_else(|_| failure());
     let before_switches = scheduler::stats()
         .unwrap_or_else(|_| failure())
@@ -892,9 +918,7 @@ fn run_preemption_context_test(
     {
         failure();
     }
-    let after_ticks = timer::ticks();
-    let after_deliveries = timer::real_deliveries();
-    let after_eois = apic::eoi_count();
+    let (after_ticks, after_deliveries, after_eois) = timer_evidence_snapshot();
     let after_task = scheduler::current_task().unwrap_or_else(|_| failure());
     let after_switches = scheduler::stats()
         .unwrap_or_else(|_| failure())

@@ -1,0 +1,30 @@
+# Agent Handoff: R4.2 ARM64 early memory
+
+- Objective: consume the shared UEFI handoff on ARM64, classify protected physical memory, initialize and exercise the early page allocator, and harden the shared firmware boundary before reuse.
+- Starting commit/worktree: `f74fc49` on `main`, with the reviewed but uncommitted R4.1 exception slice already stacked; `.freebuff/` was pre-existing and remains untouched.
+- Task state: locally verified worktree; not committed or integrated; CI and physical hardware unverified.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `cross-architecture-design`, `unsafe-rust-low-level-safety`, `test-strategy`, `debugging-investigation`, `reliability-fault-injection`, `logging-diagnostics`, `boot-protocol-evolution`, `physical-memory-management`, and `cpu-early-initialization` with their prerequisite closure.
+- Work completed: made wire pixel formats all-bit-pattern-valid; tightened protocol flags/resources/ranges; corrected the loader to advertise the full 4 KiB `BootInfo` page; replaced the safe firmware reference with an explicitly unsafe aligned by-value copy; made raw map access an explicit unsafe boundary; added checked descriptor conversion; rejected overlapping, outside, and multi-owner protected ranges while preserving out-of-map GOP apertures; strengthened allocator accounting and failure rollback; added ARM64 memory classification, allocator construction, allocation/protected-range/free/invariant smoke, tooling validation, and CI gates.
+- Files changed: shared protocol/UEFI loader, kernel boot validation and memory modules/tests, ARM64 entry/linker, x86 call sites/diagnostics, developer tooling/tests/workflows, canonical architecture/status/testing/platform documentation, and this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-boot-protocol`: 8 passed.
+  - `cargo test -p finn-kernel`: 73 passed after final overflow/accounting/coverage fixes.
+  - `python3 -m unittest tools.tests.test_boot_log tools.tests.test_build_configuration`: 40 passed.
+  - `./tools/finn check`: protocol, UEFI, kernel, documentation, and 56 Python tests passed.
+  - `cargo fmt --all -- --check`: passed.
+  - ARM64 normal-boot and memory-feature Clippy with `-D warnings`: passed.
+  - `./tools/finn test-boot`: x86 QEMU status 33 after framebuffer compatibility fix.
+  - `./tools/finn test-memory-map`: x86 QEMU status 33 with 105 descriptors, 41 classified regions, protected-range accounting, and allocator initialization.
+  - `./tools/finn test-page-allocator`: x86 QEMU status 33; single/contiguous allocation, reuse, free, double-free rejection, and invariants passed.
+  - `./tools/finn test-memory-map --target arm64-qemu`: status 0; 33 descriptors, 24 regions, positive usable/kernel/BootInfo/map-storage accounting, real page allocation at `0x40000000`, protected-range pass, free pass, invariant pass.
+  - `python3 .agents/scripts/validate.py --all`: 87 skills, no dependency cycles, all local Markdown links valid.
+  - `git diff --check`: passed.
+- Results and evidence classification: host tests, cross compilation/lint, and local QEMU `virt`/AAVMF and `q35`/OVMF runtime evidence. No integration-CI, alternate firmware, physical ARM, hostile-firmware, or own-MMU claim.
+- Documentation/status changes: `README`, `STATUS`, `ROADMAP`, `ARCHITECTURE`, `PORTING`, platform/build/kernel/testing references, boot protocol and memory architecture pages, and `.agents/STATE.md` now describe R4.2 as local-only.
+- Unverified assumptions: the trusted FinnOS loader provides readable inherited identity mappings until parsing completes; the UEFI map buffer remains immutable; QEMU/AAVMF behavior represents only the supported emulator profile.
+- Remaining work: run integration CI; then build ARM64-owned translation tables with W^X/NX, null protection, stack guards, safe activation, and fault evidence.
+- Blockers: none for local R4.2 after final review; integration authority and external CI remain outside this worktree.
+- Risks/regressions to watch: v2 names used map bytes but not the UEFI pool's spare capacity. All LoaderData must remain non-usable; reclamation is forbidden until a future protocol version carries the complete backing span. ARM64 uses a measured 256 KiB unguarded early stack under inherited mappings; guards belong to the MMU slice.
+- Current Git state: dirty, uncommitted R4.1+R4.2 stack on `f74fc49`; `.freebuff/` preserved.
+- Suggested next action: begin the R4.3 ARM64 virtual-memory slice.
+- Skills next agent must load: `virtual-memory`, `arm64-platform-development`, `boot-kernel-hardening`, `physical-memory-management`, `unsafe-rust-low-level-safety`, `cross-architecture-design`, `qemu-boot-testing`, and `test-strategy` plus prerequisite closure.

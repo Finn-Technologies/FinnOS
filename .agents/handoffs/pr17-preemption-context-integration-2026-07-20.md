@@ -1,0 +1,12 @@
+# Agent Handoff: PR #17 preemption-context integration
+
+- Objective: resolve PR #17 against current `main`, review the full change, repair integration and correctness defects, and update the existing PR branch.
+- Starting state: PR #17 head `5111421`, `main` at `93ddf9d`, merge base `3539a35`; eleven textual conflicts and six dual-edited semantic files.
+- Task state: locally complete on 2026-07-20; merge commit and remote CI are the remaining publication steps.
+- Scope: preserve ARM64 R4.1-R4.4 and boot-protocol-v3 ownership; integrate the ninth x86 QEMU mode into current target/profile tooling; review frame assembly, attribution, scheduler boundaries, rollback, validator, CI, ADR, and status documentation.
+- Non-goals: timer-ISR scheduling, blocking/wait queues, user-mode frames, FPU/SIMD state, SMP, ARM64 task parity, or claiming R6 complete.
+- Acceptance criteria: clean merge; normal and feature x86 builds; complete x86 `check-all`; six ARM64 QEMU modes; exact evidence validation; no protected-context cooperative switch; transactional stack restoration returns to its pre-reclaim baseline; documentation states the no-preemption boundary.
+- Review repairs: protected sections now reject switch-capable transitions; stack restoration compares against the caller's pre-reclaim mapped-page count and has a real page-map regression test; timer/delivery/EOI evidence is sampled with interrupts masked; validator markers are exact or space-delimited evidence lines and cross-check worker frame/RSP/SS relationships; preemption tests serialize shared atomics; stale 160-byte documentation is corrected to 176 bytes; the duplicate ADR is renumbered from 0015 to 0016; the preemption-only test function is feature-gated for normal builds.
+- Local evidence: `./tools/finn check` passes; both normal and preemption x86 freestanding builds pass; `./tools/finn check-all` passes all host checks and nine x86 QEMU modes; all six ARM64 workflow modes pass with expected status (normal/memory/page tables/GIC/exceptions status 0, fatal diagnostic status 1); focused Python validator tests pass 40 cases.
+- Important limitation: the macOS host cannot execute x86-only Rust unit tests, so the new real stack-restore unit test is compiled/executed by x86 CI; its behavior is also covered by source review, while the live QEMU suite covers the broader stack/scheduler invariants.
+- Next action: commit and push the merge resolution to `kernel/preemption-context`, then require green PR checks before merge.

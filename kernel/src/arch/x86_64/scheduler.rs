@@ -56,6 +56,8 @@ pub enum SchedulerError {
     Poisoned,
     /// The bounded preemption guard faulted while preparing a transition.
     PreemptionFault,
+    /// A stack switch was requested inside a preemption-protected transition.
+    PreemptionDisabled,
 }
 
 /// One side of a scheduler rollback failure.
@@ -789,7 +791,10 @@ pub fn reap(
 /// This function does not unwind; invalid scheduler state enters the fatal
 /// kernel halt path instead.
 pub fn park_bootstrap_and_run_idle() -> ! {
-    if reject_interrupt_context().is_err() || SWITCHING.swap(true, Ordering::Acquire) {
+    if reject_interrupt_context().is_err()
+        || reject_preemption_disabled().is_err()
+        || SWITCHING.swap(true, Ordering::Acquire)
+    {
         fatal_scheduler();
     }
     let plan = (|| {
@@ -819,6 +824,7 @@ pub fn park_bootstrap_and_run_idle() -> ! {
 /// Returns a structured error if the controlled probe cannot be prepared.
 pub fn probe_idle_once() -> Result<(), SchedulerError> {
     reject_interrupt_context()?;
+    reject_preemption_disabled()?;
     if SWITCHING.swap(true, Ordering::Acquire) {
         return Err(SchedulerError::Reentrant);
     }
@@ -842,6 +848,7 @@ pub fn probe_idle_once() -> Result<(), SchedulerError> {
 }
 
 fn prepare_yield() -> Result<Option<(*mut u64, u64)>, SchedulerError> {
+    reject_preemption_disabled()?;
     if SWITCHING.swap(true, Ordering::Acquire) {
         return Err(SchedulerError::Reentrant);
     }
@@ -871,7 +878,10 @@ extern "C" fn task_trampoline() -> ! {
 
 /// Marks the current worker exited and switches away from its active stack.
 pub fn exit_current() -> ! {
-    if reject_interrupt_context().is_err() || SWITCHING.swap(true, Ordering::Acquire) {
+    if reject_interrupt_context().is_err()
+        || reject_preemption_disabled().is_err()
+        || SWITCHING.swap(true, Ordering::Acquire)
+    {
         fatal_scheduler();
     }
     let plan = (|| {
@@ -952,6 +962,14 @@ fn reject_interrupt_context() -> Result<(), SchedulerError> {
     if crate::interrupt::in_interrupt_context() {
         INTERRUPT_CONTEXT_ENTRIES.fetch_add(1, Ordering::Relaxed);
         Err(SchedulerError::InterruptContextForbidden)
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_preemption_disabled() -> Result<(), SchedulerError> {
+    if crate::preemption::preemption_disabled() {
+        Err(SchedulerError::PreemptionDisabled)
     } else {
         Ok(())
     }
@@ -1110,5 +1128,18 @@ mod tests {
             );
             assert_eq!(runtime.policy, before);
         }
+    }
+
+    #[test]
+    fn protected_transition_rejects_stack_switch() {
+        let _lock = crate::preemption::TEST_LOCK.lock().unwrap();
+        assert_eq!(reject_preemption_disabled(), Ok(()));
+        let guard = crate::preemption::PreemptionGuard::enter().unwrap();
+        assert_eq!(
+            reject_preemption_disabled(),
+            Err(SchedulerError::PreemptionDisabled)
+        );
+        drop(guard);
+        assert_eq!(reject_preemption_disabled(), Ok(()));
     }
 }

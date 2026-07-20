@@ -7,14 +7,30 @@
 
 An x86-64 guest on Apple silicon must use software emulation; the command must not request KVM or HVF. Homebrew’s code-only OVMF image is passed as a read-only pflash drive. Serial is attached to stdio. Test mode adds `isa-debug-exit` at port `0xf4`: value `0x10` maps to host status 33 and `0x11` maps to 35. `./tools/finn test-exceptions` builds a separate image under `build/out/x86_64-qemu-exceptions/` and verifies controlled breakpoint and invalid-opcode behavior. Manual runs keep the display open and can be stopped with Ctrl+C.
 
+The ARM64 commands use QEMU `virt`, AAVMF/EDK2 pflash, a VirtIO block ESP,
+and the fixed PL011 at `0x0900_0000`. Its bounded test enables AArch64
+semihosting. Serial first boot and a resumable controlled `BRK` require status
+0; the isolated fatal `BRK` test requires status 1 plus bounded raw-frame
+diagnostics. `./tools/finn test-memory-map --target arm64-qemu` additionally
+validates the copied handoff, protected normalized map, allocator construction,
+one allocation/free cycle, and restored invariants with status 0.
+`./tools/finn test-page-tables --target arm64-qemu` additionally validates the
+owned TTBR0 regime, control-register policy, software translations, and four
+exact resumable hardware aborts. This does not claim broad exception recovery,
+timer or task parity. `./tools/finn test-arm64-gic --target arm64-qemu` pins
+`virt,gic-version=2,secure=off` with one CPU, maps the full distributor and CPU
+interface windows as Device RW/NX, and proves one exact SGI 1 IAR/EOIR
+lifecycle through the architectural IRQ vector. It does not claim GIC
+discovery, GICv3, SMP, or external device routing.
+
 `./tools/finn test-page-allocator` builds an isolated image under
 `build/out/x86_64-qemu-page-allocator/` and validates allocation, reuse,
 deallocation, double-free rejection, allocator invariants, and QEMU status
 33. It intentionally completes before page-table activation because it tests
 the allocator independently.
 
-`./tools/finn test-page-tables` builds an isolated image under
-`build/out/x86_64-qemu-page-tables/` and validates the FinnOS-owned root,
+`./tools/finn test-page-tables` builds an architecture-specific isolated image
+and validates the FinnOS-owned root,
 mapping permissions, null-page protection, stack guard pages, scratch mapping
 and unmapping, and real vector-14 page-fault delivery.
 

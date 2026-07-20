@@ -1,13 +1,13 @@
-# ADR 0015: Preemption-ready interrupt contexts
+# ADR 0016: Preemption-ready interrupt contexts
 
 ## Decision
 
 Use a complete, fixed ring-0 interrupt-return frame and dispatcher-selected
 return pointer. The current QEMU contract is a 136-byte prefix plus a 40-byte
 raw `iretq` tail (176 bytes), followed by measured 0–15-byte alignment
-slack (191-byte maximum footprint). Keep it separate from cooperative `TaskContext`,
-and introduce
-allocation-free nested preemption-disable state with deferred requests.
+slack (191-byte maximum footprint). Keep it separate from cooperative
+`TaskContext`, and introduce allocation-free nested preemption-disable state
+with deferred requests.
 
 ## Consequences
 

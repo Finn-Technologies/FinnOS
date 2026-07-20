@@ -1,0 +1,34 @@
+# Agent Handoff: R3 ARM64 serial first boot
+
+- Objective: Implement the R3 dependency slice from `BOOTAA64.EFI` through a deterministic AArch64 kernel serial marker in QEMU `virt`/AAVMF.
+- Starting commit/worktree: `df5cf62`, clean `main` tracking `origin/main`.
+- Task state: Verified; local runtime evidence and GitHub integration CI are green.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `evidence-status-reporting`, `roadmap-execution`, `build-environment-management`, `test-strategy`, `build-orchestration`, `debugging-investigation`, `qemu-boot-testing`, `cross-architecture-design`, `unsafe-rust-low-level-safety`, `boot-protocol-evolution`, `uefi-bootloader-development`, `arm64-platform-development`, `ci-maintenance`, `documentation-maintenance`, `git-commit-hygiene`, `agent-handoff`, and `implementing-roadmap-issue`.
+- Scope: ARM target metadata/tool discovery, selected ELF machine validation, `BOOTAA64.EFI`, minimal AAPCS64 kernel/linker/stack/PL011/panic path, ARM image/QEMU command, semihosting test exit, ordered marker validation, CI job, documentation, and agent-state updates.
+- Non-goals: R4 handoff consumption, FinnOS-owned MMU, exception vectors, GIC, generic timer, task contexts, production shutdown, SMP, userspace, physical hardware, and release qualification.
+- Work completed: The ARM development image boots locally through AAVMF, validates and loads `EM_AARCH64`, exits boot services, switches to the linked early stack, prints `FINNOS:KERNEL:ARM64_ENTRY` and `FINNOS:KERNEL:ARM64_SERIAL_READY`, and exits QEMU with semihosting status 0. X86 first boot remains green.
+- Main files changed: `build/targets/`, `boot/uefi/`, `kernel/arch/aarch64/`, `kernel/src/arch/aarch64/`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/`, `tools/tests/`, `.github/workflows/`, root/build/test/porting docs, and `.agents/` registry/state.
+- Tests/commands run:
+  - Baseline `./tools/finn check`: passed before changes; 67 Rust tests and 47 Python tests at that point.
+  - Baseline `./tools/finn build-boot --target arm64-qemu`: failed clearly because the target was planned/non-bootable.
+  - `rustup target add aarch64-unknown-none aarch64-unknown-uefi`: completed.
+  - `cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit --target aarch64-unknown-none -- -D warnings`: passed.
+  - `cargo clippy -p finn-boot-uefi --bin finn-boot --features uefi-app --target aarch64-unknown-uefi -- -D warnings`: passed.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'`: passed, 52 tests.
+  - `./tools/finn check`: passed, 68 Rust tests and 52 Python tests.
+  - `./tools/finn test-boot`: passed with x86 QEMU status 33 and the full ordered marker contract.
+  - `./tools/finn test-boot --target arm64-qemu`: passed with QEMU 11.0.2/Homebrew AAVMF, ARM status 0, and every R3 marker exactly once and in order.
+  - `python3 .agents/scripts/validate.py --all`: passed, 87 skills and no dependency cycles.
+  - `python3 .agents/scripts/check_links.py`: passed, 235 local references at time of execution.
+  - `git diff --check`: passed.
+- Integration evidence: PR #21 commit `0207dbc` passed CI run 137 and UEFI boot smoke run 73, including the ARM64 serial-first-boot job and the complete x86-64 regression suite.
+- Required-check compatibility: the existing x86-64 workflow job retains the `smoke` id expected by branch protection; ARM64 runs as the additional `arm64-serial-first-boot` check.
+- Results and evidence classification: R3 source/build/runtime is locally verified on macOS ARM64 using software-emulated AArch64 QEMU `virt` and integration-verified on GitHub's Ubuntu runners. No physical-hardware or R4 parity claim is made.
+- Documentation/status changes: `ROADMAP.md`, `STATUS.md`, `PORTING.md`, build/test/architecture/support docs, generated skill guidance, and `.agents/STATE.md` distinguish bounded R3 evidence from absent R4 parity; this handoff records the later integration result.
+- Unverified assumptions: ARM release profile was not runtime-tested; physical ARM64 hardware remains outside this milestone.
+- Remaining work: Begin R4 with handoff consumption and an architecture-neutral exception/trap contract before MMU/GIC/timer/context work.
+- Blockers: None for R3.
+- Risks/regressions to watch: AAVMF package path/size differences, firmware console noise, exact-load-address conflicts, inherited mapping assumptions, semihosting behavior differences, and accidental promotion of serial entry to Level 1 parity.
+- Current Git state: PR #21 on `codex/r3-arm64-serial-first-boot`; implementation commit `0207dbc` is pushed and its CI is green. This handoff evidence update is the only subsequent change.
+- Suggested next action: Merge PR #21 after its final head checks pass, then start R4 from updated `main`.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `evidence-status-reporting`, `roadmap-execution`, `test-strategy`, `qemu-boot-testing`, `cross-architecture-design`, `unsafe-rust-low-level-safety`, `arm64-platform-development`, `ci-maintenance`, `documentation-maintenance`, and `agent-handoff`.

@@ -110,10 +110,14 @@ pub fn on_timer_tick() {
 }
 
 #[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn nested_request_is_deferred() {
+        let _lock = TEST_LOCK.lock().unwrap();
         configure_quantum_ticks(0);
         REQUESTED.store(false, Ordering::Release);
         let outer = PreemptionGuard::enter().unwrap();
@@ -129,6 +133,7 @@ mod tests {
     }
     #[test]
     fn quantum_is_disabled_by_default_and_expires() {
+        let _lock = TEST_LOCK.lock().unwrap();
         configure_quantum_ticks(0);
         REQUESTED.store(false, Ordering::Release);
         on_timer_tick();

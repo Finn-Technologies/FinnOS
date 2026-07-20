@@ -18,6 +18,8 @@ kernel-bin = []
 qemu-test-exit = []
 qemu-test-panic = []
 qemu-test-exceptions = []
+qemu-test-arm64-exception-fatal = ["qemu-test-exit"]
+qemu-test-arm64-gic = ["qemu-test-exit"]
 qemu-test-memory-map = []
 qemu-test-page-allocator = []
 qemu-test-page-tables = ["qemu-test-exit"]
@@ -29,6 +31,13 @@ qemu-test-preemption-context = ["qemu-test-exit"]
 [[bin]]
 name = "finn-kernel-x86_64"
 path = "src/bin/x86_64.rs"
+required-features = ["kernel-bin"]
+test = false
+bench = false
+
+[[bin]]
+name = "finn-kernel-aarch64"
+path = "src/bin/aarch64.rs"
 required-features = ["kernel-bin"]
 test = false
 bench = false

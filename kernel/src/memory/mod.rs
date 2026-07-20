@@ -53,6 +53,10 @@ pub enum MemoryMapError {
     InvalidBootInfoRange,
     /// The raw memory-map storage range is invalid.
     InvalidMemoryMapStorageRange,
+    /// A protected range is not fully covered by the firmware memory map.
+    ProtectedRangeOutsideFirmwareMap,
+    /// Two FinnOS-protected ranges overlap.
+    OverlappingProtectedRanges,
     /// An unknown UEFI memory type was encountered.
     UnknownFirmwareType,
 }

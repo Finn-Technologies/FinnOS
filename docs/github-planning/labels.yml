@@ -1,0 +1,39 @@
+labels:
+  - {name: "priority:P0", color: "B60205", description: "Blocks a supported build or boot"}
+  - {name: "priority:P1", color: "D93F0B", description: "Blocks core OS functionality"}
+  - {name: "priority:P2", color: "FBCA04", description: "Blocks graphical usability"}
+  - {name: "priority:P3", color: "0E8A16", description: "Blocks preview, beta, or stable quality"}
+  - {name: "priority:P4", color: "C5DEF5", description: "Polish or broader post-critical-path support"}
+  - {name: "type:bug", color: "D73A4A", description: "Incorrect implemented behavior"}
+  - {name: "type:feature", color: "A2EEEF", description: "New capability"}
+  - {name: "type:maintenance", color: "BFD4F2", description: "Tooling, refactor, or upkeep"}
+  - {name: "type:docs", color: "0075CA", description: "Documentation change"}
+  - {name: "type:security", color: "8B0000", description: "Security hardening or vulnerability"}
+  - {name: "type:release", color: "5319E7", description: "Release engineering"}
+  - {name: "area:boot", color: "0052CC", description: "Firmware, loader, and handoff"}
+  - {name: "area:kernel", color: "0052CC", description: "Kernel core"}
+  - {name: "area:ipc", color: "0052CC", description: "Objects, handles, and IPC"}
+  - {name: "area:userspace", color: "0052CC", description: "Runtime, init, services, and shell"}
+  - {name: "area:drivers", color: "0052CC", description: "Device model and drivers"}
+  - {name: "area:storage", color: "0052CC", description: "Block, VFS, and filesystems"}
+  - {name: "area:network", color: "0052CC", description: "Network drivers, protocols, and policy"}
+  - {name: "area:graphics", color: "0052CC", description: "Display, rendering, and compositor"}
+  - {name: "area:ui", color: "0052CC", description: "Peony shell, toolkit, UX, and accessibility"}
+  - {name: "area:tooling", color: "0052CC", description: "Build and developer tooling"}
+  - {name: "area:ci", color: "0052CC", description: "Automated test infrastructure"}
+  - {name: "area:docs", color: "0052CC", description: "Project documentation"}
+  - {name: "area:security", color: "0052CC", description: "Security architecture and operations"}
+  - {name: "area:release", color: "0052CC", description: "Packaging, updates, and releases"}
+  - {name: "arch:x86_64", color: "D4A5A5", description: "x86-64 specific"}
+  - {name: "arch:arm64", color: "D4A5A5", description: "ARM64 specific"}
+  - {name: "arch:all", color: "D4A5A5", description: "Architecture-independent or parity work"}
+  - {name: "status:blocked", color: "000000", description: "Cannot proceed until a named dependency resolves"}
+  - {name: "status:needs-rfc", color: "FEF2C0", description: "Requires architecture proposal before implementation"}
+  - {name: "complexity:XS", color: "EDEDED", description: "Hours"}
+  - {name: "complexity:S", color: "EDEDED", description: "Days"}
+  - {name: "complexity:M", color: "EDEDED", description: "One to several weeks"}
+  - {name: "complexity:L", color: "EDEDED", description: "Several weeks"}
+  - {name: "complexity:XL", color: "EDEDED", description: "Multi-milestone program"}
+
+retain_github_labels: ["good first issue", "help wanted"]
+retire_after_migration: ["enhancement", "documentation", "status:planned", "status:in-progress", "milestone:kernel-core"]
