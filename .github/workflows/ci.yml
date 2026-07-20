@@ -26,6 +26,15 @@ jobs:
       - run: cargo build -p finn-kernel --bin finn-kernel-x86_64 --features kernel-bin --target x86_64-unknown-none
       - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target x86_64-unknown-uefi
       - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin --target aarch64-unknown-none -- -D warnings
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-exceptions --target aarch64-unknown-none -- -D warnings
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-exception-fatal --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-memory-map --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-memory-map --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-page-tables --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-page-tables --target aarch64-unknown-none -- -D warnings
+      - run: cargo build -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-gic --target aarch64-unknown-none
+      - run: cargo clippy -p finn-kernel --bin finn-kernel-aarch64 --features kernel-bin,qemu-test-exit,qemu-test-arm64-gic --target aarch64-unknown-none -- -D warnings
       - run: cargo build -p finn-boot-uefi --bin finn-boot --features uefi-app --target aarch64-unknown-uefi
 
   target-profile-build:

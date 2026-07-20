@@ -86,7 +86,7 @@ fn main() -> Status {
         return fail("BOOTINFO_ALLOCATION_FAILED");
     };
     let boot_info_start = boot_info.as_ptr() as u64;
-    let boot_info_len = size_of::<BootInfo>() as u64;
+    let boot_info_len = PAGE_SIZE;
     // UEFI page allocation guarantees alignment stricter than `BootInfo` requires.
     #[allow(clippy::cast_ptr_alignment)]
     let info_ptr = boot_info.as_ptr().cast::<BootInfo>();

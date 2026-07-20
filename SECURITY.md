@@ -12,6 +12,8 @@ The project currently has no guaranteed response SLA or supported-version window
 
 - Rust is the primary implementation language; unsafe code is reviewed as a privileged boundary.
 - x86 kernel mappings use supervisor-only permissions, NX, CR0.WP, W^X intent, an unmapped null page, and stack/heap guards.
+- The local ARM64 R4.3 worktree uses EL1-only W^X mappings, SCTLR.WXN, PXN/UXN, an unmapped null page and stack guards, and validates four real translation/permission aborts. This is QEMU evidence, not a user-isolation or physical-hardware claim.
+- The local ARM64 R4.4 path keeps IRQs masked until an explicit consumer, performs no allocation, locking, or serial output inside the GIC handler, and EOIs the exact acknowledged token once. Its fixed single-BSP QEMU GICv2 model is not a general device-discovery or interrupt-isolation claim.
 - Boot structures are versioned and structurally validated.
 - QEMU tests reject panic/fatal markers.
 

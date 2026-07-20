@@ -15,6 +15,23 @@ pub fn line(value: &str) {
     }
 }
 
+/// Write an allocation-free diagnostic label and one fixed-width hexadecimal value.
+pub fn hex_line(label: &str, value: u64) {
+    for byte in label.bytes() {
+        write(byte);
+    }
+    for shift in (0..16).rev() {
+        let digit = ((value >> (shift * 4)) & 0xf) as u8;
+        write(if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + digit - 10
+        });
+    }
+    write(b'\r');
+    write(b'\n');
+}
+
 fn write(value: u8) {
     // SAFETY: R3 supports only QEMU `virt`, whose first PL011 is fixed at
     // 0x0900_0000. This BSP-only path polls the FIFO and performs one MMIO write.

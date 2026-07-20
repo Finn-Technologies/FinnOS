@@ -1,6 +1,9 @@
-//! Minimal `AArch64` facilities for the R3 serial-first-boot boundary.
+//! Early `AArch64` facilities for QEMU serial entry and synchronous exceptions.
 
 #![allow(unsafe_code)]
 
+pub mod exceptions;
+pub mod gic;
+pub mod paging;
 pub mod qemu;
 pub mod serial;

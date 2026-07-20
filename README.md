@@ -4,7 +4,7 @@ FinnOS is an experimental, non-UNIX operating-system project written primarily i
 
 ## Current maturity
 
-FinnOS is an x86-64 UEFI kernel prototype for QEMU with a minimal ARM64 serial-entry port. It is not yet a functional general-purpose OS.
+FinnOS is an x86-64 UEFI kernel prototype for QEMU with an integrated ARM64 serial-entry port and locally verified R4 exception and early-memory slices. It is not yet a functional general-purpose OS.
 
 Verified on 2026-07-16:
 
@@ -14,13 +14,19 @@ Verified on 2026-07-16:
 - The kernel installs GDT/TSS/IDT state, classifies memory, allocates physical pages, activates private W^X page tables, maps a guarded 1 MiB heap, starts a 100 Hz xAPIC timer, and runs bounded cooperative ring-0 tasks.
 - The Rust and Python host suites and all eight debug QEMU integration scenarios pass.
 
-Locally verified on the 2026-07-17 R3 worktree: AAVMF loads `BOOTAA64.EFI`
-in QEMU `virt` and reaches a minimal AArch64 PL011 kernel marker. CI and all
-architecture-parity kernel facilities remain pending.
+R3 ARM64 serial entry is integrated with green local and CI evidence. Locally
+verified on the 2026-07-20 R4.1-R4.4 worktree: AAVMF enters at EL1, installs a
+FinnOS-owned vector table, resumes one controlled `BRK`, and terminates an
+unarmed `BRK` through bounded fatal diagnostics, copies and validates the v2
+handoff, classifies the UEFI map, constructs the early physical-page allocator,
+and activates bounded supervisor-only translation tables whose four guarded
+fault cases are exercised on hardware. A pinned single-BSP GICv2 path also
+delivers, acknowledges, and EOIs a real self-SGI. Worktree CI and broader parity
+remain pending.
 
 Not implemented:
 
-- ARM64 memory, exception, interrupt, timer, task, or shutdown parity
+- ARM64 timer, task, or shutdown parity; external IRQ routing and broad exception recovery
 - user mode, processes, system calls, IPC, or capability enforcement
 - device discovery, device IRQ routing, and general drivers
 - block storage, filesystems, persistent data, or a shell
@@ -36,7 +42,7 @@ The colored GOP framebuffer diagnostic is not a graphical environment. The firmw
 |---|---|---|---|
 | x86-64 QEMU `q35` + UEFI/OVMF | Verified | Verified | Development target |
 | x86-64 physical hardware | Unverified | Unverified | Unsupported |
-| ARM64 QEMU `virt` + UEFI | Serial-first-boot worktree | Local only | R3 locally verified; CI and R4 parity pending |
+| ARM64 QEMU `virt` + UEFI | Integrated serial entry plus local R4.1-R4.4 exceptions, memory, owned MMU, and BSP GICv2 SGI | R3 CI; R4.1-R4.4 local | Timer, task, shutdown, discovery, and external IRQ parity pending |
 | ARM64 physical hardware | No implementation | No | Unsupported |
 
 See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWARE_SUPPORT.md).

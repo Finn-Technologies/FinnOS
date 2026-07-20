@@ -6,9 +6,12 @@ No. It boots a tested x86-64 kernel prototype but has no userspace, shell, stora
 
 ## Does ARM64 work?
 
-Only the R3 serial-first-boot slice works locally in QEMU `virt`: UEFI reaches
-a minimal kernel PL011 marker. ARM64 does not yet have memory, exception,
-interrupt, timer, task, or shutdown parity. See [PORTING.md](../PORTING.md).
+R3 serial first boot is integrated in QEMU `virt`. Local R4.1-R4.4 slices add
+EL1 vectors, a controlled synchronous `BRK`, strict handoff copying, memory-map
+classification, early page allocation/free, and a guarded EL1-only address
+space, plus a pinned single-BSP GICv2 self-SGI lifecycle. ARM64 still lacks
+broad exception recovery, generic timer, task, external interrupt discovery,
+and shutdown parity. See [PORTING.md](../PORTING.md).
 
 ## Is Peony implemented?
 

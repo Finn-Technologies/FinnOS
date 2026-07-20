@@ -13,9 +13,15 @@ class BootMode(Enum):
     NORMAL = ("", "kernel-bin", False)
     FIRST_BOOT = ("test", "kernel-bin,qemu-test-exit", True)
     EXCEPTIONS = ("exceptions", "kernel-bin,qemu-test-exit,qemu-test-exceptions", True)
+    ARM64_EXCEPTION_FATAL = (
+        "arm64-exception-fatal",
+        "kernel-bin,qemu-test-exit,qemu-test-arm64-exception-fatal",
+        True,
+    )
     MEMORY_MAP = ("memory-map", "kernel-bin,qemu-test-exit,qemu-test-memory-map", True)
     PAGE_ALLOCATOR = ("page-allocator", "kernel-bin,qemu-test-exit,qemu-test-page-allocator", True)
     PAGE_TABLES = ("page-tables", "kernel-bin,qemu-test-exit,qemu-test-page-tables", True)
+    ARM64_GIC = ("arm64-gic", "kernel-bin,qemu-test-exit,qemu-test-arm64-gic", True)
     HEAP = ("heap", "kernel-bin,qemu-test-exit,qemu-test-heap", True)
     TIMER = ("timer-interrupts", "kernel-bin,qemu-test-exit,qemu-test-timer-interrupts", True)
     COOPERATIVE_TASKS = (

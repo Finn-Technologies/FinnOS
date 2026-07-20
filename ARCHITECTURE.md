@@ -21,10 +21,12 @@ AAVMF -> boot/uefi -> validates and loads AArch64 KERNEL.ELF
                          |
                          v
 kernel/src/bin/aarch64.rs
-  AAPCS64 entry -> linked early stack -> PL011 serial-ready marker
+  AAPCS64 entry -> linked early stack -> EL1 VBAR/raw synchronous frame
+       -> handoff/classifier/allocator -> private EL1 translation tables -> BSP GICv2
+       -> PL011 serial-ready marker -> controlled exception/fault tests in isolated images
 ```
 
-The loader and kernel are separate ELF/PE artifacts. On x86-64, the loader enters `_start` using SysV64 with `BootInfo` in `RDI`. The R3 ARM64 slice uses AAPCS64 with `BootInfo` in `x0`, switches to its linked early stack, and emits a PL011 marker; it does not continue through the x86 kernel foundation.
+The loader and kernel are separate ELF/PE artifacts. On x86-64, the loader enters `_start` using SysV64 with `BootInfo` in `RDI`. The ARM64 path uses AAPCS64 with `BootInfo` in `x0`, switches to its linked 256 KiB early stack, confirms EL1, masks asynchronous exceptions, and installs a 2 KiB-aligned VBAR before consuming the handoff. Both paths copy the strictly validated page-owned `BootInfo`; ARM64 now continues through the shared memory classifier, early physical allocator, and a FinnOS-owned supervisor-only address space, but not the x86 timer/task foundation.
 
 ## Boot flow
 
@@ -55,9 +57,15 @@ The loader and kernel are separate ELF/PE artifacts. On x86-64, the loader enter
 
 Architecture-independent code currently includes the boot protocol, UEFI descriptor decoding/classification, physical extent allocator, heap allocation policy, task state machine, and interrupt-depth concept. x86-specific code includes entry, linker layout, GDT/TSS/IDT, exception assembly, page tables, APIC/PIC/PIT, timer, task stacks, context switching, QEMU exit, and serial I/O.
 
-ARM64-specific R3 code includes its linker/entry stack, PL011 polling, and
-semihosting test exit. Memory classification, exceptions, translation tables,
-GIC, generic timer, and contexts are not yet wired into the ARM executable.
+ARM64-specific code includes its guarded linker/entry stack, PL011 polling,
+semihosting test exit, EL1 detection, a resident vector table, an
+architecture-specific raw exception frame, and controlled synchronous tests.
+It reuses the architecture-independent handoff, memory-map, and physical-page
+allocator policy, then installs bounded four-level 4 KiB TTBR0 tables with
+supervisor W^X, null/stack guards, and distinct normal/device attributes. The
+pinned QEMU profile also initializes a BSP GICv2 and proves one self-SGI
+acknowledge/EOI lifecycle. Generic timer and contexts are not yet wired;
+IRQ/FIQ/SError and unarmed synchronous faults remain fatal-only.
 
 The intended long-term boundary is:
 
@@ -85,7 +93,10 @@ None of the user-service boundary is implemented. It must be validated increment
 - [Memory map](docs/architecture/physical-memory-map.md)
 - [Physical allocation](docs/architecture/physical-page-allocation.md)
 - [Virtual memory](docs/architecture/x86_64-virtual-memory.md)
+- [AArch64 virtual memory](docs/architecture/aarch64-virtual-memory.md)
+- [AArch64 GICv2](docs/architecture/aarch64-gic.md)
 - [Interrupts and timer](docs/architecture/x86_64-interrupts-and-timer.md)
+- [AArch64 synchronous exceptions](docs/architecture/aarch64-exceptions.md)
 - [Cooperative tasks](docs/architecture/cooperative-kernel-tasks.md)
 - [Planned processes](docs/architecture/processes.md)
 - [Planned IPC and capabilities](docs/architecture/ipc.md)

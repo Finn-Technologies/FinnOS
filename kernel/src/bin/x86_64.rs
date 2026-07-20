@@ -123,7 +123,11 @@ extern "sysv64" fn finnos_cooperative_register_yield() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
+/// # Safety
+///
+/// The firmware loader must pass the initialized, page-owned `BootInfo`
+/// pointer established by the FinnOS boot protocol.
+pub unsafe extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
     finn_kernel::serial_log!("FINNOS:KERNEL:ENTRY\n");
     #[cfg(feature = "qemu-test-panic")]
     {
@@ -136,7 +140,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         finn_kernel::arch::x86_64::exceptions::init_exception_foundation(current_stack_top());
     }
 
-    let info = match validate_pointer(pointer) {
+    // SAFETY: The UEFI loader transfers an initialized, retained BootInfo page
+    // as the kernel entry argument. Validation copies it before further use.
+    let info = match unsafe { validate_pointer(pointer) } {
         Ok(info) => info,
         Err(_) => {
             finn_kernel::serial_log!("FINNOS:KERNEL:BOOTINFO_ERROR\n");
@@ -151,7 +157,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
             info.memory_map.byte_len,
             info.memory_map.descriptor_size
         );
-        match parse_and_classify(info) {
+        // SAFETY: BootInfo validation established the raw map range; UEFI has
+        // exited and the loader-owned backing storage remains reserved.
+        match unsafe { parse_and_classify(&info) } {
             Ok((table, summary)) => {
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_PARSED\n");
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED\n");
@@ -167,6 +175,14 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 );
                 finn_kernel::serial_log!("FINNOS:MEMORY:KERNEL_BYTES={}\n", summary.kernel_bytes);
                 finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:BOOT_INFO_BYTES={}\n",
+                    summary.boot_info_bytes
+                );
+                finn_kernel::serial_log!(
+                    "FINNOS:MEMORY:MEMORY_MAP_STORAGE_BYTES={}\n",
+                    summary.memory_map_storage_bytes
+                );
+                finn_kernel::serial_log!(
                     "FINNOS:MEMORY:FRAMEBUFFER_BYTES={}\n",
                     summary.framebuffer_bytes
                 );
@@ -180,9 +196,9 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                         finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_KERNEL\n");
                         failure();
                     }
-                    if summary.framebuffer_bytes == 0 {
+                    if summary.boot_info_bytes == 0 || summary.memory_map_storage_bytes == 0 {
                         finn_kernel::serial_log!(
-                            "FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_FRAMEBUFFER\n"
+                            "FINNOS:KERNEL:MEMORY_MAP_ERROR:ZERO_HANDOFF_STORAGE\n"
                         );
                         failure();
                     }
@@ -253,7 +269,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     );
                 }
                 #[allow(unused_mut)]
-                let mut address_space = match build_page_tables(info, &mut allocator, scratch) {
+                let mut address_space = match build_page_tables(&info, &mut allocator, scratch) {
                     Ok(space) => space,
                     Err(error) => {
                         finn_kernel::serial_log!("FINNOS:KERNEL:PAGE_TABLE_ERROR:{:?}\n", error);
@@ -266,7 +282,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     .unwrap_or(0);
                 finn_kernel::serial_log!("FINNOS:PAGING:OLD_CR3={:#x}\n", old_cr3);
                 log_cpu_transition_state();
-                if validate_required_mappings(&address_space, info).is_err() {
+                if validate_required_mappings(&address_space, &info).is_err() {
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:PAGE_TABLE_ERROR:RequiredMappingMissing\n"
                     );
@@ -298,7 +314,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     "FINNOS:PAGING:MAPPED_PAGES={}\n",
                     address_space.mapped_pages()
                 );
-                if validate_required_mappings(&address_space, info).is_err()
+                if validate_required_mappings(&address_space, &info).is_err()
                     || paging::current_cr3() != address_space.root().address()
                     || paging::current_cr0() & paging::CR0_WP == 0
                     || paging::current_efer() & paging::EFER_NXE == 0
@@ -410,7 +426,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 );
                 #[cfg(feature = "qemu-test-cooperative-tasks")]
                 {
-                    draw(info);
+                    draw(&info);
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
                         info.framebuffer.address,
@@ -422,7 +438,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                 }
                 #[cfg(feature = "qemu-test-page-tables")]
                 {
-                    draw(info);
+                    draw(&info);
                     finn_kernel::serial_log!(
                         "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\n",
                         info.framebuffer.address,
@@ -447,7 +463,7 @@ pub extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_OK absent\n");
     }
     if info.flags & BOOT_FLAG_FRAMEBUFFER_PRESENT != 0 {
-        draw(info);
+        draw(&info);
         finn_kernel::serial_log!(
             "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\n",
             info.framebuffer.address,

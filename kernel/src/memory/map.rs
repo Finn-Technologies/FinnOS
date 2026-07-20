@@ -94,14 +94,14 @@ impl Default for RegionTable {
     }
 }
 
-/// Validate memory-map metadata and return the raw byte slice.
+/// Validate memory-map metadata and return the raw byte slice for this parse.
 ///
 /// # Safety
 ///
 /// The caller must ensure `info.memory_map.address` and `info.memory_map.byte_len`
 /// describe a valid, readable physical region. This function only performs
 /// arithmetic validation.
-pub fn memory_map_bytes(info: &MemoryMapInfo) -> Result<&'static [u8], MemoryMapError> {
+unsafe fn memory_map_bytes(info: &MemoryMapInfo) -> Result<&[u8], MemoryMapError> {
     if info.descriptor_size == 0 {
         return Err(MemoryMapError::ZeroDescriptorSize);
     }
@@ -136,6 +136,8 @@ pub fn memory_map_bytes(info: &MemoryMapInfo) -> Result<&'static [u8], MemoryMap
     // SAFETY: The caller guarantees the physical range is readable. The kernel
     // entry validates BootInfo before reaching this point.
     let byte_len = usize::try_from(info.byte_len).map_err(|_| MemoryMapError::AddressOverflow)?;
+    // SAFETY: Required by this function's contract; arithmetic and length
+    // conversion were checked above.
     let slice = unsafe { core::slice::from_raw_parts(start as *const u8, byte_len) };
     Ok(slice)
 }
@@ -144,8 +146,32 @@ pub fn memory_map_bytes(info: &MemoryMapInfo) -> Result<&'static [u8], MemoryMap
 ///
 /// The returned table is sorted, non-overlapping, and has adjacent regions of
 /// the same kind merged.
-pub fn parse_and_classify(
+///
+/// # Safety
+///
+/// `info.memory_map` must describe a valid readable buffer that remains alive
+/// for this call. Callers must first validate the copied `BootInfo` handoff and
+/// ensure the firmware-owned storage remains reserved.
+pub unsafe fn parse_and_classify(
     info: &BootInfo,
+) -> Result<(RegionTable, MemoryMapSummary), MemoryMapError> {
+    // SAFETY: Forwarding the public function's raw-buffer contract.
+    unsafe { parse_and_classify_impl(info, true) }
+}
+
+#[cfg(test)]
+pub(super) unsafe fn parse_and_classify_without_range_containment_for_tests(
+    info: &BootInfo,
+) -> Result<(RegionTable, MemoryMapSummary), MemoryMapError> {
+    // SAFETY: Forwarding the test helper's raw-buffer contract. Parser unit
+    // tests use synthetic host addresses that are not physical-map entries;
+    // containment itself is tested directly against constructed tables.
+    unsafe { parse_and_classify_impl(info, false) }
+}
+
+unsafe fn parse_and_classify_impl(
+    info: &BootInfo,
+    validate_protected_ranges: bool,
 ) -> Result<(RegionTable, MemoryMapSummary), MemoryMapError> {
     if info.flags & finn_boot_protocol::BOOT_FLAG_MEMORY_MAP_PRESENT == 0 {
         return Err(MemoryMapError::MissingMemoryMap);
@@ -153,7 +179,8 @@ pub fn parse_and_classify(
     let map = &info.memory_map;
 
     // SAFETY: The kernel entry validates the physical range before calling this.
-    let bytes = memory_map_bytes(map)?;
+    // SAFETY: This function's caller provides the same raw-buffer guarantee.
+    let bytes = unsafe { memory_map_bytes(map)? };
 
     let mut table = RegionTable::new();
     let descriptor_count = map
@@ -170,13 +197,16 @@ pub fn parse_and_classify(
         if descriptor.page_count == 0 {
             continue;
         }
-        let region = descriptor_to_region(&descriptor);
+        let region = descriptor_to_region(&descriptor)?;
         table.push(region)?;
     }
 
     detect_overlapping_firmware_regions(&table)?;
 
     let exclusions = build_exclusions(info)?;
+    if validate_protected_ranges {
+        validate_exclusions(&table, &exclusions)?;
+    }
     apply_exclusions(&mut table, &exclusions)?;
 
     normalize(&mut table)?;
@@ -194,13 +224,31 @@ const fn build_exclusions(info: &BootInfo) -> Result<[MemoryRegion; 4], MemoryMa
         byte_len: info.memory_map.byte_len,
     };
 
-    if kernel_image.byte_len == 0 {
+    if kernel_image.start == 0
+        || kernel_image.byte_len == 0
+        || kernel_image
+            .start
+            .checked_add(kernel_image.byte_len)
+            .is_none()
+    {
         return Err(MemoryMapError::InvalidKernelRange);
     }
-    if boot_info_storage.byte_len == 0 {
+    if boot_info_storage.start == 0
+        || boot_info_storage.byte_len == 0
+        || boot_info_storage
+            .start
+            .checked_add(boot_info_storage.byte_len)
+            .is_none()
+    {
         return Err(MemoryMapError::InvalidBootInfoRange);
     }
-    if memory_map_storage.byte_len == 0 {
+    if memory_map_storage.start == 0
+        || memory_map_storage.byte_len == 0
+        || memory_map_storage
+            .start
+            .checked_add(memory_map_storage.byte_len)
+            .is_none()
+    {
         return Err(MemoryMapError::InvalidMemoryMapStorageRange);
     }
 
@@ -236,7 +284,14 @@ const fn build_exclusions(info: &BootInfo) -> Result<[MemoryRegion; 4], MemoryMa
     ];
 
     if info.flags & finn_boot_protocol::BOOT_FLAG_FRAMEBUFFER_PRESENT != 0 {
-        if info.framebuffer.byte_len == 0 || info.framebuffer.address == 0 {
+        if info.framebuffer.byte_len == 0
+            || info.framebuffer.address == 0
+            || info
+                .framebuffer
+                .address
+                .checked_add(info.framebuffer.byte_len)
+                .is_none()
+        {
             return Err(MemoryMapError::InvalidFramebufferRange);
         }
         exclusions[3].start = info.framebuffer.address;
@@ -244,6 +299,68 @@ const fn build_exclusions(info: &BootInfo) -> Result<[MemoryRegion; 4], MemoryMa
     }
 
     Ok(exclusions)
+}
+
+/// Validate protected-range separation and firmware-map containment before
+/// applying any mutations to the region table.
+fn validate_exclusions(
+    table: &RegionTable,
+    exclusions: &[MemoryRegion],
+) -> Result<(), MemoryMapError> {
+    for (index, range) in exclusions.iter().enumerate() {
+        if range.byte_len == 0 {
+            continue;
+        }
+        let range_end = range.end().ok_or(MemoryMapError::RegionOverflow)?;
+        for other in exclusions.iter().skip(index + 1) {
+            if other.byte_len == 0 {
+                continue;
+            }
+            let other_end = other.end().ok_or(MemoryMapError::RegionOverflow)?;
+            if range.start < other_end && other.start < range_end {
+                return Err(MemoryMapError::OverlappingProtectedRanges);
+            }
+        }
+        if range_is_covered_by_one_region(table, range.start, range_end)? {
+            continue;
+        }
+        let framebuffer_is_separate = range.kind == MemoryRegionKind::Framebuffer
+            && !range_overlaps_any_region(table, range.start, range_end)?;
+        if !framebuffer_is_separate {
+            return Err(MemoryMapError::ProtectedRangeOutsideFirmwareMap);
+        }
+    }
+    Ok(())
+}
+
+/// Return true when one firmware descriptor fully covers `[start, end)`.
+/// Requiring one owner prevents duplicate exclusions across adjacent entries.
+fn range_is_covered_by_one_region(
+    table: &RegionTable,
+    start: u64,
+    end: u64,
+) -> Result<bool, MemoryMapError> {
+    for region in table.as_slice() {
+        let region_end = region.end().ok_or(MemoryMapError::RegionOverflow)?;
+        if region.start <= start && end <= region_end {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn range_overlaps_any_region(
+    table: &RegionTable,
+    start: u64,
+    end: u64,
+) -> Result<bool, MemoryMapError> {
+    for region in table.as_slice() {
+        let region_end = region.end().ok_or(MemoryMapError::RegionOverflow)?;
+        if region.start < end && start < region_end {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Apply a single protected range to the region table, splitting regions as needed.
@@ -332,21 +449,12 @@ fn apply_exclusions(
     for exclusion in exclusions {
         apply_exclusion(table, exclusion)?;
     }
-    // Add the framebuffer as a protected range even if it does not overlap
-    // any firmware region. The kernel image, BootInfo, and memory-map storage
-    // are allocated by UEFI and are expected to overlap firmware descriptors.
+    // GOP apertures may be absent from the UEFI map. Preserve their ownership
+    // explicitly after the separately validated non-overlap check.
     let framebuffer = &exclusions[3];
     if framebuffer.byte_len > 0 {
-        let fb_end = framebuffer.end().ok_or(MemoryMapError::RegionOverflow)?;
-        let mut overlaps = false;
-        for region in table.as_slice() {
-            let region_end = region.end().ok_or(MemoryMapError::RegionOverflow)?;
-            if region.start < fb_end && framebuffer.start < region_end {
-                overlaps = true;
-                break;
-            }
-        }
-        if !overlaps {
+        let end = framebuffer.end().ok_or(MemoryMapError::RegionOverflow)?;
+        if !range_overlaps_any_region(table, framebuffer.start, end)? {
             table.push(*framebuffer)?;
         }
     }
@@ -428,6 +536,10 @@ pub struct MemoryMapSummary {
     pub reserved_bytes: u64,
     /// Kernel image bytes.
     pub kernel_bytes: u64,
+    /// `BootInfo` storage bytes.
+    pub boot_info_bytes: u64,
+    /// Raw memory-map storage bytes.
+    pub memory_map_storage_bytes: u64,
     /// Framebuffer bytes.
     pub framebuffer_bytes: u64,
 }
@@ -439,6 +551,8 @@ impl MemoryMapSummary {
         let mut usable_bytes = 0u64;
         let mut reserved_bytes = 0u64;
         let mut kernel_bytes = 0u64;
+        let mut boot_info_bytes = 0u64;
+        let mut memory_map_storage_bytes = 0u64;
         let mut framebuffer_bytes = 0u64;
         for region in table.as_slice() {
             match region.kind {
@@ -447,9 +561,20 @@ impl MemoryMapSummary {
                 }
                 MemoryRegionKind::Kernel => {
                     kernel_bytes = kernel_bytes.saturating_add(region.byte_len);
+                    reserved_bytes = reserved_bytes.saturating_add(region.byte_len);
+                }
+                MemoryRegionKind::BootInfo => {
+                    boot_info_bytes = boot_info_bytes.saturating_add(region.byte_len);
+                    reserved_bytes = reserved_bytes.saturating_add(region.byte_len);
+                }
+                MemoryRegionKind::MemoryMapStorage => {
+                    memory_map_storage_bytes =
+                        memory_map_storage_bytes.saturating_add(region.byte_len);
+                    reserved_bytes = reserved_bytes.saturating_add(region.byte_len);
                 }
                 MemoryRegionKind::Framebuffer => {
                     framebuffer_bytes = framebuffer_bytes.saturating_add(region.byte_len);
+                    reserved_bytes = reserved_bytes.saturating_add(region.byte_len);
                 }
                 _ => {
                     reserved_bytes = reserved_bytes.saturating_add(region.byte_len);
@@ -462,6 +587,8 @@ impl MemoryMapSummary {
             usable_bytes,
             reserved_bytes,
             kernel_bytes,
+            boot_info_bytes,
+            memory_map_storage_bytes,
             framebuffer_bytes,
         }
     }

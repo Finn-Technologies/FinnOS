@@ -104,16 +104,21 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-/// Convert a decoded UEFI descriptor into a `FinnOS` memory region.
-#[must_use]
-pub const fn descriptor_to_region(descriptor: &UefiDescriptor) -> MemoryRegion {
+/// Convert a decoded UEFI descriptor into a checked `FinnOS` memory region.
+///
+/// # Errors
+///
+/// Returns a typed overflow error when the page count or exclusive end cannot
+/// be represented in `u64`.
+pub fn descriptor_to_region(descriptor: &UefiDescriptor) -> Result<MemoryRegion, MemoryMapError> {
     let kind = descriptor.memory_type.classify();
-    let byte_len = descriptor.page_count.saturating_mul(UEFI_PAGE_SIZE);
-    MemoryRegion {
+    let byte_len = descriptor.byte_len()?;
+    let _ = descriptor.end()?;
+    Ok(MemoryRegion {
         start: descriptor.physical_start,
         byte_len,
         kind,
         source: MemoryRegionSource::Uefi(descriptor.memory_type),
         attributes: descriptor.attributes,
-    }
+    })
 }

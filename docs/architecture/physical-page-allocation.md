@@ -1,6 +1,6 @@
 # Early physical page allocation
 
-> Status: Implemented for x86-64 UEFI QEMU
+> Status: Implemented for x86-64 UEFI QEMU; locally verified for ARM64 early boot
 
 FinnOS has an early, single-core physical page allocator. It manages only
 memory-map regions classified as `Usable`; protected, firmware, device,
@@ -32,6 +32,11 @@ This allocator is not thread-safe and is intended only for the current
 single-core early-boot phase. Boot-services and runtime-services memory are
 not reclaimed. There is no user-space allocator, NUMA support, or huge-page
 allocation policy.
+
+The ARM64 R4.2 QEMU test constructs this allocator from the shared normalized
+table, allocates one real page, proves that the address is `Usable` and outside
+kernel/BootInfo/map/framebuffer ranges, returns it, and rechecks counters and
+invariants. It does not map or write that physical page.
 
 The FinnOS-owned x86-64 paging layer now reserves a fixed 64-page table pool
 from this allocator. Those physical pages remain allocated while the active

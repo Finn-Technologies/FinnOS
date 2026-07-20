@@ -389,13 +389,18 @@ impl EarlyPhysicalPageAllocator {
         if self.free_pages > self.total_pages {
             return Err(PageAllocationError::CorruptAllocatorState);
         }
+        let mut managed_sum = 0u64;
         for i in 0..self.managed_count {
             if self.managed[i].page_count == 0
                 || (i > 0 && self.managed[i - 1].end()? >= self.managed[i].start)
             {
                 return Err(PageAllocationError::CorruptAllocatorState);
             }
+            managed_sum = managed_sum
+                .checked_add(self.managed[i].page_count)
+                .ok_or(PageAllocationError::CorruptAllocatorState)?;
         }
+        let mut free_sum = 0u64;
         for i in 0..self.free_count {
             if self.free[i].page_count == 0
                 || (i > 0 && self.free[i - 1].end()? >= self.free[i].start)
@@ -403,6 +408,12 @@ impl EarlyPhysicalPageAllocator {
             {
                 return Err(PageAllocationError::CorruptAllocatorState);
             }
+            free_sum = free_sum
+                .checked_add(self.free[i].page_count)
+                .ok_or(PageAllocationError::CorruptAllocatorState)?;
+        }
+        if managed_sum != self.total_pages || free_sum != self.free_pages {
+            return Err(PageAllocationError::CorruptAllocatorState);
         }
         Ok(())
     }
@@ -555,5 +566,138 @@ mod tests {
             )])),
             Err(PageAllocationError::NoUsableMemory)
         ));
+    }
+
+    #[test]
+    fn rejects_unsorted_overlapping_and_overflowing_region_tables() {
+        let unsorted = table(&[
+            (0x4000, PAGE_SIZE, MemoryRegionKind::Usable),
+            (0x1000, PAGE_SIZE, MemoryRegionKind::Usable),
+        ]);
+        assert_eq!(
+            EarlyPhysicalPageAllocator::from_memory_regions(&unsorted).err(),
+            Some(PageAllocationError::OverlappingManagedRegions)
+        );
+
+        let overlapping = table(&[
+            (0x1000, 2 * PAGE_SIZE, MemoryRegionKind::Usable),
+            (0x2000, 2 * PAGE_SIZE, MemoryRegionKind::Usable),
+        ]);
+        assert_eq!(
+            EarlyPhysicalPageAllocator::from_memory_regions(&overlapping).err(),
+            Some(PageAllocationError::OverlappingManagedRegions)
+        );
+
+        let overflowing = table(&[(
+            u64::MAX - PAGE_SIZE + 1,
+            PAGE_SIZE,
+            MemoryRegionKind::Usable,
+        )]);
+        assert_eq!(
+            EarlyPhysicalPageAllocator::from_memory_regions(&overflowing).err(),
+            Some(PageAllocationError::InvalidManagedRegion)
+        );
+    }
+
+    #[test]
+    fn exhaustion_and_failed_contiguous_request_preserve_state() {
+        let mut allocator = EarlyPhysicalPageAllocator::from_memory_regions(&table(&[(
+            0x1000,
+            3 * PAGE_SIZE,
+            MemoryRegionKind::Usable,
+        )]))
+        .unwrap();
+        let first = allocator.allocate_contiguous(2).unwrap();
+        let last = allocator.allocate_page().unwrap();
+        assert_eq!(allocator.free_pages(), 0);
+        let before = (
+            allocator.total_pages(),
+            allocator.free_pages(),
+            allocator.allocated_pages(),
+            allocator.free_extent_count(),
+        );
+        assert_eq!(
+            allocator.allocate_contiguous(2),
+            Err(PageAllocationError::OutOfMemory)
+        );
+        assert_eq!(
+            before,
+            (
+                allocator.total_pages(),
+                allocator.free_pages(),
+                allocator.allocated_pages(),
+                allocator.free_extent_count(),
+            )
+        );
+        assert!(allocator.check_invariants().is_ok());
+        allocator.deallocate(first).unwrap();
+        allocator
+            .deallocate(PageRange::new(last.start_address(), 1).unwrap())
+            .unwrap();
+        assert_eq!(allocator.free_pages(), allocator.total_pages());
+        assert_eq!(allocator.free_extent_count(), 1);
+    }
+
+    #[test]
+    fn partial_overlap_and_free_extent_capacity_fail_without_mutation() {
+        let mut allocator = EarlyPhysicalPageAllocator::from_memory_regions(&table(&[(
+            0x1000,
+            514 * PAGE_SIZE,
+            MemoryRegionKind::Usable,
+        )]))
+        .unwrap();
+        let whole = allocator.allocate_contiguous(514).unwrap();
+        for index in 0..MAX_FREE_EXTENTS {
+            allocator
+                .deallocate(PageRange::new(0x1000 + (index as u64 * 2 * PAGE_SIZE), 1).unwrap())
+                .unwrap();
+        }
+        assert_eq!(allocator.free_extent_count(), MAX_FREE_EXTENTS);
+        let before_pages = allocator.free_pages();
+        assert_eq!(
+            allocator.deallocate(PageRange::new(0x1000 + 513 * PAGE_SIZE, 1).unwrap()),
+            Err(PageAllocationError::FreeExtentCapacityExceeded)
+        );
+        assert_eq!(allocator.free_pages(), before_pages);
+        assert_eq!(allocator.free_extent_count(), MAX_FREE_EXTENTS);
+        assert!(allocator.check_invariants().is_ok());
+
+        assert_eq!(
+            allocator.deallocate(PageRange::new(whole.start_address(), 2).unwrap()),
+            Err(PageAllocationError::FreeRangeOverlap)
+        );
+        assert_eq!(allocator.free_pages(), before_pages);
+        assert!(allocator.check_invariants().is_ok());
+    }
+
+    #[test]
+    fn invariant_check_reconciles_extent_and_counter_totals() {
+        let allocator = EarlyPhysicalPageAllocator::from_memory_regions(&table(&[(
+            0x1000,
+            4 * PAGE_SIZE,
+            MemoryRegionKind::Usable,
+        )]))
+        .unwrap();
+
+        let mut corrupt = allocator.clone();
+        corrupt.total_pages += 1;
+        assert_eq!(
+            corrupt.check_invariants(),
+            Err(PageAllocationError::CorruptAllocatorState)
+        );
+
+        corrupt = allocator.clone();
+        corrupt.free_pages -= 1;
+        assert_eq!(
+            corrupt.check_invariants(),
+            Err(PageAllocationError::CorruptAllocatorState)
+        );
+
+        corrupt = allocator;
+        corrupt.managed[0].page_count += 1;
+        assert_eq!(
+            corrupt.check_invariants(),
+            Err(PageAllocationError::CorruptAllocatorState)
+        );
     }
 }

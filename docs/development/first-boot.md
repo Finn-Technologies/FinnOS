@@ -13,6 +13,15 @@ QEMU AArch64, and AAVMF, then run `./tools/finn test-boot --target
 arm64-qemu`. Success requires the ordered bootloader markers followed by
 `FINNOS:KERNEL:ARM64_ENTRY` and `FINNOS:KERNEL:ARM64_SERIAL_READY` with QEMU
 status 0.
+
+R4.1 adds `./tools/finn test-exceptions --target arm64-qemu` for a resumable
+controlled `BRK` and `./tools/finn test-arm64-exception-fatal --target
+arm64-qemu` for the bounded non-returning diagnostic path.
+
+R4.2 adds `./tools/finn test-memory-map --target arm64-qemu`. It requires the
+ordered handoff/map/table/allocator markers, fixed-width positive accounting,
+one allocation outside all protected ranges, a successful free, restored
+invariants, and status 0. A framebuffer is optional on this ARM target.
 # First Boot timer order
 
 After heap initialization, FinnOS installs the external IDT gates, remaps and

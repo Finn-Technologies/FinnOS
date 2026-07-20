@@ -59,11 +59,27 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 mtools dosfstools
       - name: Run ARM64 serial first-boot smoke test
         run: ./tools/finn test-boot --target arm64-qemu
+      - name: Run ARM64 memory-map and early allocator test
+        run: ./tools/finn test-memory-map --target arm64-qemu
+      - name: Run ARM64 owned page-table test
+        run: ./tools/finn test-page-tables --target arm64-qemu
+      - name: Run ARM64 GICv2 self-SGI test
+        run: ./tools/finn test-arm64-gic --target arm64-qemu
+      - name: Run ARM64 synchronous exception test
+        run: ./tools/finn test-exceptions --target arm64-qemu
+      - name: Run ARM64 fatal exception diagnostic test
+        run: ./tools/finn test-arm64-exception-fatal --target arm64-qemu
       - name: Preserve ARM64 boot evidence on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: arm64-serial-boot-failure-${{ github.run_attempt }}
-          path: build/out/arm64-qemu-test/
+          path: |
+            build/out/arm64-qemu-test/
+            build/out/arm64-qemu-memory-map/
+            build/out/arm64-qemu-page-tables/
+            build/out/arm64-qemu-arm64-gic/
+            build/out/arm64-qemu-exceptions/
+            build/out/arm64-qemu-arm64-exception-fatal/
           if-no-files-found: warn
           retention-days: 14

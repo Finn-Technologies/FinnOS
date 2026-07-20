@@ -1,6 +1,6 @@
 # Physical memory map
 
-> Status: Implemented for x86-64 UEFI QEMU
+> Status: Implemented for x86-64 UEFI QEMU; locally verified on ARM64 QEMU
 > Implementation: `kernel/src/memory`
 
 ## Overview
@@ -51,7 +51,12 @@ After decoding firmware descriptors, the parser subtracts or reserves:
 - `MemoryMapStorage`: the raw UEFI memory-map buffer range.
 - `Framebuffer`: the GOP framebuffer backing range.
 
-These ranges are applied in a fixed priority order. Overlapping protected ranges are resolved by that order.
+Protected ranges must not overlap one another. Kernel, `BootInfo`, map-storage,
+and any in-map framebuffer range must each be fully owned by one firmware
+descriptor; spanning adjacent descriptors is rejected. A GOP framebuffer may
+instead be wholly outside the firmware map, in which case the parser appends
+its validated ownership range explicitly. Partial overlap is rejected. Invalid
+ownership claims fail before the table is mutated.
 
 ## Range splitting
 
@@ -77,12 +82,17 @@ If the final map would exceed `MAX_MEMORY_REGIONS`, the parser returns a structu
 
 ## Current limitations
 
-- Memory is classified but not allocated.
+- The classifier itself does not allocate; the early page allocator consumes
+  only its normalized `Usable` output and ARM64 smoke-tests one allocate/free.
 - Boot-services memory is not yet reclaimed.
 - The physical page allocator uses only `Usable` regions and does not reclaim boot-services or runtime-services memory.
 - FinnOS-owned page-table storage is reserved from usable pages and remains allocated while the
   active address space exists.
 - The early kernel heap reserves its backing pages from the physical page allocator after paging activation.
-- x86-64 UEFI QEMU only.
+- ARM64 consumes the map under inherited firmware identity translations, then
+  reserves table storage from `Usable` pages and activates its owned R4.3 map.
+- Version 3 describes used memory-map bytes, not the UEFI pool allocation's
+  spare capacity. All LoaderData remains non-usable; reclaiming it is forbidden
+  until a future protocol version describes the complete backing allocation.
 
 The classified ranges remain the source of physical-page ownership while paging is built; page-table storage is reserved from `Usable` pages and is not returned while active.
