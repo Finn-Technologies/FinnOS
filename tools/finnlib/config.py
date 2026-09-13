@@ -41,6 +41,7 @@ class BuildTarget:
     qemu_system: str
     qemu_machine: str
     qemu_cpu: str
+    data_image: str = ""
 
 
 @dataclass(frozen=True)
@@ -114,7 +115,7 @@ def _target(name: str, metadata: dict[str, Any], data: dict[str, Any], path: Pat
     for key in ("architecture", "platform", "firmware", "status", "bootable"):
         if key not in data:
             raise ConfigurationError(f"{context} is missing {key!r}")
-    for key in ("architecture", "platform", "firmware", "status", "bootable"):
+    for key in ("architecture", "platform", "firmware", "status", "bootable", "data_image"):
         if key in metadata and metadata[key] != data.get(key):
             raise ConfigurationError(f"[targets.{name}].{key} disagrees with {context}")
     bootable = data["bootable"]
@@ -139,8 +140,9 @@ def _target(name: str, metadata: dict[str, Any], data: dict[str, Any], path: Pat
         qemu_system=_string(data, "qemu_system", context, required=bootable),
         qemu_machine=_string(data, "qemu_machine", context, required=bootable),
         qemu_cpu=_string(data, "qemu_cpu", context, required=False),
+        data_image=_string(data, "data_image", context, required=False),
     )
-    for field_name in ("boot_filename", "kernel_filename", "image_filename"):
+    for field_name in ("boot_filename", "kernel_filename", "image_filename", "data_image"):
         value = getattr(target, field_name)
         if value and Path(value).name != value:
             raise ConfigurationError(f"{context}: {field_name} must be a filename")

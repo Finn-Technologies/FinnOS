@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 from enum import Enum
 from pathlib import Path
 
 from .config import BuildProfile, BuildTarget
+from .toolchain import find_firmware
 
 
 class BootMode(Enum):
@@ -34,6 +36,15 @@ class BootMode(Enum):
         "kernel-bin,qemu-test-preemption-context",
         True,
     )
+    USERSPACE = (
+        "userspace",
+        "kernel-bin,qemu-test-exit,qemu-test-userspace",
+        True,
+    )
+    IPC = ("ipc", "kernel-bin,qemu-test-exit,qemu-test-ipc", True)
+    ELF_LOADER = ("elf-loader", "kernel-bin,qemu-test-exit,qemu-test-elf-loader", True)
+    INIT = ("init", "kernel-bin,qemu-test-exit,qemu-test-init", True)
+    DESKTOP = ("desktop", "kernel-bin,qemu-test-exit,qemu-test-desktop", True)
 
     def __init__(self, suffix: str, kernel_features: str, test_exit: bool) -> None:
         self.suffix = suffix
@@ -83,13 +94,80 @@ def build_boot(
         boot = root / "target" / target.boot_cargo_target / artifact_profile / target.boot_binary
     if not kernel.is_file() or not boot.is_file(): raise RuntimeError("expected boot artifacts were not produced")
     manifest = output / "manifest.txt"
+    data_image = output / target.data_image if target.data_image else None
     manifest.write_text(
-        f"target = {target.name}\nprofile = {profile.name}\ncargo_profile = {artifact_profile}\n"
-        + artifact_manifest("kernel", kernel)
-        + artifact_manifest("boot_manager", boot),
+        generate_reproducible_manifest(
+            root, target, profile, artifact_profile, kernel, boot, data_image
+        ),
         encoding="utf-8",
     )
     return boot, kernel
+
+def generate_reproducible_manifest(
+    root: Path,
+    target: BuildTarget,
+    profile: BuildProfile,
+    artifact_profile: str,
+    kernel: Path,
+    boot: Path,
+    data_image: Path | None = None,
+) -> str:
+    lines = [
+        f"target = {target.name}",
+        f"profile = {profile.name}",
+        f"cargo_profile = {artifact_profile}",
+    ]
+    try:
+        rev = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root, capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root, capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        dirty = "dirty" if status else "clean"
+        lines.append(f"source.revision = {rev} ({dirty})")
+    except Exception:
+        lines.append("source.revision = unknown")
+
+    lockfile = root / "Cargo.lock"
+    if lockfile.is_file():
+        lines.append(f"cargo_lock.sha256 = {hashlib.sha256(lockfile.read_bytes()).hexdigest()}")
+
+    try:
+        rustc_ver = subprocess.run(
+            ["rustc", "--version"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        lines.append(f"toolchain.rustc = {rustc_ver}")
+    except Exception:
+        pass
+
+    try:
+        cargo_ver = subprocess.run(
+            ["cargo", "--version"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        lines.append(f"toolchain.cargo = {cargo_ver}")
+    except Exception:
+        pass
+
+    lines.append(f"toolchain.python = {sys.version.split()[0]}")
+
+    firmware_path = find_firmware(target.architecture)
+    if firmware_path and firmware_path.is_file():
+        firmware_digest = hashlib.sha256(firmware_path.read_bytes()).hexdigest()
+        lines.append(f"firmware.path = {firmware_path}")
+        lines.append(f"firmware.sha256 = {firmware_digest}")
+
+    lines.append(artifact_manifest("kernel", kernel).strip())
+    lines.append(artifact_manifest("boot_manager", boot).strip())
+
+    if data_image and data_image.is_file():
+        lines.append(artifact_manifest("data_image", data_image).strip())
+
+    return "\n".join(lines) + "\n"
 
 def artifact_manifest(name: str, path: Path) -> str:
     digest = hashlib.sha256(path.read_bytes()).hexdigest()

@@ -2,7 +2,47 @@ import unittest
 from pathlib import Path
 import re
 
-from tools.finnlib.qemu import ARM64_EXCEPTION_MARKERS, ARM64_GIC_MARKERS, ARM64_MARKERS, ARM64_MEMORY_MAP_MARKERS, ARM64_PAGE_TABLE_MARKERS, COOPERATIVE_TASK_MARKERS, HEAP_MARKERS, MARKERS, PAGE_ALLOCATOR_MARKERS, PAGE_TABLE_MARKERS, PREEMPTION_CONTEXT_MARKERS, TIMER_MARKERS, qemu_command, validate_arm64_exception_fatal, validate_arm64_exceptions, validate_arm64_gic, validate_arm64_memory_map, validate_arm64_page_tables, validate_arm64_smoke, validate_cooperative_tasks, validate_heap, validate_page_allocator, validate_page_tables, validate_preemption_context, validate_smoke, validate_timer
+from tools.finnlib.qemu import (
+    ARM64_COOPERATIVE_TASK_MARKERS,
+    ARM64_EXCEPTION_MARKERS,
+    ARM64_GIC_MARKERS,
+    ARM64_MARKERS,
+    ARM64_MEMORY_MAP_MARKERS,
+    ARM64_PAGE_TABLE_MARKERS,
+    ARM64_TIMER_MARKERS,
+    COOPERATIVE_TASK_MARKERS,
+    DESKTOP_MARKERS,
+    HEAP_MARKERS,
+    IPC_MARKERS,
+    MARKERS,
+    PAGE_ALLOCATOR_MARKERS,
+    PAGE_TABLE_MARKERS,
+    PREEMPTION_CONTEXT_MARKERS,
+    TIMER_MARKERS,
+    USERSPACE_MARKERS,
+    qemu_command,
+    validate_arm64_cooperative_tasks,
+    validate_arm64_desktop,
+    validate_arm64_exception_fatal,
+    validate_arm64_exceptions,
+    validate_arm64_gic,
+    validate_arm64_ipc,
+    validate_arm64_memory_map,
+    validate_arm64_page_tables,
+    validate_arm64_smoke,
+    validate_arm64_timer,
+    validate_arm64_userspace,
+    validate_cooperative_tasks,
+    validate_desktop,
+    validate_heap,
+    validate_ipc,
+    validate_page_allocator,
+    validate_page_tables,
+    validate_preemption_context,
+    validate_smoke,
+    validate_timer,
+    validate_userspace,
+)
 
 class BootLogTests(unittest.TestCase):
     def preemption_context_log(self):
@@ -516,9 +556,44 @@ class BootLogTests(unittest.TestCase):
         self.assertIn("-cpu cortex-a72", rendered)
         self.assertIn("-machine virt,gic-version=2,secure=off", rendered)
         self.assertIn("-smp 1", rendered)
-        self.assertIn("virtio-blk-pci", rendered)
         self.assertIn("-semihosting-config enable=on,target=native", rendered)
         self.assertNotIn("isa-debug-exit", rendered)
+
+    def test_qemu_command_attaches_data_drive_on_x86_and_arm64(self):
+        x86_cmd = qemu_command(
+            "qemu-system-x86_64",
+            "/firmware/OVMF_CODE.fd",
+            Path("/images/finnos.img"),
+            headless=True,
+            data_drive=Path("/images/data.img"),
+        )
+        x86_str = " ".join(str(p) for p in x86_cmd)
+        self.assertIn("-drive if=ide,format=raw,file=/images/finnos.img", x86_str)
+        self.assertIn("-drive if=none,format=raw,file=/images/data.img,id=finnos-data", x86_str)
+        self.assertIn("-device virtio-blk-pci,drive=finnos-data", x86_str)
+
+        arm_cmd = qemu_command(
+            "qemu-system-aarch64",
+            "/firmware/AAVMF_CODE.fd",
+            Path("/images/finnos.img"),
+            headless=True,
+            architecture="arm64",
+            data_drive=Path("/images/data.img"),
+        )
+        arm_str = " ".join(str(p) for p in arm_cmd)
+        self.assertIn("-drive if=none,format=raw,file=/images/finnos.img,id=finnos-esp", arm_str)
+        self.assertIn("-drive if=none,format=raw,file=/images/data.img,id=finnos-data", arm_str)
+        self.assertIn("-device virtio-blk-pci,drive=finnos-data", arm_str)
+
+    def test_qemu_command_attaches_gpu_when_requested(self):
+        cmd = qemu_command(
+            "qemu-system-x86_64",
+            "/firmware/OVMF_CODE.fd",
+            Path("/images/finnos.img"),
+            headless=True,
+            gpu=True,
+        )
+        self.assertIn("-device virtio-gpu-pci", " ".join(cmd))
 
     def test_page_allocator_markers(self):
         self.assertEqual(validate_page_allocator(33, "\n".join(PAGE_ALLOCATOR_MARKERS)), [])
@@ -599,5 +674,115 @@ class BootLogTests(unittest.TestCase):
         errors = validate_timer(33, output)
         self.assertTrue(any("TIMER_READY" in error for error in errors))
         self.assertTrue(any("forbidden" in error for error in errors))
+
+    def arm64_timer_log(self):
+        evidence = [
+            "FINNOS:INTERRUPTS:TIMER_PPI=30",
+            "FINNOS:TIMER:FREQUENCY_HZ=100",
+            "FINNOS:TIMER:TICK_MILLISECONDS=10",
+            "FINNOS:TIMER:ARM64_CNTFRQ=62500000",
+            "FINNOS:TIMER:ARM64_INTERVAL=625000",
+            "FINNOS:TIMER:TEST_START_TICKS=1",
+            "FINNOS:TIMER:TEST_END_TICKS=9",
+            "FINNOS:TIMER:TEST_ELAPSED_TICKS=8",
+            "FINNOS:TIMER:TEST_DELIVERY_DELTA=8",
+            "FINNOS:TIMER:TEST_EOI_DELTA=8",
+            "FINNOS:TIMER:TEST_UPTIME_MS=90",
+            "FINNOS:TIMER:FREQUENCY_WINDOW_MS=50",
+            "FINNOS:TIMER:FREQUENCY_WINDOW_TICKS=5",
+        ]
+        return "\n".join(ARM64_TIMER_MARKERS + tuple(evidence))
+
+    def test_arm64_timer_complete_sequence(self):
+        self.assertEqual(validate_arm64_timer(0, self.arm64_timer_log()), [])
+
+    def test_arm64_timer_rejects_wrong_status_and_errors(self):
+        output = self.arm64_timer_log()
+        self.assertTrue(validate_arm64_timer(1, output))
+        self.assertTrue(validate_arm64_timer(0, output.replace("FREQUENCY_HZ=100", "FREQUENCY_HZ=50")))
+        self.assertTrue(validate_arm64_timer(0, output + "\nFINNOS:KERNEL:PANIC"))
+        self.assertTrue(validate_arm64_timer(0, output + "\nFINNOS:KERNEL:TIMER_ERROR:Delivery"))
+
+    def arm64_cooperative_log(self):
+        evidence = [f"FINNOS:TASKS:EVENT_{index}={value}" for index, value in enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))]
+        evidence += [
+            "FINNOS:TASKS:EVENT_COUNT=9", "FINNOS:TASKS:A_STACK_START=0x1000", "FINNOS:TASKS:A_STACK_END=0x3000", "FINNOS:TASKS:A_SENTINEL=0x1800",
+            "FINNOS:TASKS:B_STACK_START=0x4000", "FINNOS:TASKS:B_STACK_END=0x6000", "FINNOS:TASKS:B_SENTINEL=0x4800",
+            "FINNOS:TASKS:C_STACK_START=0x7000", "FINNOS:TASKS:C_STACK_END=0x9000", "FINNOS:TASKS:C_SENTINEL=0x7800",
+            "FINNOS:TASKS:IDLE_STACK_START=0xa000", "FINNOS:TASKS:IDLE_STACK_END=0xc000", "FINNOS:TASKS:IDLE_RSP=0xa800",
+            "FINNOS:TASKS:COMPLETED_DELTA=4", "FINNOS:TASKS:EXITED_BEFORE_REAP=4", "FINNOS:TASKS:QUEUE_LENGTH_BEFORE_REAP=0",
+            "FINNOS:TASKS:PHYSICAL_FREE_BASELINE=100", "FINNOS:TASKS:PHYSICAL_FREE_AFTER_REAP=100", "FINNOS:TASKS:MAPPED_BASELINE=50", "FINNOS:TASKS:MAPPED_AFTER_REAP=50",
+            "FINNOS:TASKS:VACANT_BASELINE=6", "FINNOS:TASKS:VACANT_AFTER_REAP=6", "FINNOS:TASKS:REAPED_DELTA=4", "FINNOS:TASKS:REUSED_SLOT=2",
+            "FINNOS:TASKS:OLD_GENERATION=1", "FINNOS:TASKS:NEW_GENERATION=2", "FINNOS:TASKS:STALE_ID_REJECTED=1", "FINNOS:TASKS:REUSE_RUNS=1",
+            "FINNOS:TASKS:IDLE_TICK_DELTA=1", "FINNOS:TASKS:TIMER_START_TICKS=10", "FINNOS:TASKS:TIMER_END_TICKS=12", "FINNOS:TASKS:TICK_DELTA=2",
+            "FINNOS:TASKS:DELIVERY_DELTA=2", "FINNOS:TASKS:EOI_DELTA=2", "FINNOS:TASKS:CR3_BEFORE=0x1000", "FINNOS:TASKS:CR3_AFTER=0x1000", "FINNOS:TASKS:SCHEDULER_ISR_ENTRIES=0",
+        ]
+        return "\n".join(ARM64_COOPERATIVE_TASK_MARKERS + tuple(evidence))
+
+    def test_arm64_cooperative_tasks_complete_sequence(self):
+        self.assertEqual(validate_arm64_cooperative_tasks(0, self.arm64_cooperative_log()), [])
+
+    def test_arm64_cooperative_tasks_rejects_status_events_and_generation(self):
+        output = self.arm64_cooperative_log()
+        self.assertTrue(validate_arm64_cooperative_tasks(1, output))
+        self.assertTrue(validate_arm64_cooperative_tasks(0, output.replace("EVENT_0=11", "EVENT_0=21")))
+        self.assertTrue(validate_arm64_cooperative_tasks(0, output.replace("NEW_GENERATION=2", "NEW_GENERATION=1")))
+        self.assertTrue(validate_arm64_cooperative_tasks(0, output + "\nFINNOS:KERNEL:SCHEDULER_ERROR:Panic"))
+
+    def test_ipc_complete_sequence(self):
+        self.assertEqual(validate_ipc(33, "\n".join(IPC_MARKERS)), [])
+
+    def test_ipc_rejects_status_missing_order_and_forbidden(self):
+        output = "\n".join(IPC_MARKERS)
+        self.assertTrue(validate_ipc(0, output))
+        self.assertTrue(validate_ipc(33, "\n".join(IPC_MARKERS[:-1])))
+        swapped = list(IPC_MARKERS)
+        swapped[2], swapped[3] = swapped[3], swapped[2]
+        self.assertTrue(validate_ipc(33, "\n".join(swapped)))
+        self.assertTrue(validate_ipc(33, output + "\nFINNOS:KERNEL:PANIC"))
+        self.assertTrue(validate_ipc(33, output + "\nFINNOS:EXCEPTION:PAGE_FAULT"))
+        self.assertTrue(validate_ipc(33, output + "\nFINNOS:EXCEPTION:GENERAL_PROTECTION"))
+        self.assertTrue(validate_ipc(33, output + "\nFINNOS:EXCEPTION:DOUBLE_FAULT"))
+
+    def test_arm64_ipc_complete_sequence(self):
+        self.assertEqual(validate_arm64_ipc(0, "\n".join(IPC_MARKERS)), [])
+
+    def test_arm64_ipc_rejects_status_missing_order_and_forbidden(self):
+        output = "\n".join(IPC_MARKERS)
+        self.assertTrue(validate_arm64_ipc(1, output))
+        self.assertTrue(validate_arm64_ipc(0, "\n".join(IPC_MARKERS[:-1])))
+        swapped = list(IPC_MARKERS)
+        swapped[-2], swapped[-1] = swapped[-1], swapped[-2]
+        self.assertTrue(validate_arm64_ipc(0, "\n".join(swapped)))
+        self.assertTrue(validate_arm64_ipc(0, output + "\nFINNOS:KERNEL:PANIC"))
+        self.assertTrue(validate_arm64_ipc(0, output + "\nFINNOS:EXCEPTION:ARM64_FATAL"))
+
+    def test_desktop_complete_sequence(self):
+        self.assertEqual(validate_desktop(33, "\n".join(DESKTOP_MARKERS)), [])
+
+    def test_desktop_rejects_status_missing_order_and_forbidden(self):
+        output = "\n".join(DESKTOP_MARKERS)
+        self.assertTrue(validate_desktop(0, output))
+        self.assertTrue(validate_desktop(33, "\n".join(DESKTOP_MARKERS[:-1])))
+        swapped = list(DESKTOP_MARKERS)
+        swapped[2], swapped[3] = swapped[3], swapped[2]
+        self.assertTrue(validate_desktop(33, "\n".join(swapped)))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:KERNEL:PANIC"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:PAGE_FAULT"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:GENERAL_PROTECTION"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:DOUBLE_FAULT"))
+
+    def test_arm64_desktop_complete_sequence(self):
+        self.assertEqual(validate_arm64_desktop(0, "\n".join(DESKTOP_MARKERS)), [])
+
+    def test_arm64_desktop_rejects_status_missing_order_and_forbidden(self):
+        output = "\n".join(DESKTOP_MARKERS)
+        self.assertTrue(validate_arm64_desktop(1, output))
+        self.assertTrue(validate_arm64_desktop(0, "\n".join(DESKTOP_MARKERS[:-1])))
+        swapped = list(DESKTOP_MARKERS)
+        swapped[-2], swapped[-1] = swapped[-1], swapped[-2]
+        self.assertTrue(validate_arm64_desktop(0, "\n".join(swapped)))
+        self.assertTrue(validate_arm64_desktop(0, output + "\nFINNOS:KERNEL:PANIC"))
+        self.assertTrue(validate_arm64_desktop(0, output + "\nFINNOS:EXCEPTION:ARM64_FATAL"))
 
 if __name__ == "__main__": unittest.main()
