@@ -46,6 +46,17 @@ pub fn log(args: fmt::Arguments<'_>) {
     let _ = serial.write_fmt(args);
 }
 
+/// Write a slice of raw bytes to COM1.
+pub fn write_bytes(bytes: &[u8]) {
+    let serial = Serial;
+    for &byte in bytes {
+        if byte == b'\n' {
+            serial.write_byte(b'\r');
+        }
+        serial.write_byte(byte);
+    }
+}
+
 /// Format and write a line to the early COM1 logger.
 #[macro_export]
 macro_rules! serial_log { ($($arg:tt)*) => { $crate::arch::x86_64::serial::log(core::format_args!($($arg)*)); }; }

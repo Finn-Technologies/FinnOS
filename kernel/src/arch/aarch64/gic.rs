@@ -19,6 +19,8 @@ pub const CPU_INTERFACE_BASE: u64 = 0x0801_0000;
 pub const INTERFACE_SIZE: u64 = 0x1_0000;
 /// Self-targeted software interrupt used by the isolated test.
 pub const TEST_SGI_ID: u32 = 1;
+/// Non-secure EL1 physical timer PPI identifier.
+pub const TIMER_PPI_ID: u32 = 30;
 /// `GICv2` spurious interrupt identifier.
 pub const SPURIOUS_INTERRUPT_ID: u32 = 1023;
 /// State value consumed by the bounded assembly wait loop.
@@ -133,6 +135,7 @@ pub enum IrqDisposition {
 #[cfg(any(target_os = "none", test))]
 enum AcknowledgeClass {
     ExpectedSgi,
+    TimerTick,
     Special(u32),
     Unexpected(u32),
 }
@@ -144,6 +147,8 @@ const fn classify_acknowledge(raw_iar: u32, armed: bool) -> AcknowledgeClass {
         AcknowledgeClass::Special(id)
     } else if id == TEST_SGI_ID && raw_iar & (0x7 << 10) == 0 && armed {
         AcknowledgeClass::ExpectedSgi
+    } else if id == TIMER_PPI_ID {
+        AcknowledgeClass::TimerTick
     } else {
         AcknowledgeClass::Unexpected(id)
     }
@@ -246,6 +251,30 @@ pub unsafe fn initialize() -> Result<ControllerInfo, InitializationError> {
     })
 }
 
+/// Enable PPI 30 (Physical Timer) on the distributor.
+///
+/// # Errors
+///
+/// Returns `IrqNotMasked` if called before controller initialization.
+#[cfg(target_os = "none")]
+pub fn enable_timer_ppi() -> Result<(), InitializationError> {
+    if !READY.load(Ordering::Acquire) {
+        return Err(InitializationError::IrqNotMasked);
+    }
+    // SAFETY: caller is single-BSP and GIC distributor is mapped.
+    unsafe {
+        let group = read_distributor(GICD_IGROUPR);
+        write_distributor(GICD_IGROUPR, group & !(1 << TIMER_PPI_ID));
+        let offset = GICD_IPRIORITYR + (u64::from(TIMER_PPI_ID) / 4) * 4;
+        let shift = (TIMER_PPI_ID % 4) * 8;
+        let prio = read_distributor(offset) & !(0xff << shift);
+        write_distributor(offset, prio | (0x80 << shift));
+        write_distributor(GICD_ISENABLER, 1 << TIMER_PPI_ID);
+        barrier();
+    }
+    Ok(())
+}
+
 /// Acknowledge and complete one IRQ without logging or allocation.
 #[cfg(target_os = "none")]
 pub fn handle_irq(frame_sentinel: u64, spsr: u64) -> IrqDisposition {
@@ -262,6 +291,20 @@ pub fn handle_irq(frame_sentinel: u64, spsr: u64) -> IrqDisposition {
         AcknowledgeClass::Special(id) => {
             SPURIOUS.fetch_add(1, Ordering::Relaxed);
             IrqDisposition::Spurious(id)
+        }
+        AcknowledgeClass::TimerTick => {
+            FRAME_SENTINEL.store(frame_sentinel, Ordering::Relaxed);
+            IRQ_SPSR.store(spsr, Ordering::Relaxed);
+            LAST_IAR.store(u64::from(raw_iar), Ordering::Relaxed);
+            super::timer::handle_tick();
+            // SAFETY: EOIR receives the exact token returned by IAR.
+            unsafe {
+                write_cpu(GICC_EOIR, raw_iar);
+                barrier();
+            }
+            EOIS.fetch_add(1, Ordering::Relaxed);
+            DELIVERIES.fetch_add(1, Ordering::Relaxed);
+            IrqDisposition::Handled
         }
         AcknowledgeClass::ExpectedSgi => {
             FRAME_SENTINEL.store(frame_sentinel, Ordering::Relaxed);
@@ -478,6 +521,10 @@ mod tests {
         assert_eq!(
             classify_acknowledge(33, true),
             AcknowledgeClass::Unexpected(33)
+        );
+        assert_eq!(
+            classify_acknowledge(TIMER_PPI_ID, false),
+            AcknowledgeClass::TimerTick
         );
     }
 

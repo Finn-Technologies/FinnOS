@@ -219,10 +219,34 @@ impl MappingPermissions {
             cache_disable: true,
         }
     }
-    pub const fn validate(self) -> Result<(), PagingError> {
-        if self.user {
-            return Err(PagingError::UserMappingForbidden);
+    pub const fn user_rx() -> Self {
+        Self {
+            writable: false,
+            executable: true,
+            user: true,
+            write_through: false,
+            cache_disable: false,
         }
+    }
+    pub const fn user_r_nx() -> Self {
+        Self {
+            writable: false,
+            executable: false,
+            user: true,
+            write_through: false,
+            cache_disable: false,
+        }
+    }
+    pub const fn user_rw_nx() -> Self {
+        Self {
+            writable: true,
+            executable: false,
+            user: true,
+            write_through: false,
+            cache_disable: false,
+        }
+    }
+    pub const fn validate(self) -> Result<(), PagingError> {
         if self.writable && self.executable {
             return Err(PagingError::WritableExecutableMapping);
         }
@@ -408,9 +432,6 @@ impl PageTableEntry {
         frame: PhysicalFrame,
         permissions: MappingPermissions,
     ) -> Result<Self, PagingError> {
-        if permissions.user {
-            return Err(PagingError::UserMappingForbidden);
-        }
         if permissions.writable && permissions.executable {
             return Err(PagingError::WritableExecutableMapping);
         }
@@ -420,6 +441,7 @@ impl PageTableEntry {
             } else {
                 0
             }
+            | if permissions.user { Self::USER } else { 0 }
             | if permissions.write_through {
                 Self::WRITE_THROUGH
             } else {
@@ -700,6 +722,54 @@ impl ActiveAddressSpace {
     }
 }
 
+impl crate::loader::AddressSpaceMapper for ActiveAddressSpace {
+    #[allow(unsafe_code)]
+    fn stage_page_content(
+        &mut self,
+        phys: u64,
+        dest_offset: usize,
+        data: &[u8],
+        _executable: bool,
+    ) -> Result<(), ()> {
+        let scratch_vp = VirtualPage::new(SCRATCH_VIRTUAL_ADDRESS).map_err(|_| ())?;
+        let frame = PhysicalFrame::new(phys, self.width).map_err(|_| ())?;
+        self.map_page(scratch_vp, frame, MappingPermissions::kernel_rw_nx())
+            .map_err(|_| ())?;
+        // SAFETY: SCRATCH_VIRTUAL_ADDRESS is mapped with kernel RW permissions above.
+        unsafe {
+            let ptr = SCRATCH_VIRTUAL_ADDRESS as *mut u8;
+            core::ptr::write_bytes(ptr, 0, crate::memory::PAGE_SIZE as usize);
+            if !data.is_empty() {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(dest_offset), data.len());
+            }
+        }
+        self.unmap_page(scratch_vp).map_err(|_| ())?;
+        Ok(())
+    }
+
+    fn map_user_page(
+        &mut self,
+        user_vaddr: u64,
+        phys: u64,
+        readable: bool,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), ()> {
+        let vp = VirtualPage::new(user_vaddr).map_err(|_| ())?;
+        let frame = PhysicalFrame::new(phys, self.width).map_err(|_| ())?;
+        let perms = if executable {
+            MappingPermissions::user_rx()
+        } else if writable {
+            MappingPermissions::user_rw_nx()
+        } else if readable {
+            MappingPermissions::user_r_nx()
+        } else {
+            return Err(());
+        };
+        self.map_page(vp, frame, perms).map_err(|_| ()).map(|_| ())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Translation {
     pub physical_address: u64,
@@ -809,13 +879,23 @@ unsafe fn map_one(
             if entry.is_huge() {
                 return Err(PagingError::UnexpectedHugePage);
             }
+            if permissions.user && !entry.user() {
+                write_entry(
+                    entry_address,
+                    PageTableEntry(entry.raw() | PageTableEntry::USER),
+                );
+            }
             table = entry.address(space.width)?;
         } else {
             let child_page = space.pool.take()?;
             let child = PhysicalFrame::new(child_page.start_address(), space.width)?;
             // SAFETY: the child is an allocator-owned, aligned transition page.
             zero_page(child.address());
-            write_entry(entry_address, PageTableEntry::table(child));
+            let mut intermediate = PageTableEntry::table(child);
+            if permissions.user {
+                intermediate = PageTableEntry(intermediate.raw() | PageTableEntry::USER);
+            }
+            write_entry(entry_address, intermediate);
             table = child.address();
         }
     }
@@ -1119,5 +1199,35 @@ mod tests {
     fn pool_capacity_is_fixed() {
         assert_eq!(MAX_PAGE_TABLE_PAGES, 64);
         assert_eq!(MappingPlan::new().len(), 0);
+    }
+
+    #[test]
+    fn user_permissions_encode_correctly() {
+        let frame = PhysicalFrame::new(0x1000, 48).unwrap();
+        let rx = PageTableEntry::leaf(frame, MappingPermissions::user_rx()).unwrap();
+        assert!(rx.is_present());
+        assert!(rx.user());
+        assert!(rx.executable());
+        assert!(!rx.writable());
+
+        let rw_nx = PageTableEntry::leaf(frame, MappingPermissions::user_rw_nx()).unwrap();
+        assert!(rw_nx.is_present());
+        assert!(rw_nx.user());
+        assert!(!rw_nx.executable());
+        assert!(rw_nx.writable());
+
+        let r_nx = PageTableEntry::leaf(frame, MappingPermissions::user_r_nx()).unwrap();
+        assert!(r_nx.is_present());
+        assert!(r_nx.user());
+        assert!(!r_nx.executable());
+        assert!(!r_nx.writable());
+
+        // W^X check
+        let mut wx = MappingPermissions::user_rw_nx();
+        wx.executable = true;
+        assert_eq!(
+            PageTableEntry::leaf(frame, wx),
+            Err(PagingError::WritableExecutableMapping)
+        );
     }
 }

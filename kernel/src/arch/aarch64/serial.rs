@@ -15,6 +15,16 @@ pub fn line(value: &str) {
     }
 }
 
+/// Write raw bytes to PL011.
+pub fn write_bytes(bytes: &[u8]) {
+    for &byte in bytes {
+        if byte == b'\n' {
+            write(b'\r');
+        }
+        write(byte);
+    }
+}
+
 /// Write an allocation-free diagnostic label and one fixed-width hexadecimal value.
 pub fn hex_line(label: &str, value: u64) {
     for byte in label.bytes() {
@@ -27,6 +37,29 @@ pub fn hex_line(label: &str, value: u64) {
         } else {
             b'a' + digit - 10
         });
+    }
+    write(b'\r');
+    write(b'\n');
+}
+
+/// Write an allocation-free diagnostic label and one decimal value.
+pub fn dec_line(label: &str, mut value: u64) {
+    for byte in label.bytes() {
+        write(byte);
+    }
+    if value == 0 {
+        write(b'0');
+    } else {
+        let mut buffer = [0u8; 20];
+        let mut count = 0;
+        while value > 0 {
+            buffer[count] = b'0' + (value % 10) as u8;
+            value /= 10;
+            count += 1;
+        }
+        for byte in buffer[..count].iter().rev() {
+            write(*byte);
+        }
     }
     write(b'\r');
     write(b'\n');
