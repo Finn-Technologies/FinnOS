@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![allow(unsafe_code)]
+#![allow(clippy::too_many_lines)]
 
 use core::panic::PanicInfo;
 #[cfg(feature = "qemu-test-cooperative-tasks")]

@@ -1,5 +1,6 @@
 //! Virtual layout and lifecycle for guarded cooperative task stacks on ARM64.
 
+#![allow(clippy::collapsible_if)]
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::missing_errors_doc)]
@@ -228,7 +229,8 @@ pub fn map_task_stack(
 
         // Zero page content
         unsafe {
-            core::ptr::write_bytes(va as *mut u8, 0, PAGE_SIZE as usize);
+            let page_len = usize::try_from(PAGE_SIZE).unwrap_or(4096);
+            core::ptr::write_bytes(va as *mut u8, 0, page_len);
         }
     }
 
@@ -249,9 +251,7 @@ pub fn reclaim_task_stack(
         let idx = mapping.mapped_count - 1;
         let va = mapping.virtual_start + (idx as u64) * PAGE_SIZE;
         if let Err(e) = address_space.unmap_page(va) {
-            if err.is_none() {
-                err = Some(TaskStackError::Paging(e));
-            }
+            err.get_or_insert(TaskStackError::Paging(e));
         }
         mapping.mapped_count -= 1;
     }
@@ -262,16 +262,14 @@ pub fn reclaim_task_stack(
         let pa = mapping.physical_pages[idx];
         if let Ok(range) = PageRange::new(pa, 1) {
             if let Err(e) = allocator.deallocate(range) {
-                if err.is_none() {
-                    err = Some(TaskStackError::Physical(e));
-                }
+                err.get_or_insert(TaskStackError::Physical(e));
             }
         }
         mapping.physical_pages[idx] = 0;
         mapping.owned_count -= 1;
     }
 
-    if let Some(e) = err { Err(e) } else { Ok(()) }
+    err.map_or(Ok(()), Err)
 }
 
 /// Restore / clean up partially initialized stack.

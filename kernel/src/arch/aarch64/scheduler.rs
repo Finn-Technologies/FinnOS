@@ -4,6 +4,7 @@
 #![allow(clippy::empty_loop)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::option_if_let_else)]
 #![allow(unsafe_code)]

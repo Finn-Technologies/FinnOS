@@ -877,7 +877,8 @@ impl crate::loader::AddressSpaceMapper for ActiveAddressSpace {
         // SAFETY: SCRATCH_VIRTUAL_ADDRESS is mapped with ReadWriteNoExecute above.
         unsafe {
             let ptr = SCRATCH_VIRTUAL_ADDRESS as *mut u8;
-            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+            let page_len = usize::try_from(PAGE_SIZE).unwrap_or(4096);
+            core::ptr::write_bytes(ptr, 0, page_len);
             if !data.is_empty() {
                 core::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(dest_offset), data.len());
             }

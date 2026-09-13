@@ -652,7 +652,7 @@ extern "C" fn finnos_arm64_exception_dispatch(frame: *mut ExceptionFrame) {
             frame.registers[4],
             frame.registers[5],
         );
-        frame.registers[0] = result as u64;
+        frame.registers[0] = result.cast_unsigned();
         return;
     }
     if frame.source == SOURCE_CURRENT_SPX_IRQ {
