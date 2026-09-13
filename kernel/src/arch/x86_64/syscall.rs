@@ -108,7 +108,7 @@ pub extern "C" fn x86_64_syscall_dispatch(
     a5: u64,
     a6: u64,
 ) -> u64 {
-    crate::syscall::dispatch(num, a1, a2, a3, a4, a5, a6) as u64
+    crate::syscall::dispatch(num, a1, a2, a3, a4, a5, a6).cast_unsigned()
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
@@ -176,7 +176,7 @@ pub unsafe fn init() {
 ///
 /// # Safety
 ///
-/// The provided entry_rip and user_rsp must name valid, mapped user memory.
+/// The provided `entry_rip` and `user_rsp` must name valid, mapped user memory.
 pub unsafe fn enter_user_mode(entry_rip: u64, user_rsp: u64) -> ! {
     #[cfg(all(target_arch = "x86_64", target_os = "none"))]
     unsafe {

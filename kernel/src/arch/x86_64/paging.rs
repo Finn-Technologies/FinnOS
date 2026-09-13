@@ -1216,11 +1216,11 @@ mod tests {
         assert!(!rw_nx.executable());
         assert!(rw_nx.writable());
 
-        let r_nx = PageTableEntry::leaf(frame, MappingPermissions::user_r_nx()).unwrap();
-        assert!(r_nx.is_present());
-        assert!(r_nx.user());
-        assert!(!r_nx.executable());
-        assert!(!r_nx.writable());
+        let readonly_nx = PageTableEntry::leaf(frame, MappingPermissions::user_r_nx()).unwrap();
+        assert!(readonly_nx.is_present());
+        assert!(readonly_nx.user());
+        assert!(!readonly_nx.executable());
+        assert!(!readonly_nx.writable());
 
         // W^X check
         let mut wx = MappingPermissions::user_rw_nx();

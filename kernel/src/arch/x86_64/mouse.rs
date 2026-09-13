@@ -49,31 +49,31 @@ impl Ps2Mouse {
     #[allow(unsafe_code)]
     pub fn init(&mut self) {
         // Enable auxiliary mouse port
-        self.wait_write();
+        Self::wait_write();
         out(0x64, 0xA8);
 
         // Read Compaq status / command byte
-        self.wait_write();
+        Self::wait_write();
         out(0x64, 0x20);
-        let mut status = self.read_data();
+        let mut status = Self::read_data();
 
         // Bit 1: enable mouse interrupt (IRQ 12)
         // Bit 5: clear mouse clock disable
         status |= 0x02;
         status &= !0x20;
 
-        self.wait_write();
+        Self::wait_write();
         out(0x64, 0x60);
-        self.wait_write();
+        Self::wait_write();
         out(0x60, status);
 
         // Set default sampling/scaling settings (command 0xF6)
-        self.write_mouse(0xF6);
-        let _ = self.read_data(); // ACK (0xFA)
+        Self::write_mouse(0xF6);
+        let _ = Self::read_data(); // ACK (0xFA)
 
         // Enable data streaming / reporting (command 0xF4)
-        self.write_mouse(0xF4);
-        let _ = self.read_data(); // ACK (0xFA)
+        Self::write_mouse(0xF4);
+        let _ = Self::read_data(); // ACK (0xFA)
 
         // Flush any residual bytes from previous states
         for _ in 0..16 {
@@ -85,7 +85,7 @@ impl Ps2Mouse {
         }
     }
 
-    fn wait_write(&self) {
+    fn wait_write() {
         for _ in 0..100_000 {
             if (inp(0x64) & 0x02) == 0 {
                 return;
@@ -93,7 +93,7 @@ impl Ps2Mouse {
         }
     }
 
-    fn read_data(&self) -> u8 {
+    fn read_data() -> u8 {
         for _ in 0..100_000 {
             if (inp(0x64) & 0x01) != 0 {
                 return inp(0x60);
@@ -102,10 +102,10 @@ impl Ps2Mouse {
         0
     }
 
-    fn write_mouse(&self, byte: u8) {
-        self.wait_write();
+    fn write_mouse(byte: u8) {
+        Self::wait_write();
         out(0x64, 0xD4);
-        self.wait_write();
+        Self::wait_write();
         out(0x60, byte);
     }
 
