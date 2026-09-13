@@ -37,7 +37,20 @@ name = "finn-kernel"
 version = "0.0.1"
 dependencies = [
  "finn-boot-protocol",
+ "finn-libpeony",
 ]
+
+[[package]]
+name = "finn-libpeony"
+version = "0.0.1"
+dependencies = [
+ "finn-boot-protocol",
+ "finn-libsys",
+]
+
+[[package]]
+name = "finn-libsys"
+version = "0.0.1"
 
 [[package]]
 name = "log"

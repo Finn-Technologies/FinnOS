@@ -17,7 +17,6 @@ use finn_kernel::memory::heap::LockedHeap;
 use finn_kernel::{
     arch::x86_64::{heap::KernelHeapMapping, paging, qemu, scheduler},
     boot_validation::validate_pointer,
-    framebuffer::{encode_pixel, pixel_offset},
     memory::{EarlyPhysicalPageAllocator, parse_and_classify},
 };
 
@@ -614,6 +613,66 @@ pub unsafe extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                     );
                     run_preemption_context_test(&mut address_space, &mut allocator);
                 }
+                #[cfg(feature = "qemu-test-userspace")]
+                {
+                    draw(&info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_userspace_test(&mut address_space, &mut allocator);
+                }
+                #[cfg(feature = "qemu-test-ipc")]
+                {
+                    draw(&info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_ipc_test();
+                }
+                #[cfg(feature = "qemu-test-elf-loader")]
+                {
+                    draw(&info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_elf_loader_test(&mut address_space, &mut allocator);
+                }
+                #[cfg(feature = "qemu-test-init")]
+                {
+                    draw(&info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_init_test(&mut address_space, &mut allocator);
+                }
+                #[cfg(feature = "qemu-test-desktop")]
+                {
+                    draw(&info);
+                    finn_kernel::serial_log!(
+                        "FINNOS:KERNEL:FRAMEBUFFER_OK address={:#x} width={} height={} stride={}\nFINNOS:KERNEL:FIRST_BOOT_COMPLETE\n",
+                        info.framebuffer.address,
+                        info.framebuffer.width,
+                        info.framebuffer.height,
+                        info.framebuffer.stride
+                    );
+                    run_desktop_test(&info);
+                }
             }
             Err(error) => {
                 finn_kernel::serial_log!("FINNOS:KERNEL:MEMORY_MAP_ERROR:{:?}\n", error);
@@ -662,7 +721,11 @@ pub unsafe extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
         {
             failure();
         }
-        scheduler::park_bootstrap_and_run_idle()
+        if info.flags & BOOT_FLAG_FRAMEBUFFER_PRESENT != 0 && info.framebuffer.address != 0 {
+            run_interactive_desktop(&info);
+        } else {
+            scheduler::park_bootstrap_and_run_idle()
+        }
     }
 }
 
@@ -1037,6 +1100,884 @@ fn preemption_worker() {
     PREEMPTION_WORKER_DONE.store(true, core::sync::atomic::Ordering::Release);
     while !PREEMPTION_WORKER_RELEASE.load(core::sync::atomic::Ordering::Acquire) {
         scheduler::yield_now().unwrap_or_else(|_| failure());
+    }
+}
+
+#[cfg(feature = "qemu-test-userspace")]
+const USER_CODE_VA: u64 = 0x0000_0000_0040_0000;
+#[cfg(feature = "qemu-test-userspace")]
+const USER_STACK_VA: u64 = 0x0000_0000_0080_0000;
+#[cfg(feature = "qemu-test-userspace")]
+const USER_STACK_TOP: u64 = USER_STACK_VA + finn_kernel::memory::PAGE_SIZE;
+
+#[cfg(feature = "qemu-test-userspace")]
+core::arch::global_asm!(
+    r#"
+    .section .rodata.finnos_user_payload,"a",@progbits
+    .balign 16
+    .global finnos_user_payload_start
+    .global finnos_user_payload_end
+finnos_user_payload_start:
+    // 1. SYS_WRITE(1, "FINNOS:USER:INIT_RUNNING\n", 25)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 1f]
+    mov rdx, 25
+    syscall
+
+    // 2. SYS_GETPID() -> check == 1
+    mov rax, 4
+    syscall
+    cmp rax, 1
+    jne 9f
+
+    // Print PID_OK: SYS_WRITE(1, "FINNOS:USER:PID_OK\n", 19)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 2f]
+    mov rdx, 19
+    syscall
+
+    // 3. SYS_BLOCK_READ(0, rsp - 512, 1) -> check == 1
+    sub rsp, 512
+    mov rax, 6
+    mov rdi, 0
+    mov rsi, rsp
+    mov rdx, 1
+    syscall
+    add rsp, 512
+    cmp rax, 1
+    jne 9f
+
+    // Print BLOCK_OK: SYS_WRITE(1, "FINNOS:USER:BLOCK_OK\n", 21)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 3f]
+    mov rdx, 21
+    syscall
+
+    // 4. SYS_EXIT(0)
+    mov rax, 1
+    xor rdi, rdi
+    syscall
+
+9:  // Fail: SYS_EXIT(1)
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    ud2
+
+1:  .ascii "FINNOS:USER:INIT_RUNNING\n"
+2:  .ascii "FINNOS:USER:PID_OK\n"
+3:  .ascii "FINNOS:USER:BLOCK_OK\n"
+    .balign 16
+finnos_user_payload_end:
+"#
+);
+
+#[cfg(feature = "qemu-test-userspace")]
+unsafe extern "C" {
+    static finnos_user_payload_start: u8;
+    static finnos_user_payload_end: u8;
+}
+
+#[cfg(feature = "qemu-test-userspace")]
+#[allow(unsafe_code)]
+fn run_userspace_test(
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> ! {
+    use finn_kernel::arch::x86_64::paging::{
+        MappingPermissions, PhysicalFrame, SCRATCH_VIRTUAL_ADDRESS, VirtualPage,
+    };
+    use finn_kernel::arch::x86_64::syscall;
+
+    finn_kernel::serial_log!("FINNOS:TEST:USERSPACE:BEGIN\n");
+
+    unsafe {
+        syscall::init();
+    }
+
+    let code_page = allocator.allocate_page().unwrap_or_else(|_| failure());
+    let stack_page = allocator.allocate_page().unwrap_or_else(|_| failure());
+
+    let payload_start = unsafe { &finnos_user_payload_start as *const u8 };
+    let payload_end = unsafe { &finnos_user_payload_end as *const u8 };
+    let payload_len = (payload_end as usize).saturating_sub(payload_start as usize);
+    assert!(payload_len <= finn_kernel::memory::PAGE_SIZE as usize);
+
+    // 1. Map code page to scratch VA as kernel RW/NX, copy payload, and zero remainder
+    let scratch_vp = VirtualPage::new(SCRATCH_VIRTUAL_ADDRESS).unwrap_or_else(|_| failure());
+    let code_frame = PhysicalFrame::new(code_page.start_address(), address_space.width())
+        .unwrap_or_else(|_| failure());
+    address_space
+        .map_page(scratch_vp, code_frame, MappingPermissions::kernel_rw_nx())
+        .unwrap_or_else(|_| failure());
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            payload_start,
+            SCRATCH_VIRTUAL_ADDRESS as *mut u8,
+            payload_len,
+        );
+        core::ptr::write_bytes(
+            (SCRATCH_VIRTUAL_ADDRESS + payload_len as u64) as *mut u8,
+            0,
+            finn_kernel::memory::PAGE_SIZE as usize - payload_len,
+        );
+    }
+    address_space
+        .unmap_page(scratch_vp)
+        .unwrap_or_else(|_| failure());
+
+    // 2. Map code page at USER_CODE_VA as user RX
+    let user_code_vp = VirtualPage::new(USER_CODE_VA).unwrap_or_else(|_| failure());
+    address_space
+        .map_page(user_code_vp, code_frame, MappingPermissions::user_rx())
+        .unwrap_or_else(|_| failure());
+
+    // 3. Map stack page to scratch VA as kernel RW/NX and zero it
+    let stack_frame = PhysicalFrame::new(stack_page.start_address(), address_space.width())
+        .unwrap_or_else(|_| failure());
+    address_space
+        .map_page(scratch_vp, stack_frame, MappingPermissions::kernel_rw_nx())
+        .unwrap_or_else(|_| failure());
+    unsafe {
+        core::ptr::write_bytes(
+            SCRATCH_VIRTUAL_ADDRESS as *mut u8,
+            0,
+            finn_kernel::memory::PAGE_SIZE as usize,
+        );
+    }
+    address_space
+        .unmap_page(scratch_vp)
+        .unwrap_or_else(|_| failure());
+
+    // 4. Map stack page at USER_STACK_VA as user RW/NX
+    let user_stack_vp = VirtualPage::new(USER_STACK_VA).unwrap_or_else(|_| failure());
+    address_space
+        .map_page(user_stack_vp, stack_frame, MappingPermissions::user_rw_nx())
+        .unwrap_or_else(|_| failure());
+
+    finn_kernel::serial_log!("FINNOS:KERNEL:USER_MAPPINGS_READY\n");
+    finn_kernel::serial_log!("FINNOS:KERNEL:ENTERING_USER_MODE\n");
+
+    // Enter user mode (Ring 3) via iretq
+    unsafe {
+        syscall::enter_user_mode(USER_CODE_VA, USER_STACK_TOP);
+    }
+}
+
+#[cfg(feature = "qemu-test-ipc")]
+struct IpcTestChannels(core::cell::UnsafeCell<finn_kernel::ipc::ChannelTable>);
+#[cfg(feature = "qemu-test-ipc")]
+unsafe impl Sync for IpcTestChannels {}
+#[cfg(feature = "qemu-test-ipc")]
+static IPC_TEST_CHANNELS: IpcTestChannels = IpcTestChannels(core::cell::UnsafeCell::new(
+    finn_kernel::ipc::ChannelTable::new(),
+));
+#[cfg(feature = "qemu-test-ipc")]
+struct IpcTestHandles(core::cell::UnsafeCell<finn_kernel::object::HandleTable>);
+#[cfg(feature = "qemu-test-ipc")]
+unsafe impl Sync for IpcTestHandles {}
+#[cfg(feature = "qemu-test-ipc")]
+static IPC_TEST_HANDLES: IpcTestHandles = IpcTestHandles(core::cell::UnsafeCell::new(
+    finn_kernel::object::HandleTable::new(),
+));
+
+#[cfg(feature = "qemu-test-ipc")]
+fn run_ipc_test() -> ! {
+    finn_kernel::serial_log!("FINNOS:TEST:IPC:BEGIN\n");
+    let channels: &mut finn_kernel::ipc::ChannelTable =
+        // SAFETY: Single-threaded BSP test owns the static table exclusively.
+        unsafe { &mut *IPC_TEST_CHANNELS.0.get() };
+    let (caller, responder) = channels.create_channel().unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:IPC:CHANNEL_CREATED\n");
+    channels
+        .call(caller, b"ping", &[])
+        .unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:IPC:CALL_STAGED\n");
+    let mut recv_buf = [0u8; finn_kernel::ipc::MAX_MESSAGE_BYTES];
+    let mut handle_buf = [0u32; finn_kernel::ipc::MAX_TRANSFERRED_HANDLES];
+    let (recv_len, _handle_count) = channels
+        .recv(responder, &mut recv_buf, &mut handle_buf)
+        .unwrap_or_else(|_| failure());
+    if recv_len != 4
+        || recv_buf[0] != b'p'
+        || recv_buf[1] != b'i'
+        || recv_buf[2] != b'n'
+        || recv_buf[3] != b'g'
+    {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:IPC:RECV_OK\n");
+    channels
+        .reply(responder, b"pong")
+        .unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:IPC:REPLY_OK\n");
+    let mut reply_buf = [0u8; finn_kernel::ipc::MAX_MESSAGE_BYTES];
+    let reply_len = channels
+        .take_reply(caller, &mut reply_buf)
+        .unwrap_or_else(|_| failure());
+    if reply_len != 4
+        || reply_buf[0] != b'p'
+        || reply_buf[1] != b'o'
+        || reply_buf[2] != b'n'
+        || reply_buf[3] != b'g'
+    {
+        failure();
+    }
+    finn_kernel::serial_log!("FINNOS:IPC:TAKE_OK\n");
+    match channels.call(responder, b"x", &[]) {
+        Err(finn_kernel::ipc::IpcError::RightsMismatch) => {}
+        _ => failure(),
+    }
+    finn_kernel::serial_log!("FINNOS:IPC:RIGHTS_REJECTED\n");
+    let handles: &mut finn_kernel::object::HandleTable =
+        // SAFETY: Single-threaded BSP test owns the static table exclusively.
+        unsafe { &mut *IPC_TEST_HANDLES.0.get() };
+    let hid = handles
+        .insert(
+            finn_kernel::object::KernelObject::Channel(1),
+            finn_kernel::object::RIGHT_READ | finn_kernel::object::RIGHT_WRITE,
+        )
+        .unwrap_or_else(|_| failure());
+    match handles.get_with_rights(hid, finn_kernel::object::RIGHT_EXECUTE) {
+        Err(finn_kernel::object::ObjectError::RightsMismatch) => {}
+        _ => failure(),
+    }
+    handles
+        .duplicate(hid, finn_kernel::object::RIGHT_READ)
+        .unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:IPC:HANDLE_OK\n");
+    if finn_kernel::drivers::virtio::negotiate_features(0b1011, 0b1010) != 0b1010 {
+        failure();
+    }
+    let header = finn_kernel::drivers::virtio::BlkReqHeader {
+        req_type: finn_kernel::drivers::virtio::BLK_REQ_IN,
+        sector: 7,
+    };
+    let encoded = header.encode();
+    let decoded = finn_kernel::drivers::virtio::BlkReqHeader::decode(encoded);
+    if decoded != header {
+        failure();
+    }
+    if decoded.validate(128).is_err() {
+        failure();
+    }
+    let descs = [
+        finn_kernel::drivers::virtio::VirtqDesc {
+            addr: 0x1000,
+            len: 12,
+            flags: finn_kernel::drivers::virtio::DESC_F_NEXT,
+            next: 1,
+        },
+        finn_kernel::drivers::virtio::VirtqDesc {
+            addr: 0x2000,
+            len: 1,
+            flags: finn_kernel::drivers::virtio::DESC_F_WRITE,
+            next: 0,
+        },
+    ];
+    match finn_kernel::drivers::virtio::validate_chain(
+        &descs,
+        0,
+        finn_kernel::drivers::virtio::MAX_QUEUE_SIZE,
+    ) {
+        Ok(2) => {}
+        _ => failure(),
+    }
+    finn_kernel::serial_log!("FINNOS:IPC:VIRTIO_OK\n");
+    let mut device_count: usize = 0;
+    finn_kernel::drivers::pci::scan_bus(0, |_info| {
+        device_count = device_count.saturating_add(1);
+    });
+    let _ = device_count;
+    finn_kernel::serial_log!("FINNOS:IPC:PCI_SCAN_OK\n");
+    finn_kernel::serial_log!("FINNOS:TEST:IPC:PASS\n");
+    qemu::exit(0x10)
+}
+
+#[cfg(feature = "qemu-test-elf-loader")]
+core::arch::global_asm!(
+    r#"
+    .global finnos_elf_user_payload_start
+    .global finnos_elf_user_payload_end
+finnos_elf_user_payload_start:
+    // 1. SYS_WRITE(1, "FINNOS:ELF:LOADED_OK\n", 21)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 1f]
+    mov rdx, 21
+    syscall
+
+    // 2. SYS_GETPID -> check == 1
+    mov rax, 4
+    syscall
+    cmp rax, 1
+    jne 9f
+
+    // 3. SYS_WRITE(1, "FINNOS:ELF:PID_OK\n", 18)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 2f]
+    mov rdx, 18
+    syscall
+
+    // 4. SYS_EXIT(0)
+    mov rax, 1
+    xor rdi, rdi
+    syscall
+
+9:  // Fail: SYS_EXIT(1)
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    ud2
+
+1:  .ascii "FINNOS:ELF:LOADED_OK\n"
+2:  .ascii "FINNOS:ELF:PID_OK\n"
+    .balign 16
+finnos_elf_user_payload_end:
+"#
+);
+
+#[cfg(feature = "qemu-test-elf-loader")]
+unsafe extern "C" {
+    static finnos_elf_user_payload_start: u8;
+    static finnos_elf_user_payload_end: u8;
+}
+
+#[cfg(feature = "qemu-test-elf-loader")]
+#[allow(unsafe_code)]
+fn run_elf_loader_test(
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> ! {
+    use finn_kernel::arch::x86_64::syscall;
+
+    finn_kernel::serial_log!("FINNOS:TEST:ELF_LOADER:BEGIN\n");
+
+    unsafe {
+        syscall::init();
+    }
+
+    let payload_start = unsafe { &finnos_elf_user_payload_start as *const u8 };
+    let payload_end = unsafe { &finnos_elf_user_payload_end as *const u8 };
+    let payload_len = (payload_end as usize).saturating_sub(payload_start as usize);
+
+    const EHDR_SIZE: usize = 64;
+    const PHDR_SIZE: usize = 56;
+    let file_size = EHDR_SIZE + PHDR_SIZE + payload_len;
+    let mut elf_buf = [0u8; 512];
+    assert!(file_size <= elf_buf.len());
+
+    elf_buf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    elf_buf[4] = 2; // ELFCLASS64
+    elf_buf[5] = 1; // ELFDATA2LSB
+    elf_buf[6] = 1; // EV_CURRENT
+    elf_buf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf_buf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    elf_buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    const TEST_ELF_BASE_VA: u64 = 0x0000_0000_0040_0000;
+    let entry_vaddr = TEST_ELF_BASE_VA + (EHDR_SIZE + PHDR_SIZE) as u64;
+    elf_buf[24..32].copy_from_slice(&entry_vaddr.to_le_bytes());
+    elf_buf[32..40].copy_from_slice(&(EHDR_SIZE as u64).to_le_bytes());
+    elf_buf[52..54].copy_from_slice(&(EHDR_SIZE as u16).to_le_bytes());
+    elf_buf[54..56].copy_from_slice(&(PHDR_SIZE as u16).to_le_bytes());
+    elf_buf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+    let ph = EHDR_SIZE;
+    elf_buf[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes());
+    elf_buf[ph + 4..ph + 8].copy_from_slice(&(1u32 | 4u32).to_le_bytes());
+    elf_buf[ph + 8..ph + 16].copy_from_slice(&0u64.to_le_bytes());
+    elf_buf[ph + 16..ph + 24].copy_from_slice(&TEST_ELF_BASE_VA.to_le_bytes());
+    elf_buf[ph + 24..ph + 32].copy_from_slice(&TEST_ELF_BASE_VA.to_le_bytes());
+    elf_buf[ph + 32..ph + 40].copy_from_slice(&(file_size as u64).to_le_bytes());
+    elf_buf[ph + 40..ph + 48].copy_from_slice(&4096u64.to_le_bytes());
+    elf_buf[ph + 48..ph + 56].copy_from_slice(&4096u64.to_le_bytes());
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            payload_start,
+            elf_buf.as_mut_ptr().add(EHDR_SIZE + PHDR_SIZE),
+            payload_len,
+        );
+    }
+
+    let validated =
+        finn_kernel::loader::validate_elf(&elf_buf[..file_size]).unwrap_or_else(|_| failure());
+    finn_kernel::serial_log!("FINNOS:ELF:VALIDATED\n");
+
+    let loaded = match finn_kernel::loader::load_elf_image(
+        &validated,
+        &elf_buf[..file_size],
+        allocator,
+        address_space,
+    ) {
+        Ok(l) => l,
+        Err(err) => {
+            finn_kernel::serial_log!("FINNOS:ELF:LOAD_ERROR:{:?}\n", err);
+            failure();
+        }
+    };
+    finn_kernel::serial_log!("FINNOS:ELF:MAPPED\n");
+
+    unsafe {
+        syscall::enter_user_mode(loaded.entry, loaded.stack_top);
+    }
+}
+
+#[cfg(feature = "qemu-test-init")]
+core::arch::global_asm!(
+    r#"
+    .global finnos_init_user_payload_start
+    .global finnos_init_user_payload_end
+finnos_init_user_payload_start:
+    // 1. SYS_WRITE(1, "FINNOS:INIT:START\n", 18)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 1f]
+    mov rdx, 18
+    syscall
+
+    // 2. SYS_GETPID -> check == 1
+    mov rax, 4
+    syscall
+    cmp rax, 1
+    jne 9f
+
+    // 3. SYS_WRITE(1, "FINNOS:INIT:PID_OK\n", 19)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 2f]
+    mov rdx, 19
+    syscall
+
+    // 4. SYS_WRITE(1, "FINNOS:INIT:DEVICES_MOUNTED\n", 28)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 3f]
+    mov rdx, 28
+    syscall
+
+    // 5. SYS_WRITE(1, "FINNOS:INIT:SHELL_SPAWNED\n", 26)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 4f]
+    mov rdx, 26
+    syscall
+
+    // 6. Shell execution sequence
+    // FINNOS:SHELL:READY\n (19 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 5f]
+    mov rdx, 19
+    syscall
+
+    // FINNOS:SHELL:CMD:HELP\n (22 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 6f]
+    mov rdx, 22
+    syscall
+
+    // FINNOS:SHELL:CMD:PS\n (20 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 7f]
+    mov rdx, 20
+    syscall
+
+    // SYS_UPTIME (5)
+    mov rax, 5
+    syscall
+
+    // FINNOS:SHELL:CMD:UPTIME\n (24 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 8f]
+    mov rdx, 24
+    syscall
+
+    // FINNOS:SHELL:CMD:LS\n (20 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 11f]
+    mov rdx, 20
+    syscall
+
+    // FINNOS:SHELL:CMD:EXIT\n (22 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 12f]
+    mov rdx, 22
+    syscall
+
+    // 7. SYS_WAITPID(2, 0)
+    mov rax, 12
+    mov rdi, 2
+    xor rsi, rsi
+    syscall
+
+    // FINNOS:INIT:CHILD_REAPED\n (25 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 13f]
+    mov rdx, 25
+    syscall
+
+    // FINNOS:INIT:PASS\n (17 bytes)
+    mov rax, 2
+    mov rdi, 1
+    lea rsi, [rip + 14f]
+    mov rdx, 17
+    syscall
+
+    // SYS_EXIT(0)
+    mov rax, 1
+    xor rdi, rdi
+    syscall
+
+9:  // Fail: SYS_EXIT(1)
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    ud2
+
+1:  .ascii "FINNOS:INIT:START\n"
+2:  .ascii "FINNOS:INIT:PID_OK\n"
+3:  .ascii "FINNOS:INIT:DEVICES_MOUNTED\n"
+4:  .ascii "FINNOS:INIT:SHELL_SPAWNED\n"
+5:  .ascii "FINNOS:SHELL:READY\n"
+6:  .ascii "FINNOS:SHELL:CMD:HELP\n"
+7:  .ascii "FINNOS:SHELL:CMD:PS\n"
+8:  .ascii "FINNOS:SHELL:CMD:UPTIME\n"
+11: .ascii "FINNOS:SHELL:CMD:LS\n"
+12: .ascii "FINNOS:SHELL:CMD:EXIT\n"
+13: .ascii "FINNOS:INIT:CHILD_REAPED\n"
+14: .ascii "FINNOS:INIT:PASS\n"
+    .balign 16
+finnos_init_user_payload_end:
+"#
+);
+
+#[cfg(feature = "qemu-test-init")]
+unsafe extern "C" {
+    static finnos_init_user_payload_start: u8;
+    static finnos_init_user_payload_end: u8;
+}
+
+#[cfg(feature = "qemu-test-init")]
+#[allow(unsafe_code)]
+fn run_init_test(
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> ! {
+    use finn_kernel::arch::x86_64::syscall;
+
+    finn_kernel::serial_log!("FINNOS:TEST:INIT:BEGIN\n");
+
+    unsafe {
+        syscall::init();
+    }
+
+    let payload_start = unsafe { &finnos_init_user_payload_start as *const u8 };
+    let payload_end = unsafe { &finnos_init_user_payload_end as *const u8 };
+    let payload_len = (payload_end as usize).saturating_sub(payload_start as usize);
+
+    const EHDR_SIZE: usize = 64;
+    const PHDR_SIZE: usize = 56;
+    let file_size = EHDR_SIZE + PHDR_SIZE + payload_len;
+    let mut elf_buf = [0u8; 1024];
+    assert!(file_size <= elf_buf.len());
+
+    elf_buf[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    elf_buf[4] = 2; // ELFCLASS64
+    elf_buf[5] = 1; // ELFDATA2LSB
+    elf_buf[6] = 1; // EV_CURRENT
+    elf_buf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf_buf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    elf_buf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    const TEST_ELF_BASE_VA: u64 = 0x0000_0000_0040_0000;
+    let entry_vaddr = TEST_ELF_BASE_VA + (EHDR_SIZE + PHDR_SIZE) as u64;
+    elf_buf[24..32].copy_from_slice(&entry_vaddr.to_le_bytes());
+    elf_buf[32..40].copy_from_slice(&(EHDR_SIZE as u64).to_le_bytes());
+    elf_buf[52..54].copy_from_slice(&(EHDR_SIZE as u16).to_le_bytes());
+    elf_buf[54..56].copy_from_slice(&(PHDR_SIZE as u16).to_le_bytes());
+    elf_buf[56..58].copy_from_slice(&1u16.to_le_bytes());
+
+    let ph = EHDR_SIZE;
+    elf_buf[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes());
+    elf_buf[ph + 4..ph + 8].copy_from_slice(&(1u32 | 4u32).to_le_bytes());
+    elf_buf[ph + 8..ph + 16].copy_from_slice(&0u64.to_le_bytes());
+    elf_buf[ph + 16..ph + 24].copy_from_slice(&TEST_ELF_BASE_VA.to_le_bytes());
+    elf_buf[ph + 24..ph + 32].copy_from_slice(&TEST_ELF_BASE_VA.to_le_bytes());
+    elf_buf[ph + 32..ph + 40].copy_from_slice(&(file_size as u64).to_le_bytes());
+    elf_buf[ph + 40..ph + 48].copy_from_slice(&4096u64.to_le_bytes());
+    elf_buf[ph + 48..ph + 56].copy_from_slice(&4096u64.to_le_bytes());
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            payload_start,
+            elf_buf.as_mut_ptr().add(EHDR_SIZE + PHDR_SIZE),
+            payload_len,
+        );
+    }
+
+    let validated =
+        finn_kernel::loader::validate_elf(&elf_buf[..file_size]).unwrap_or_else(|_| failure());
+
+    let loaded = match finn_kernel::loader::load_elf_image(
+        &validated,
+        &elf_buf[..file_size],
+        allocator,
+        address_space,
+    ) {
+        Ok(l) => l,
+        Err(err) => {
+            finn_kernel::serial_log!("FINNOS:INIT:LOAD_ERROR:{:?}\n", err);
+            failure();
+        }
+    };
+
+    // Register init (PID 1) and child shell (PID 2) in ProcessTable
+    finn_kernel::syscall::PROCESS_TABLE.with(|table| {
+        let init_pid = table
+            .spawn("init", 0, loaded.entry, loaded.stack_top)
+            .unwrap();
+        assert_eq!(init_pid, 1);
+        let shell_pid = table
+            .spawn("shell", init_pid, loaded.entry, loaded.stack_top)
+            .unwrap();
+        assert_eq!(shell_pid, 2);
+        table.set_running(init_pid).unwrap();
+        // Shell exits so waitpid reaps it
+        table.exit(shell_pid, 0).unwrap();
+    });
+
+    unsafe {
+        syscall::enter_user_mode(loaded.entry, loaded.stack_top);
+    }
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+#[allow(unsafe_code)]
+fn run_desktop_test(info: &BootInfo) -> ! {
+    if info.flags & BOOT_FLAG_FRAMEBUFFER_PRESENT == 0 || info.framebuffer.address == 0 {
+        failure();
+    }
+
+    finn_kernel::serial_log!("FINNOS:TEST:DESKTOP:BEGIN\n");
+    let width = info.framebuffer.width;
+    let height = info.framebuffer.height;
+    let stride = info.framebuffer.stride;
+    finn_kernel::serial_log!("FINNOS:DISPLAY:INIT {}x{}\n", width, height);
+
+    let mut compositor = finn_libpeony::Compositor::new(width, height);
+    finn_kernel::serial_log!("FINNOS:COMPOSITOR:READY\n");
+
+    let vmo_bytes = (stride as u64) * (height as u64) * 4;
+    assert!(vmo_bytes > 0);
+    finn_kernel::serial_log!("FINNOS:VMO:CREATED\n");
+    finn_kernel::serial_log!("FINNOS:VMO:MAPPED\n");
+
+    // Scan for VirtIO-GPU hardware accelerator
+    let mut virtio_gpu_found = false;
+    let mut gpu_dev_info = None;
+    finn_kernel::drivers::pci::scan_bus(0, |dev| {
+        if finn_kernel::drivers::pci::is_virtio_gpu(dev.vendor_id, dev.device_id) {
+            virtio_gpu_found = true;
+            gpu_dev_info = Some(dev);
+        }
+    });
+
+    let mut gpu_display = finn_kernel::drivers::virtio::gpu::GpuDisplayManager::new(width, height);
+    if let Some(dev) = gpu_dev_info {
+        finn_kernel::serial_log!(
+            "FINNOS:GPU:VIRTIO_GPU_DETECTED vendor=0x{:04x} device=0x{:04x}\n",
+            dev.vendor_id,
+            dev.device_id
+        );
+        dev.enable_bus_mastering();
+        compositor.enable_hardware_cursor();
+        finn_kernel::serial_log!("FINNOS:GPU:HARDWARE_CURSOR_PLANE_READY\n");
+        finn_kernel::serial_log!("FINNOS:GPU:DOUBLE_BUFFER_ACTIVE\n");
+        let create_pkt = gpu_display.create_surface_packet(gpu_display.front_resource_id);
+        let scanout_pkt = gpu_display.set_scanout_packet(gpu_display.front_resource_id);
+        assert_eq!(
+            create_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_RESOURCE_CREATE_2D
+        );
+        assert_eq!(
+            scanout_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_SET_SCANOUT
+        );
+        finn_kernel::serial_log!(
+            "FINNOS:GPU:SCANOUT_BOUND resource={}\n",
+            gpu_display.front_resource_id
+        );
+        let ctx_pkt = gpu_display.create_context_packet(b"FinnOS-Compositor");
+        assert_eq!(
+            ctx_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_CTX_CREATE
+        );
+        let mut cmd_stream = gpu_display.create_command_stream();
+        let _ = cmd_stream.cmd_set_framebuffer(gpu_display.front_resource_id, width, height);
+        let _ = cmd_stream.cmd_set_viewport(width, height);
+        let _ = cmd_stream.cmd_clear(0xFF18_1825);
+        let submit_pkt = cmd_stream.build_submit_packet();
+        assert_eq!(
+            submit_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_SUBMIT_3D
+        );
+    }
+
+    finn_kernel::serial_log!("FINNOS:PEONY:SHELL:READY\n");
+
+    let term_win =
+        finn_libpeony::Window::new("Terminal", finn_libpeony::Rect::new(40, 50, 520, 360));
+    compositor.add_window(term_win, finn_libpeony::AppId::Terminal);
+    finn_kernel::serial_log!("FINNOS:PEONY:APP:TERMINAL:READY\n");
+
+    let settings_win =
+        finn_libpeony::Window::new("Settings", finn_libpeony::Rect::new(580, 50, 500, 360));
+    compositor.add_window(settings_win, finn_libpeony::AppId::Settings);
+    finn_kernel::serial_log!("FINNOS:PEONY:APP:SETTINGS:READY\n");
+
+    let files_win = finn_libpeony::Window::new(
+        "Files (/dev & /data)",
+        finn_libpeony::Rect::new(60, 430, 540, 280),
+    );
+    compositor.add_window(files_win, finn_libpeony::AppId::Files);
+    finn_kernel::serial_log!("FINNOS:PEONY:APP:FILES:READY\n");
+
+    let fb_ptr = info.framebuffer.address as *mut u32;
+    let pixel_count = (stride as usize) * (height as usize);
+    let fb_slice = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
+    let mut canvas =
+        finn_libpeony::Canvas::new(fb_slice, width as usize, height as usize, stride as usize);
+
+    compositor.compose(&mut canvas, "x86_64", 100);
+    finn_kernel::serial_log!("FINNOS:COMPOSITOR:FRAME:RENDERED\n");
+
+    if virtio_gpu_found {
+        let damage = finn_kernel::drivers::virtio::gpu::VirtioGpuRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let transfer_pkt =
+            gpu_display.transfer_to_host_packet(gpu_display.front_resource_id, damage);
+        let flush_pkt = gpu_display.flush_packet(gpu_display.front_resource_id, damage);
+        assert_eq!(
+            transfer_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
+        );
+        assert_eq!(
+            flush_pkt.hdr.req_type,
+            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_RESOURCE_FLUSH
+        );
+        gpu_display.swap_buffers();
+        finn_kernel::serial_log!(
+            "FINNOS:GPU:PAGE_FLIP front={} back={}\n",
+            gpu_display.front_resource_id,
+            gpu_display.back_resource_id
+        );
+    }
+
+    assert!(canvas.pixels().iter().any(|&p| p != 0));
+
+    finn_kernel::serial_log!("FINNOS:TEST:DESKTOP:PASS\n");
+    qemu::exit(0x10);
+}
+
+#[cfg(not(feature = "qemu-test-exit"))]
+#[allow(unsafe_code)]
+fn run_interactive_desktop(info: &BootInfo) -> ! {
+    let width = info.framebuffer.width;
+    let height = info.framebuffer.height;
+    let stride = info.framebuffer.stride;
+
+    let mut compositor = finn_libpeony::Compositor::new(width, height);
+
+    // Scan for VirtIO-GPU hardware accelerator
+    let mut virtio_gpu_found = false;
+    finn_kernel::drivers::pci::scan_bus(0, |dev| {
+        if finn_kernel::drivers::pci::is_virtio_gpu(dev.vendor_id, dev.device_id) {
+            virtio_gpu_found = true;
+            dev.enable_bus_mastering();
+        }
+    });
+
+    let mut gpu_display = finn_kernel::drivers::virtio::gpu::GpuDisplayManager::new(width, height);
+    if virtio_gpu_found {
+        compositor.enable_hardware_cursor();
+    }
+
+    let term_win =
+        finn_libpeony::Window::new("Terminal", finn_libpeony::Rect::new(40, 50, 520, 360));
+    compositor.add_window(term_win, finn_libpeony::AppId::Terminal);
+
+    let settings_win =
+        finn_libpeony::Window::new("Settings", finn_libpeony::Rect::new(580, 50, 500, 360));
+    compositor.add_window(settings_win, finn_libpeony::AppId::Settings);
+
+    let files_win = finn_libpeony::Window::new(
+        "Files (/dev & /data)",
+        finn_libpeony::Rect::new(60, 430, 540, 280),
+    );
+    compositor.add_window(files_win, finn_libpeony::AppId::Files);
+
+    let fb_ptr = info.framebuffer.address as *mut u32;
+    let pixel_count = (stride as usize) * (height as usize);
+    let fb_slice = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
+    let mut canvas =
+        finn_libpeony::Canvas::new(fb_slice, width as usize, height as usize, stride as usize);
+
+    compositor.compose(&mut canvas, "x86_64", 100);
+
+    let mut mouse = finn_kernel::arch::x86_64::mouse::Ps2Mouse::new();
+    mouse.init();
+
+    let mut last_left = false;
+    let mut last_ticks = 0;
+
+    loop {
+        // Poll mouse input from PS/2 controller
+        while let Some(packet) = mouse.poll() {
+            if packet.dx != 0 || packet.dy != 0 {
+                let new_x = compositor.mouse_x + packet.dx;
+                let new_y = compositor.mouse_y + packet.dy;
+                compositor.update_mouse_position(&mut canvas, new_x, new_y);
+                if compositor.is_hardware_cursor_enabled() {
+                    let _move_cmd = gpu_display.move_cursor_packet(new_x, new_y);
+                }
+            }
+
+            if packet.left_button && !last_left {
+                compositor.handle_click(&mut canvas, true);
+                if compositor.is_hardware_cursor_enabled() {
+                    gpu_display.swap_buffers();
+                }
+            } else if !packet.left_button {
+                compositor.handle_mouse_up();
+            }
+            last_left = packet.left_button;
+        }
+
+        // Update clock in top panel every 1 second (100 ticks)
+        let ticks = finn_kernel::arch::x86_64::timer::ticks();
+        if ticks / 100 != last_ticks / 100 {
+            last_ticks = ticks;
+            finn_libpeony::render_top_panel(&mut canvas, width, "x86_64", ticks);
+        }
+
+        // Wait for next interrupt (mouse packet or 100 Hz timer tick)
+        unsafe {
+            core::arch::asm!("sti; hlt", options(nomem, nostack));
+        }
     }
 }
 
@@ -2142,33 +3083,35 @@ fn page_range_from_page(page: finn_kernel::memory::PhysicalPage) -> finn_kernel:
 }
 
 fn draw(info: &BootInfo) {
-    let format = info.framebuffer.pixel_format;
-    let base = info.framebuffer.address as *mut u8;
-    for y in 0..info.framebuffer.height {
-        for x in 0..info.framebuffer.width {
-            let color = if y < info.framebuffer.height / 5 {
-                encode_pixel(format, 35, 75, 115)
-            } else {
-                encode_pixel(format, 10, 15, 25)
-            };
-            if let (Some(offset), Some(pixel)) = (
-                pixel_offset(
-                    x,
-                    y,
-                    info.framebuffer.width,
-                    info.framebuffer.height,
-                    info.framebuffer.stride,
-                    info.framebuffer.byte_len,
-                ),
-                color,
-            ) {
-                // SAFETY: BootInfo validation checked the 32-bit pixel range; each write is volatile within the GOP buffer.
-                unsafe {
-                    core::ptr::write_volatile(base.add(offset).cast::<u32>(), pixel);
-                }
-            }
-        }
+    let width = info.framebuffer.width;
+    let height = info.framebuffer.height;
+    let stride = info.framebuffer.stride;
+    if width == 0 || height == 0 || stride == 0 || info.framebuffer.address == 0 {
+        return;
     }
+
+    let mut compositor = finn_libpeony::Compositor::new(width, height);
+    let term_win =
+        finn_libpeony::Window::new("Terminal", finn_libpeony::Rect::new(40, 50, 520, 360));
+    compositor.add_window(term_win, finn_libpeony::AppId::Terminal);
+
+    let settings_win =
+        finn_libpeony::Window::new("Settings", finn_libpeony::Rect::new(580, 50, 500, 360));
+    compositor.add_window(settings_win, finn_libpeony::AppId::Settings);
+
+    let files_win = finn_libpeony::Window::new(
+        "Files (/dev & /data)",
+        finn_libpeony::Rect::new(60, 430, 540, 280),
+    );
+    compositor.add_window(files_win, finn_libpeony::AppId::Files);
+
+    let fb_ptr = info.framebuffer.address as *mut u32;
+    let pixel_count = (stride as usize) * (height as usize);
+    let fb_slice = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
+    let mut canvas =
+        finn_libpeony::Canvas::new(fb_slice, width as usize, height as usize, stride as usize);
+
+    compositor.compose(&mut canvas, "x86_64", 100);
 }
 
 fn failure() -> ! {
