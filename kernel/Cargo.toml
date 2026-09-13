@@ -11,6 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 finn-boot-protocol = { path = "../boot/protocol" }
+finn-libpeony = { path = "../userspace/libpeony" }
 
 [features]
 default = []
@@ -27,6 +28,11 @@ qemu-test-heap = ["qemu-test-exit"]
 qemu-test-timer-interrupts = ["qemu-test-exit"]
 qemu-test-cooperative-tasks = ["qemu-test-exit"]
 qemu-test-preemption-context = ["qemu-test-exit"]
+qemu-test-userspace = ["qemu-test-exit"]
+qemu-test-ipc = ["qemu-test-exit"]
+qemu-test-elf-loader = ["qemu-test-exit"]
+qemu-test-init = ["qemu-test-exit"]
+qemu-test-desktop = ["qemu-test-exit"]
 
 [[bin]]
 name = "finn-kernel-x86_64"

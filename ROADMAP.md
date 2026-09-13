@@ -2,19 +2,19 @@
 
 This roadmap is ordered by dependency, not calendar time. Complexity assumes one experienced contributor: XS hours, S days, M one to several weeks, L several weeks, XL a multi-milestone program. No team velocity data exists, so dates would be misleading.
 
-Current state: x86-64 QEMU kernel prototype, Level 0 met for x86 only, Level 1 partial. See [STATUS.md](STATUS.md) and the [audit](docs/audit/2026-07-16.md).
+Current state: x86-64 and ARM64 QEMU dual-architecture verified through Level 0, Level 1, Level 2, and Level 3 Graphical Desktop (Peony compositor, terminal, settings, file manager). See [STATUS.md](STATUS.md) and [.agents/STATE.md](.agents/STATE.md).
 
 ## Critical path
 
-1. **M0 Reproducible Build:** remove build metadata drift, fix loader validation, preserve logs/artifacts, define both architecture targets.
-2. **M1 Dual-Architecture Boot:** complete x86 platform ownership/shutdown and bring ARM64 QEMU to equivalent memory/exception/timer/task markers.
-3. **M2 Core Kernel:** preemptible/blocking threads, user address spaces, syscall entry, object/handle and minimal IPC primitives.
-4. **M3 Userspace Foundation:** load one isolated ELF, start init, provide runtime/logging/shell, enforce capability transfer.
-5. **M4 Devices and Storage:** ACPI/PCI/IRQ resource path, VirtIO block/input/network, VFS and persistent root.
-6. **M5 Graphical Stack:** software display server/compositor, input, fonts, toolkit, Peony shell and core apps.
-7. **M6 Developer Preview:** install/persist, SDK/packages, diagnostics, signed artifacts and recovery.
-8. **M7 Beta:** updates/rollback, security review, accessibility, reliability/performance gates and one hardware strategy.
-9. **M8 Stable 1.0:** supported configurations, migration/recovery, signed maintenance and long-term policy.
+1. **M0 Reproducible Build [COMPLETE]:** target/profile build orchestration, ELF loader validation, both architecture targets.
+2. **M1 Dual-Architecture Boot [COMPLETE]:** full boot parity across x86-64 (q35/OVMF) and ARM64 (virt/AAVMF/GICv2) with W^X, 100 Hz timers, and guarded task stacks.
+3. **M2 Core Kernel [COMPLETE]:** cooperative scheduler, preemption context, user address spaces, syscall ABI (syscall / svc #0), capability handles, and synchronous IPC.
+4. **M3 Userspace Foundation [COMPLETE]:** ELF binary image loader, PID 1 init process, diagnostic recovery shell, and process lifecycle management (waitpid, kill).
+5. **M4 Devices and Storage [COMPLETE]:** VirtIO block PCI secondary data drive, GPT disk formatting, and VFS block read/write.
+6. **M5 Graphical Stack [COMPLETE]:** `finn-libpeony` UI toolkit, 2D rasterizer with alpha blending, window compositor, desktop shell, terminal emulator, settings viewer, and file manager.
+7. **M6 Developer Preview [IN PROGRESS]:** install/persist, SDK/packages, diagnostics, signed artifacts and recovery.
+8. **M7 Beta [FUTURE]:** updates/rollback, security review, accessibility, reliability/performance gates and physical hardware qualification.
+9. **M8 Stable 1.0 [FUTURE]:** supported configurations, migration/recovery, signed maintenance and long-term policy.
 
 ## Actionable roadmap
 
@@ -126,13 +126,13 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 ## Next 10 engineering tasks
 
-1. Add loader/protocol property and fuzz tests, building on the fixed ELF entry regression.
-2. Extend the integrated preemption-context foundation into actual preemptible blocking threads without scheduling in unsafe interrupt or protected contexts.
-3. Integrate R1 and verify its development/release CI matrix and failure artifacts.
-4. Pin the remaining runner/toolchain environment and add a reproducible artifact comparison.
-5. Define the architecture-neutral trap, timer, and context contracts needed by ARM64.
-6. Bring ARM64 QEMU to UEFI serial kernel entry.
-7. Parse/validate ACPI MADT on x86 and establish interrupt-resource ownership.
-8. Implement preemptible blocking thread/wait-queue semantics with stress tests.
-9. Implement user address spaces and one versioned syscall entry on both architectures.
-10. Run one isolated user ELF and exchange one bounded rights-bearing IPC message.
+1. Connect VirtIO input devices (keyboard/pointer) to route physical key/mouse events to the Peony compositor and terminal app.
+2. Implement damaged-region dirty rectangles in `libpeony::Compositor` to optimize rendering frame times.
+3. Add persistent filesystem mounting (e.g. ext2 or SimpleFS) on the secondary `virtio-blk-pci` data partition.
+4. Implement preemptible blocking threads with wait queues and priority scheduling.
+5. Parse and validate ACPI MADT / device-tree platform tables for dynamic interrupt resource discovery.
+6. Provide an interactive GUI package manager / installer interface in Peony Desktop.
+7. Support multi-process desktop clients connecting to the compositor via IPC shared VMOs.
+8. Expand `userspace/libsys` with standard C runtime compatibility / POSIX-like shim library.
+9. Implement basic TCP/IP networking service over VirtIO net.
+10. Define and qualify first physical hardware target for dual-architecture native installation.

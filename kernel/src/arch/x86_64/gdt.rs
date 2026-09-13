@@ -27,8 +27,14 @@ pub const KERNEL_CODE_SELECTOR: u16 = 0x08;
 /// Segment selector for the kernel data descriptor.
 pub const KERNEL_DATA_SELECTOR: u16 = 0x10;
 
+/// Segment selector for the user data descriptor (RPL 3).
+pub const USER_DATA_SELECTOR: u16 = 0x1b;
+
+/// Segment selector for the user code descriptor (RPL 3).
+pub const USER_CODE_SELECTOR: u16 = 0x23;
+
 /// Segment selector for the TSS descriptor.
-pub const TSS_SELECTOR: u16 = 0x18;
+pub const TSS_SELECTOR: u16 = 0x28;
 
 /// GDT pseudo-descriptor passed to `lgdt`.
 #[repr(C, packed)]
@@ -67,6 +73,24 @@ pub const fn kernel_data_descriptor() -> u64 {
     // Present, ring 0, data, writable.
     const ACCESS: u8 = 0b1001_0010;
     const FLAGS: u8 = 0b0000;
+    encode_descriptor(0, 0xfffff, ACCESS, FLAGS)
+}
+
+/// Encode a 64-bit user data descriptor (ring 3, data, writable).
+#[must_use]
+pub const fn user_data_descriptor() -> u64 {
+    // Present, ring 3, data, writable.
+    const ACCESS: u8 = 0b1111_0010;
+    const FLAGS: u8 = 0b0000;
+    encode_descriptor(0, 0xfffff, ACCESS, FLAGS)
+}
+
+/// Encode a 64-bit user code descriptor (ring 3, code, executable, readable).
+#[must_use]
+pub const fn user_code_descriptor() -> u64 {
+    // Present, ring 3, code, executable, conforming=0, readable.
+    const ACCESS: u8 = 0b1111_1010;
+    const FLAGS: u8 = 0b1010;
     encode_descriptor(0, 0xfffff, ACCESS, FLAGS)
 }
 
@@ -111,14 +135,16 @@ pub unsafe fn init(tss: &TSS) {
         (*gdt)[0] = 0;
         (*gdt)[1] = kernel_code_descriptor();
         (*gdt)[2] = kernel_data_descriptor();
+        (*gdt)[3] = user_data_descriptor();
+        (*gdt)[4] = user_code_descriptor();
     }
     let tss_base = core::ptr::from_ref(tss) as usize as u64;
     let tss_limit = core::mem::size_of::<TSS>() as u64 - 1;
     unsafe {
         #[allow(clippy::cast_possible_truncation)]
         let tss_limit_u32 = tss_limit as u32;
-        (*gdt)[3] = tss_descriptor_low(tss_base, tss_limit_u32);
-        (*gdt)[4] = tss_descriptor_high(tss_base);
+        (*gdt)[5] = tss_descriptor_low(tss_base, tss_limit_u32);
+        (*gdt)[6] = tss_descriptor_high(tss_base);
     }
 
     let pointer = GdtPointer {
@@ -240,11 +266,35 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn user_code_has_expected_access_and_flags() {
+        let descriptor = user_code_descriptor();
+        let access = (descriptor >> 40) as u8;
+        let flags = (descriptor >> 52) as u8 & 0xf;
+        assert_eq!(access, 0xfa);
+        assert_eq!(flags, 0xa);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn user_data_has_expected_access() {
+        let descriptor = user_data_descriptor();
+        let access = (descriptor >> 40) as u8;
+        assert_eq!(access, 0xf2);
+    }
+
+    #[test]
     fn selector_encoding() {
         assert_eq!(selector(1, 0), 0x08);
         assert_eq!(selector(2, 0), 0x10);
-        assert_eq!(selector(3, 0), 0x18);
-        assert_eq!(selector(1, 3), 0x0b);
+        assert_eq!(selector(3, 3), 0x1b);
+        assert_eq!(selector(4, 3), 0x23);
+        assert_eq!(selector(5, 0), 0x28);
+        assert_eq!(KERNEL_CODE_SELECTOR, 0x08);
+        assert_eq!(KERNEL_DATA_SELECTOR, 0x10);
+        assert_eq!(USER_DATA_SELECTOR, 0x1b);
+        assert_eq!(USER_CODE_SELECTOR, 0x23);
+        assert_eq!(TSS_SELECTOR, 0x28);
     }
 
     #[test]

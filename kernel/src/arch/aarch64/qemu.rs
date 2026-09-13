@@ -26,6 +26,48 @@ pub fn failure() -> ! {
     exit(&FAILURE)
 }
 
+/// Terminate a semihosting-enabled QEMU test with an explicit exit code.
+pub fn exit_code(code: u64) -> ! {
+    let block = ExitBlock {
+        reason: APPLICATION_EXIT,
+        subcode: code,
+    };
+    // SAFETY: QEMU semihosting is enabled.
+    unsafe {
+        core::arch::asm!(
+            "dsb sy",
+            "hlt #0xf000",
+            in("x0") 0x20_u64,
+            in("x1") &raw const block as u64,
+            options(noreturn)
+        );
+    }
+}
+
+/// Power off system via PSCI `SYSTEM_OFF` (0x84000008).
+pub fn system_off() -> ! {
+    // SAFETY: PSCI call via HVC on QEMU virt.
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            in("x0") 0x8400_0008_u64,
+            options(noreturn)
+        );
+    }
+}
+
+/// Reset system via PSCI `SYSTEM_RESET` (0x84000009).
+pub fn system_reset() -> ! {
+    // SAFETY: PSCI call via HVC on QEMU virt.
+    unsafe {
+        core::arch::asm!(
+            "hvc #0",
+            in("x0") 0x8400_0009_u64,
+            options(noreturn)
+        );
+    }
+}
+
 fn exit(block: &'static ExitBlock) -> ! {
     // SAFETY: The test QEMU command explicitly enables AArch64 semihosting.
     // SYS_EXIT_EXTENDED (0x20) reads the aligned, static two-word block.

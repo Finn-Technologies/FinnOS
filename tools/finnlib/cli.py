@@ -10,7 +10,7 @@ from typing import Optional
 
 from .build import BootMode, build_boot, cargo, output_directory
 from .config import ConfigurationError, load_configuration
-from .image import make_image, stage_esp
+from .image import make_data_image, make_image, stage_esp
 from .qemu import (
     EXCEPTION_MARKERS,
     FORBIDDEN_EXCEPTION_MARKERS,
@@ -29,8 +29,20 @@ from .qemu import (
     validate_arm64_memory_map,
     validate_arm64_page_tables,
     validate_arm64_gic,
+    validate_arm64_timer,
+    validate_arm64_cooperative_tasks,
     validate_arm64_smoke,
     validate_preemption_context,
+    validate_userspace,
+    validate_arm64_userspace,
+    validate_ipc,
+    validate_arm64_ipc,
+    validate_elf_loader,
+    validate_arm64_elf_loader,
+    validate_init,
+    validate_arm64_init,
+    validate_desktop,
+    validate_arm64_desktop,
 )
 from .toolchain import find_command, find_firmware, find_tool, rust_target_installed
 
@@ -48,6 +60,11 @@ BOOT_MODES = {
     "test-timer-interrupts": BootMode.TIMER,
     "test-cooperative-tasks": BootMode.COOPERATIVE_TASKS,
     "test-preemption-context": BootMode.PREEMPTION_CONTEXT,
+    "test-userspace": BootMode.USERSPACE,
+    "test-ipc": BootMode.IPC,
+    "test-elf-loader": BootMode.ELF_LOADER,
+    "test-init": BootMode.INIT,
+    "test-desktop": BootMode.DESKTOP,
 }
 BUILD_OPTION_COMMANDS = {"doctor", "build", "build-boot", "image", "run", "run-headless", *BOOT_MODES}
 
@@ -75,23 +92,24 @@ def command(
     name: str,
     target_name: Optional[str] = None,
     profile_name: Optional[str] = None,
+    data_drive: Optional[str] = None,
 ) -> int:
     if name == "help":
         print("FinnOS developer wrapper for x86-64 and ARM64 UEFI development targets.")
-        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-arm64-exception-fatal test-memory-map test-page-allocator test-page-tables test-arm64-gic test-heap test-timer-interrupts test-cooperative-tasks test-preemption-context check-all clean")
-        print("Build options: --target TARGET --profile development|release")
+        print("Commands: help doctor build test format format-check lint check build-boot image run run-headless test-python test-boot test-exceptions test-arm64-exception-fatal test-memory-map test-page-allocator test-page-tables test-arm64-gic test-heap test-timer-interrupts test-cooperative-tasks test-preemption-context test-userspace test-ipc test-elf-loader test-init test-desktop check-all clean")
+        print("Build options: --target TARGET --profile development|release [--data-drive [PATH]]")
         return 0
-    if (target_name or profile_name) and name not in BUILD_OPTION_COMMANDS:
-        raise ConfigurationError(f"{name!r} does not accept --target or --profile")
+    if (target_name or profile_name or data_drive) and name not in BUILD_OPTION_COMMANDS:
+        raise ConfigurationError(f"{name!r} does not accept --target, --profile, or --data-drive")
     if name == "doctor":
         if profile_name is not None:
             raise ConfigurationError("'doctor' does not accept --profile")
         return doctor(target_name)
     if name == "build":
-        _target, profile = load_configuration(ROOT).select(target_name, profile_name)
-        cargo(ROOT, ["build", "--workspace", *profile.cargo_args])
+        target, profile = load_configuration(ROOT).select(target_name, profile_name)
+        cargo(ROOT, ["build", "--workspace", "--all-targets", *profile.cargo_args])
         return 0
-    if name == "test": cargo(ROOT, ["test", "--workspace"]); return 0
+    if name == "test": cargo(ROOT, ["test", "--workspace", "--", "--test-threads=1"]); return 0
     if name == "format": cargo(ROOT, ["fmt", "--all"]); return 0
     if name == "format-check": cargo(ROOT, ["fmt", "--all", "--", "--check"]); return 0
     if name == "lint": cargo(ROOT, ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]); return 0
@@ -108,6 +126,13 @@ def command(
             BootMode.MEMORY_MAP,
             BootMode.PAGE_TABLES,
             BootMode.ARM64_GIC,
+            BootMode.TIMER,
+            BootMode.COOPERATIVE_TASKS,
+            BootMode.USERSPACE,
+            BootMode.IPC,
+            BootMode.ELF_LOADER,
+            BootMode.INIT,
+            BootMode.DESKTOP,
         ):
             raise ConfigurationError(
                 f"{name!r} is not implemented for target {target.name!r}; "
@@ -124,6 +149,10 @@ def command(
         if name == "build-boot":
             return 0
         image = make_image(esp, out / target.image_filename)
+        data_drive_path: Optional[Path] = None
+        if data_drive or target.data_image:
+            drive_file = Path(data_drive) if data_drive and data_drive != "auto" else out / target.data_image
+            data_drive_path = make_data_image(drive_file)
         if name == "image":
             return 0
         firmware = find_firmware(target.architecture)
@@ -131,10 +160,17 @@ def command(
         if not firmware or not qemu:
             firmware_name = "AAVMF" if target.architecture == "arm64" else "OVMF"
             raise RuntimeError(f"{target.qemu_system} and {firmware_name} are required")
+        enable_gpu = (
+            mode == BootMode.DESKTOP
+            or name == "run"
+            or os.environ.get("FINNOS_GPU", "").strip() in ("1", "true", "yes")
+        )
         args = qemu_command(
             qemu, str(firmware), image, headless=name != "run",
             test_exit=mode.test_exit, machine=target.qemu_machine,
             architecture=target.architecture, cpu=target.qemu_cpu,
+            data_drive=data_drive_path,
+            gpu=enable_gpu,
         )
         print("$ " + " ".join(args), flush=True)
         if mode.test_exit:
@@ -154,7 +190,21 @@ def command(
             print(output)
             print(f"qemu status: {result.returncode}")
             validator = (
-                validate_arm64_gic
+                validate_arm64_desktop
+                if target.architecture == "arm64" and mode == BootMode.DESKTOP
+                else validate_arm64_init
+                if target.architecture == "arm64" and mode == BootMode.INIT
+                else validate_arm64_elf_loader
+                if target.architecture == "arm64" and mode == BootMode.ELF_LOADER
+                else validate_arm64_ipc
+                if target.architecture == "arm64" and mode == BootMode.IPC
+                else validate_arm64_userspace
+                if target.architecture == "arm64" and mode == BootMode.USERSPACE
+                else validate_arm64_cooperative_tasks
+                if target.architecture == "arm64" and mode == BootMode.COOPERATIVE_TASKS
+                else validate_arm64_timer
+                if target.architecture == "arm64" and mode == BootMode.TIMER
+                else validate_arm64_gic
                 if target.architecture == "arm64" and mode == BootMode.ARM64_GIC
                 else validate_arm64_page_tables
                 if target.architecture == "arm64" and mode == BootMode.PAGE_TABLES
@@ -167,6 +217,11 @@ def command(
                 else validate_arm64_smoke
                 if target.architecture == "arm64"
                 else {
+                BootMode.DESKTOP: validate_desktop,
+                BootMode.INIT: validate_init,
+                BootMode.ELF_LOADER: validate_elf_loader,
+                BootMode.IPC: validate_ipc,
+                BootMode.USERSPACE: validate_userspace,
                 BootMode.COOPERATIVE_TASKS: validate_cooperative_tasks,
                 BootMode.PREEMPTION_CONTEXT: validate_preemption_context,
                 BootMode.EXCEPTIONS: validate_exceptions,
@@ -188,7 +243,7 @@ def command(
         return 0
     if name == "test-python": subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tools/tests", "-p", "test_*.py"], cwd=ROOT, check=True); return 0
     if name == "check-all":
-        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks", "test-preemption-context"))
+        return run_steps(("doctor", "check", "image", "test-boot", "test-exceptions", "test-memory-map", "test-page-allocator", "test-page-tables", "test-heap", "test-timer-interrupts", "test-cooperative-tasks", "test-preemption-context", "test-userspace", "test-ipc", "test-elf-loader", "test-init", "test-desktop"))
     if name == "clean":
         for path in (ROOT / "target", ROOT / "build" / "out"):
             if path.exists() and ROOT in path.parents: print(f"removing {path}"); shutil.rmtree(path)
@@ -202,10 +257,58 @@ def run_steps(steps: tuple[str, ...]) -> int:
             return status
     return 0
 
+class ParsedArguments(tuple):
+    def __new__(cls, name: str, target: Optional[str], profile: Optional[str], data_drive: Optional[str] = None):
+        return super().__new__(cls, (name, target, profile))
+
+    def __init__(self, name: str, target: Optional[str], profile: Optional[str], data_drive: Optional[str] = None):
+        self.name = name
+        self.target = target
+        self.profile = profile
+        self.data_drive = data_drive
+
+
+def parse_arguments(arguments: list[str]) -> ParsedArguments:
+    if not arguments:
+        return ParsedArguments("help", None, None)
+    name = arguments[0]
+    target_name: Optional[str] = None
+    profile_name: Optional[str] = None
+    data_drive: Optional[str] = None
+    index = 1
+    while index < len(arguments):
+        option = arguments[index]
+        if option not in ("--target", "--profile", "--data-drive"):
+            raise ConfigurationError(f"unknown argument {option!r}")
+        if option == "--data-drive":
+            if data_drive is not None:
+                raise ConfigurationError("--data-drive may be provided only once")
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("--"):
+                data_drive = arguments[index + 1]
+                index += 2
+            else:
+                data_drive = "auto"
+                index += 1
+            continue
+        if index + 1 >= len(arguments):
+            raise ConfigurationError(f"{option} requires a value")
+        value = arguments[index + 1]
+        if option == "--target":
+            if target_name is not None:
+                raise ConfigurationError("--target may be provided only once")
+            target_name = value
+        elif option == "--profile":
+            if profile_name is not None:
+                raise ConfigurationError("--profile may be provided only once")
+            profile_name = value
+        index += 2
+    return ParsedArguments(name, target_name, profile_name, data_drive)
+
+
 def main() -> int:
     try:
-        name, target_name, profile_name = parse_arguments(sys.argv[1:])
-        return command(name, target_name, profile_name)
+        args = parse_arguments(sys.argv[1:])
+        return command(args.name, args.target, args.profile, args.data_drive)
     except KeyboardInterrupt: print("\nInterrupted.", file=sys.stderr); return 130
     except subprocess.CalledProcessError as error:
         print(f"error: command failed ({error.returncode}): {_command_text(error.cmd)}", file=sys.stderr)
@@ -214,32 +317,6 @@ def main() -> int:
         return error.returncode or 1
     except subprocess.TimeoutExpired as error: print(f"QEMU timed out after {error.timeout}s", file=sys.stderr); return 1
     except (OSError, RuntimeError) as error: print(f"error: {error}", file=sys.stderr); return 1
-
-
-def parse_arguments(arguments: list[str]) -> tuple[str, Optional[str], Optional[str]]:
-    if not arguments:
-        return "help", None, None
-    name = arguments[0]
-    target_name: Optional[str] = None
-    profile_name: Optional[str] = None
-    index = 1
-    while index < len(arguments):
-        option = arguments[index]
-        if option not in ("--target", "--profile"):
-            raise ConfigurationError(f"unknown argument {option!r}")
-        if index + 1 >= len(arguments):
-            raise ConfigurationError(f"{option} requires a value")
-        value = arguments[index + 1]
-        if option == "--target":
-            if target_name is not None:
-                raise ConfigurationError("--target may be provided only once")
-            target_name = value
-        else:
-            if profile_name is not None:
-                raise ConfigurationError("--profile may be provided only once")
-            profile_name = value
-        index += 2
-    return name, target_name, profile_name
 
 
 def _command_text(command_value: object) -> str:

@@ -1,0 +1,108 @@
+# Agent Handoff: VM Desktop Milestone Completion (Phases 1-8 Dual-Architecture)
+
+- Objective: Complete all remaining phases of the VM Desktop roadmap to boot FinnOS in QEMU to a working Peony graphical desktop (session manager → top panel/app launcher → terminal, settings, file manager) on both `x86_64-qemu` and `arm64-qemu` in strict lockstep, with secondary persistent storage (`virtio-blk-pci`) and serial recovery console.
+- Starting commit/worktree:
+```text
+commit: e4d43413dccb570dd56582af11398957121fec78
+```
+- Task state: Locally Verified
+- Skills used:
+  - `finnos-operating-rules`
+  - `repository-orientation`
+  - `task-planning`
+  - `test-strategy`
+  - `x86-64-platform-development`
+  - `arm64-platform-development`
+  - `syscall-development`
+  - `ipc-capabilities`
+  - `executable-loader`
+  - `init-service-management`
+  - `compositor-window-system`
+  - `peony-toolkit-development`
+  - `core-graphical-applications`
+  - `documentation-maintenance`
+  - `agent-handoff`
+- Work completed:
+  - **Phase 1 & 2: Platform Parity & Storage Foundation**:
+    - Complete dual-architecture parity across x86-64 (q35/OVMF) and ARM64 (virt/AAVMF/GICv2).
+    - Four-level W^X paging, guard pages, 1 MiB heap, 100 Hz timers (APIC/PIT on x86, Generic Timer PPI 30 on ARM64).
+    - 8-slot cooperative scheduler with guarded task stacks in `0x0000_2800_0000_0000`.
+    - Secondary persistent data storage disk (`virtio-blk-pci`) with GPT formatting.
+    - VFS block device layer with read/write and pseudo-devices (`/dev/null`, `/dev/zero`, `/data/state`).
+  - **Phase 3: Capabilities & Synchronous IPC**:
+    - `kernel/src/object`: HandleTable, generation-safe HandleId, rights bitmask (`RIGHT_READ`, `RIGHT_WRITE`, `RIGHT_TRANSFER`, `RIGHT_DESTROY`).
+    - `kernel/src/ipc`: Synchronous rendezvous ChannelTable.
+    - `kernel/src/drivers/virtio`: Transport-free virtio descriptor and block request policy, PCI virtio-blk matcher.
+    - Syscalls 8/9/10 (`SYS_CHANNEL_CREATE`, `SYS_IPC_CALL`, `SYS_IPC_REPLY_RECV`).
+    - Verified dual-arch with `./tools/finn test-ipc`.
+  - **Phase 4: ELF Loader & Userspace Runtime**:
+    - `kernel/src/loader/elf`: Validates 64-bit LE ET_EXEC/ET_DYN for EM_X86_64 and EM_AARCH64 with W^X, segment overlap, bounds, and entry point checking.
+    - `kernel/src/loader/map.rs`: Page allocator and address space mapping for user ELF images.
+    - `userspace/libsys`: Raw syscall assembly wrappers (`syscall` on x86_64, `svc #0` on aarch64) and safe user API (`yield_now`, `exit`, `write`, `getpid`, `spawn`, `waitpid`, `kill`, `channel_create`, `ipc_call`, `vmo_create`, `vmo_map`).
+    - Verified dual-arch with `./tools/finn test-elf-loader`.
+  - **Phase 5: Process Lifecycle, Init & Diagnostic Shell**:
+    - `kernel/src/process`: Bounded `ProcessTable` (capacity 16), `ProcessControlBlock`, lifecycle transitions (`Ready`, `Running`, `Blocked`, `Exited`), `waitpid` child status reaping, `kill` signal handling.
+    - Kernel syscall integration with `PROCESS_TABLE`.
+    - User mode init payload executing PID 1 init sequence, device mounting, diagnostic shell commands (`help`, `ps`, `uptime`, `ls`, `exit`), child process reaping, and clean exit.
+    - Verified dual-arch with `./tools/finn test-init`.
+  - **Phase 6 & 7: Peony UI Toolkit, Compositor & Core Applications**:
+    - `userspace/libpeony`: Graphical desktop toolkit crate (#![no_std]).
+    - `font.rs`: Embedded 8x16 bitmap font covering ASCII 32..=126 with fallback glyph.
+    - `canvas.rs`: 2D rasterizer with `Color` (RGBA/BGRX packed, alpha blending `blend_over`), `Rect` bounds and hit-testing, `Canvas` (`clear`, `set_pixel`, `fill_rect`, `draw_rect`, `draw_char`, `draw_string`).
+    - `widget.rs`: `Window` widget (drop shadow, border, titlebar, close button hit-testing, client rect) and `Button` widget.
+    - `apps.rs`: Core desktop applications: Top Panel / Status Bar (FinnOS logo, launcher, clock, memory, arch badge), Terminal emulator window (recovery prompt `finnos:/>`, commands, ps table), System Settings viewer (OS details, kernel ABI, architecture, uptime, memory), File Manager browsing `/dev` and `/data`.
+    - `compositor.rs`: Fixed-array window tracking, in-place z-order layer sorting, slate grid wallpaper rendering, mouse cursor rendering (12x18 arrow), and complete composition pipeline.
+  - **QEMU Desktop Mode (`test-desktop`)**:
+    - Kernel feature `qemu-test-desktop` added and wired to `SYS_EXIT` pass marker `FINNOS:TEST:DESKTOP:PASS`.
+    - Dual-architecture kernel runners in `kernel/src/bin/x86_64.rs` and `kernel/src/bin/aarch64.rs` initialize display, compose desktop scene, render directly into the physical UEFI GOP linear framebuffer (`0x80000000` 1280x800 on x86, `0x4c7a0000` 1024x768 on ARM64 via `ramfb`), and verify pixel memory integrity.
+    - Added `BootMode.DESKTOP`, `DESKTOP_MARKERS`, `validate_desktop`, and `validate_arm64_desktop` in `tools/finnlib/`.
+    - Added unit tests in `tools/tests/test_build_configuration.py` and `tools/tests/test_boot_log.py`.
+- Files changed:
+  - `Cargo.toml`, `Cargo.lock`
+  - `kernel/Cargo.toml`
+  - `kernel/src/bin/x86_64.rs`
+  - `kernel/src/bin/aarch64.rs`
+  - `kernel/src/syscall/mod.rs`
+  - `userspace/libpeony/` (entire crate: Cargo.toml, src/lib.rs, font.rs, canvas.rs, widget.rs, apps.rs, compositor.rs)
+  - `userspace/libsys/` (entire crate)
+  - `tools/finnlib/build.py`
+  - `tools/finnlib/cli.py`
+  - `tools/finnlib/qemu.py`
+  - `tools/tests/test_boot_log.py`
+  - `tools/tests/test_build_configuration.py`
+  - `.agents/STATE.md`
+  - `STATUS.md`
+  - `ROADMAP.md`
+- Tests/commands run:
+  - `cargo test --workspace`: 223 tests PASS (181 kernel + 9 libpeony + 15 libsys + 8 protocol + 10 uefi).
+  - `cargo clippy --workspace --all-targets`: 0 warnings, 0 errors.
+  - `cargo fmt --all -- --check`: clean formatting across workspace.
+  - `./tools/finn test-python`: 85/85 Python unit tests PASS.
+  - `./tools/finn test-desktop`: PASS on `x86_64-qemu` (status 33, 11 ordered markers).
+  - `./tools/finn test-desktop --target arm64-qemu`: PASS on `arm64-qemu` (status 0, 11 ordered markers).
+  - `./tools/finn check-all`: ALL 17 STAGES PASS (doctor, check, image, test-boot, test-exceptions, test-memory-map, test-page-allocator, test-page-tables, test-heap, test-timer-interrupts, test-cooperative-tasks, test-preemption-context, test-userspace, test-ipc, test-elf-loader, test-init, test-desktop).
+  - `python3 .agents/scripts/validate.py --all`: 87 skills validated, no dependency cycles.
+- Results and evidence classification:
+  - Fully Verified: Phases 1 through 8 in QEMU dual-architecture lockstep on both x86-64 and ARM64.
+- Documentation/status changes:
+  - `.agents/STATE.md`: Updated to record dual-arch Level 1, Level 2, and Level 3 VM Desktop completion.
+  - `STATUS.md`: Updated subsystem completion percentages, boot matrix, and maturity levels.
+  - `ROADMAP.md`: Updated Critical Path (M0-M5 complete, M6 in progress), and updated next 10 engineering tasks.
+- Unverified assumptions:
+  - Physical hardware display controller operation (currently tested against UEFI GOP linear framebuffer in QEMU `q35` and `virt` with `ramfb`).
+- Remaining work:
+  - Phase 9+: Physical hardware bring-up, VirtIO input device event queue integration to driver mouse pointer interactively, preemptible blocking threads with wait queues.
+- Blockers:
+  - None for VM desktop critical path.
+- Risks/regressions to watch:
+  - Stack frame sizes in `#![no_std]` UI code (always keep full-frame buffers on heap or framebuffer slices, never on stack).
+- Current Git state:
+  - Working tree contains all Phase 1-8 implementation files, passing tests, and updated docs.
+- Suggested next action:
+  - Commit the completed work tree or prepare pull request following `git-commit-hygiene` and `preparing-pull-request`.
+- Skills next agent must load:
+  - `git-commit-hygiene`
+  - `preparing-pull-request`
+  - `input-devices`
+  - `scheduler-thread-development`
+

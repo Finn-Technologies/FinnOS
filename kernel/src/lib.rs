@@ -10,10 +10,17 @@
 
 pub mod arch;
 pub mod boot_validation;
+pub mod drivers;
 pub mod framebuffer;
+pub mod fs;
 pub mod interrupt;
+pub mod ipc;
+pub mod loader;
 pub mod memory;
+pub mod object;
 pub mod preemption;
+pub mod process;
+pub mod syscall;
 pub mod task;
 
 /// The human-readable name of the `FinnOS` kernel.

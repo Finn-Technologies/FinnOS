@@ -23,12 +23,15 @@ pub const MAX_MAPPED_PAGES: u64 = 32_768;
 pub const MAX_TABLE_PAGES: usize = 64;
 /// PL011 physical base on the supported QEMU `virt` machine.
 pub const PL011_BASE: u64 = 0x0900_0000;
+/// Kernel scratch virtual address for staging user pages.
+pub const SCRATCH_VIRTUAL_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
 const LOW_VA_LIMIT: u64 = 1 << 48;
 const OUTPUT_ADDRESS_MASK: u64 = 0x0000_ffff_ffff_f000;
 const DESCRIPTOR_VALID: u64 = 1;
 const DESCRIPTOR_TABLE_OR_PAGE: u64 = 1 << 1;
 const ATTR_INDEX_SHIFT: u64 = 2;
+const AP_USER: u64 = 1 << 6;
 const AP_READ_ONLY: u64 = 1 << 7;
 const SH_OUTER: u64 = 0b10 << 8;
 const SH_INNER: u64 = 0b11 << 8;
@@ -39,6 +42,7 @@ const TABLE_DESCRIPTOR_ALLOWED: u64 = OUTPUT_ADDRESS_MASK | 0b11;
 const PAGE_DESCRIPTOR_ALLOWED: u64 = OUTPUT_ADDRESS_MASK
     | 0b11
     | (0b111 << ATTR_INDEX_SHIFT)
+    | AP_USER
     | AP_READ_ONLY
     | (0b11 << 8)
     | ACCESS_FLAG
@@ -138,7 +142,7 @@ impl MemoryType {
     }
 }
 
-/// Privileged leaf permissions. EL0 access is always forbidden.
+/// Privileged and user leaf permissions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Permissions {
     /// Read-only and executable at EL1, execute-never at EL0.
@@ -147,15 +151,34 @@ pub enum Permissions {
     ReadOnlyNoExecute,
     /// Read-write and execute-never at every EL.
     ReadWriteNoExecute,
+    /// Read-only and executable at EL0, execute-never at EL1.
+    UserReadExecute,
+    /// Read-only and execute-never at every EL. Accessible from EL0.
+    UserReadOnlyNoExecute,
+    /// Read-write and execute-never at every EL. Accessible from EL0.
+    UserReadWriteNoExecute,
 }
 
 impl Permissions {
-    const fn writable(self) -> bool {
-        matches!(self, Self::ReadWriteNoExecute)
+    /// Returns true if the permissions allow writing.
+    pub const fn writable(self) -> bool {
+        matches!(
+            self,
+            Self::ReadWriteNoExecute | Self::UserReadWriteNoExecute
+        )
     }
 
-    const fn executable(self) -> bool {
-        matches!(self, Self::ReadExecute)
+    /// Returns true if the permissions allow execution.
+    pub const fn executable(self) -> bool {
+        matches!(self, Self::ReadExecute | Self::UserReadExecute)
+    }
+
+    /// Returns true if the permissions grant EL0 access.
+    pub const fn is_user(self) -> bool {
+        matches!(
+            self,
+            Self::UserReadExecute | Self::UserReadOnlyNoExecute | Self::UserReadWriteNoExecute
+        )
     }
 }
 
@@ -430,13 +453,23 @@ pub fn page_descriptor(
         | physical_address
         | (u64::from(memory_type.attribute_index()) << ATTR_INDEX_SHIFT)
         | memory_type.shareability_bits()
-        | ACCESS_FLAG
-        | UXN;
+        | ACCESS_FLAG;
+
+    if permissions.is_user() {
+        descriptor |= AP_USER;
+        descriptor |= PXN;
+        if !permissions.executable() {
+            descriptor |= UXN;
+        }
+    } else {
+        descriptor |= UXN;
+        if !permissions.executable() {
+            descriptor |= PXN;
+        }
+    }
+
     if !permissions.writable() {
         descriptor |= AP_READ_ONLY;
-    }
-    if !permissions.executable() {
-        descriptor |= PXN;
     }
     Ok(descriptor)
 }
@@ -474,17 +507,21 @@ fn decode_page_descriptor(raw: u64, page_offset: u64) -> Result<Translation, Pag
     if raw & (0b11 << 8) != expected_shareability {
         return Err(PagingError::InvalidDescriptor);
     }
+    let user = raw & AP_USER != 0;
     let read_only = raw & AP_READ_ONLY != 0;
     let pxn = raw & PXN != 0;
     let uxn = raw & UXN != 0;
-    if !uxn || raw & ACCESS_FLAG == 0 {
+    if raw & ACCESS_FLAG == 0 {
         return Err(PagingError::InvalidDescriptor);
     }
-    let permissions = match (read_only, pxn) {
-        (true, false) => Permissions::ReadExecute,
-        (true, true) => Permissions::ReadOnlyNoExecute,
-        (false, true) => Permissions::ReadWriteNoExecute,
-        (false, false) => return Err(PagingError::WritableExecutableMapping),
+    let permissions = match (user, read_only, pxn, uxn) {
+        (false, true, false, true) => Permissions::ReadExecute,
+        (false, true, true, true) => Permissions::ReadOnlyNoExecute,
+        (false, false, true, true) => Permissions::ReadWriteNoExecute,
+        (true, true, true, false) => Permissions::UserReadExecute,
+        (true, true, true, true) => Permissions::UserReadOnlyNoExecute,
+        (true, false, true, true) => Permissions::UserReadWriteNoExecute,
+        _ => return Err(PagingError::InvalidDescriptor),
     };
     Ok(Translation {
         physical_address: (raw & OUTPUT_ADDRESS_MASK)
@@ -632,6 +669,37 @@ pub struct ActiveAddressSpace {
     plan: MappingPlan,
     features: CpuFeatures,
     active: bool,
+    mapped_pages: u64,
+}
+
+#[cfg(target_os = "none")]
+unsafe fn clean_word_to_poc(address: u64) {
+    unsafe {
+        core::arch::asm!(
+            "dc cvac, {addr}",
+            "dsb ish",
+            addr = in(reg) address,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+#[cfg(target_os = "none")]
+unsafe fn clean_range_to_poc(start: u64, end: u64) {
+    let mut addr = start & !(64 - 1);
+    while addr < end {
+        unsafe {
+            core::arch::asm!(
+                "dc cvac, {addr}",
+                addr = in(reg) addr,
+                options(nostack, preserves_flags)
+            );
+        }
+        addr += 64;
+    }
+    unsafe {
+        core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    }
 }
 
 #[cfg(target_os = "none")]
@@ -646,6 +714,11 @@ impl ActiveAddressSpace {
         self.pool.used
     }
 
+    /// Number of mapped pages.
+    pub const fn mapped_pages(&self) -> u64 {
+        self.mapped_pages
+    }
+
     /// Walk the constructed hardware tables without changing them.
     pub fn translate(&self, virtual_address: u64) -> Result<Translation, PagingError> {
         walk_with(self.root, virtual_address, |table, index| {
@@ -657,6 +730,207 @@ impl ActiveAddressSpace {
         })
     }
 
+    /// Map one supervisor-only 4 KiB page dynamically.
+    pub fn map_page(
+        &mut self,
+        virtual_address: u64,
+        physical_address: u64,
+        permissions: Permissions,
+        memory_type: MemoryType,
+    ) -> Result<(), PagingError> {
+        if !virtual_address.is_multiple_of(PAGE_SIZE) || !physical_address.is_multiple_of(PAGE_SIZE)
+        {
+            return Err(PagingError::AddressNotPageAligned);
+        }
+        if virtual_address >= LOW_VA_LIMIT {
+            return Err(PagingError::VirtualAddressOutOfRange);
+        }
+        if physical_address >= (1u64 << self.features.physical_address_bits) {
+            return Err(PagingError::PhysicalAddressOutOfRange);
+        }
+        if virtual_address == 0 {
+            return Err(PagingError::NullPageMapped);
+        }
+
+        let shifts = [39u32, 30, 21];
+        let mut table = self.root;
+        for shift in shifts {
+            let index = ((virtual_address >> shift) & 0x1ff) as usize;
+            let pointer = unsafe { (table as *mut u64).add(index) };
+            let raw = unsafe { core::ptr::read(pointer) };
+            if raw & DESCRIPTOR_VALID == 0 {
+                let child = self.pool.take()?;
+                unsafe {
+                    core::ptr::write_bytes(child as *mut u8, 0, TABLE_ENTRIES * 8);
+                    clean_range_to_poc(child, child + PAGE_SIZE);
+                    let desc = table_descriptor(child)?;
+                    core::ptr::write(pointer, desc);
+                    clean_word_to_poc(pointer as u64);
+                }
+                table = child;
+            } else if raw & 0b11 == 0b11 {
+                let child = raw & OUTPUT_ADDRESS_MASK;
+                if !self.pool.contains(child) {
+                    return Err(PagingError::InvalidDescriptor);
+                }
+                table = child;
+            } else {
+                return Err(PagingError::InvalidDescriptor);
+            }
+        }
+        let index = ((virtual_address >> 12) & 0x1ff) as usize;
+        let pointer = unsafe { (table as *mut u64).add(index) };
+        let old = unsafe { core::ptr::read(pointer) };
+        if old & DESCRIPTOR_VALID != 0 {
+            return Err(PagingError::VirtualMappingConflict);
+        }
+        let new = page_descriptor(physical_address, permissions, memory_type)?;
+        unsafe {
+            core::ptr::write(pointer, new);
+            clean_word_to_poc(pointer as u64);
+        }
+        if self.active {
+            unsafe {
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi vaae1is, {page}",
+                    "dsb ish",
+                    "isb",
+                    page = in(reg) (virtual_address >> 12),
+                    options(nostack, preserves_flags)
+                );
+            }
+        }
+        self.mapped_pages = self.mapped_pages.saturating_add(1);
+        Ok(())
+    }
+
+    /// Unmap one 4 KiB page.
+    pub fn unmap_page(&mut self, virtual_address: u64) -> Result<u64, PagingError> {
+        if !virtual_address.is_multiple_of(PAGE_SIZE) {
+            return Err(PagingError::AddressNotPageAligned);
+        }
+        if virtual_address >= LOW_VA_LIMIT {
+            return Err(PagingError::VirtualAddressOutOfRange);
+        }
+
+        let shifts = [39u32, 30, 21];
+        let mut table = self.root;
+        for shift in shifts {
+            let index = ((virtual_address >> shift) & 0x1ff) as usize;
+            let pointer = unsafe { (table as *mut u64).add(index) };
+            let raw = unsafe { core::ptr::read(pointer) };
+            if raw & 0b11 != 0b11 {
+                return Err(PagingError::NotMapped);
+            }
+            let child = raw & OUTPUT_ADDRESS_MASK;
+            if !self.pool.contains(child) {
+                return Err(PagingError::InvalidDescriptor);
+            }
+            table = child;
+        }
+        let index = ((virtual_address >> 12) & 0x1ff) as usize;
+        let pointer = unsafe { (table as *mut u64).add(index) };
+        let old = unsafe { core::ptr::read(pointer) };
+        if old & DESCRIPTOR_VALID == 0 {
+            return Err(PagingError::NotMapped);
+        }
+        let phys = old & OUTPUT_ADDRESS_MASK;
+        unsafe {
+            core::ptr::write(pointer, 0);
+            clean_word_to_poc(pointer as u64);
+        }
+        if self.active {
+            unsafe {
+                core::arch::asm!(
+                    "dsb ishst",
+                    "tlbi vaae1is, {page}",
+                    "dsb ish",
+                    "isb",
+                    page = in(reg) (virtual_address >> 12),
+                    options(nostack, preserves_flags)
+                );
+            }
+        }
+        self.mapped_pages = self.mapped_pages.saturating_sub(1);
+        Ok(phys)
+    }
+}
+
+#[cfg(target_os = "none")]
+impl crate::loader::AddressSpaceMapper for ActiveAddressSpace {
+    fn stage_page_content(
+        &mut self,
+        phys: u64,
+        dest_offset: usize,
+        data: &[u8],
+        executable: bool,
+    ) -> Result<(), ()> {
+        self.map_page(
+            SCRATCH_VIRTUAL_ADDRESS,
+            phys,
+            Permissions::ReadWriteNoExecute,
+            MemoryType::NormalWriteBack,
+        )
+        .map_err(|_| ())?;
+
+        // SAFETY: SCRATCH_VIRTUAL_ADDRESS is mapped with ReadWriteNoExecute above.
+        unsafe {
+            let ptr = SCRATCH_VIRTUAL_ADDRESS as *mut u8;
+            let page_len = usize::try_from(PAGE_SIZE).unwrap_or(4096);
+            core::ptr::write_bytes(ptr, 0, page_len);
+            if !data.is_empty() {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(dest_offset), data.len());
+            }
+            if executable {
+                let mut offset = 0;
+                while offset < PAGE_SIZE {
+                    let addr = SCRATCH_VIRTUAL_ADDRESS + offset;
+                    core::arch::asm!(
+                        "dc cvau, {p}",
+                        p = in(reg) addr,
+                        options(nostack, preserves_flags)
+                    );
+                    offset += 64;
+                }
+                core::arch::asm!(
+                    "dsb ish",
+                    "ic iallu",
+                    "dsb ish",
+                    "isb",
+                    options(nostack, preserves_flags)
+                );
+            }
+        }
+
+        self.unmap_page(SCRATCH_VIRTUAL_ADDRESS).map_err(|_| ())?;
+        Ok(())
+    }
+
+    fn map_user_page(
+        &mut self,
+        user_vaddr: u64,
+        phys: u64,
+        readable: bool,
+        writable: bool,
+        executable: bool,
+    ) -> Result<(), ()> {
+        let perms = if executable {
+            Permissions::UserReadExecute
+        } else if writable {
+            Permissions::UserReadWriteNoExecute
+        } else if readable {
+            Permissions::UserReadOnlyNoExecute
+        } else {
+            return Err(());
+        };
+        self.map_page(user_vaddr, phys, perms, MemoryType::NormalWriteBack)
+            .map_err(|_| ())
+    }
+}
+
+#[cfg(target_os = "none")]
+impl ActiveAddressSpace {
     /// Activate this immutable address space after proving every live identity range.
     ///
     /// # Safety
@@ -909,6 +1183,7 @@ pub unsafe fn build(
         plan: plan.clone(),
         features,
         active: false,
+        mapped_pages: plan.mapped_pages().saturating_add(MAX_TABLE_PAGES as u64),
     };
     for request in plan.as_slice() {
         for page_index in 0..request.page_count {
@@ -1061,6 +1336,35 @@ mod tests {
         assert_eq!((framebuffer >> ATTR_INDEX_SHIFT) & 0b111, 2);
         assert_eq!(framebuffer & SH_INNER, SH_INNER);
         assert_eq!(framebuffer & (PXN | UXN), PXN | UXN);
+
+        let user_code = page_descriptor(
+            0x0040_0000,
+            Permissions::UserReadExecute,
+            MemoryType::NormalWriteBack,
+        )
+        .unwrap();
+        assert_eq!(user_code & AP_USER, AP_USER);
+        assert_eq!(user_code & AP_READ_ONLY, AP_READ_ONLY);
+        assert_eq!(user_code & PXN, PXN);
+        assert_eq!(user_code & UXN, 0);
+        let decoded = decode_page_descriptor(user_code, 0).unwrap();
+        assert_eq!(decoded.permissions, Permissions::UserReadExecute);
+
+        let user_data = page_descriptor(
+            0x0040_1000,
+            Permissions::UserReadWriteNoExecute,
+            MemoryType::NormalWriteBack,
+        )
+        .unwrap();
+        assert_eq!(user_data & AP_USER, AP_USER);
+        assert_eq!(user_data & AP_READ_ONLY, 0);
+        assert_eq!(user_data & PXN, PXN);
+        assert_eq!(user_data & UXN, UXN);
+        let decoded_data = decode_page_descriptor(user_data, 0).unwrap();
+        assert_eq!(
+            decoded_data.permissions,
+            Permissions::UserReadWriteNoExecute
+        );
     }
 
     #[test]

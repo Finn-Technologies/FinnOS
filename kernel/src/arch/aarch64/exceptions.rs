@@ -7,10 +7,9 @@
 
 #![allow(unsafe_code)]
 
-#[cfg(all(target_os = "none", feature = "qemu-test-page-tables"))]
-use core::sync::atomic::AtomicU64;
 #[cfg(target_os = "none")]
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::AtomicU8;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 #[cfg(target_os = "none")]
 use super::gic;
@@ -31,6 +30,10 @@ const SOURCE_CURRENT_SP0_SYNC: u64 = 0;
 const SOURCE_CURRENT_SPX_SYNC: u64 = 4;
 #[cfg(target_os = "none")]
 const SOURCE_CURRENT_SPX_IRQ: u64 = 5;
+#[cfg(any(target_os = "none", test))]
+const SOURCE_LOWER_AARCH64_SYNC: u64 = 8;
+#[cfg(any(target_os = "none", test))]
+const EC_SVC64: u8 = 0x15;
 #[cfg(any(target_os = "none", test))]
 const EC_BRK64: u8 = 0x3c;
 #[cfg(any(test, all(target_os = "none", feature = "qemu-test-page-tables")))]
@@ -639,6 +642,19 @@ extern "C" fn finnos_arm64_exception_dispatch(frame: *mut ExceptionFrame) {
     // SAFETY: every vector slot allocates exactly `FRAME_SIZE` bytes and passes
     // its aligned SP. The frame remains exclusively owned until ERET.
     let frame = unsafe { &mut *frame };
+    if frame.source == SOURCE_LOWER_AARCH64_SYNC && exception_class(frame.esr) == EC_SVC64 {
+        let result = crate::syscall::dispatch(
+            frame.registers[8],
+            frame.registers[0],
+            frame.registers[1],
+            frame.registers[2],
+            frame.registers[3],
+            frame.registers[4],
+            frame.registers[5],
+        );
+        frame.registers[0] = result.cast_unsigned();
+        return;
+    }
     if frame.source == SOURCE_CURRENT_SPX_IRQ {
         match gic::handle_irq(frame.registers[19], frame.spsr) {
             gic::IrqDisposition::Handled | gic::IrqDisposition::Spurious(_) => return,
@@ -730,6 +746,79 @@ fn fatal(marker: &str) -> ! {
         // waits for an event; it does not access memory or return.
         unsafe { core::arch::asm!("wfe", options(nomem, nostack, preserves_flags)) }
     }
+}
+
+use crate::task::TaskId;
+
+const MAX_PUBLISHED_STACKS: usize = crate::task::MAX_TASKS;
+
+struct PublishedTaskStack {
+    active: AtomicBool,
+    generation: AtomicU32,
+    start: AtomicU64,
+    end: AtomicU64,
+}
+impl PublishedTaskStack {
+    const fn empty() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            generation: AtomicU32::new(0),
+            start: AtomicU64::new(0),
+            end: AtomicU64::new(0),
+        }
+    }
+}
+static PUBLISHED_STACKS: [PublishedTaskStack; MAX_PUBLISHED_STACKS] =
+    [const { PublishedTaskStack::empty() }; MAX_PUBLISHED_STACKS];
+
+/// Errors from stack-derived task attribution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttributionError {
+    /// No active published stack contains the address.
+    NoMatch,
+    /// The mirrored generation was invalid.
+    InvalidGeneration,
+    /// A live publication already occupies the task slot.
+    AlreadyPublished,
+}
+
+/// Publishes one task stack with release ordering.
+///
+/// # Errors
+///
+/// Returns `AttributionError::InvalidGeneration` if generation is 0, slot is out of bounds,
+/// or `start >= end`. Returns `AttributionError::AlreadyPublished` if the slot is active.
+pub fn publish_task_stack(id: TaskId, start: u64, end: u64) -> Result<(), AttributionError> {
+    if id.generation() == 0 || id.slot() >= MAX_PUBLISHED_STACKS || start >= end {
+        return Err(AttributionError::InvalidGeneration);
+    }
+    let slot = &PUBLISHED_STACKS[id.slot()];
+    if slot.active.load(Ordering::Acquire) {
+        return Err(AttributionError::AlreadyPublished);
+    }
+    slot.active.store(false, Ordering::Release);
+    slot.start.store(start, Ordering::Relaxed);
+    slot.end.store(end, Ordering::Relaxed);
+    slot.generation.store(id.generation(), Ordering::Relaxed);
+    slot.active.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// Removes a task stack publication before slot reuse or reclamation.
+pub fn unpublish_task_stack(slot_index: usize) {
+    if let Some(slot) = PUBLISHED_STACKS.get(slot_index) {
+        slot.active.store(false, Ordering::Release);
+    }
+}
+
+/// Returns whether a generation-tagged task currently has an active publication.
+#[must_use]
+pub fn task_stack_published(id: TaskId) -> bool {
+    let Some(slot) = PUBLISHED_STACKS.get(id.slot()) else {
+        return false;
+    };
+    slot.active.load(Ordering::Acquire)
+        && slot.generation.load(Ordering::Acquire) == id.generation()
 }
 
 #[cfg(test)]
@@ -938,5 +1027,12 @@ mod tests {
             far,
             elr,
         ));
+    }
+
+    #[test]
+    fn svc_exception_class_decodes_correctly() {
+        let esr_svc = u64::from(EC_SVC64) << 26;
+        assert_eq!(exception_class(esr_svc), EC_SVC64);
+        assert_eq!(SOURCE_LOWER_AARCH64_SYNC, 8);
     }
 }

@@ -4,6 +4,8 @@ members = [
     "boot/protocol",
     "boot/uefi",
     "kernel",
+    "userspace/libsys",
+    "userspace/libpeony",
 ]
 
 [workspace.package]

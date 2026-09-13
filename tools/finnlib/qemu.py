@@ -104,6 +104,81 @@ ARM64_GIC_MARKERS = ARM64_MARKERS + (
     "FINNOS:TEST:ARM64_GIC:PASS",
 )
 
+ARM64_TIMER_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:BOOTINFO_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED",
+    "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED",
+    "FINNOS:KERNEL:MEMORY_MAP_TABLE_VALID",
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVE",
+    "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+    "FINNOS:KERNEL:TIMER_CALIBRATED",
+    "FINNOS:KERNEL:TIMER_STARTED",
+    "FINNOS:KERNEL:INTERRUPTS_ENABLED",
+    "FINNOS:KERNEL:TIMER_READY",
+    "FINNOS:KERNEL:TASK_STACKS_READY",
+    "FINNOS:KERNEL:SCHEDULER_READY",
+    "FINNOS:TEST:TIMER_INTERRUPTS:BEGIN",
+    "FINNOS:TEST:TIMER_INTERRUPTS:GIC_READY",
+    "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_BEGIN",
+    "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:FREQUENCY_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:MONOTONIC_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:EOI_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:INTERRUPT_CONTEXT_OK",
+    "FINNOS:TEST:TIMER_INTERRUPTS:PASS",
+)
+
+ARM64_COOPERATIVE_TASK_MARKERS = (
+    "FINNOS:BOOTLOADER:START",
+    "FINNOS:BOOTLOADER:KERNEL_FOUND",
+    "FINNOS:BOOTLOADER:KERNEL_VALID",
+    "FINNOS:BOOTLOADER:KERNEL_LOADED",
+    "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
+    "FINNOS:KERNEL:ARM64_ENTRY",
+    "FINNOS:KERNEL:BOOTINFO_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_OK",
+    "FINNOS:KERNEL:MEMORY_MAP_PARSED",
+    "FINNOS:KERNEL:MEMORY_MAP_CLASSIFIED",
+    "FINNOS:KERNEL:MEMORY_MAP_TABLE_VALID",
+    "FINNOS:KERNEL:PAGE_ALLOCATOR_READY",
+    "FINNOS:KERNEL:PAGE_TABLES_BUILT",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVATING",
+    "FINNOS:KERNEL:PAGE_TABLES_ACTIVE",
+    "FINNOS:KERNEL:ADDRESS_SPACE_VALIDATED",
+    "FINNOS:KERNEL:ARM64_SERIAL_READY",
+    "FINNOS:KERNEL:TIMER_CALIBRATED",
+    "FINNOS:KERNEL:TIMER_STARTED",
+    "FINNOS:KERNEL:INTERRUPTS_ENABLED",
+    "FINNOS:KERNEL:TIMER_READY",
+    "FINNOS:KERNEL:TASK_STACKS_READY",
+    "FINNOS:KERNEL:SCHEDULER_READY",
+    "FINNOS:TEST:COOPERATIVE_TASKS:BEGIN",
+    "FINNOS:TEST:COOPERATIVE_TASKS:BOOTSTRAP_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:STACKS_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_BEGIN",
+    "FINNOS:TEST:COOPERATIVE_TASKS:ROUND_ROBIN_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:REGISTER_STATE_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:STACK_ISOLATION_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:TASK_EXIT_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:STACK_RECLAIM_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:SLOT_REUSE_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:IDLE_CONTEXT_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:TIMER_CONTINUITY_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:INVARIANTS_OK",
+    "FINNOS:TEST:COOPERATIVE_TASKS:PASS",
+)
+
 MARKERS = (
     "FINNOS:BOOTLOADER:START", "FINNOS:BOOTLOADER:KERNEL_FOUND", "FINNOS:BOOTLOADER:KERNEL_VALID",
     "FINNOS:BOOTLOADER:KERNEL_LOADED", "FINNOS:BOOTLOADER:FRAMEBUFFER_READY", "FINNOS:BOOTLOADER:EXIT_BOOT_SERVICES",
@@ -528,6 +603,159 @@ def validate_arm64_exception_fatal(status: int, output: str) -> list[str]:
             errors.append(f"forbidden marker found: {marker}")
     return errors
 
+def validate_arm64_timer(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    if status != 0 and "FINNOS:TEST:TIMER_INTERRUPTS:REAL_TICKS_OK" in output and "FINNOS:TEST:TIMER_INTERRUPTS:PASS" not in output:
+        errors.append("timer test timed out after partial timer markers")
+    positions = [output.find(marker) for marker in ARM64_TIMER_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing timer marker(s): " + ", ".join(marker for marker, position in zip(ARM64_TIMER_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("timer markers are out of order")
+    if output.count("FINNOS:KERNEL:TIMER_READY") != 1:
+        errors.append("expected exactly one TIMER_READY")
+    if output.count("FINNOS:TEST:TIMER_INTERRUPTS:PASS") != 1:
+        errors.append("expected exactly one timer PASS")
+    if "FINNOS:INTERRUPTS:TIMER_PPI=30" not in output:
+        errors.append("timer PPI was not verified as 30")
+
+    numeric = {key: int(value) for key, value in re.findall(r"FINNOS:TIMER:(FREQUENCY_HZ|TICK_MILLISECONDS|ARM64_CNTFRQ|ARM64_INTERVAL|FREQUENCY_WINDOW_MS|FREQUENCY_WINDOW_TICKS)=(\d+)", output)}
+    if numeric.get("FREQUENCY_HZ") != 100:
+        errors.append("frequency is not 100 Hz")
+    if numeric.get("TICK_MILLISECONDS") != 10:
+        errors.append("tick duration is not 10 ms")
+    if numeric.get("ARM64_CNTFRQ", 0) == 0:
+        errors.append("ARM64 counter frequency is zero")
+    if numeric.get("ARM64_INTERVAL", 0) == 0:
+        errors.append("ARM64 timer interval is zero")
+    if numeric.get("ARM64_CNTFRQ", 0) > 0 and numeric.get("ARM64_INTERVAL") != numeric.get("ARM64_CNTFRQ") // 100:
+        errors.append("ARM64 timer interval does not match 100 Hz frequency")
+    if numeric.get("FREQUENCY_WINDOW_MS") != 50:
+        errors.append("frequency window ms is not 50")
+    if not 3 <= numeric.get("FREQUENCY_WINDOW_TICKS", 0) <= 7:
+        errors.append("frequency window is outside 3..7 ticks")
+
+    values = {key: int(value) for key, value in re.findall(r"FINNOS:TIMER:(TEST_START_TICKS|TEST_END_TICKS|TEST_ELAPSED_TICKS|TEST_DELIVERY_DELTA|TEST_EOI_DELTA|TEST_UPTIME_MS)=(\d+)", output)}
+    if values.get("TEST_END_TICKS", 0) <= values.get("TEST_START_TICKS", 0):
+        errors.append("timer ticks did not increase")
+    if values.get("TEST_ELAPSED_TICKS", 0) < 8:
+        errors.append("fewer than eight elapsed ticks")
+    if values.get("TEST_ELAPSED_TICKS", 0) != values.get("TEST_END_TICKS", 0) - values.get("TEST_START_TICKS", 0):
+        errors.append("elapsed tick value is inconsistent")
+    if values.get("TEST_DELIVERY_DELTA", 0) < 8:
+        errors.append("fewer than eight delivery events")
+    if values.get("TEST_EOI_DELTA", 0) != values.get("TEST_DELIVERY_DELTA", 0):
+        errors.append("timer EOI count does not match delivery count")
+    if values.get("TEST_UPTIME_MS", 0) != values.get("TEST_END_TICKS", 0) * 10:
+        errors.append("uptime conversion is inconsistent")
+
+    forbidden = (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:KERNEL:TIMER_ERROR",
+        "FINNOS:KERNEL:GIC_ERROR",
+        "FINNOS:INTERRUPT:ARM64_GIC_ERROR",
+        "FINNOS:EXCEPTION:ARM64_",
+        "FINNOS:TEST:ARM64_EXCEPTIONS:",
+        "FINNOS:TEST:ARM64_EXCEPTION_FATAL:",
+        "FINNOS:TEST:ARM64_MEMORY_MAP:",
+        "FINNOS:TEST:ARM64_PAGE_TABLES:",
+        "FINNOS:TEST:ARM64_PAGE_FAULTS:",
+    )
+    for marker in forbidden:
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_cooperative_tasks(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in ARM64_COOPERATIVE_TASK_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing cooperative-task marker(s): " + ", ".join(marker for marker, position in zip(ARM64_COOPERATIVE_TASK_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("cooperative-task markers are out of order")
+    for marker in ARM64_COOPERATIVE_TASK_MARKERS:
+        if output.count(marker) != 1:
+            errors.append(f"expected exactly one cooperative-task marker: {marker}")
+    events = [(int(index), int(value)) for index, value in re.findall(r"FINNOS:TASKS:EVENT_(\d+)=(\d+)", output)]
+    if events != list(enumerate((11, 21, 31, 12, 22, 32, 13, 23, 33))):
+        errors.append("worker event order is not A1/B1/C1/A2/B2/C2/A3/B3/C3")
+    if "FINNOS:TASKS:EVENT_COUNT=9" not in output:
+        errors.append("worker event count is not nine")
+    numeric_keys = (
+        "A_STACK_START", "A_STACK_END", "A_SENTINEL", "B_STACK_START", "B_STACK_END", "B_SENTINEL",
+        "C_STACK_START", "C_STACK_END", "C_SENTINEL", "IDLE_STACK_START", "IDLE_STACK_END", "IDLE_RSP",
+        "COMPLETED_DELTA", "EXITED_BEFORE_REAP", "QUEUE_LENGTH_BEFORE_REAP", "PHYSICAL_FREE_BASELINE",
+        "PHYSICAL_FREE_AFTER_REAP", "MAPPED_BASELINE", "MAPPED_AFTER_REAP", "VACANT_BASELINE",
+        "VACANT_AFTER_REAP", "REAPED_DELTA", "REUSED_SLOT", "OLD_GENERATION", "NEW_GENERATION",
+        "STALE_ID_REJECTED", "REUSE_RUNS", "IDLE_TICK_DELTA", "TIMER_START_TICKS", "TIMER_END_TICKS",
+        "TICK_DELTA", "DELIVERY_DELTA", "EOI_DELTA", "CR3_BEFORE", "CR3_AFTER", "SCHEDULER_ISR_ENTRIES",
+    )
+    values: dict[str, int] = {}
+    for key in numeric_keys:
+        matches = re.findall(rf"FINNOS:TASKS:{key}=(0x[0-9a-fA-F]+|\d+)", output)
+        if len(matches) != 1:
+            errors.append(f"expected exactly one numeric field {key}")
+        else:
+            try:
+                values[key] = int(matches[0], 0)
+                if values[key] > (1 << 64) - 1:
+                    errors.append(f"numeric field {key} exceeds u64")
+            except ValueError:
+                errors.append(f"invalid numeric field {key}")
+    for name in ("A", "B", "C"):
+        if not values.get(f"{name}_STACK_START", 0) <= values.get(f"{name}_SENTINEL", 0) < values.get(f"{name}_STACK_END", 0):
+            errors.append(f"{name} sentinel is outside its stack")
+    ranges = [(values.get(f"{name}_STACK_START", 0), values.get(f"{name}_STACK_END", 0)) for name in ("A", "B", "C")]
+    if any(start >= end for start, end in ranges):
+        errors.append("worker stack range is empty or reversed")
+    if any(a_start < b_end and b_start < a_end for index, (a_start, a_end) in enumerate(ranges) for b_start, b_end in ranges[index + 1:]):
+        errors.append("worker stack ranges overlap")
+    idle_range = (values.get("IDLE_STACK_START", 0), values.get("IDLE_STACK_END", 0))
+    if idle_range[0] >= idle_range[1]:
+        errors.append("idle stack range is empty or reversed")
+    if any(start < idle_range[1] and idle_range[0] < end for start, end in ranges):
+        errors.append("idle stack overlaps a worker stack")
+    if not idle_range[0] <= values.get("IDLE_RSP", 0) < idle_range[1]:
+        errors.append("idle RSP is outside idle stack")
+    expected = {"COMPLETED_DELTA": 4, "EXITED_BEFORE_REAP": 4, "QUEUE_LENGTH_BEFORE_REAP": 0, "REAPED_DELTA": 4, "REUSED_SLOT": 2, "STALE_ID_REJECTED": 1, "REUSE_RUNS": 1, "SCHEDULER_ISR_ENTRIES": 0}
+    for key, value in expected.items():
+        if values.get(key) != value:
+            errors.append(f"unexpected {key}")
+    for before, after, label in (("PHYSICAL_FREE_BASELINE", "PHYSICAL_FREE_AFTER_REAP", "physical pages"), ("MAPPED_BASELINE", "MAPPED_AFTER_REAP", "mapped leaves"), ("VACANT_BASELINE", "VACANT_AFTER_REAP", "vacant slots")):
+        if values.get(before) != values.get(after):
+            errors.append(f"{label} baseline was not restored")
+    if values.get("NEW_GENERATION") != values.get("OLD_GENERATION", 0) + 1:
+        errors.append("task slot generation did not advance exactly once")
+    if values.get("TIMER_END_TICKS", 0) <= values.get("TIMER_START_TICKS", 0) or values.get("TICK_DELTA", 0) <= 0:
+        errors.append("timer ticks did not advance across task switches")
+    if values.get("TICK_DELTA") != values.get("TIMER_END_TICKS", 0) - values.get("TIMER_START_TICKS", 0):
+        errors.append("timer tick delta is inconsistent")
+    if values.get("DELIVERY_DELTA", 0) <= 0 or values.get("EOI_DELTA") != values.get("DELIVERY_DELTA"):
+        errors.append("timer delivery and EOI deltas are inconsistent")
+    if values.get("IDLE_TICK_DELTA", 0) <= 0:
+        errors.append("idle did not observe a timer tick")
+    if values.get("CR3_BEFORE") != values.get("CR3_AFTER"):
+        errors.append("CR3 changed across cooperative scheduling")
+    forbidden = (
+        "FINNOS:BOOTLOADER:ERROR:",
+        "FINNOS:KERNEL:PANIC",
+        "FINNOS:KERNEL:SCHEDULER_ERROR",
+        "FINNOS:KERNEL:TASK_STACK_ERROR",
+        "FINNOS:TASK:CONTEXT_ERROR",
+        "FINNOS:KERNEL:TASK_CONTEXT_ERROR",
+        "FINNOS:INTERRUPT:ARM64_GIC_ERROR",
+        "FINNOS:EXCEPTION:ARM64_",
+    )
+    for marker in forbidden:
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
 def validate_memory_map(status: int, output: str) -> list[str]:
     errors: list[str] = []
     if status != 33: errors.append(f"expected QEMU status 33, got {status}")
@@ -877,6 +1105,211 @@ def validate_cooperative_tasks(status: int, output: str) -> list[str]:
         if marker in output: errors.append(f"forbidden marker found: {marker}")
     return errors
 
+USERSPACE_MARKERS = (
+    "FINNOS:TEST:USERSPACE:BEGIN",
+    "FINNOS:KERNEL:USER_MAPPINGS_READY",
+    "FINNOS:KERNEL:ENTERING_USER_MODE",
+    "FINNOS:USER:INIT_RUNNING",
+    "FINNOS:USER:PID_OK",
+    "FINNOS:USER:BLOCK_OK",
+    "FINNOS:USER:EXIT status=0x0",
+    "FINNOS:USER:PASS",
+)
+
+def validate_userspace(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33:
+        errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in USERSPACE_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing userspace marker(s): " + ", ".join(marker for marker, position in zip(USERSPACE_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("userspace markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_userspace(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in USERSPACE_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing arm64 userspace marker(s): " + ", ".join(marker for marker, position in zip(USERSPACE_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("arm64 userspace markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+IPC_MARKERS = (
+    "FINNOS:TEST:IPC:BEGIN",
+    "FINNOS:IPC:CHANNEL_CREATED",
+    "FINNOS:IPC:CALL_STAGED",
+    "FINNOS:IPC:RECV_OK",
+    "FINNOS:IPC:REPLY_OK",
+    "FINNOS:IPC:TAKE_OK",
+    "FINNOS:IPC:RIGHTS_REJECTED",
+    "FINNOS:IPC:HANDLE_OK",
+    "FINNOS:IPC:VIRTIO_OK",
+    "FINNOS:IPC:PCI_SCAN_OK",
+    "FINNOS:TEST:IPC:PASS",
+)
+
+def validate_ipc(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33:
+        errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in IPC_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing ipc marker(s): " + ", ".join(marker for marker, position in zip(IPC_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("ipc markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_ipc(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in IPC_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing arm64 ipc marker(s): " + ", ".join(marker for marker, position in zip(IPC_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("arm64 ipc markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+ELF_LOADER_MARKERS = (
+    "FINNOS:TEST:ELF_LOADER:BEGIN",
+    "FINNOS:ELF:VALIDATED",
+    "FINNOS:ELF:MAPPED",
+    "FINNOS:ELF:LOADED_OK",
+    "FINNOS:ELF:PID_OK",
+    "FINNOS:TEST:ELF_LOADER:PASS",
+)
+
+def validate_elf_loader(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33:
+        errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in ELF_LOADER_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing elf-loader marker(s): " + ", ".join(marker for marker, position in zip(ELF_LOADER_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("elf-loader markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_elf_loader(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in ELF_LOADER_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing arm64 elf-loader marker(s): " + ", ".join(marker for marker, position in zip(ELF_LOADER_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("arm64 elf-loader markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+INIT_MARKERS: tuple[str, ...] = (
+    "FINNOS:TEST:INIT:BEGIN",
+    "FINNOS:INIT:START",
+    "FINNOS:INIT:PID_OK",
+    "FINNOS:INIT:DEVICES_MOUNTED",
+    "FINNOS:INIT:SHELL_SPAWNED",
+    "FINNOS:SHELL:READY",
+    "FINNOS:SHELL:CMD:HELP",
+    "FINNOS:SHELL:CMD:PS",
+    "FINNOS:SHELL:CMD:UPTIME",
+    "FINNOS:SHELL:CMD:LS",
+    "FINNOS:SHELL:CMD:EXIT",
+    "FINNOS:INIT:CHILD_REAPED",
+    "FINNOS:INIT:PASS",
+    "FINNOS:TEST:INIT:PASS",
+)
+
+def validate_init(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33:
+        errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in INIT_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing init marker(s): " + ", ".join(marker for marker, position in zip(INIT_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("init markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_init(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in INIT_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing arm64 init marker(s): " + ", ".join(marker for marker, position in zip(INIT_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("arm64 init markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+DESKTOP_MARKERS: tuple[str, ...] = (
+    "FINNOS:TEST:DESKTOP:BEGIN",
+    "FINNOS:DISPLAY:INIT",
+    "FINNOS:COMPOSITOR:READY",
+    "FINNOS:VMO:CREATED",
+    "FINNOS:VMO:MAPPED",
+    "FINNOS:PEONY:SHELL:READY",
+    "FINNOS:PEONY:APP:TERMINAL:READY",
+    "FINNOS:PEONY:APP:SETTINGS:READY",
+    "FINNOS:PEONY:APP:FILES:READY",
+    "FINNOS:COMPOSITOR:FRAME:RENDERED",
+    "FINNOS:TEST:DESKTOP:PASS",
+)
+
+def validate_desktop(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 33:
+        errors.append(f"expected QEMU status 33, got {status}")
+    positions = [output.find(marker) for marker in DESKTOP_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing desktop marker(s): " + ", ".join(marker for marker, position in zip(DESKTOP_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("desktop markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
+def validate_arm64_desktop(status: int, output: str) -> list[str]:
+    errors: list[str] = []
+    if status != 0:
+        errors.append(f"expected ARM64 semihosting status 0, got {status}")
+    positions = [output.find(marker) for marker in DESKTOP_MARKERS]
+    if any(position < 0 for position in positions):
+        errors.append("missing arm64 desktop marker(s): " + ", ".join(marker for marker, position in zip(DESKTOP_MARKERS, positions) if position < 0))
+    if positions != sorted(position for position in positions if position >= 0):
+        errors.append("arm64 desktop markers are out of order")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+        if marker in output:
+            errors.append(f"forbidden marker found: {marker}")
+    return errors
+
 def qemu_command(
     qemu: str,
     firmware: str,
@@ -886,10 +1319,13 @@ def qemu_command(
     machine: str = "q35",
     architecture: str = "x86_64",
     cpu: str = "",
+    data_drive: Path | None = None,
+    gpu: bool = False,
 ) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
-    command = [qemu, "-machine", machine]
+    machine_arg = f"{machine},vmport=off" if machine == "q35" and architecture == "x86_64" else machine
+    command = [qemu, "-machine", machine_arg]
     if cpu:
         command.extend(["-cpu", cpu])
     command.extend([
@@ -899,11 +1335,19 @@ def qemu_command(
     if architecture == "arm64":
         command.extend([
             "-smp", "1",
+            "-device", "ramfb",
             "-drive", f"if=none,format=raw,file={image},id=finnos-esp",
             "-device", "virtio-blk-pci,drive=finnos-esp",
         ])
     else:
         command.extend(["-drive", f"if=ide,format=raw,file={image}"])
+    if data_drive is not None:
+        command.extend([
+            "-drive", f"if=none,format=raw,file={data_drive},id=finnos-data",
+            "-device", "virtio-blk-pci,drive=finnos-data",
+        ])
+    if gpu:
+        command.extend(["-device", "virtio-gpu-pci"])
     command.extend(["-serial", "stdio", "-monitor", "none", "-no-reboot", "-net", "none"])
     if headless: command.extend(["-display", "none"])
     if test_exit and architecture == "arm64":

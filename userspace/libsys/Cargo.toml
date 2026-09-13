@@ -1,0 +1,15 @@
+[package]
+name = "finn-libsys"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Host-testable userspace ABI constants and runtime skeleton for FinnOS (no QEMU wiring)."
+
+[lib]
+name = "finn_libsys"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
