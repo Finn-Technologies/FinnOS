@@ -274,7 +274,17 @@ impl EarlyPhysicalPageAllocator {
         let range = self.allocate_contiguous(1)?;
         Ok(PhysicalPage { start: range.start })
     }
+}
 
+impl crate::loader::FrameAllocator for EarlyPhysicalPageAllocator {
+    fn allocate_frame(&mut self) -> Result<u64, ()> {
+        self.allocate_page()
+            .map(PhysicalPage::start_address)
+            .map_err(|_| ())
+    }
+}
+
+impl EarlyPhysicalPageAllocator {
     /// Allocate contiguous pages from the lowest suitable free extent.
     pub fn allocate_contiguous(
         &mut self,
