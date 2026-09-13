@@ -1,0 +1,19 @@
+[package]
+name = "finn-libpeony"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Peony graphical desktop toolkit, 2D rasterizer, window compositor, and core apps for FinnOS."
+
+[lib]
+name = "finn_libpeony"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+finn-boot-protocol = { path = "../../boot/protocol" }
+finn-libsys = { path = "../libsys" }
+
+[lints]
+workspace = true
