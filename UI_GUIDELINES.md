@@ -1,6 +1,6 @@
 # Peony UI and Design-System Plan
 
-> Implementation status: planned only. FinnOS currently draws a framebuffer diagnostic and has no UI runtime.
+> Implementation status: in progress. `finn-libpeony` provides a working software-rendered desktop slice with bounded damage tracking; a separate bounded VirtIO-GPU control query is verified in QEMU, while the complete UI runtime, accessibility tree, input services, and GPU presentation remain in progress.
 
 ## Product principles
 
@@ -9,7 +9,7 @@
 3. **Capability use is legible.** Apps explain and expose active access to files, devices, location, microphone, camera, and network.
 4. **Density follows task.** System chrome remains compact; reading and touch layouts gain space without changing hierarchy.
 5. **Motion communicates causality.** Animation never hides latency, blocks input, or substitutes for state.
-6. **Software rendering is the baseline.** Correctness and accessibility cannot depend on GPU acceleration.
+6. **Software rendering is the baseline.** Correctness and accessibility cannot depend on GPU acceleration; accelerated presentation is an optimization layered on the same damage contract.
 
 ## Visual direction
 
@@ -100,6 +100,8 @@ Apps use command area, navigation, content, and contextual detail only when each
 ## Performance targets
 
 For the reference QEMU software-rendered scene at 1280x800: sustain 60 frames/s during ordinary window movement, keep compositor input-to-present p95 under 50 ms, avoid redrawing undamaged surfaces, and hold idle CPU below 2% of one reference virtual CPU after timers are mature. Targets must be measured and revised from evidence, not silently relaxed.
+
+The current implementation provides bounded `DamageRegion` tracking, canvas clipping, taskbar-only clock recomposition, and a separate polled QEMU VirtIO-GPU 2D setup plus damage follow-up path. It does not yet prove continuous compositor-to-GPU presentation or the 60 Hz target: QEMU screenshots, input-to-present latency, IRQ completion, GPU-composited presentation, 3D command execution, and physical-hardware measurements remain required.
 
 ## Delivery sequence
 

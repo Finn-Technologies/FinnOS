@@ -5,6 +5,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "qemu-test-desktop")]
+use alloc::boxed::Box;
 #[cfg(feature = "qemu-test-heap")]
 use alloc::{boxed::Box, string::String, vec::Vec};
 #[cfg(feature = "qemu-test-heap")]
@@ -671,7 +673,7 @@ pub unsafe extern "sysv64" fn kernel_main(pointer: *const BootInfo) -> ! {
                         info.framebuffer.height,
                         info.framebuffer.stride
                     );
-                    run_desktop_test(&info);
+                    run_desktop_test(&info, &mut address_space, &mut allocator);
                 }
             }
             Err(error) => {
@@ -1762,8 +1764,204 @@ fn run_init_test(
 }
 
 #[cfg(feature = "qemu-test-desktop")]
+static mut GPU_CONTROL_STORAGE: finn_kernel::drivers::virtio::gpu::queue::GpuControlSmokeStorage =
+    finn_kernel::drivers::virtio::gpu::queue::GpuControlSmokeStorage::new();
+
+#[cfg(feature = "qemu-test-desktop")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GpuTransportSmokeError {
+    RegionDecode,
+    BarMapping,
+    PageBudget,
+    PageMapping,
+    RingMapping,
+    QueueSetup,
+    QueueSubmit,
+    CompletionTimeout,
+    ResponseDecode,
+    TeardownFailed,
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GpuTransportSmokeReport {
+    final_state: finn_kernel::drivers::virtio::gpu::queue::Gpu2dResourceState,
+    owned_resource_released: bool,
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+const GPU_DISPLAY_VIRTUAL_BASE: u64 = 0x0000_6000_0000_0000;
+
+#[cfg(feature = "qemu-test-desktop")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GpuDisplayPrepareError {
+    Buffer(finn_kernel::drivers::virtio::gpu::GpuDisplayBufferError),
+    Paging(finn_kernel::arch::x86_64::paging::PagingError),
+    TableCapacity,
+    Rollback(finn_kernel::arch::x86_64::paging::PagingError),
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+struct GpuDisplayMapping {
+    buffer: finn_kernel::drivers::virtio::gpu::GpuDisplayBuffer,
+    virtual_base: u64,
+    mapped_pages: u64,
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+fn prepare_gpu_display_mapping(
+    allocator: &mut EarlyPhysicalPageAllocator,
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    width: u32,
+    height: u32,
+    stride: u32,
+) -> Result<GpuDisplayMapping, GpuDisplayPrepareError> {
+    use finn_kernel::arch::x86_64::paging::{
+        MapOutcome, MappingPermissions, PhysicalFrame, VirtualPage,
+    };
+    use finn_kernel::drivers::virtio::gpu::{
+        GPU_DISPLAY_MAX_TABLE_PAGES_BOUND, GpuDisplayBuffer, GpuDisplayBufferError,
+    };
+    use finn_kernel::memory::PAGE_SIZE;
+
+    let mut buffer = GpuDisplayBuffer::allocate(allocator, width, height, stride)
+        .map_err(GpuDisplayPrepareError::Buffer)?;
+    let physical_address = buffer
+        .backing_address()
+        .ok_or(GpuDisplayPrepareError::Buffer(
+            GpuDisplayBufferError::NullBackingAddress,
+        ))?;
+    let page_count = buffer.page_count();
+    let table_bound = GpuDisplayBuffer::translation_table_page_upper_bound(page_count)
+        .map_err(GpuDisplayPrepareError::Buffer)?;
+    let table_bound =
+        usize::try_from(table_bound).map_err(|_| GpuDisplayPrepareError::TableCapacity)?;
+    let pool = address_space.pool();
+    let table_pages_before = pool.used_count();
+    if table_bound > pool.reserved_count().saturating_sub(table_pages_before) {
+        let _ = buffer.release(allocator);
+        return Err(GpuDisplayPrepareError::TableCapacity);
+    }
+
+    let mut mapped_pages = 0u64;
+    let map_result = (|| -> Result<(), finn_kernel::arch::x86_64::paging::PagingError> {
+        for index in 0..page_count {
+            let offset = index
+                .checked_mul(PAGE_SIZE)
+                .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+            let virtual_address = GPU_DISPLAY_VIRTUAL_BASE
+                .checked_add(offset)
+                .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+            let physical = physical_address
+                .checked_add(offset)
+                .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+            let page = VirtualPage::new(virtual_address)?;
+            let frame = PhysicalFrame::new(physical, address_space.width())?;
+            if address_space.map_page(page, frame, MappingPermissions::framebuffer())?
+                != MapOutcome::Created
+            {
+                return Err(finn_kernel::arch::x86_64::paging::PagingError::MappingConflict);
+            }
+            mapped_pages = mapped_pages
+                .checked_add(1)
+                .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = map_result {
+        let rollback = (|| -> Result<(), finn_kernel::arch::x86_64::paging::PagingError> {
+            let mut mapped = mapped_pages;
+            while mapped > 0 {
+                mapped = mapped
+                    .checked_sub(1)
+                    .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+                let address =
+                    GPU_DISPLAY_VIRTUAL_BASE
+                        .checked_add(mapped.checked_mul(PAGE_SIZE).ok_or(
+                            finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow,
+                        )?)
+                        .ok_or(finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow)?;
+                address_space.unmap_page(VirtualPage::new(address)?)?;
+            }
+            Ok(())
+        })();
+        return match rollback {
+            Ok(()) => {
+                let _ = buffer.release(allocator);
+                Err(GpuDisplayPrepareError::Paging(error))
+            }
+            Err(rollback_error) => Err(GpuDisplayPrepareError::Rollback(rollback_error)),
+        };
+    }
+    let table_pages_used = address_space
+        .pool()
+        .used_count()
+        .saturating_sub(table_pages_before);
+    let mut mapping = GpuDisplayMapping {
+        buffer,
+        virtual_base: GPU_DISPLAY_VIRTUAL_BASE,
+        mapped_pages: page_count,
+    };
+    let table_pages_used =
+        u64::try_from(table_pages_used).map_err(|_| GpuDisplayPrepareError::TableCapacity)?;
+    if table_pages_used > u64::try_from(table_bound).unwrap_or(u64::MAX)
+        || table_pages_used > GPU_DISPLAY_MAX_TABLE_PAGES_BOUND
+    {
+        if let Err(error) = cleanup_gpu_display_mapping(&mut mapping, address_space, allocator) {
+            return Err(error);
+        }
+        return Err(GpuDisplayPrepareError::TableCapacity);
+    }
+    Ok(mapping)
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+fn cleanup_gpu_display_mapping(
+    mapping: &mut GpuDisplayMapping,
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> Result<(), GpuDisplayPrepareError> {
+    use finn_kernel::arch::x86_64::paging::VirtualPage;
+    use finn_kernel::memory::PAGE_SIZE;
+
+    let mut remaining = mapping.mapped_pages;
+    while remaining > 0 {
+        remaining = remaining
+            .checked_sub(1)
+            .ok_or(GpuDisplayPrepareError::Paging(
+                finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow,
+            ))?;
+        let address =
+            mapping
+                .virtual_base
+                .checked_add(remaining.checked_mul(PAGE_SIZE).ok_or(
+                    GpuDisplayPrepareError::Paging(
+                        finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow,
+                    ),
+                )?)
+                .ok_or(GpuDisplayPrepareError::Paging(
+                    finn_kernel::arch::x86_64::paging::PagingError::AddressOverflow,
+                ))?;
+        address_space
+            .unmap_page(VirtualPage::new(address).map_err(GpuDisplayPrepareError::Paging)?)
+            .map_err(GpuDisplayPrepareError::Paging)?;
+        mapping.mapped_pages = remaining;
+    }
+    mapping
+        .buffer
+        .release(allocator)
+        .map_err(GpuDisplayPrepareError::Buffer)?;
+    mapping.mapped_pages = 0;
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-desktop")]
 #[allow(unsafe_code)]
-fn run_desktop_test(info: &BootInfo) -> ! {
+fn run_desktop_test(
+    info: &BootInfo,
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    allocator: &mut EarlyPhysicalPageAllocator,
+) -> ! {
     if info.flags & BOOT_FLAG_FRAMEBUFFER_PRESENT == 0 || info.framebuffer.address == 0 {
         failure();
     }
@@ -1792,7 +1990,6 @@ fn run_desktop_test(info: &BootInfo) -> ! {
         }
     });
 
-    let mut gpu_display = finn_kernel::drivers::virtio::gpu::GpuDisplayManager::new(width, height);
     if let Some(dev) = gpu_dev_info {
         finn_kernel::serial_log!(
             "FINNOS:GPU:VIRTIO_GPU_DETECTED vendor=0x{:04x} device=0x{:04x}\n",
@@ -1800,37 +1997,68 @@ fn run_desktop_test(info: &BootInfo) -> ! {
             dev.device_id
         );
         dev.enable_bus_mastering();
-        compositor.enable_hardware_cursor();
-        finn_kernel::serial_log!("FINNOS:GPU:HARDWARE_CURSOR_PLANE_READY\n");
-        finn_kernel::serial_log!("FINNOS:GPU:DOUBLE_BUFFER_ACTIVE\n");
-        let create_pkt = gpu_display.create_surface_packet(gpu_display.front_resource_id);
-        let scanout_pkt = gpu_display.set_scanout_packet(gpu_display.front_resource_id);
-        assert_eq!(
-            create_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_RESOURCE_CREATE_2D
-        );
-        assert_eq!(
-            scanout_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_SET_SCANOUT
-        );
-        finn_kernel::serial_log!(
-            "FINNOS:GPU:SCANOUT_BOUND resource={}\n",
-            gpu_display.front_resource_id
-        );
-        let ctx_pkt = gpu_display.create_context_packet(b"FinnOS-Compositor");
-        assert_eq!(
-            ctx_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_CTX_CREATE
-        );
-        let mut cmd_stream = gpu_display.create_command_stream();
-        let _ = cmd_stream.cmd_set_framebuffer(gpu_display.front_resource_id, width, height);
-        let _ = cmd_stream.cmd_set_viewport(width, height);
-        let _ = cmd_stream.cmd_clear(0xFF18_1825);
-        let submit_pkt = cmd_stream.build_submit_packet();
-        assert_eq!(
-            submit_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_SUBMIT_3D
-        );
+        match dev.virtio_capabilities() {
+            Ok(capabilities) => {
+                for capability in capabilities.all() {
+                    finn_kernel::serial_log!(
+                        "FINNOS:GPU:VIRTIO_CAP off={:#x} len={} kind={:?} bar={} region={:#x}:{} notify={:#x}:{} multiplier={}\n",
+                        capability.config_offset,
+                        capability.capability_length,
+                        capability.kind,
+                        capability.bar,
+                        capability.region_offset,
+                        capability.region_length,
+                        capability.notify_offset,
+                        capability.notify_length,
+                        capability.notify_offset_multiplier
+                    );
+                }
+                let common_bar = capabilities
+                    .find(finn_kernel::drivers::virtio::pci::VirtioPciCapabilityKind::Common)
+                    .map_or(0xff, |capability| capability.bar);
+                let notify_bar = capabilities
+                    .find(finn_kernel::drivers::virtio::pci::VirtioPciCapabilityKind::Notify)
+                    .map_or(0xff, |capability| capability.bar);
+                let device_bar = capabilities
+                    .find(finn_kernel::drivers::virtio::pci::VirtioPciCapabilityKind::Device)
+                    .map_or(0xff, |capability| capability.bar);
+                finn_kernel::serial_log!(
+                    "FINNOS:GPU:VIRTIO_MODERN_CAPS_OK common_bar={} notify_bar={} device_bar={}\n",
+                    common_bar,
+                    notify_bar,
+                    device_bar
+                );
+            }
+            Err(error) => {
+                finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_MODERN_CAPS_UNAVAILABLE {:?}\n", error);
+            }
+        }
+    }
+
+    let mut owned_display = None;
+    if virtio_gpu_found {
+        match prepare_gpu_display_mapping(allocator, address_space, width, height, stride) {
+            Ok(mapping) => {
+                let presentation_address = mapping
+                    .buffer
+                    .backing_address()
+                    .unwrap_or(info.framebuffer.address);
+                finn_kernel::serial_log!(
+                    "FINNOS:GPU:DISPLAY_BUFFER_ALLOCATED pages={} address={:#x}\n",
+                    mapping.buffer.page_count(),
+                    presentation_address
+                );
+                finn_kernel::serial_log!(
+                    "FINNOS:GPU:DISPLAY_BUFFER_MAPPED virtual={:#x} pages={}\n",
+                    mapping.virtual_base,
+                    mapping.buffer.page_count()
+                );
+                owned_display = Some(mapping);
+            }
+            Err(error) => {
+                finn_kernel::serial_log!("FINNOS:GPU:DISPLAY_BUFFER_UNAVAILABLE {:?}\n", error);
+            }
+        }
     }
 
     finn_kernel::serial_log!("FINNOS:PEONY:SHELL:READY\n");
@@ -1852,45 +2080,449 @@ fn run_desktop_test(info: &BootInfo) -> ! {
     compositor.add_window(files_win, finn_libpeony::AppId::Files);
     finn_kernel::serial_log!("FINNOS:PEONY:APP:FILES:READY\n");
 
-    let fb_ptr = info.framebuffer.address as *mut u32;
     let pixel_count = (stride as usize) * (height as usize);
-    let fb_slice = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
-    let mut canvas =
-        finn_libpeony::Canvas::new(fb_slice, width as usize, height as usize, stride as usize);
+    let mut canvas = if let Some(mapping) = owned_display.as_ref() {
+        let pointer = mapping.virtual_base as *mut u32;
+        let pixels = unsafe { core::slice::from_raw_parts_mut(pointer, pixel_count) };
+        finn_libpeony::Canvas::new(pixels, width as usize, height as usize, stride as usize)
+    } else {
+        let fb_ptr = info.framebuffer.address as *mut u32;
+        let pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
+        finn_libpeony::Canvas::new(pixels, width as usize, height as usize, stride as usize)
+    };
 
     compositor.compose(&mut canvas, "x86_64", 100);
     finn_kernel::serial_log!("FINNOS:COMPOSITOR:FRAME:RENDERED\n");
 
-    if virtio_gpu_found {
-        let damage = finn_kernel::drivers::virtio::gpu::VirtioGpuRect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        };
-        let transfer_pkt =
-            gpu_display.transfer_to_host_packet(gpu_display.front_resource_id, damage);
-        let flush_pkt = gpu_display.flush_packet(gpu_display.front_resource_id, damage);
-        assert_eq!(
-            transfer_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D
-        );
-        assert_eq!(
-            flush_pkt.hdr.req_type,
-            finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_CMD_RESOURCE_FLUSH
-        );
-        gpu_display.swap_buffers();
-        finn_kernel::serial_log!(
-            "FINNOS:GPU:PAGE_FLIP front={} back={}\n",
-            gpu_display.front_resource_id,
-            gpu_display.back_resource_id
-        );
-    }
+    let gpu_result = if virtio_gpu_found {
+        if let Some(dev) = gpu_dev_info {
+            Some(run_virtio_gpu_transport_smoke(
+                address_space,
+                &dev,
+                width,
+                height,
+                stride,
+                info.framebuffer.address,
+                owned_display.as_ref().map(|mapping| &mapping.buffer),
+                &mut compositor,
+                &mut canvas,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let owned_resource_released = match gpu_result {
+        Some(Ok(report)) => report.owned_resource_released,
+        Some(Err(error)) => {
+            if error != GpuTransportSmokeError::TeardownFailed {
+                finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_2D_PRESENTATION_UNAVAILABLE\n");
+            }
+            finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_2D_FAILURE {:?}\n", error);
+            false
+        }
+        None => false,
+    };
 
     assert!(canvas.pixels().iter().any(|&p| p != 0));
+    if owned_display.is_some() {
+        let fb_ptr = info.framebuffer.address as *mut u32;
+        // SAFETY: the UEFI handoff validated the GOP framebuffer and the
+        // compositor canvas uses the same bounded pixel count.
+        let fb_slice = unsafe { core::slice::from_raw_parts_mut(fb_ptr, pixel_count) };
+        let copy_len = fb_slice.len().min(canvas.pixels().len());
+        fb_slice[..copy_len].copy_from_slice(&canvas.pixels()[..copy_len]);
+        finn_kernel::serial_log!("FINNOS:GPU:DISPLAY_BUFFER_COPIED_TO_GOP\n");
+    }
+    if let Some(mapping) = owned_display.as_mut() {
+        if owned_resource_released {
+            match cleanup_gpu_display_mapping(mapping, address_space, allocator) {
+                Ok(()) => {
+                    finn_kernel::serial_log!("FINNOS:GPU:DISPLAY_BUFFER_RELEASED\n");
+                    owned_display = None;
+                }
+                Err(error) => finn_kernel::serial_log!(
+                    "FINNOS:GPU:DISPLAY_BUFFER_CLEANUP_RETAINED {:?}\n",
+                    error
+                ),
+            }
+        }
+    }
+    if owned_display.is_some() {
+        finn_kernel::serial_log!("FINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY\n");
+    }
 
     finn_kernel::serial_log!("FINNOS:TEST:DESKTOP:PASS\n");
     qemu::exit(0x10);
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+#[allow(unsafe_code)]
+fn run_virtio_gpu_transport_smoke(
+    address_space: &mut finn_kernel::arch::x86_64::paging::ActiveAddressSpace,
+    dev: &finn_kernel::drivers::pci::PciDeviceInfo,
+    width: u32,
+    height: u32,
+    stride: u32,
+    gop_framebuffer_address: u64,
+    owned_display: Option<&finn_kernel::drivers::virtio::gpu::GpuDisplayBuffer>,
+    compositor: &mut finn_libpeony::Compositor,
+    canvas: &mut finn_libpeony::Canvas,
+) -> Result<GpuTransportSmokeReport, GpuTransportSmokeError> {
+    use finn_kernel::arch::x86_64::paging::{
+        MapOutcome, MappingPermissions, PhysicalFrame, VirtualPage,
+    };
+    use finn_kernel::drivers::virtio::gpu::queue::{
+        self, Gpu2dResource, GpuControlBufferAddresses, GpuControlQueue,
+    };
+    use finn_kernel::drivers::virtio::split_queue::SplitVirtqueueStorage;
+    use finn_kernel::drivers::virtio::transport::{
+        self, MappedVirtioPciMmio, VIRTIO_PCI_MMIO_WINDOW_BASE,
+    };
+
+    finn_kernel::arch::x86_64::serial::write_bytes(b"FINNOS:GPU:VIRTIO_TRANSPORT:DECODE_BEGIN\n");
+    let regions = match dev.virtio_regions() {
+        Ok(regions) => regions,
+        Err(_) => {
+            finn_kernel::arch::x86_64::serial::write_bytes(
+                b"FINNOS:GPU:VIRTIO_TRANSPORT:REGIONS_FAILED\n",
+            );
+            return Err(GpuTransportSmokeError::RegionDecode);
+        }
+    };
+    finn_kernel::arch::x86_64::serial::write_bytes(b"FINNOS:GPU:VIRTIO_TRANSPORT:REGIONS_OK\n");
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_REGIONS common={:#x}:{} notify={:#x}:{} device={:#x}:{} bar={:#x} multiplier={}\n",
+        regions.common.physical_base,
+        regions.common.byte_len,
+        regions.notify.physical_base,
+        regions.notify.byte_len,
+        regions.device.physical_base,
+        regions.device.byte_len,
+        regions.common.bar_address,
+        regions.notify_offset_multiplier
+    );
+    let bar = match transport::bar_mapping(&regions) {
+        Ok(bar) => bar,
+        Err(_) => {
+            finn_kernel::arch::x86_64::serial::write_bytes(
+                b"FINNOS:GPU:VIRTIO_TRANSPORT:BAR_RANGE_FAILED\n",
+            );
+            return Err(GpuTransportSmokeError::BarMapping);
+        }
+    };
+    let page_count = bar.byte_len / transport::VIRTIO_PCI_MAPPING_PAGE_SIZE;
+    if page_count == 0 || page_count > 16 {
+        return Err(GpuTransportSmokeError::PageBudget);
+    }
+
+    let mut mapped_pages = 0usize;
+    for index in 0..page_count {
+        let offset = index
+            .checked_mul(transport::VIRTIO_PCI_MAPPING_PAGE_SIZE)
+            .ok_or(GpuTransportSmokeError::PageBudget)?;
+        let virtual_address = VIRTIO_PCI_MMIO_WINDOW_BASE
+            .checked_add(offset)
+            .ok_or(GpuTransportSmokeError::PageBudget)?;
+        let physical_address = bar
+            .physical_start
+            .checked_add(offset)
+            .ok_or(GpuTransportSmokeError::PageBudget)?;
+        let page =
+            VirtualPage::new(virtual_address).map_err(|_| GpuTransportSmokeError::PageMapping)?;
+        let frame = PhysicalFrame::new(physical_address, address_space.width())
+            .map_err(|_| GpuTransportSmokeError::PageMapping)?;
+        match address_space.map_page(page, frame, MappingPermissions::kernel_mmio_rw_nx()) {
+            Ok(MapOutcome::Created) => mapped_pages += 1,
+            Ok(MapOutcome::AlreadyPresent) => {}
+            Err(_) => {
+                for rollback in (0..mapped_pages).rev() {
+                    let rollback_index =
+                        u64::try_from(rollback).map_err(|_| GpuTransportSmokeError::PageMapping)?;
+                    let rollback_offset = rollback_index
+                        .checked_mul(transport::VIRTIO_PCI_MAPPING_PAGE_SIZE)
+                        .ok_or(GpuTransportSmokeError::PageMapping)?;
+                    let rollback_page = VirtualPage::new(
+                        VIRTIO_PCI_MMIO_WINDOW_BASE
+                            .checked_add(rollback_offset)
+                            .ok_or(GpuTransportSmokeError::PageMapping)?,
+                    )
+                    .map_err(|_| GpuTransportSmokeError::PageMapping)?;
+                    address_space
+                        .unmap_page(rollback_page)
+                        .map_err(|_| GpuTransportSmokeError::PageMapping)?;
+                }
+                return Err(GpuTransportSmokeError::PageMapping);
+            }
+        }
+    }
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_BAR_MAPPED physical={:#x} bytes={}\n",
+        bar.physical_start,
+        bar.byte_len
+    );
+
+    let common_base = VIRTIO_PCI_MMIO_WINDOW_BASE
+        .checked_add(bar.common_offset)
+        .ok_or(GpuTransportSmokeError::BarMapping)?;
+    let notify_base = VIRTIO_PCI_MMIO_WINDOW_BASE
+        .checked_add(bar.notify_offset)
+        .ok_or(GpuTransportSmokeError::BarMapping)?;
+    // The ISR window lives in the same BAR span that was just mapped, so its
+    // virtual address is window-relative. An absent capability stays absent.
+    let (isr_base, isr_length) = match regions.isr {
+        Some(region) => {
+            let offset = region
+                .physical_base
+                .checked_sub(bar.physical_start)
+                .ok_or(GpuTransportSmokeError::BarMapping)?;
+            (
+                Some(
+                    VIRTIO_PCI_MMIO_WINDOW_BASE
+                        .checked_add(offset)
+                        .ok_or(GpuTransportSmokeError::BarMapping)?,
+                ),
+                region.byte_len,
+            )
+        }
+        None => (None, 0),
+    };
+    let mmio = MappedVirtioPciMmio::new(
+        common_base,
+        regions.common.byte_len,
+        notify_base,
+        regions.notify.byte_len,
+        isr_base,
+        isr_length,
+    );
+    let mut transport = transport::VirtioPciTransport::with_interrupts(
+        mmio,
+        regions.common.byte_len,
+        regions.notify.byte_len,
+        regions.notify_offset_multiplier,
+        0,
+        regions.isr.is_some(),
+    );
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_ISR_REGION present={} bytes={}\n",
+        u8::from(regions.isr.is_some()),
+        isr_length
+    );
+    transport.begin();
+    let queue_count = transport
+        .initialize()
+        .map_err(|_| GpuTransportSmokeError::QueueSetup)?;
+    finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_TRANSPORT_READY queues={}\n", queue_count);
+    let offered0 = transport.read_device_features(0);
+    let offered1 = transport.read_device_features(1);
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_OFFERED_FEATURES low=0x{:x} high=0x{:x}\n",
+        offered0,
+        offered1
+    );
+    let accepted = transport
+        .negotiate_features(finn_kernel::drivers::virtio::gpu::VIRTIO_GPU_SUPPORTED_FEATURE_WORDS)
+        .map_err(|_| GpuTransportSmokeError::QueueSetup)?;
+    finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_FEATURES_OK supported=0x{:x}\n", accepted);
+
+    // SAFETY: the static object is identity-mapped by the kernel image and is
+    // borrowed only for the duration of this single-threaded desktop smoke.
+    let storage = unsafe { &mut *core::ptr::addr_of_mut!(GPU_CONTROL_STORAGE) };
+    let descriptor_address = address_space
+        .translate(storage.descriptors.as_ptr() as u64)
+        .map_err(|_| GpuTransportSmokeError::RingMapping)?
+        .ok_or(GpuTransportSmokeError::RingMapping)?
+        .physical_address;
+    let available_address = address_space
+        .translate(storage.available.as_ptr() as u64)
+        .map_err(|_| GpuTransportSmokeError::RingMapping)?
+        .ok_or(GpuTransportSmokeError::RingMapping)?
+        .physical_address;
+    let used_address = address_space
+        .translate(storage.used.as_ptr() as u64)
+        .map_err(|_| GpuTransportSmokeError::RingMapping)?
+        .ok_or(GpuTransportSmokeError::RingMapping)?
+        .physical_address;
+    let request_address = address_space
+        .translate(storage.request.as_ptr() as u64)
+        .map_err(|_| GpuTransportSmokeError::RingMapping)?
+        .ok_or(GpuTransportSmokeError::RingMapping)?
+        .physical_address;
+    let response_address = address_space
+        .translate(storage.response.as_ptr() as u64)
+        .map_err(|_| GpuTransportSmokeError::RingMapping)?
+        .ok_or(GpuTransportSmokeError::RingMapping)?
+        .physical_address;
+    let layout = storage
+        .queue_layout_at(
+            descriptor_address,
+            available_address,
+            used_address,
+            accepted & (finn_kernel::drivers::virtio::gpu::VIRTIO_F_EVENT_IDX as u64) != 0,
+        )
+        .ok_or(GpuTransportSmokeError::QueueSetup)?;
+    let max_queue_size = transport
+        .configure_queue(0, layout.queue_size, &layout)
+        .map_err(|_| GpuTransportSmokeError::QueueSetup)?;
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_CONTROL_QUEUE_READY size={} max={}\n",
+        layout.queue_size,
+        max_queue_size
+    );
+    transport
+        .finish()
+        .map_err(|_| GpuTransportSmokeError::QueueSetup)?;
+    finn_kernel::serial_log!(
+        "FINNOS:GPU:VIRTIO_QUEUE_ADDRESSES desc={:#x} avail={:#x} used={:#x}\n",
+        descriptor_address,
+        available_address,
+        used_address
+    );
+    let mut queue = Box::new(GpuControlQueue::new(layout));
+    let mut ring_storage = SplitVirtqueueStorage::new(
+        queue.layout(),
+        &mut storage.descriptors,
+        &mut storage.available,
+        &storage.used,
+    )
+    .map_err(|_| GpuTransportSmokeError::QueueSetup)?;
+    let scanouts = queue::submit_display_info_query(
+        &mut transport,
+        &mut queue,
+        &mut ring_storage,
+        &mut storage.request,
+        &mut storage.response,
+        request_address,
+        response_address,
+    );
+    match scanouts {
+        Ok(scanouts) if scanouts > 0 => {
+            finn_kernel::serial_log!(
+                "FINNOS:GPU:VIRTIO_CONTROL_QUERY_COMPLETED scanouts={}\n",
+                scanouts
+            );
+            let mut resource = match owned_display {
+                Some(buffer) => Gpu2dResource::from_display_buffer(1, buffer)
+                    .map_err(|_| GpuTransportSmokeError::ResponseDecode)?,
+                None => Gpu2dResource::new(1, gop_framebuffer_address, width, height, stride)
+                    .ok_or(GpuTransportSmokeError::ResponseDecode)?,
+            };
+            let initial_report = queue::submit_2d_resource_session(
+                &mut transport,
+                &mut queue,
+                &mut ring_storage,
+                &mut storage.request,
+                &mut storage.response,
+                GpuControlBufferAddresses {
+                    request: request_address,
+                    response: response_address,
+                },
+                &mut resource,
+                None,
+            )
+            .map_err(map_gpu_query_error)?;
+            finn_kernel::serial_log!(
+                "FINNOS:GPU:VIRTIO_2D_INITIAL_COMMANDS={}\n",
+                initial_report.initial_commands
+            );
+            let damage = compositor.update_clock(canvas, "x86_64", 101);
+            let bounds = damage
+                .bounding_box()
+                .ok_or(GpuTransportSmokeError::ResponseDecode)?;
+            let followup_damage = finn_kernel::drivers::virtio::gpu::VirtioGpuRect {
+                x: u32::try_from(bounds.x).map_err(|_| GpuTransportSmokeError::ResponseDecode)?,
+                y: u32::try_from(bounds.y).map_err(|_| GpuTransportSmokeError::ResponseDecode)?,
+                width: bounds.width,
+                height: bounds.height,
+            };
+            finn_kernel::serial_log!(
+                "FINNOS:PEONY:GPU_DAMAGE regions={} x={} y={} width={} height={}\n",
+                damage.len(),
+                followup_damage.x,
+                followup_damage.y,
+                followup_damage.width,
+                followup_damage.height
+            );
+            let followup_report = queue::submit_2d_resource_session(
+                &mut transport,
+                &mut queue,
+                &mut ring_storage,
+                &mut storage.request,
+                &mut storage.response,
+                GpuControlBufferAddresses {
+                    request: request_address,
+                    response: response_address,
+                },
+                &mut resource,
+                Some(followup_damage),
+            )
+            .map_err(map_gpu_query_error)?;
+            finn_kernel::serial_log!(
+                "FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS={}\n",
+                followup_report.followup_commands
+            );
+            let commands = initial_report.initial_commands + followup_report.followup_commands;
+            finn_kernel::serial_log!(
+                "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED resource=1 commands={}\n",
+                commands
+            );
+
+            let owned_resource_released = if owned_display.is_some() {
+                let teardown = queue::submit_2d_teardown_session(
+                    &mut transport,
+                    &mut queue,
+                    &mut ring_storage,
+                    &mut storage.request,
+                    &mut storage.response,
+                    GpuControlBufferAddresses {
+                        request: request_address,
+                        response: response_address,
+                    },
+                    &mut resource,
+                )
+                .map_err(|_| GpuTransportSmokeError::TeardownFailed)?;
+                if !resource.device_resource_released() {
+                    return Err(GpuTransportSmokeError::TeardownFailed);
+                }
+                finn_kernel::serial_log!(
+                    "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED resource=1 commands={}\n",
+                    teardown.commands
+                );
+                true
+            } else {
+                false
+            };
+
+            Ok(GpuTransportSmokeReport {
+                final_state: resource.state(),
+                owned_resource_released,
+            })
+        }
+        Ok(_) => Err(GpuTransportSmokeError::ResponseDecode),
+        Err(error) => Err(map_gpu_query_error(error)),
+    }
+}
+
+#[cfg(feature = "qemu-test-desktop")]
+fn map_gpu_query_error(
+    error: finn_kernel::drivers::virtio::gpu::queue::GpuControlQueryError,
+) -> GpuTransportSmokeError {
+    match error {
+        finn_kernel::drivers::virtio::gpu::queue::GpuControlQueryError::CompletionTimeout => {
+            GpuTransportSmokeError::CompletionTimeout
+        }
+        finn_kernel::drivers::virtio::gpu::queue::GpuControlQueryError::Queue(queue_error) => {
+            finn_kernel::serial_log!("FINNOS:GPU:VIRTIO_RESPONSE_ERROR {:?}\n", queue_error);
+            GpuTransportSmokeError::ResponseDecode
+        }
+        finn_kernel::drivers::virtio::gpu::queue::GpuControlQueryError::Transport(_) => {
+            GpuTransportSmokeError::QueueSubmit
+        }
+        finn_kernel::drivers::virtio::gpu::queue::GpuControlQueryError::InvalidPresentationParameters => {
+            GpuTransportSmokeError::ResponseDecode
+        }
+    }
 }
 
 #[cfg(not(feature = "qemu-test-exit"))]
@@ -1901,20 +2533,6 @@ fn run_interactive_desktop(info: &BootInfo) -> ! {
     let stride = info.framebuffer.stride;
 
     let mut compositor = finn_libpeony::Compositor::new(width, height);
-
-    // Scan for VirtIO-GPU hardware accelerator
-    let mut virtio_gpu_found = false;
-    finn_kernel::drivers::pci::scan_bus(0, |dev| {
-        if finn_kernel::drivers::pci::is_virtio_gpu(dev.vendor_id, dev.device_id) {
-            virtio_gpu_found = true;
-            dev.enable_bus_mastering();
-        }
-    });
-
-    let mut gpu_display = finn_kernel::drivers::virtio::gpu::GpuDisplayManager::new(width, height);
-    if virtio_gpu_found {
-        compositor.enable_hardware_cursor();
-    }
 
     let term_win =
         finn_libpeony::Window::new("Terminal", finn_libpeony::Rect::new(40, 50, 520, 360));
@@ -1950,17 +2568,11 @@ fn run_interactive_desktop(info: &BootInfo) -> ! {
             if packet.dx != 0 || packet.dy != 0 {
                 let new_x = compositor.mouse_x + packet.dx;
                 let new_y = compositor.mouse_y + packet.dy;
-                compositor.update_mouse_position(&mut canvas, new_x, new_y);
-                if compositor.is_hardware_cursor_enabled() {
-                    let _move_cmd = gpu_display.move_cursor_packet(new_x, new_y);
-                }
+                let _ = compositor.update_mouse_position_damaged(&mut canvas, new_x, new_y);
             }
 
             if packet.left_button && !last_left {
                 compositor.handle_click(&mut canvas, true);
-                if compositor.is_hardware_cursor_enabled() {
-                    gpu_display.swap_buffers();
-                }
             } else if !packet.left_button {
                 compositor.handle_mouse_up();
             }
@@ -1971,7 +2583,7 @@ fn run_interactive_desktop(info: &BootInfo) -> ! {
         let ticks = finn_kernel::arch::x86_64::timer::ticks();
         if ticks / 100 != last_ticks / 100 {
             last_ticks = ticks;
-            finn_libpeony::render_top_panel(&mut canvas, width, "x86_64", ticks);
+            let _ = compositor.update_clock(&mut canvas, "x86_64", ticks);
         }
 
         // Wait for next interrupt (mouse packet or 100 Hz timer tick)

@@ -8,6 +8,7 @@ pub mod gdt;
 pub mod heap;
 pub mod idt;
 pub mod interrupts;
+pub mod keyboard;
 pub mod mouse;
 pub mod paging;
 pub mod pci;

@@ -1,0 +1,43 @@
+# Agent Handoff: <task>
+
+- Objective: determine whether the emulated VirtIO-GPU device actually exposes MSI, and if so give the driver the capability and table information needed to program a real vector.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown and interrupt-foundation slices. No commit or push was made in this session.
+- Task state: Locally Verified. Device capability confirmed; **no** interrupt is programmed or delivered yet.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `pci-pcie`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Added a general PCI MSI/MSI-X capability walker (`discover_msi_capabilities`) plus `PciDeviceInfo::msi_capabilities()`. A device with neither capability yields `None` rather than an error, because lacking MSI is a device fact.
+  - Added MSI-X table-entry policy: `MsiXEntry`, `msix_control` bits, a `masked` constructor so a vector can never fire with a partially programmed message, and a bounds-checked `msix_entry_offset`.
+  - **Fixed a real parser bug found through runtime evidence.** The first MSI-X attempt reported the device as MSI-unavailable. Runtime probing showed the device does expose MSI-X (`ID=0x11` at offset `0x98`), but my parser applied the `VirtIO` 4-byte-header rule to a standard capability. Verified against QEMU's own `msix.c` (`MSIX_CAP_LENGTH 12`) and `pci_regs.h`: MSI-X has a 2-byte header, message control at +2 with the entry count in its low 11 bits storing `nentries - 1`, and `PCI_MSIX_TABLE` at +4 carrying the offset with the BAR index in the low three bits. The parser now matches that layout.
+  - Wired the discovered MSI-X table size into the transport's vector capacity so allocation is bounded by the device's own statement, and added `PCI_MSIX_PRESENT` / `PCI_MSIX_TABLE_SIZE` markers to the ARM64 desktop path, enforced by the QEMU log contract with a negative test.
+- Files changed: `kernel/src/drivers/virtio/pci.rs`, `kernel/src/drivers/pci.rs`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/qemu.py`, `tools/tests/test_boot_log.py`, `STATUS.md`, `HARDWARE_SUPPORT.md`, `docs/architecture/drivers.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel` -> 235 passed (was 232; +3 MSI-X tests).
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 235 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - Bare-metal: both `finn-kernel-x86_64` and `finn-kernel-aarch64` build clean with `kernel-bin,qemu-test-desktop`.
+  - `./tools/finn test-desktop` -> status 33, `TEST:DESKTOP:PASS`. `./tools/finn test-desktop --target arm64-qemu` -> status 0, with `PCI_MSIX_PRESENT=1` and `PCI_MSIX_TABLE_SIZE=3` in the log.
+  - `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+  - ARM64 spot-check (`test-boot`, `test-arm64-gic`, `test-timer-interrupts`, `test-ipc`, `test-init`) -> all exit 0.
+- Results and evidence classification:
+  - Verified in QEMU this session: the VirtIO-GPU device exposes MSI-X with a 3-entry table, and that table size now bounds the driver's vector allocator.
+  - Verified on the host: MSI/MSI-X capability decode against the real wire layout, masked-by-default table entries, and table-entry bounds.
+  - **Not** verified: that a vector is programmed in a platform MSI-X table, that the device raises an interrupt, or that the driver receives one. The desktop runs are still polled.
+- Documentation/status changes: `STATUS.md` (interrupts and driver-model rows), `HARDWARE_SUPPORT.md` (PCI row), and `docs/architecture/drivers.md` now record the confirmed MSI-X capability and keep the missing platform half explicit.
+- Unverified assumptions:
+  - MSI-X presence on one emulated device says nothing about other devices or physical hardware.
+  - The MSI-X table's BAR and offset are decoded but not yet mapped or written.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Map the MSI-X table's BAR and program one entry (masked first, then address/data, then enable) on ARM64.
+  - Route the device's SPI through `route_spi` and have the completion wait observe `CompletionMode::InterruptSignalled` instead of polling.
+  - Build the x86 IOAPIC and MSI-X path for parity.
+  - Add a general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+- Blockers: no platform path programs an MSI-X table entry or raises a device interrupt, so completion is still polled. No physical GPU is available.
+- Risks/regressions to watch:
+  - The MSI-X layout differs structurally from the `VirtIO` capability layout that shares the same chain; mixing the two rules is exactly the bug this slice found, so keep them decoupled.
+  - Enabling an MSI-X vector requires the table to be mapped device-coherently; a partial program could deliver to a stale address.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: map the MSI-X table BAR, program the control-queue vector masked-then-enabled with a routed ARM64 SPI, and prove the completion wait reports `InterruptSignalled` in the desktop run. Preserve the teardown-before-release ordering and its validator as an invariant.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `pci-pcie`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `interrupt-exception-handling`, `reliability-fault-injection`.

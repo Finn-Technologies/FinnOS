@@ -1,11 +1,21 @@
 #![deny(missing_docs)]
 
-//! `VirtIO-GPU` hardware device driver and graphics acceleration policy.
+//! `VirtIO-GPU` protocol policy and bounded control-queue driver.
 //!
 //! Implements the OASIS `VirtIO` Specification v1.2 (Device ID 16 / `0x1050`).
-//! Supports 2D hardware display scanout, host memory backing attachment,
-//! hardware cursor overlay planes, double-buffered page-flipping, and feature
-//! negotiation for 3D `VirGL` acceleration.
+//! Provides wire types and packet builders for 2D display operations, host
+//! memory backing, hardware cursor planes, and 3D `VirGL` commands. The
+//! current QEMU-verified path submits a polled `GET_DISPLAY_INFO` control
+//! request; production scanout, rendering, and acceleration remain future
+//! integration work.
+
+pub mod display;
+pub mod queue;
+
+pub use display::{
+    DisplayGeometry, GPU_DISPLAY_BYTES_PER_PIXEL, GPU_DISPLAY_MAX_PAGES,
+    GPU_DISPLAY_MAX_TABLE_PAGES_BOUND, GpuDisplayBuffer, GpuDisplayBufferError,
+};
 
 /// PCI Device ID for standard `VirtIO-GPU` devices (`0x1050`).
 pub const VIRTIO_GPU_DEVICE: u16 = 0x1050;
@@ -19,6 +29,16 @@ pub const VIRTIO_GPU_F_EDID_BIT: u32 = 1;
 pub const VIRTIO_GPU_F_VIRGL: u32 = 1 << VIRTIO_GPU_F_VIRGL_BIT;
 /// Feature mask for EDID display capability queries (`1 << 1`).
 pub const VIRTIO_GPU_F_EDID: u32 = 1 << VIRTIO_GPU_F_EDID_BIT;
+
+/// `VirtIO` indirect-descriptor feature bit in feature word zero.
+pub const VIRTIO_F_INDIRECT_DESC: u32 = 1 << 28;
+/// `VirtIO` event-index feature bit in feature word zero.
+pub const VIRTIO_F_EVENT_IDX: u32 = 1 << 29;
+/// `VirtIO` 1.0 feature bit in feature word one.
+pub const VIRTIO_F_VERSION_1: u32 = 1;
+/// Feature words accepted by the bounded split-virtqueue GPU transport.
+pub const VIRTIO_GPU_SUPPORTED_FEATURE_WORDS: [u64; 2] =
+    [VIRTIO_F_EVENT_IDX as u64, VIRTIO_F_VERSION_1 as u64];
 
 /// 2D Command: Query available display scanouts and native resolutions (`0x0100`).
 pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
@@ -59,10 +79,10 @@ pub const VIRGL_BIND_RENDER_TARGET: u32 = 1 << 1;
 /// 3D Resource Bind: Sampler view / texture (`1 << 3`).
 pub const VIRGL_BIND_SAMPLER_VIEW: u32 = 1 << 3;
 
-/// Cursor Command: Update hardware cursor image, hotspot, and position (`0x0120`).
-pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0120;
-/// Cursor Command: Move hardware cursor position without changing image (`0x0121`).
-pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0121;
+/// Cursor Command: Update hardware cursor image, hotspot, and position (`0x0300`).
+pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
+/// Cursor Command: Move hardware cursor position without changing image (`0x0301`).
+pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
 /// GPU Success Response: command completed without payload (`0x1100`).
 pub const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
@@ -90,7 +110,7 @@ pub const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32 = 1;
 pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 
 /// Standard header common to all `VirtIO-GPU` control and cursor requests.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(C)]
 pub struct VirtioGpuCtrlHdr {
     /// Command or response type (`VIRTIO_GPU_CMD_*` or `VIRTIO_GPU_RESP_*`).
@@ -120,6 +140,85 @@ impl VirtioGpuCtrlHdr {
             padding: [0; 3],
         }
     }
+
+    /// Encode the control header into its little-endian wire form.
+    #[must_use]
+    pub fn encode(self) -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        let [t0, t1, t2, t3] = self.req_type.to_le_bytes();
+        let [f0, f1, f2, f3] = self.flags.to_le_bytes();
+        let [id0, id1, id2, id3, id4, id5, id6, id7] = self.fence_id.to_le_bytes();
+        let [c0, c1, c2, c3] = self.ctx_id.to_le_bytes();
+        bytes[0..4].copy_from_slice(&[t0, t1, t2, t3]);
+        bytes[4..8].copy_from_slice(&[f0, f1, f2, f3]);
+        bytes[8..16].copy_from_slice(&[id0, id1, id2, id3, id4, id5, id6, id7]);
+        bytes[16..20].copy_from_slice(&[c0, c1, c2, c3]);
+        bytes[20] = self.ring_idx;
+        bytes[21..24].copy_from_slice(&self.padding);
+        bytes
+    }
+
+    /// Decode a control header from its little-endian wire form.
+    #[must_use]
+    pub const fn decode(bytes: [u8; 24]) -> Self {
+        Self {
+            req_type: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            flags: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            fence_id: u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]),
+            ctx_id: u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]),
+            ring_idx: bytes[20],
+            padding: [bytes[21], bytes[22], bytes[23]],
+        }
+    }
+}
+
+/// Request to query the device's display scanouts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct VirtioGpuGetDisplayInfo {
+    /// Common control header.
+    pub hdr: VirtioGpuCtrlHdr,
+}
+
+impl VirtioGpuGetDisplayInfo {
+    /// Build a display-information query request.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            hdr: VirtioGpuCtrlHdr::new(VIRTIO_GPU_CMD_GET_DISPLAY_INFO),
+        }
+    }
+}
+
+impl Default for VirtioGpuGetDisplayInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Response payload for [`VIRTIO_GPU_RESP_OK_DISPLAY_INFO`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct VirtioGpuDisplayInfo {
+    /// Common control header.
+    pub hdr: VirtioGpuCtrlHdr,
+    /// Fixed-size scanout array defined by the VirtIO-GPU specification.
+    pub pmodes: [VirtioGpuDisplayOne; VIRTIO_GPU_MAX_SCANOUTS],
+}
+
+/// One display scanout description in a display-information response.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+pub struct VirtioGpuDisplayOne {
+    /// Physical rectangle of the scanout.
+    pub rect: VirtioGpuRect,
+    /// Current enabled pixel format.
+    pub enabled: u32,
+    /// Scanout flags.
+    pub flags: u32,
 }
 
 /// 2D Rectangle representing a display region or transfer bounding box.
@@ -134,6 +233,19 @@ pub struct VirtioGpuRect {
     pub width: u32,
     /// Height of rectangle in pixels.
     pub height: u32,
+}
+
+impl VirtioGpuRect {
+    /// Return whether the rectangle lies inside a surface of the given size.
+    #[must_use]
+    pub const fn is_valid_for(&self, width: u32, height: u32) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
+        let right = self.x as u64 + self.width as u64;
+        let bottom = self.y as u64 + self.height as u64;
+        right <= width as u64 && bottom <= height as u64
+    }
 }
 
 /// Request to create a 2D GPU surface resource.
@@ -218,6 +330,30 @@ pub struct VirtioGpuResourceAttachBacking {
     pub resource_id: u32,
     /// Number of contiguous memory entries following this header.
     pub nr_entries: u32,
+}
+
+/// Request to release a guest GPU resource reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct VirtioGpuResourceUnref {
+    /// Common control header.
+    pub hdr: VirtioGpuCtrlHdr,
+    /// Target resource ID.
+    pub resource_id: u32,
+    /// Reserved zero padding.
+    pub padding: u32,
+}
+
+/// Request to detach all guest backing pages from a GPU resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct VirtioGpuResourceDetachBacking {
+    /// Common control header.
+    pub hdr: VirtioGpuCtrlHdr,
+    /// Target resource ID.
+    pub resource_id: u32,
+    /// Reserved zero padding.
+    pub padding: u32,
 }
 
 /// Hardware cursor position coordinate.
@@ -577,6 +713,21 @@ impl GpuDisplayManager {
         }
     }
 
+    /// Build a validated screen-flip packet for a pending damage rectangle.
+    #[must_use]
+    pub const fn present_damage_packet(
+        &self,
+        resource_id: u32,
+        damage: VirtioGpuRect,
+    ) -> Option<VirtioGpuSetScanout> {
+        if !damage.is_valid_for(self.width, self.height) {
+            return None;
+        }
+        let mut packet = self.set_scanout_packet(resource_id);
+        packet.rect = damage;
+        Some(packet)
+    }
+
     /// Build a hardware cursor move packet.
     #[must_use]
     pub fn move_cursor_packet(&mut self, x: i32, y: i32) -> VirtioGpuUpdateCursor {
@@ -677,6 +828,7 @@ mod tests {
         assert_eq!(hdr.req_type, 0x0101);
         assert_eq!(hdr.flags, 0);
         assert_eq!(hdr.fence_id, 0);
+        assert_eq!(VirtioGpuCtrlHdr::decode(hdr.encode()), hdr);
     }
 
     #[test]
@@ -709,6 +861,52 @@ mod tests {
         assert_eq!(cursor.width, 64);
         assert_eq!(cursor.height, 64);
         assert_eq!(cursor.format, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM);
+    }
+
+    #[test]
+    fn damage_rectangle_validation_rejects_out_of_bounds() {
+        let rect = VirtioGpuRect {
+            x: 8,
+            y: 4,
+            width: 16,
+            height: 8,
+        };
+        assert!(rect.is_valid_for(1280, 800));
+        assert!(
+            !VirtioGpuRect {
+                x: 1272,
+                width: 16,
+                ..rect
+            }
+            .is_valid_for(1280, 800)
+        );
+        assert!(!VirtioGpuRect { width: 0, ..rect }.is_valid_for(1280, 800));
+    }
+
+    #[test]
+    fn present_damage_packet_carries_rectangle() {
+        let mgr = GpuDisplayManager::new(1280, 800);
+        let damage = VirtioGpuRect {
+            x: 10,
+            y: 20,
+            width: 30,
+            height: 40,
+        };
+        let packet = mgr.present_damage_packet(2, damage).unwrap();
+        assert_eq!(packet.hdr.req_type, VIRTIO_GPU_CMD_SET_SCANOUT);
+        assert_eq!(packet.resource_id, 2);
+        assert_eq!(packet.rect, damage);
+        assert!(
+            mgr.present_damage_packet(
+                2,
+                VirtioGpuRect {
+                    x: 1279,
+                    width: 2,
+                    ..damage
+                }
+            )
+            .is_none()
+        );
     }
 
     #[test]

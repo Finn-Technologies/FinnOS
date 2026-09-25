@@ -30,6 +30,8 @@ use crate::memory::{EarlyPhysicalPageAllocator, PAGE_SIZE, PageAllocationError, 
 pub const TABLE_ENTRIES: usize = 512;
 pub const MAX_PAGE_TABLE_PAGES: usize = 64;
 pub const MAX_MAPPING_REQUESTS: usize = 64;
+/// Maximum number of caller-supplied leaf pages in one initial address space.
+pub const MAX_MAPPED_PAGES: u64 = 32_768;
 pub const SCRATCH_VIRTUAL_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +75,7 @@ pub enum PagingError {
     CounterUnderflow,
     PhysicalAddressTooWide,
     ZeroPageRange,
+    MappedPageCapacityExceeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,6 +285,7 @@ pub struct MappingRequest {
 pub struct MappingPlan {
     requests: [MappingRequest; MAX_MAPPING_REQUESTS],
     count: usize,
+    mapped_pages: u64,
 }
 impl MappingPlan {
     pub const fn new() -> Self {
@@ -294,6 +298,7 @@ impl MappingPlan {
                 purpose: MappingPurpose::KernelReadOnly,
             }; MAX_MAPPING_REQUESTS],
             count: 0,
+            mapped_pages: 0,
         }
     }
     pub const fn len(&self) -> usize {
@@ -301,6 +306,10 @@ impl MappingPlan {
     }
     pub fn as_slice(&self) -> &[MappingRequest] {
         &self.requests[..self.count]
+    }
+    /// Return the number of requested leaf pages.
+    pub const fn mapped_pages(&self) -> u64 {
+        self.mapped_pages
     }
     pub fn push(&mut self, request: MappingRequest) -> Result<(), PagingError> {
         request.permissions.validate()?;
@@ -363,8 +372,16 @@ impl MappingPlan {
         if self.count == MAX_MAPPING_REQUESTS {
             return Err(PagingError::MappingPlanCapacityExceeded);
         }
+        let new_total = self
+            .mapped_pages
+            .checked_add(request.page_count)
+            .ok_or(PagingError::PageCountOverflow)?;
+        if new_total > MAX_MAPPED_PAGES {
+            return Err(PagingError::MappedPageCapacityExceeded);
+        }
         self.requests[self.count] = request;
         self.count += 1;
+        self.mapped_pages = new_total;
         for i in (1..self.count).rev() {
             if self.requests[i].virtual_start < self.requests[i - 1].virtual_start {
                 self.requests.swap(i, i - 1);
@@ -1199,6 +1216,31 @@ mod tests {
     fn pool_capacity_is_fixed() {
         assert_eq!(MAX_PAGE_TABLE_PAGES, 64);
         assert_eq!(MappingPlan::new().len(), 0);
+    }
+
+    #[test]
+    fn mapped_page_capacity_is_bounded() {
+        let mut plan = MappingPlan::new();
+        plan.push(MappingRequest {
+            virtual_start: 0x1000,
+            physical_start: 0x1000,
+            page_count: MAX_MAPPED_PAGES,
+            permissions: MappingPermissions::kernel_r_nx(),
+            purpose: MappingPurpose::BootInfo,
+        })
+        .unwrap();
+        assert_eq!(plan.mapped_pages(), MAX_MAPPED_PAGES);
+        assert_eq!(
+            plan.push(MappingRequest {
+                virtual_start: 0x2100_0000,
+                physical_start: 0x2100_0000,
+                page_count: 1,
+                permissions: MappingPermissions::kernel_r_nx(),
+                purpose: MappingPurpose::TestScratch,
+            }),
+            Err(PagingError::MappedPageCapacityExceeded)
+        );
+        assert_eq!(plan.mapped_pages(), MAX_MAPPED_PAGES);
     }
 
     #[test]

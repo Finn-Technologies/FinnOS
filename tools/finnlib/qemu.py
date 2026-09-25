@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 
 ARM64_MARKERS = (
     "FINNOS:BOOTLOADER:START",
@@ -1282,6 +1283,15 @@ DESKTOP_MARKERS: tuple[str, ...] = (
     "FINNOS:TEST:DESKTOP:PASS",
 )
 
+DESKTOP_FORBIDDEN_MARKERS: tuple[str, ...] = (
+    "FINNOS:GPU:VIRTIO_2D_PRESENTATION_UNAVAILABLE",
+    "FINNOS:GPU:VIRTIO_RESPONSE_ERROR",
+    "FINNOS:GPU:HARDWARE_CURSOR_PLANE_READY",
+    "FINNOS:GPU:DOUBLE_BUFFER_ACTIVE",
+    "FINNOS:GPU:SCANOUT_BOUND",
+    "FINNOS:GPU:PAGE_FLIP",
+)
+
 def validate_desktop(status: int, output: str) -> list[str]:
     errors: list[str] = []
     if status != 33:
@@ -1291,7 +1301,45 @@ def validate_desktop(status: int, output: str) -> list[str]:
         errors.append("missing desktop marker(s): " + ", ".join(marker for marker, position in zip(DESKTOP_MARKERS, positions) if position < 0))
     if positions != sorted(position for position in positions if position >= 0):
         errors.append("desktop markers are out of order")
-    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT"):
+    gpu_markers = (
+        "FINNOS:GPU:VIRTIO_CONTROL_QUERY_COMPLETED scanouts=",
+        "FINNOS:GPU:VIRTIO_2D_INITIAL_COMMANDS=5",
+        "FINNOS:PEONY:GPU_DAMAGE regions=1 x=0 y=755 width=1280 height=45",
+        "FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS=2",
+        "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED resource=1 commands=7",
+    )
+    gpu_positions = [output.find(marker) for marker in gpu_markers]
+    if any(position < 0 for position in gpu_positions):
+        errors.append("missing x86 desktop GPU marker(s): " + ", ".join(
+            marker for marker, position in zip(gpu_markers, gpu_positions) if position < 0
+        ))
+    if gpu_positions != sorted(position for position in gpu_positions if position >= 0):
+        errors.append("x86 desktop GPU markers are out of order")
+    if gpu_positions[0] >= 0 and output.find("FINNOS:COMPOSITOR:FRAME:RENDERED") > gpu_positions[0]:
+        errors.append("x86 desktop GPU query precedes the rendered software frame")
+    if gpu_positions[-1] >= 0 and positions[-1] >= 0 and gpu_positions[-1] > positions[-1]:
+        errors.append("x86 desktop GPU presentation follows the desktop PASS marker")
+    owned_buffer_markers = (
+        "FINNOS:GPU:DISPLAY_BUFFER_ALLOCATED pages=",
+        "FINNOS:GPU:DISPLAY_BUFFER_MAPPED virtual=",
+        "FINNOS:GPU:VIRTIO_ISR_REGION present=1",
+        "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED resource=1 commands=7",
+        "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED resource=1 commands=3",
+        "FINNOS:GPU:DISPLAY_BUFFER_COPIED_TO_GOP",
+        "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+    )
+    owned_buffer_positions = [output.find(marker) for marker in owned_buffer_markers]
+    if any(position < 0 for position in owned_buffer_positions):
+        errors.append("missing x86 owned display buffer marker(s)")
+    elif owned_buffer_positions != sorted(owned_buffer_positions):
+        errors.append("x86 owned display buffer markers are out of order")
+    released = output.find("FINNOS:GPU:DISPLAY_BUFFER_RELEASED")
+    torn_down = output.find("FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED")
+    if released >= 0 and (torn_down < 0 or released < torn_down):
+        errors.append("x86 owned display buffer was released before device teardown completed")
+    if "FINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY" in output and released >= 0:
+        errors.append("x86 display buffer cannot be both released and retained for recovery")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:PAGE_FAULT", "FINNOS:EXCEPTION:GENERAL_PROTECTION", "FINNOS:EXCEPTION:DOUBLE_FAULT", *DESKTOP_FORBIDDEN_MARKERS):
         if marker in output:
             errors.append(f"forbidden marker found: {marker}")
     return errors
@@ -1305,10 +1353,90 @@ def validate_arm64_desktop(status: int, output: str) -> list[str]:
         errors.append("missing arm64 desktop marker(s): " + ", ".join(marker for marker, position in zip(DESKTOP_MARKERS, positions) if position < 0))
     if positions != sorted(position for position in positions if position >= 0):
         errors.append("arm64 desktop markers are out of order")
-    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL"):
+    gpu_markers = (
+        "FINNOS:GPU:VIRTIO_CONTROL_QUERY_COMPLETED_SCANOUTS=",
+        "FINNOS:GPU:VIRTIO_2D_INITIAL_COMMANDS=5",
+        "FINNOS:PEONY:GPU_DAMAGE_REGIONS=1",
+        "FINNOS:PEONY:GPU_DAMAGE_X=0",
+        "FINNOS:PEONY:GPU_DAMAGE_Y=555",
+        "FINNOS:PEONY:GPU_DAMAGE_WIDTH=800",
+        "FINNOS:PEONY:GPU_DAMAGE_HEIGHT=45",
+        "FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS=2",
+        "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMMANDS=7",
+        "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED",
+    )
+    gpu_positions = [output.find(marker) for marker in gpu_markers]
+    if any(position < 0 for position in gpu_positions):
+        errors.append("missing arm64 desktop GPU marker(s): " + ", ".join(
+            marker for marker, position in zip(gpu_markers, gpu_positions) if position < 0
+        ))
+    if gpu_positions != sorted(position for position in gpu_positions if position >= 0):
+        errors.append("arm64 desktop GPU markers are out of order")
+    if gpu_positions[0] >= 0 and output.find("FINNOS:COMPOSITOR:FRAME:RENDERED") > gpu_positions[0]:
+        errors.append("arm64 desktop GPU query precedes the rendered software frame")
+    if gpu_positions[-1] >= 0 and positions[-1] >= 0 and gpu_positions[-1] > positions[-1]:
+        errors.append("arm64 desktop GPU presentation follows the desktop PASS marker")
+    owned_buffer_markers = (
+        "FINNOS:GPU:PCI_MSIX_PRESENT=1",
+        "FINNOS:GPU:PCI_MSIX_TABLE_SIZE=3",
+        "FINNOS:GPU:DISPLAY_BUFFER_PAGES=",
+        "FINNOS:GPU:DISPLAY_BUFFER_PHYSICAL=",
+        "FINNOS:GPU:DISPLAY_BUFFER_VIRTUAL=",
+        "FINNOS:GPU:VIRTIO_ISR_REGION_PRESENT=1",
+        "FINNOS:GPU:VIRTIO_ISR_REGION_BYTES=4096",
+        "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED",
+        "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED",
+        "FINNOS:GPU:DISPLAY_BUFFER_COPIED_TO_GOP",
+        "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+    )
+    owned_buffer_positions = [output.find(marker) for marker in owned_buffer_markers]
+    if any(position < 0 for position in owned_buffer_positions):
+        errors.append("missing arm64 owned display buffer marker(s)")
+    elif owned_buffer_positions != sorted(owned_buffer_positions):
+        errors.append("arm64 owned display buffer markers are out of order")
+    released = output.find("FINNOS:GPU:DISPLAY_BUFFER_RELEASED")
+    torn_down = output.find("FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED")
+    if released >= 0 and (torn_down < 0 or released < torn_down):
+        errors.append("arm64 owned display buffer was released before device teardown completed")
+    if "FINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY" in output and released >= 0:
+        errors.append("arm64 display buffer cannot be both released and retained for recovery")
+    for marker in ("FINNOS:KERNEL:PANIC", "FINNOS:EXCEPTION:ARM64_FATAL", *DESKTOP_FORBIDDEN_MARKERS):
         if marker in output:
             errors.append(f"forbidden marker found: {marker}")
     return errors
+
+
+def qemu_supports_machine_property(
+    qemu: str,
+    machine: str,
+    property_name: str,
+    timeout: int = 10,
+) -> bool:
+    """Return whether `machine` accepts `property_name` on this emulator.
+
+    Appending `help` to a machine string makes QEMU print that machine type's
+    supported properties, so a missing property such as `msi` on QEMU 8.2's
+    `virt` is detected without booting a guest. A missing, unusable, or
+    non-zero-exit emulator is reported as unsupported so callers fall back
+    rather than crash; boot validation, not this probe, decides whether a run
+    is acceptable.
+    """
+    try:
+        result = subprocess.run(
+            [qemu, "-machine", f"{machine},help"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return re.search(
+        rf"^\s*{re.escape(property_name)}=<", result.stdout, re.MULTILINE
+    ) is not None
+
 
 def qemu_command(
     qemu: str,
@@ -1321,10 +1449,26 @@ def qemu_command(
     cpu: str = "",
     data_drive: Path | None = None,
     gpu: bool = False,
+    msi: str | None = None,
 ) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
-    machine_arg = f"{machine},vmport=off" if machine == "q35" and architecture == "x86_64" else machine
+    if machine == "q35" and architecture == "x86_64":
+        machine_arg = f"{machine},vmport=off"
+    elif architecture == "arm64" and machine.startswith("virt"):
+        # The default `auto` MSI controller resolves to the GICv3 ITS, which
+        # the GICv2-only guest cannot use. Selecting `gicv2m` makes the MSI
+        # doorbell frame at 0x08020000 the live delivery path so a device MSI
+        # can actually reach the distributor. This is a diagnostic aid, not a
+        # boot requirement: QEMU 8.2 has no `msi` property on `virt`, so the
+        # property is only appended when the local emulator actually has it.
+        machine_arg = (
+            f"{machine},msi={msi}"
+            if msi and qemu_supports_machine_property(qemu, machine, "msi")
+            else machine
+        )
+    else:
+        machine_arg = machine
     command = [qemu, "-machine", machine_arg]
     if cpu:
         command.extend(["-cpu", cpu])

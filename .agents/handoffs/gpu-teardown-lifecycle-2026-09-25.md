@@ -1,0 +1,53 @@
+# Agent Handoff: GPU display-buffer teardown lifecycle
+
+- Objective: finish the missing VirtIO-GPU 2D teardown (scanout disable, backing detach, resource unref) and release the owned `GpuDisplayBuffer` only after the device confirms the resource is released, while retaining the buffer for recovery on any failure.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the accumulated GPU/Peony/desktop slice. No commit or push was made in this session.
+- Task state: Locally Verified in the worktree. Not integrated and not hardware verified.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `graphics-architecture`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `cross-architecture-design`, `threat-modelling`, `capability-privilege-review`, `synchronization-concurrency`, `reliability-fault-injection`, `performance-engineering`, `build-orchestration`, `build-environment-management`, `debugging-investigation`, `evidence-status-reporting`.
+- Work completed:
+  - Baseline reproduced: `cargo test -p finn-kernel drivers::virtio::gpu` failed to compile with six `E0425` errors (`encode_resource_detach_backing_body` and `encode_resource_unref_body` missing, plus two unqualified command constants in the test).
+  - Added the two 8-byte body encoders (`resource_id` then zero padding) matching `struct virtio_gpu_resource_detach_backing` and `struct virtio_gpu_resource_unref` in the local `linux/virtio_gpu.h`.
+  - Added `Gpu2dResource::device_resource_released()` as the single release gate, a `const` `advance_teardown_state` typed transition helper, and `commit_teardown_state`, which advances state only when the command actually completed.
+  - Added host tests: exact wire layout, invalid-state rejection, ordered stage advancement, and injected-failure checks proving a failed completion neither advances state nor unlocks release.
+  - Wired both `kernel/src/bin/x86_64.rs` and `kernel/src/bin/aarch64.rs`: teardown runs after presentation, owned pages are unmapped and released only when `device_resource_released()` is true, and otherwise the run emits `FINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY`.
+  - Made `cleanup_gpu_display_mapping` resumable on both ports by tracking `mapped_pages` and decrementing only after each successful unmap.
+  - Updated `tools/finnlib/qemu.py` and `tools/tests/test_boot_log.py` so the desktop contract requires teardown completion before release, rejects release without teardown, and rejects a log that is both released and retained.
+- Files changed: `kernel/src/drivers/virtio/gpu/queue.rs`, `kernel/src/bin/x86_64.rs`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/qemu.py`, `tools/tests/test_boot_log.py`, `STATUS.md`, `README.md`, `HARDWARE_SUPPORT.md`, `ROADMAP.md`, `docs/architecture/drivers.md`, `.agents/STATE.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel drivers::virtio::gpu` -> 19 passed.
+  - `cargo fmt --all -- --check` -> clean.
+  - `cargo clippy --workspace --all-targets -- -D warnings` -> clean after making `next_teardown_action` `const`.
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 220 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no dependency cycles.
+  - `python3 .agents/scripts/check_links.py` -> 245 local references valid.
+  - Bare-metal checks: `finn-kernel-x86_64` and `finn-kernel-aarch64` with `kernel-bin,qemu-test-desktop` -> clean, using the rustup toolchain that owns the `*-unknown-none` targets.
+  - `./tools/finn test-desktop` (x86-64 q35/OVMF) -> QEMU status 33; `initial=5`, `followup=2`, `commands=7`, `VIRTIO_2D_TEARDOWN_COMPLETED resource=1 commands=3`, `DISPLAY_BUFFER_COPIED_TO_GOP`, `DISPLAY_BUFFER_RELEASED`, `TEST:DESKTOP:PASS`.
+  - `./tools/finn test-desktop --target arm64-qemu` (virt/AAVMF) -> QEMU status 0 with the same sequence, `VIRTIO_2D_TEARDOWN_COMMANDS=3`, `DISPLAY_BUFFER_RELEASED`, `TEST:DESKTOP:PASS`.
+  - `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+  - ARM64 ladder (`test-boot`, `test-exceptions`, `test-arm64-exception-fatal`, `test-memory-map`, `test-arm64-gic`, `test-timer-interrupts`, `test-cooperative-tasks`, `test-userspace`, `test-ipc`, `test-elf-loader`, `test-init`, `test-page-tables`) -> all exit 0. `test-page-allocator` and `test-heap` return the tooling's documented "not implemented for ARM64" refusal, not a regression.
+- Results and evidence classification:
+  - Verified this session in QEMU: the device accepts `SET_SCANOUT` disable, `RESOURCE_DETACH_BACKING`, and `RESOURCE_UNREF`, after which owned display pages are unmapped and released on both ports.
+  - Verified this session on the host: teardown state machine, exact command bodies, injected-failure non-advance behavior, and resumable mapping cleanup counters.
+  - Implemented-unverified: IRQ/MSI completion, continuous compositor-to-GPU presentation, hardware cursor, VirGL/3D execution, frame latency, and 60 Hz measurement.
+  - Not verified: any physical GPU, and anything outside the two QEMU configurations above.
+- Documentation/status changes: the `STATUS.md` graphics row, `README.md` GPU claim, `HARDWARE_SUPPORT.md` display row, `ROADMAP.md` next task 2, and `docs/architecture/drivers.md` now describe the verified teardown-before-release rule and keep polled completion, IRQ routing, a general resource broker, continuous presentation, 3D, and physical hardware explicitly unverified.
+- Unverified assumptions:
+  - QEMU's VirtIO-GPU 2D path is not evidence of real GPU or driver behavior.
+  - Bounded polling is assumed sufficient for teardown. There is no interrupt-driven quiescence or DMA-completion barrier, so unmap/release after a polled completion is the best available ordering today, not a general hardware rule.
+  - Host toolchain: the default `cargo` on this machine is Homebrew Rust, which lacks the bare-metal target libraries. Verification used the `rustup`-managed stable 1.98.1 toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink to start. Neither change is in the repository, and `./tools/finn doctor` does not detect this.
+- Remaining work:
+  - IRQ/MSI-driven completion with device-quiescence and DMA barriers before release.
+  - A general GPU resource broker/allocator owning resource IDs and backing.
+  - Continuous Peony-to-GPU presentation, page flipping, hardware cursor, and VirGL/3D execution.
+  - Frame-latency measurement and a 60 Hz target check.
+  - Physical hardware qualification and the wider desktop-class OS scope.
+- Blockers: no physical GPU or reference hardware is available; there is no resource broker and no IRQ routing, so teardown remains polled and single-threaded.
+- Risks/regressions to watch:
+  - Release is gated on a polled `RESOURCE_UNREF` completion. A timeout is treated as a hard stop that retains the buffer, which is safe but is not a full in-flight recovery implementation.
+  - The desktop log contract is now strict about ordering; deliberately reordering the driver (for example, copying to GOP before teardown) will fail the validator.
+  - The `libLLVM.dylib` symlink is a local host fix that a clean host may also need.
+  - `cargo clippy -p finn-kernel --bin finn-kernel-{x86_64,aarch64} --features kernel-bin,qemu-test-desktop -- -D warnings` reports roughly 30 pre-existing lints in these two binaries (`cast_lossless`, `items_after_statements`, `map_or`, `needless_if`, `too_many_arguments`, `used_while_existing`). The repository's `check` gate does not exercise them because the binaries are behind `required-features`, so they were left in place rather than expanded into this slice. The two lines introduced or moved by this change were fixed.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input work. No commit, push, PR, or issue update was made.
+- Suggested next action: add IRQ/MSI completion to the VirtIO-GPU transport so teardown is gated on real device quiescence, then introduce a resource broker that owns resource IDs and backing. Preserve the current teardown-before-release ordering and its validator as an invariant.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `graphics-architecture`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `interrupt-exception-handling`, `ipc-capabilities`, `reliability-fault-injection`, `performance-engineering`.

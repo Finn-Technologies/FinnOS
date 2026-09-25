@@ -2,7 +2,7 @@
 
 This roadmap is ordered by dependency, not calendar time. Complexity assumes one experienced contributor: XS hours, S days, M one to several weeks, L several weeks, XL a multi-milestone program. No team velocity data exists, so dates would be misleading.
 
-Current state: x86-64 and ARM64 QEMU dual-architecture verified through Level 0, Level 1, Level 2, and Level 3 Graphical Desktop (Peony compositor, terminal, settings, file manager). See [STATUS.md](STATUS.md) and [.agents/STATE.md](.agents/STATE.md).
+Current state: x86-64 and ARM64 QEMU dual-architecture verified through Level 0, Level 1, Level 2, and Level 3 Graphical Desktop (Peony compositor, terminal, settings, file manager), with a bounded polled VirtIO-GPU 2D resource/scanout/flush setup and Peony damage follow-up path. See [STATUS.md](STATUS.md) and [.agents/STATE.md](.agents/STATE.md).
 
 ## Critical path
 
@@ -126,8 +126,8 @@ Each item includes the fields needed to become a GitHub issue. P0 blocks build/b
 
 ## Next 10 engineering tasks
 
-1. Connect VirtIO input devices (keyboard/pointer) to route physical key/mouse events to the Peony compositor and terminal app.
-2. Implement damaged-region dirty rectangles in `libpeony::Compositor` to optimize rendering frame times.
+1. Connect VirtIO input devices (keyboard/pointer) to route physical key/mouse events to the Peony compositor and terminal app; finish the PS/2 polling adapter separately for x86-64 development.
+2. Deliver a device interrupt end to end. The ARM64 routing, MSI-X programming, and device-SPI dispatch are done; the remaining work is environmental or architectural: confirm against a second QEMU version, or port the ARM64 interrupt path to GICv3 so the ITS becomes usable, then add an x86 IOAPIC and MSI-X table. After that, replace bounded polling in the control-queue wait and add a general GPU resource broker and latency measurement while preserving GOP fallback and the teardown-before-release rule.
 3. Add persistent filesystem mounting (e.g. ext2 or SimpleFS) on the secondary `virtio-blk-pci` data partition.
 4. Implement preemptible blocking threads with wait queues and priority scheduling.
 5. Parse and validate ACPI MADT / device-tree platform tables for dynamic interrupt resource discovery.

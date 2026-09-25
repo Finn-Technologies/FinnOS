@@ -1,0 +1,48 @@
+# Agent Handoff: <task>
+
+- Objective: build the driver-owned half of interrupt-driven VirtIO-GPU completion, plus the one platform route that is reachable today, so GPU teardown can eventually be gated on real device quiescence rather than polling.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown slice. No commit or push was made in this session.
+- Task state: Locally Verified in the worktree. Not integrated, and **not** an end-to-end interrupt path.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `graphics-architecture`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `interrupt-exception-handling`, `pci-pcie`, `cross-architecture-design`, `synchronization-concurrency`, `reliability-fault-injection`, `evidence-status-reporting`, `build-orchestration`, `build-environment-management`, `debugging-investigation`.
+- Work completed:
+  - `PciVirtioRegions` now resolves the previously-parsed-but-discarded `Isr` capability into a real region, exposed as `Option<PciVirtioRegion>` plus a `virtio_isr_region()` accessor. A device without one stays polled and is never silently approximated.
+  - `virtio::transport` gained a dedicated `isr_read_u8` MMIO accessor whose contract matches QEMU's own implementation (reading atomically clears the register and deasserts the interrupt line), a `NO_VECTOR` mask constant, and `QueueInterruptFlags` with `queue_completion_pending()`.
+  - Added a bounded, reusable `VectorAllocator`, `enable_queue_interrupt` / `disable_queue_interrupt` over the common `QUEUE_MSIX_VECTOR` register with read-back verification, and explicit errors for a device with no ISR, an exhausted table, a duplicate bind, and a rejected write.
+  - Added an architecture-neutral completion policy (`CompletionSignal` / `CompletionMode` / `completion_mode`) and wired it into the control-queue wait so a bound vector is consulted while the used ring stays the sole authority for whether a completion exists. A transport failure or an empty ISR read leaves the wait polled rather than claiming a signal.
+  - ARM64 GICv2 gained bounded SPI routing (`route_spi` / `unroute_spi`, group 1, priority `0x80`), an `is_routable_spi` policy that excludes PPIs, SGIs, and special IDs, and a bounded single-ownership device-handler table. A routed SPI now dispatches to its handler instead of being treated as fatal; `exceptions.rs` treats that disposition as handled.
+  - Both desktop paths resolve and map the ISR region and emit `FINNOS:GPU:VIRTIO_ISR_REGION` / `..._ISR_REGION_PRESENT=1` / `..._ISR_REGION_BYTES=4096`; the QEMU log contract now requires those markers and rejects a log that is missing them.
+- Files changed: `kernel/src/drivers/pci.rs`, `kernel/src/drivers/virtio/transport.rs`, `kernel/src/drivers/virtio/pci.rs`, `kernel/src/drivers/virtio/gpu/queue.rs`, `kernel/src/arch/aarch64/gic.rs`, `kernel/src/arch/aarch64/exceptions.rs`, `kernel/src/bin/x86_64.rs`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/qemu.py`, `tools/tests/test_boot_log.py`, `STATUS.md`, `HARDWARE_SUPPORT.md`, `ROADMAP.md`, `docs/architecture/drivers.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel` -> 232 passed (was 220 before this slice; +12 new tests).
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 232 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - Bare-metal: `finn-kernel-x86_64` and `finn-kernel-aarch64` with `kernel-bin,qemu-test-desktop` build clean.
+  - `./tools/finn test-desktop` (x86-64) -> status 33, `VIRTIO_ISR_REGION present=1 bytes=4096`, presentation 7, teardown 3, `DISPLAY_BUFFER_RELEASED`, `TEST:DESKTOP:PASS`.
+  - `./tools/finn test-desktop --target arm64-qemu` -> status 0, `VIRTIO_ISR_REGION_PRESENT=1` / `_BYTES=4096`, same teardown and release markers, `TEST:DESKTOP:PASS`.
+  - `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+  - ARM64 ladder (12 supported modes incl. `test-arm64-gic`) -> all exit 0, so the SPI-routing dispatcher change did not disturb the existing SGI/timer interrupt behavior.
+- Results and evidence classification:
+  - Verified this session in QEMU: the VirtIO-GPU device exposes a 4 KiB ISR region on both architectures, and the existing presentation + teardown + release path is unchanged.
+  - Verified this session on the host: bounded vector allocation/reuse, read-back-verified MSI-X programming, rejection of the no-ISR device, destructive ISR reads, the completion-mode policy, SPI routability, and handler single-ownership and table bounds.
+  - **Not** verified: that any device interrupt is actually raised and delivered to the driver. The live desktop runs are still polled; the interrupt path is a capability the driver can consume, not one proven to fire.
+- Documentation/status changes: `STATUS.md` (graphics and interrupts rows), `HARDWARE_SUPPORT.md` (interrupt-controller and PCI rows), `ROADMAP.md` next task 2, and `docs/architecture/drivers.md` now describe the driver half of interrupt completion, the ARM64 SPI route, and the explicit remaining platform gap without claiming delivered interrupts.
+- Unverified assumptions:
+  - QEMU's VirtIO-GPU behavior is not evidence of real GPU or driver behavior.
+  - The MSI-X vector programming follows the common-configuration register and QEMU's ISR semantics, but no platform MSI-X table entry is programmed anywhere yet, so an allocated vector is not yet deliverable.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Raise a real device interrupt end to end: program a platform MSI-X table entry, route the ARM64 SPI through the GIC dispatcher, and observe it in the control-queue wait instead of polling.
+  - Build the x86 IOAPIC and MSI-X path, which does not exist yet and is required for parity.
+  - Add a general GPU resource broker/allocator owning resource IDs and backing.
+  - Continuous Peony-to-GPU presentation, page flipping, hardware cursor, VirGL/3D execution, and frame-latency measurement.
+  - Physical hardware qualification and the wider desktop-class OS scope.
+- Blockers: no platform path currently raises a device interrupt (no x86 IOAPIC/MSI-X table; no ARM64 device wired to raise its SPI), so completion cannot yet be interrupt-driven end to end. No physical GPU is available.
+- Risks/regressions to watch:
+  - The device-handler table uses a `SyncUnsafeCell`-style single-BSP borrow guarded by an explicit contract; it is correct for BSP-only operation but must be revisited before SMP, where it would need real synchronization.
+  - The ISR read is destructive; any future platform handler must read it exactly once per delivered interrupt, or completions will be lost.
+  - `cargo clippy` on the feature-gated desktop binaries still reports the pre-existing lints recorded in the previous handoff; this slice's new lines are clean.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown work. No commit, push, PR, or issue update was made.
+- Suggested next action: on ARM64, bind the VirtIO-GPU control queue to a real vector, program the device to raise its SPI, and route that SPI through `route_spi` so the completion wait observes `CompletionMode::InterruptSignalled` instead of polling; then mirror with an x86 IOAPIC + MSI-X table. Preserve the teardown-before-release ordering and its validator as an invariant.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `graphics-architecture`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `interrupt-exception-handling`, `pci-pcie`, `reliability-fault-injection`, `performance-engineering`.

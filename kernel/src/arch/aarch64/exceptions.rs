@@ -657,7 +657,9 @@ extern "C" fn finnos_arm64_exception_dispatch(frame: *mut ExceptionFrame) {
     }
     if frame.source == SOURCE_CURRENT_SPX_IRQ {
         match gic::handle_irq(frame.registers[19], frame.spsr) {
-            gic::IrqDisposition::Handled | gic::IrqDisposition::Spurious(_) => return,
+            gic::IrqDisposition::Handled
+            | gic::IrqDisposition::Spurious(_)
+            | gic::IrqDisposition::Device { .. } => return,
             gic::IrqDisposition::Unexpected {
                 raw_iar,
                 interrupt_id,

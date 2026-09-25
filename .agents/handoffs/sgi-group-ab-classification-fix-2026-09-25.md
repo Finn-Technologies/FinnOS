@@ -1,0 +1,40 @@
+# Agent Handoff: SGI group A/B and device-SPI classification fix
+
+- Objective: run the SGI group A/B to distinguish a group-signalling defect from an SPI-specific one, and correct any guest-side handling it exposes.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, MSI-X-discovery, GICv2m, frame-base, group-1, and delivery-localization slices. No commit or push was made in this session.
+- Task state: Locally Verified. A real latent defect was found and fixed; the emulator still does not deliver SPIs, so the delivery gap persists.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Added an SGI group A/B to the GIC test that re-groups the already-working self-SGI into group 0 and group 1 and observes delivery for each.
+  - Found and corrected two probe bugs in the process, both of which had produced misleading readings: the probe did not reset the observed state between arms (so the group-0 row reported stale success), and it ran with IRQs masked (so delivery could never be observed at all). After fixing both, group 0 delivers and the group-1 arm does not return.
+  - Traced the group-1 hang to a genuine latent defect: `classify_acknowledge` recognised only the test SGI and the timer PPI, so **any routed device SPI fell into the `Unexpected` branch**, which the exception path treats as fatal. A first real device interrupt would have panicked the kernel.
+  - Added an `AcknowledgeClass::Device(id)` arm so a routed SPI is acknowledged, deactivated, and dispatched to its registered handler, and updated the fail-closed test to keep unowned PPIs on the fatal path while asserting routed SPIs go to a handler.
+  - Confirmed the desktop still reports `MSI_DELIVERIES=0` after the fix, so the emulator does not deliver the SPI regardless of correct handling.
+  - Removed the SGI group probe and its helper functions after the measurement.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel arch::aarch64::gic` -> 11 passed, including the new device-SPI classification test.
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 239 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - `./tools/finn test-arm64-gic --target arm64-qemu` -> status 0. `./tools/finn test-desktop --target arm64-qemu` -> status 0. `./tools/finn test-desktop` (x86-64) -> status 33.
+- Results and evidence classification:
+  - Verified: the SGI delivers in group 0 with a clean reset and unmasked IRQs, and does not return in group 1 on this configuration.
+  - Verified: routed SPIs are now acknowledged and dispatched to their registered handler instead of taking the fatal path. This was a real latent defect and is fixed.
+  - **Not** verified: that any SPI is delivered. `MSI_DELIVERIES` is still 0 with correct handling in place, so the emulator's non-delivery is not caused by guest classification.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior.
+  - The group-1 SGI result is suggestive but not conclusive on its own, because the SGI is a software interrupt with its own path; the SPI non-delivery is the stronger evidence.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Install a second QEMU version and re-run the ARM64 desktop image, comparing `MSI_DELIVERIES`. Only QEMU 11.1.1 is available locally, so this check was not possible here.
+  - Port the ARM64 interrupt path to GICv3 so the ITS becomes usable; the GICv2 kernel currently panics on a `gic-version=3` machine.
+  - Once SPI delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity, and add the general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+- Risks/regressions to watch:
+  - The `Device` dispatch arm is what keeps a real device interrupt from panicking the kernel; it must stay paired with handler registration and the fatal path for unowned identifiers.
+  - The load-sensitive `test-timer-interrupts` flake noted earlier still applies.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: install a second QEMU version and re-run the existing ARM64 desktop image, comparing `MSI_DELIVERIES`. With the classification defect now fixed, a delivery there would immediately confirm a QEMU-side regression.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.

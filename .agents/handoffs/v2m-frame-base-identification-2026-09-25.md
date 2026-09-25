@@ -1,0 +1,42 @@
+# Agent Handoff: GICv2m frame-base identification
+
+- Objective: determine why a fully programmed ARM64 MSI-X vector never delivers, and fix any guest-side error in the interrupt identifier arithmetic.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, MSI-X-discovery, and GICv2m slices. No commit or push was made in this session.
+- Task state: Locally Verified. A real guest-side bug was found and fixed; delivery remains unproven and the residual gap is now located inside QEMU.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `pci-pcie`, `interrupt-exception-handling`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Traced QEMU's `gicv2m_write` and `create_v2m` and found the identifier arithmetic the previous slice had wrong: `GICD_MSI_TYPER` reports the frame's **MSI window** (`base_spi + 32`), the doorbell subtracts that offset from the value written, and the machine wires the frame's SPI line `n` to distributor input `frame_base + n`. The value written to the doorbell must therefore be the **window base** (80 on this machine), while the identifier that reaches the distributor is the **frame base** (48). The previous slice routed the window base and wrote the distributor identifier, so the pulse landed on an unrouted line and the doorbell value fell outside the frame's window check.
+  - Added `v2m_first_distributor_id` and used it for routing, and corrected the MSI-X message data to the window base. Added a host test that pins both halves of the distinction.
+  - Ran the ARM64 desktop under QEMU `guest_errors,unimp` tracing: the trace is empty, so the v2m writes are structurally valid with no bad-offset or bad-size report.
+  - Added `spi_routing_state` to read the distributor's enable/group/priority back, confirming `enabled=1`, `group1=1`, `priority=128`, and, with a temporary probe, that pending and active bits stay clear after a direct doorbell write.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, `STATUS.md`, `docs/architecture/drivers.md`, `.agents/STATE.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel` -> 237 passed (was 236; +1 frame-base identification test).
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 237 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - Bare-metal: both desktop kernel targets build clean.
+  - `./tools/finn test-desktop` -> status 33. `./tools/finn test-desktop --target arm64-qemu` -> status 0, `TEST:DESKTOP:PASS`, with `MSI_INTERRUPT_ID=48`, `MSI_ROUTE_ENABLED=1`, `QUEUE_INTERRUPT_ENABLED`, and `MSI_DELIVERIES=0`.
+  - `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+  - QEMU `guest_errors,unimp` trace of the ARM64 desktop -> empty.
+- Results and evidence classification:
+  - Verified: the frame-base versus window-base identifier arithmetic is correct and host-tested; routing, MSI-X function control, and the table entry are all correct; QEMU reports no bad MMIO access to the v2m frame.
+  - **Not** verified: that any interrupt is delivered. A direct doorbell write leaves the distributor's pending and active bits clear, so no SPI is latched for this configuration.
+- Documentation/status changes: `STATUS.md` (interrupts row), `docs/architecture/drivers.md`, and `.agents/STATE.md` now describe the corrected identifier arithmetic and the residual, QEMU-side delivery gap.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior.
+  - The guest-side path is verified correct; the reason the v2m pulse does not latch in the distributor is not established and is the next unknown.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Use QEMU `-d int` tracing, and a bare `-machine virt,gic-version=2` configuration without the rest of FinnOS, to determine whether the v2m pulse reaches the GIC distributor at all. This isolates the QEMU-side gap from the guest.
+  - Once delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity, and add the general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+- Blockers: the v2m doorbell does not latch an SPI in the distributor for this QEMU configuration, so interrupt-driven completion cannot be proven. No physical GPU is available.
+- Risks/regressions to watch:
+  - The frame-base/window-base distinction is subtle and easy to reintroduce; it is now covered by a host test, so a regression fails CI.
+  - Enabling the MSI-X function and clearing mask-all is a real device state change; the current order (route, register handler, then enable) avoids spurious delivery.
+  - The handler table remains a single-BSP `UnsafeCell` and must be revisited before SMP.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: boot a bare `-machine virt,gic-version=2,msi=gicv2m` QEMU instance with `-d int` and a minimal v2m doorbell writer, to determine whether the pulse reaches the distributor independently of FinnOS. That isolates the remaining unknown to QEMU or the guest's GIC setup.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.

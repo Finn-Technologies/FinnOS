@@ -1,0 +1,48 @@
+# Agent Handoff: GPU Owned Display-Buffer Contract
+
+- Objective: Add an allocator-aware owned display-buffer policy and bounded architecture integration for the next VirtIO-GPU presentation slice, with checked geometry, `PageRange` ownership, uncached/framebuffer-style mappings, GOP fallback, and an explicit device-lifetime retention boundary, while making no continuous-rendering or acceleration claim.
+- Starting commit/worktree: `468ed41530ef598fe70019bd90edd47327bc4b74`; dirty worktree on `main` with the prior GPU/Peony changes preserved. Fresh `git status`/`git log` were read this session.
+- Task state: Locally verified owned-buffer presentation change; not committed, pushed, or integrated.
+- Skills used: finnos-operating-rules, repository-orientation, task-planning, test-strategy, qemu-boot-testing, cross-architecture-design, performance-engineering, graphics-architecture, physical-memory-management, virtual-memory, boot-kernel-hardening, evidence-status-reporting, build-orchestration, debugging-investigation, driver-architecture, unsafe-rust-low-level-safety, reliability-fault-injection, synchronization-concurrency, documentation-maintenance, agent-handoff.
+- Work completed:
+  - Added `kernel/src/drivers/virtio/gpu/display.rs` with `GpuDisplayBuffer`, `GpuDisplayBufferError`, checked geometry, contiguous allocation through `EarlyPhysicalPageAllocator`, explicit `release`, null/undersized/range/overflow/capacity failures, and a conservative four-level 4 KiB table-page upper bound.
+  - Added `Gpu2dPresentation::from_display_buffer` and `Gpu2dResource::from_display_buffer`, attaching the complete page-rounded backing length while retaining stride-aware damage offsets.
+  - Added x86-64 `MAX_MAPPED_PAGES` and `MappedPageCapacityExceeded` parity with the existing ARM64 initial-plan cap.
+  - Added focused tests for reference 1280x800 geometry (1,000 pages, within the 1,024-page policy and six-table bound), allocation/release, malformed geometry, exhaustion, range ownership, and the queue bridge.
+  - Added per-architecture desktop mapping adapters: x86-64 uses `MappingPermissions::framebuffer()`; ARM64 uses `MemoryType::NormalNonCacheable`; both preflight table capacity, reverse-rollback failed leaf mappings, render Peony into the owned range, and copy the result to GOP.
+  - Connected `Gpu2dResource::from_display_buffer` to the live QEMU 2D session, so the device attaches the owned physical backing rather than only constructing packets.
+  - Updated `README.md`, `STATUS.md`, `ROADMAP.md`, `HARDWARE_SUPPORT.md`, architecture docs, and `.agents/STATE.md` to state that the buffer is mapped and presented in bounded QEMU runs but retained until detach/destroy exists.
+- Files changed by this slice: `kernel/src/drivers/virtio/gpu/display.rs` (new), `kernel/src/drivers/virtio/gpu.rs`, `kernel/src/drivers/virtio/gpu/queue.rs`, `kernel/src/arch/x86_64/paging.rs`, `kernel/src/bin/x86_64.rs`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/qemu.py`, `tools/tests/test_boot_log.py`, `.agents/STATE.md`, `README.md`, `STATUS.md`, `ROADMAP.md`, `HARDWARE_SUPPORT.md`, `docs/architecture/drivers.md`, `docs/architecture/peony.md`, and this handoff. Existing unrelated dirty files remain untouched.
+- Tests/commands run:
+  - `python3 .agents/scripts/capture_state.py` -> pass; recorded host, Git state, and tool versions.
+  - `cargo test -p finn-kernel drivers::virtio::gpu --lib -- --nocapture` -> pass: 18 tests.
+  - `cargo test -p finn-kernel arch::x86_64::paging --lib -- --nocapture` -> pass: 0 matching host tests; ARM64 paging separately pass: 5 tests.
+  - `cargo test -p finn-kernel arch::aarch64::paging --lib -- --nocapture` -> pass: 5 tests.
+  - `cargo test -p finn-kernel memory::allocator --lib -- --nocapture` -> pass: 9 tests.
+- `cargo test -p finn-kernel --lib -- --nocapture` -> pass: 219 tests.
+- `cargo clippy -p finn-kernel --all-targets -- -D warnings` -> pass.
+- `cargo fmt --all -- --check` and `git diff --check` -> pass.
+- `python3 .agents/scripts/validate.py --all` -> pass: 87 skills, no dependency cycles.
+- `cargo test --workspace -- --test-threads=1` -> pass: 219 kernel, 40 Peony, 15 libsys, 8 protocol, and 10 UEFI tests.
+- `cargo clippy --workspace --all-targets -- -D warnings` -> pass.
+- `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> pass: 86 tests.
+- `python3 .agents/scripts/check_links.py` -> pass: 245 local references.
+- Bare-metal verification used a pinned Rustup environment because the active Homebrew compiler has no bare-metal `core`; the required LLVM path was supplied through `DYLD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH`.
+  - x86-64 desktop kernel build: `RUSTC="$(rustup which rustc)"` with `CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=.../gcc-ld/ld.lld` -> pass.
+  - ARM64 desktop kernel build: `RUSTC="$(rustup which rustc)"` with `CARGO_TARGET_AARCH64_UNKNOWN_NONE_LINKER=.../gcc-ld/ld.lld` -> pass.
+  - x86-64 UEFI loader build with `rust-lld` -> pass.
+  - ARM64 UEFI loader build with `rust-lld` -> pass.
+  - `./tools/finn test-desktop` with the pinned environment and Homebrew Python 3.12 -> pass; QEMU status 33; fresh log reports an owned `DISPLAY_BUFFER_ALLOCATED pages=1000`, `DISPLAY_BUFFER_MAPPED`, `DISPLAY_BUFFER_COPIED_TO_GOP`, `DISPLAY_BUFFER_RETAINED_FOR_DEVICE`, the expected 1280x800 damage rectangle, and the five-command plus two-command GPU sequence.
+  - `./tools/finn test-desktop --target arm64-qemu` with the same environment -> pass; QEMU status 0; fresh log reports `DISPLAY_BUFFER_PAGES=469`, `DISPLAY_BUFFER_MAPPED`, `DISPLAY_BUFFER_COPIED_TO_GOP`, `DISPLAY_BUFFER_RETAINED_FOR_DEVICE`, the expected 800x600 damage rectangle, and the five-command plus two-command GPU sequence.
+  - `./tools/finn check-all` with the pinned environment -> pass; the aggregate host and ordered QEMU stages completed successfully, including the final owned-buffer desktop run.
+- Results and evidence classification:
+  - Verified: shared owned-buffer geometry, page-range ownership, allocator release, bounded failures, queue bridge, x86-64/ARM64 mapping/rollback paths, and both fresh QEMU owned-buffer presentation sequences.
+  - Implemented-unverified: detach/destroy lifecycle, dynamic table-pool growth, cache/device coherency on real hardware, lifecycle failure recovery, continuous compositor presentation, IRQ/MSI completion, VirGL/3D, latency/60 Hz, and physical hardware.
+  - Intentionally unchanged: the GOP copy remains visible and authoritative for fallback; the owned backing is retained because no detach/destroy command is submitted yet.
+- Unverified assumptions: The current QEMU sizes and table-pool availability represent the supported reference profiles only. The six-table bound is conservative and architectural, not a general hardware guarantee. A 4 MiB `u32` VirtIO-GPU backing length remains within the current protocol encoder, but larger displays need a format/streaming design. The host's system Python strips `DYLD_*`; fresh QEMU evidence therefore used Homebrew Python 3.12 with the pinned Rustup environment.
+- Remaining work: submit resource detach/destroy, add failure-injection and rollback/retry lifecycle tests, add IRQ/MSI completion, measure frame latency, and qualify physical hardware. The broader filesystems, input, networking, stock-app breadth, and release goals remain on the roadmap.
+- Blockers: No general GPU resource broker/restartable driver lifecycle, no external VirtIO IRQ routing, no physical hardware, and no teardown proof.
+- Risks/regressions to watch: page-table exhaustion mid-presentation, mapping rollback, DMA/cache visibility, invalid virtual windows, release-before-DMA-drain/detach, and accidentally treating bounded QEMU evidence as continuous or physical GPU support.
+- Current Git state: dirty worktree at `468ed41`; no commit, push, PR, or integration claim was made.
+- Suggested next action: implement `VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING`/`VIRTIO_GPU_CMD_RESOURCE_DESTROY_2D` completion paths with explicit device quiescence, then use them to release the owned buffer and add injected failure/restart tests.
+- Skills next agent must load: finnos-operating-rules, repository-orientation, task-planning, test-strategy, qemu-boot-testing, graphics-architecture, virtual-memory, physical-memory-management, cross-architecture-design, driver-architecture, unsafe-rust-low-level-safety, reliability-fault-injection, documentation-maintenance, agent-handoff.

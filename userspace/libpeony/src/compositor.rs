@@ -11,7 +11,8 @@ use crate::apps::{
     render_control_centre_state, render_files_app_state, render_power_options_state,
     render_settings_app_state, render_start_menu_state, render_taskbar, render_terminal_app,
 };
-use crate::canvas::{Canvas, Color, Rect};
+use crate::canvas::{Canvas, Color, DamageRegion, Rect};
+use crate::input::KeyboardEvent;
 use crate::widget::Window;
 
 /// Mouse cursor arrow bitmap (12x18 pixels).
@@ -38,6 +39,7 @@ pub static MOUSE_CURSOR: [u16; 18] = [
 
 const CURSOR_W: usize = 16;
 const CURSOR_H: usize = 20;
+const WINDOW_SHADOW_MARGIN: i32 = 24;
 
 /// Background pixels saved beneath the mouse cursor for fast, flicker-free restoration.
 #[derive(Clone, Copy)]
@@ -116,6 +118,8 @@ pub struct Compositor {
     pub state: DesktopState,
     /// Hardware GPU cursor plane enabled (decouples cursor rendering from CPU frame canvas).
     pub hardware_cursor: bool,
+    /// Pending screen regions that need recomposition.
+    damage: DamageRegion,
 }
 
 impl Compositor {
@@ -143,6 +147,7 @@ impl Compositor {
             start_menu_open: false,
             control_centre_open: false,
             hardware_cursor: false,
+            damage: DamageRegion::empty(),
             state: DesktopState {
                 settings_category: 1,
                 setting_dark_mode: false,
@@ -181,6 +186,35 @@ impl Compositor {
     #[must_use]
     pub const fn is_hardware_cursor_enabled(&self) -> bool {
         self.hardware_cursor
+    }
+
+    /// Add a screen rectangle to the pending damage set.
+    pub const fn request_damage(&mut self, rect: Rect) {
+        let screen = Rect::new(0, 0, self.width, self.height);
+        self.damage.add_clipped(rect, screen);
+    }
+
+    /// Add the complete display to the pending damage set.
+    pub const fn request_full_damage(&mut self) {
+        self.damage = DamageRegion::full(self.width, self.height);
+    }
+
+    /// Return the pending damage regions for diagnostics or presentation.
+    #[must_use]
+    pub fn pending_damage(&self) -> &[Rect] {
+        self.damage.regions()
+    }
+
+    /// Clear pending damage without rendering it.
+    pub const fn clear_damage(&mut self) {
+        self.damage.clear();
+    }
+
+    /// Return the pending damage set and clear the compositor queue.
+    pub const fn take_damage(&mut self) -> DamageRegion {
+        let damage = self.damage;
+        self.damage.clear();
+        damage
     }
 
     /// Maximum z-order currently assigned.
@@ -225,6 +259,7 @@ impl Compositor {
     pub fn add_window(&mut self, window: Window, app_id: AppId) -> Option<usize> {
         let slot = self.windows.iter().position(Option::is_none)?;
         let z_order = slot as u32;
+        let bounds = window.bounds;
         self.windows[slot] = Some(CompositorWindow {
             window,
             app_id,
@@ -232,6 +267,7 @@ impl Compositor {
             visible: true,
         });
         self.active_index = Some(slot);
+        self.request_damage(Self::window_damage_rect(bounds));
         Some(slot)
     }
 
@@ -329,29 +365,168 @@ impl Compositor {
 
     /// Update mouse coordinates and restore/redraw cursor with zero flicker.
     pub fn update_mouse_position(&mut self, canvas: &mut Canvas, new_x: i32, new_y: i32) {
+        let _ = self.update_mouse_position_damaged(canvas, new_x, new_y);
+    }
+
+    /// Update mouse coordinates and recompose only the affected desktop
+    /// regions. This is the preferred input path for software and hardware
+    /// cursor configurations.
+    #[allow(clippy::too_many_lines)]
+    pub fn update_mouse_position_damaged(
+        &mut self,
+        canvas: &mut Canvas,
+        new_x: i32,
+        new_y: i32,
+    ) -> DamageRegion {
+        let old_x = self.mouse_x;
+        let old_y = self.mouse_y;
         let clamped_x = new_x.clamp(0, (self.width.saturating_sub(1)) as i32);
         let clamped_y = new_y.clamp(0, (self.height.saturating_sub(1)) as i32);
+        if old_x == clamped_x && old_y == clamped_y {
+            return DamageRegion::empty();
+        }
 
-        if self.mouse_x == clamped_x && self.mouse_y == clamped_y {
-            return;
+        let old_cursor = Rect::new(old_x, old_y, CURSOR_W as u32, CURSOR_H as u32);
+        let new_cursor = Rect::new(clamped_x, clamped_y, CURSOR_W as u32, CURSOR_H as u32);
+
+        if let Some(slot) = self.dragging_window
+            && let Some(cw) = &self.windows[slot]
+        {
+            let old_window = cw.window.bounds;
+            let old_damage = old_cursor.union(&Self::window_damage_rect(old_window));
+            let new_window = Rect::new(
+                clamped_x - self.drag_offset_x,
+                (clamped_y - self.drag_offset_y)
+                    .clamp(0, (self.height - TASKBAR_HEIGHT - 30) as i32),
+                old_window.width,
+                old_window.height,
+            );
+            self.request_damage(
+                old_damage
+                    .union(&new_cursor)
+                    .union(&Self::window_damage_rect(new_window)),
+            );
+            self.mouse_x = clamped_x;
+            self.mouse_y = clamped_y;
+            if let Some(cw) = &mut self.windows[slot] {
+                cw.window.bounds.x = new_window.x;
+                cw.window.bounds.y = new_window.y;
+            }
+            return self.compose_pending(canvas, "finnos", 100);
         }
 
         self.mouse_x = clamped_x;
         self.mouse_y = clamped_y;
-
-        if let Some(slot) = self.dragging_window
-            && let Some(cw) = &mut self.windows[slot]
-        {
-            cw.window.bounds.x = clamped_x - self.drag_offset_x;
-            cw.window.bounds.y = (clamped_y - self.drag_offset_y)
-                .clamp(0, (self.height - TASKBAR_HEIGHT - 30) as i32);
-            self.compose(canvas, "finnos", 100);
-            return;
+        if self.hardware_cursor {
+            return DamageRegion::empty();
         }
 
-        if !self.hardware_cursor {
-            self.restore_cursor_background(canvas);
-            self.draw_mouse_cursor(canvas);
+        let mut damage = old_cursor.union(&new_cursor);
+        if self.cursor_bg.valid {
+            damage = damage.union(&Rect::new(
+                self.cursor_bg.x,
+                self.cursor_bg.y,
+                self.cursor_bg.w as u32,
+                self.cursor_bg.h as u32,
+            ));
+        }
+        self.request_damage(damage);
+        self.compose_pending(canvas, "finnos", 100)
+    }
+
+    const fn window_damage_rect(bounds: Rect) -> Rect {
+        Rect::new(
+            bounds.x.saturating_sub(WINDOW_SHADOW_MARGIN),
+            bounds.y.saturating_sub(WINDOW_SHADOW_MARGIN),
+            bounds
+                .width
+                .saturating_add((WINDOW_SHADOW_MARGIN * 2) as u32),
+            bounds
+                .height
+                .saturating_add((WINDOW_SHADOW_MARGIN * 2) as u32),
+        )
+    }
+
+    /// Update the live taskbar clock and recompose only the taskbar strip.
+    pub fn update_clock(
+        &mut self,
+        canvas: &mut Canvas,
+        arch_name: &str,
+        uptime_ticks: u64,
+    ) -> DamageRegion {
+        let taskbar = Rect::new(
+            0,
+            self.height.saturating_sub(TASKBAR_HEIGHT) as i32,
+            self.width,
+            TASKBAR_HEIGHT,
+        );
+        self.request_damage(taskbar);
+        self.compose_pending(canvas, arch_name, uptime_ticks)
+    }
+
+    /// Route a normalized keyboard shortcut to the desktop shell.
+    ///
+    /// The current policy covers the baseline launcher, terminal, close, and
+    /// task-switch shortcuts. Application text entry and focus traversal remain
+    /// follow-up work and are intentionally not guessed here.
+    pub fn handle_keyboard(&mut self, canvas: &mut Canvas, event: KeyboardEvent) -> DamageRegion {
+        if event.is_launcher_shortcut() {
+            self.start_menu_open = !self.start_menu_open;
+            self.state.start_menu_open = self.start_menu_open;
+            self.request_full_damage();
+            return self.compose_pending(canvas, "finnos", 100);
+        }
+
+        if event.is_terminal_shortcut() {
+            self.raise_app(AppId::Terminal);
+            self.request_full_damage();
+            return self.compose_pending(canvas, "finnos", 100);
+        }
+
+        if event.is_close_shortcut()
+            && let Some(index) = self.active_index
+            && let Some(window) = &mut self.windows[index]
+        {
+            window.visible = false;
+            self.request_full_damage();
+            return self.compose_pending(canvas, "finnos", 100);
+        }
+
+        if event.is_task_switch_shortcut() {
+            self.raise_next_app();
+            self.request_full_damage();
+            return self.compose_pending(canvas, "finnos", 100);
+        }
+
+        DamageRegion::empty()
+    }
+
+    fn raise_next_app(&mut self) {
+        let Some(current) = self.active_index else {
+            self.raise_app(AppId::Terminal);
+            return;
+        };
+        let Some(current_app) = self.windows[current].as_ref().map(|window| window.app_id) else {
+            return;
+        };
+        let mut candidate: Option<(usize, u32)> = None;
+        for (index, window) in self.windows.iter().enumerate() {
+            if let Some(window) = window
+                && window.visible
+                && window.app_id != current_app
+            {
+                match candidate {
+                    Some((_, current_z_order)) if current_z_order >= window.z_order => {}
+                    _ => candidate = Some((index, window.z_order)),
+                }
+            }
+        }
+        if let Some((index, _)) = candidate {
+            self.active_index = Some(index);
+            let next_z = self.max_z() + 1;
+            if let Some(window) = &mut self.windows[index] {
+                window.z_order = next_z;
+            }
         }
     }
 
@@ -374,7 +549,8 @@ impl Compositor {
             if self.state.system_action_message.is_some() {
                 self.state.system_action_message = None;
                 self.state.power_modal_open = false;
-                self.compose(canvas, "finnos", 100);
+                self.request_full_damage();
+                self.compose_pending(canvas, "finnos", 100);
                 return;
             }
             let r = 40i32;
@@ -409,7 +585,8 @@ impl Compositor {
                     self.state.power_modal_open = false;
                 }
             }
-            self.compose(canvas, "finnos", 100);
+            self.request_full_damage();
+            self.compose_pending(canvas, "finnos", 100);
             return;
         }
 
@@ -437,13 +614,15 @@ impl Compositor {
                     self.start_menu_open = false;
                     self.state.start_menu_open = false;
                     self.raise_app(AppId::Settings);
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 } else if d_p <= 16 * 16 {
                     self.start_menu_open = false;
                     self.state.start_menu_open = false;
                     self.state.power_modal_open = true;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
@@ -461,7 +640,8 @@ impl Compositor {
                             1 | 2 => self.raise_app(AppId::Files),
                             _ => self.raise_app(AppId::Settings),
                         }
-                        self.compose(canvas, "finnos", 100);
+                        self.request_full_damage();
+                        self.compose_pending(canvas, "finnos", 100);
                         return;
                     }
                 }
@@ -479,7 +659,8 @@ impl Compositor {
                             2 => self.raise_app(AppId::Files),
                             _ => self.raise_app(AppId::Settings),
                         }
-                        self.compose(canvas, "finnos", 100);
+                        self.request_full_damage();
+                        self.compose_pending(canvas, "finnos", 100);
                         return;
                     }
                 }
@@ -501,7 +682,8 @@ impl Compositor {
                             1 => self.raise_app(AppId::Settings),
                             _ => self.raise_app(AppId::Files),
                         }
-                        self.compose(canvas, "finnos", 100);
+                        self.request_full_damage();
+                        self.compose_pending(canvas, "finnos", 100);
                         return;
                     }
                 }
@@ -510,7 +692,8 @@ impl Compositor {
             }
             self.start_menu_open = false;
             self.state.start_menu_open = false;
-            self.compose(canvas, "finnos", 100);
+            self.request_full_damage();
+            self.compose_pending(canvas, "finnos", 100);
             return;
         }
 
@@ -525,21 +708,24 @@ impl Compositor {
                 let wifi_rect = Rect::new(px + 12, py + 12, 112, 56);
                 if wifi_rect.contains(mx, my) {
                     self.state.wifi_enabled = !self.state.wifi_enabled;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
                 let bt_rect = Rect::new(px + 132, py + 12, 117, 56);
                 if bt_rect.contains(mx, my) {
                     self.state.bluetooth_enabled = !self.state.bluetooth_enabled;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
                 let play_rect = Rect::new(px + 140, py + 112, 40, 24);
                 if play_rect.contains(mx, my) {
                     self.state.media_playing = !self.state.media_playing;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
@@ -547,14 +733,16 @@ impl Compositor {
                 if bright_rect.contains(mx, my) {
                     let rel_y = (py + 148 + 106 - my).clamp(0, 106);
                     self.state.brightness_pct = ((rel_y as u32 * 100) / 106).clamp(10, 100);
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
                 let vol_rect = Rect::new(px + 74, py + 148, 54, 106);
                 if vol_rect.contains(mx, my) {
                     let rel_y = (py + 148 + 106 - my).clamp(0, 106);
                     self.state.volume_pct = ((rel_y as u32 * 100) / 106).clamp(0, 100);
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
@@ -569,7 +757,8 @@ impl Compositor {
                             2 => self.state.flashlight_enabled = !self.state.flashlight_enabled,
                             _ => self.state.cast_enabled = !self.state.cast_enabled,
                         }
-                        self.compose(canvas, "finnos", 100);
+                        self.request_full_damage();
+                        self.compose_pending(canvas, "finnos", 100);
                         return;
                     }
                 }
@@ -577,7 +766,8 @@ impl Compositor {
             }
             self.control_centre_open = false;
             self.state.control_centre_open = false;
-            self.compose(canvas, "finnos", 100);
+            self.request_full_damage();
+            self.compose_pending(canvas, "finnos", 100);
             return;
         }
 
@@ -592,7 +782,8 @@ impl Compositor {
             if mx >= dock_x && mx < dock_x + DOCK_ICON as i32 {
                 self.start_menu_open = !self.start_menu_open;
                 self.state.start_menu_open = self.start_menu_open;
-                self.compose(canvas, "finnos", 100);
+                self.request_full_damage();
+                self.compose_pending(canvas, "finnos", 100);
                 return;
             }
             let clicked_app = if mx >= dock_x + 46 && mx < dock_x + 46 + DOCK_ICON as i32 {
@@ -608,7 +799,8 @@ impl Compositor {
                 self.start_menu_open = false;
                 self.state.start_menu_open = false;
                 self.raise_app(target);
-                self.compose(canvas, "finnos", 100);
+                self.request_full_damage();
+                self.compose_pending(canvas, "finnos", 100);
                 return;
             }
         }
@@ -618,7 +810,8 @@ impl Compositor {
         if my >= bar_y && mx >= self.width as i32 - 260 {
             self.control_centre_open = !self.control_centre_open;
             self.state.control_centre_open = self.control_centre_open;
-            self.compose(canvas, "finnos", 100);
+            self.request_full_damage();
+            self.compose_pending(canvas, "finnos", 100);
             return;
         }
 
@@ -644,13 +837,15 @@ impl Compositor {
 
                 if cw.window.is_close_button(mx, my) {
                     cw.visible = false;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
                 if cw.window.is_minimize_button(mx, my) {
                     cw.visible = false;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
@@ -660,7 +855,8 @@ impl Compositor {
                     self.dragging_window = Some(slot);
                     self.drag_offset_x = mx - cw.window.bounds.x;
                     self.drag_offset_y = my - cw.window.bounds.y;
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
 
@@ -818,7 +1014,8 @@ impl Compositor {
                         }
                     }
 
-                    self.compose(canvas, "finnos", 100);
+                    self.request_full_damage();
+                    self.compose_pending(canvas, "finnos", 100);
                     return;
                 }
             }
@@ -831,8 +1028,36 @@ impl Compositor {
     /// (71:438) / Control Centre (44:381) → 45px frosted taskbar with centered
     /// dock + tray (71:125) → Power Modal (112:245) → mouse cursor.
     pub fn compose(&mut self, canvas: &mut Canvas, arch_name: &str, uptime_ticks: u64) {
-        self.cursor_bg.valid = false;
+        self.request_full_damage();
+        self.compose_pending(canvas, arch_name, uptime_ticks);
+    }
 
+    /// Compose only the regions accumulated by input and state changes.
+    ///
+    /// An empty damage set is a no-op. This lets the interactive loop avoid
+    /// rewriting the complete wallpaper on every timer tick while keeping the
+    /// initial boot path explicit through [`Self::compose`].
+    pub fn compose_pending(
+        &mut self,
+        canvas: &mut Canvas,
+        arch_name: &str,
+        uptime_ticks: u64,
+    ) -> DamageRegion {
+        let damage = self.take_damage();
+        if damage.is_empty() {
+            return damage;
+        }
+
+        for region in damage.regions() {
+            canvas.set_clip(*region);
+            self.compose_region(canvas, arch_name, uptime_ticks);
+        }
+        canvas.clear_clip();
+        self.cursor_bg.valid = false;
+        damage
+    }
+
+    fn compose_region(&mut self, canvas: &mut Canvas, arch_name: &str, uptime_ticks: u64) {
         // 1. Authentic photographic desert landscape wallpaper.
         self.render_wallpaper(canvas);
 
@@ -1056,5 +1281,86 @@ mod tests {
 
         // Canvas pixels should be completely untouched because GPU handles cursor plane
         assert_eq!(canvas.pixels(), snapshot.as_slice());
+    }
+
+    #[test]
+    fn compositor_damage_preserves_untouched_pixels() {
+        let mut compositor = Compositor::new(160, 120);
+        let win = Window::new("Terminal", Rect::new(20, 20, 80, 60));
+        compositor.add_window(win, AppId::Terminal);
+
+        let mut buf = std::vec![0u32; 160 * 120];
+        let mut canvas = Canvas::new(&mut buf, 160, 120, 160);
+        compositor.compose(&mut canvas, "test", 0);
+        let before = canvas.pixels().to_vec();
+
+        compositor.request_damage(Rect::new(20, 20, 10, 10));
+        let damage = compositor.compose_pending(&mut canvas, "test", 0);
+        assert!(!damage.is_empty());
+        assert!(damage.bounding_box().unwrap().width < 160);
+        let after = canvas.pixels();
+        let unchanged = (0..120).all(|y| {
+            (0..160).all(|x| {
+                !damage.intersects(Rect::new(x as i32, y as i32, 1, 1))
+                    || before[y * 160 + x] == after[y * 160 + x]
+            })
+        });
+        assert!(unchanged, "pixels outside the damage set changed");
+    }
+
+    #[test]
+    fn compositor_empty_damage_is_a_noop() {
+        let mut compositor = Compositor::new(80, 60);
+        let mut buf = std::vec![0u32; 80 * 60];
+        let mut canvas = Canvas::new(&mut buf, 80, 60, 80);
+        let damage = compositor.compose_pending(&mut canvas, "test", 0);
+        assert!(damage.is_empty());
+        assert!(canvas.pixels().iter().all(|&pixel| pixel == 0));
+    }
+
+    #[test]
+    fn compositor_keyboard_shortcuts_update_shell_state() {
+        use crate::input::{Key, KeyState, KeyboardEvent};
+
+        let mut compositor = Compositor::new(320, 240);
+        let mut buf = std::vec![0u32; 320 * 240];
+        let mut canvas = Canvas::new(&mut buf, 320, 240, 320);
+        compositor.compose(&mut canvas, "test", 0);
+
+        let launcher = KeyboardEvent {
+            key: Key::Super,
+            state: KeyState::Pressed,
+            shift: false,
+            control: false,
+            alt: false,
+            super_key: true,
+        };
+        let _ = compositor.handle_keyboard(&mut canvas, launcher);
+        assert!(compositor.start_menu_open);
+
+        let mut released = launcher;
+        released.state = KeyState::Released;
+        let _ = compositor.handle_keyboard(&mut canvas, released);
+        assert!(compositor.start_menu_open);
+
+        compositor.start_menu_open = false;
+        compositor.state.start_menu_open = false;
+        compositor.add_window(
+            Window::new("Terminal", Rect::new(20, 20, 120, 100)),
+            AppId::Terminal,
+        );
+        compositor.active_index = Some(0);
+
+        let close = KeyboardEvent {
+            key: Key::Character('F'),
+            state: KeyState::Pressed,
+            shift: false,
+            control: false,
+            alt: true,
+            super_key: false,
+        };
+        let _ = compositor.handle_keyboard(&mut canvas, close);
+        assert!(!compositor.start_menu_open);
+        assert!(!compositor.windows[0].as_ref().unwrap().visible);
     }
 }

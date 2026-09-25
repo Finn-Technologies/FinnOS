@@ -1,0 +1,44 @@
+# Agent Handoff: v2m frame A/B probe
+
+- Objective: determine whether the `GICv2m` frame latches any interrupt at all on this configuration, or only the specific line the GPU used.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, MSI-X-discovery, GICv2m, frame-base, and group-1 slices. No commit or push was made in this session.
+- Task state: Locally Verified. The remaining delivery gap is narrowed to a QEMU-side question, and the guest-side configuration is demonstrably complete.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Ran the guest-side A/B the previous handoff specified: probed frame lines 0, 1, and 5, mapping to distributor identifiers 48, 49, and 53, each routed with the pending bit sampled immediately after the doorbell write. **All three report `pending=0`**, which rules out "one disconnected line" and shows the frame is not latching any line for this configuration.
+  - Verified the doorbell values used are inside the frame's accepted window under QEMU's own arithmetic (`value - (base_spi + 32)` in range), so the writes are not silently rejected.
+  - Added `v2m_doorbell_value` and `v2m_doorbell_to_distributor_id` as explicit, host-tested mappings so the frame-line to distributor-identifier relationship cannot be reintroduced by hand. The test also pins that a line past the frame's own table is rejected even when the resulting identifier would still be a globally routable SPI.
+  - Attempted a host-side isolation with the QEMU monitor; its `writeq` did not reach the MMIO windows, so the probe was discarded rather than reported as evidence.
+  - Removed the temporary per-line probe loop from the desktop path after the measurement, keeping the reusable helpers.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, `docs/architecture/drivers.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel arch::aarch64::gic` -> 10 passed, including the new doorbell mapping test.
+  - `cargo test -p finn-kernel` -> 238 passed.
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 238 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - `./tools/finn test-desktop --target arm64-qemu` -> status 0. `./tools/finn test-arm64-gic --target arm64-qemu` -> status 0. `./tools/finn test-desktop` (x86-64) -> status 33.
+  - `./tools/finn check-all` -> exit 0 on the re-run. One earlier run failed in `test-timer-interrupts` (x86-64) with a partial timer log; that test passes in isolation and on the re-run, and this session's source changes are AArch64-only, so it is a pre-existing load-sensitive flake rather than a regression.
+- Results and evidence classification:
+  - Verified: the frame's doorbell values are computed correctly and land inside the frame's accepted window; the guest's routing, group enables, MSI-X programming, and identifier arithmetic are all correct.
+  - Verified: no frame line latches. Three distinct lines were probed and none produced a pending bit.
+  - **Not** verified: that any device interrupt is delivered. The remaining gap is not a guest-side configuration error.
+- Documentation/status changes: `docs/architecture/drivers.md` now records the A/B result and that the remaining question is QEMU-side.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior.
+  - The guest-side path is verified correct across every cause found so far; the exact reason the frame does not latch is unestablished and needs QEMU-side investigation.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - QEMU-side investigation of whether `arm_gicv2m` latches on this version and machine configuration, for example by checking the upstream `arm_gicv2m` / `virt` wiring or trying a different QEMU version.
+  - Once delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity, and add the general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+  - Re-check the load-sensitive `test-timer-interrupts` flake, which is unrelated to this slice but worth hardening.
+- Blockers: the v2m doorbell does not latch a distributor SPI on this QEMU configuration, so interrupt-driven completion cannot be proven from the guest. No physical GPU is available.
+- Risks/regressions to watch:
+  - The x86 `test-timer-interrupts` stage failed once under `check-all` load and passed in isolation and on re-run; it is a pre-existing flake, not caused by this AArch64-only change.
+  - Enabling group 1 widens deliverable interrupts; today only explicitly routed SPIs are in group 1, so it is bounded, but any future code that sets `IGROUPR` without enabling the SPI would make an unowned interrupt deliverable.
+  - The handler table remains a single-BSP `UnsafeCell` and must be revisited before SMP.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: investigate the QEMU side of `arm_gicv2m` delivery (upstream source or a different QEMU version) to establish whether the frame latches at all here; if it does not, interrupt-driven completion needs a different MSI controller (for example the ITS with a GICv3 guest) before the driver wait can be exercised.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.

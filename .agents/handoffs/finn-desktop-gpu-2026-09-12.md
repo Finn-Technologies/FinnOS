@@ -1,5 +1,9 @@
 # Agent Handoff: Modern GPU Acceleration Pipeline (VirtIO-GPU, Hardware Cursor Plane, Double Buffering)
 
+> Superseded by `virtio-gpu-control-transport-2026-09-24.md`. The current
+> evidence verifies a bounded control-virtqueue query, not production GPU
+> acceleration, hardware cursor operation, or physical hardware support.
+
 - Objective: Transition FinnOS desktop from pure CPU software linear framebuffer rendering to modern GPU-accelerated display architecture: OASIS VirtIO-GPU driver, PCI device discovery, hardware scanout surface binding, dedicated hardware cursor overlay plane (zero CPU frame invalidation/flicker), double-buffered swapchain with dirty region host DMA transfer, and tear-free page flipping.
 - Starting commit/worktree:
 ```text

@@ -17,6 +17,9 @@
 //! architecture-specific mechanism here, so no parity table is needed.
 
 pub mod gpu;
+pub mod pci;
+pub mod split_queue;
+pub mod transport;
 
 /// PCI vendor ID shared by all `VirtIO` devices (`0x1AF4`).
 pub const VIRTIO_VENDOR: u16 = 0x1AF4;
