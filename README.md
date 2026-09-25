@@ -1,10 +1,10 @@
 # FinnOS
 
-FinnOS is an experimental, non-UNIX operating-system project written primarily in Rust. The intended architecture is a capability-oriented hybrid microkernel with a native graphical platform named Peony. That architecture is a design direction, not the current implementation.
+FinnOS is an experimental, non-UNIX operating-system project written primarily in Rust. The intended architecture is a capability-oriented hybrid microkernel with a native graphical platform named Peony. The current VM slice includes a software-rendered Peony desktop and a bounded BAR-backed VirtIO-GPU control transport with a polled 2D resource/scanout/flush smoke path plus one Peony damage-driven follow-up frame; the complete OS and hardware story are still in progress.
 
 ## Current maturity
 
-FinnOS is an x86-64 UEFI kernel prototype for QEMU with an integrated ARM64 serial-entry port and locally verified R4 exception and early-memory slices. It is not yet a functional general-purpose OS.
+The current `main` branch includes a dual-architecture QEMU desktop slice, but the repository documentation and older audit material predate that implementation. Read [`STATUS.md`](STATUS.md) and [`ROADMAP.md`](ROADMAP.md) for the current evidence-bounded state. FinnOS is not yet a functional general-purpose OS. The GPU claim is deliberately narrow: QEMU traces show a real control-virtqueue `GET_DISPLAY_INFO` response, a five-command initial 2D resource/scanout/flush setup, a two-command follow-up transfer/flush for a Peony damage rectangle, and an owned `GpuDisplayBuffer` that is mapped, rendered, and submitted on both guests with a GOP fallback copy. Teardown then disables the scanout, detaches the guest backing, and unreferences the resource, after which the owned pages are unmapped and released; a failed teardown keeps the buffer retained for recovery. The driver half of interrupt-driven completion exists, including MSI-X vector programming, the `ISR` region, GICv2 SPI routing, and device-SPI dispatch, but the emulated GICv2 distributor does not latch SPI pending in this environment, so completion still completes by polling in the live desktop runs. Continuous Peony GPU presentation, GPU-composited rendering, and 3D acceleration are not verified.
 
 Verified on 2026-07-16:
 
@@ -27,14 +27,13 @@ interrupt-return frames, stack-derived task attribution, and deferred reschedule
 requests; the timer still returns to the interrupted task and does not perform
 scheduling.
 
-Not implemented:
+Not yet implemented or not verified:
 
-- ARM64 timer, task, or shutdown parity; external IRQ routing and broad exception recovery
-- user mode, processes, system calls, IPC, or capability enforcement
-- device discovery, device IRQ routing, and general drivers
-- block storage, filesystems, persistent data, or a shell
-- networking, audio, USB, input, GPU acceleration, or power management
-- compositor, window system, fonts, toolkit, desktop, or applications
+- external IRQ routing, broad exception recovery, and physical hardware qualification
+- a complete user-mode driver/resource broker, IRQ-driven VirtIO lifecycle, networking, audio, USB, or power management
+- a persistent filesystem with crash recovery, package/install flow, and release updates
+- full Peony input, accessibility, text shaping/localization, multi-process compositor protocols, and measured 60 Hz presentation
+- Continuous compositor-to-GPU presentation, GPU-composited rendering, 3D acceleration, physical GPU qualification, and the rest of the requested hardware breadth; the bounded QEMU smoke path is not hardware support
 - installation, packaging, updates, recovery, or supported physical hardware
 
 The colored GOP framebuffer diagnostic is not a graphical environment. The firmware-backed boot FAT image is not an OS storage stack.
@@ -45,7 +44,7 @@ The colored GOP framebuffer diagnostic is not a graphical environment. The firmw
 |---|---|---|---|
 | x86-64 QEMU `q35` + UEFI/OVMF | Verified | Verified | Development target |
 | x86-64 physical hardware | Unverified | Unverified | Unsupported |
-| ARM64 QEMU `virt` + UEFI | Integrated serial entry, exceptions, memory, owned MMU, and BSP GICv2 SGI | R3-R4.4 integrated and locally reverified | Timer, task, shutdown, discovery, and external IRQ parity pending |
+| ARM64 QEMU `virt` + UEFI | Dual-architecture VM desktop slice | Development target; current host toolchain can run host tests | External IRQ, transport, and physical hardware qualification pending |
 | ARM64 physical hardware | No implementation | No | Unsupported |
 
 See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWARE_SUPPORT.md).
@@ -60,7 +59,7 @@ See [supported platforms](SUPPORTED_PLATFORMS.md) and [hardware support](HARDWAR
 ./tools/finn test-boot --profile release
 ```
 
-Use `./tools/finn run` for an interactive QEMU window. The current system does not accept input; the window only displays the framebuffer diagnostic. Detailed prerequisites and commands are in [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md).
+Use `./tools/finn run` for an interactive QEMU window. The VM desktop slice has compositor mouse handling and software cursor behavior; keyboard, general input services, and full application interaction remain incomplete. Detailed prerequisites and commands are in [BUILDING.md](BUILDING.md) and [TESTING.md](TESTING.md).
 
 ## Repository map
 

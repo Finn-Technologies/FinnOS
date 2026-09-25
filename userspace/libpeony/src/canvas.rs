@@ -245,6 +245,228 @@ impl Rect {
             && py >= self.y
             && py < self.y + self.height as i32
     }
+
+    /// Return whether this rectangle has no area.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// Intersect this rectangle with another rectangle.
+    #[must_use]
+    pub const fn intersection(&self, other: &Self) -> Option<Self> {
+        if self.is_empty() || other.is_empty() {
+            return None;
+        }
+
+        let left = if self.x > other.x { self.x } else { other.x };
+        let top = if self.y > other.y { self.y } else { other.y };
+        let self_right = self.x as i64 + self.width as i64;
+        let other_right = other.x as i64 + other.width as i64;
+        let self_bottom = self.y as i64 + self.height as i64;
+        let other_bottom = other.y as i64 + other.height as i64;
+        let right = if self_right < other_right {
+            self_right
+        } else {
+            other_right
+        };
+        let bottom = if self_bottom < other_bottom {
+            self_bottom
+        } else {
+            other_bottom
+        };
+
+        if right <= left as i64 || bottom <= top as i64 {
+            return None;
+        }
+
+        Some(Self::new(
+            left,
+            top,
+            (right - left as i64) as u32,
+            (bottom - top as i64) as u32,
+        ))
+    }
+
+    /// Return the smallest rectangle containing both inputs.
+    #[must_use]
+    pub const fn union(&self, other: &Self) -> Self {
+        if self.is_empty() {
+            return *other;
+        }
+        if other.is_empty() {
+            return *self;
+        }
+
+        let left = if self.x < other.x { self.x } else { other.x };
+        let top = if self.y < other.y { self.y } else { other.y };
+        let self_right = self.x as i64 + self.width as i64;
+        let other_right = other.x as i64 + other.width as i64;
+        let self_bottom = self.y as i64 + self.height as i64;
+        let other_bottom = other.y as i64 + other.height as i64;
+        let right = if self_right > other_right {
+            self_right
+        } else {
+            other_right
+        };
+        let bottom = if self_bottom > other_bottom {
+            self_bottom
+        } else {
+            other_bottom
+        };
+
+        Self::new(
+            left,
+            top,
+            (right - left as i64) as u32,
+            (bottom - top as i64) as u32,
+        )
+    }
+}
+
+/// Maximum number of independent rectangles retained by a damage region.
+pub const MAX_DAMAGE_REGIONS: usize = 16;
+
+/// Bounded set of screen rectangles that need to be recomposed.
+///
+/// A compositor can accumulate several small changes without turning every
+/// frame into a full-screen redraw. If the fixed capacity is exhausted, the
+/// region set collapses to one bounding rectangle, keeping the operation
+/// bounded for `no_std` targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DamageRegion {
+    regions: [Rect; MAX_DAMAGE_REGIONS],
+    len: usize,
+}
+
+impl Default for DamageRegion {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl DamageRegion {
+    /// Create an empty damage set.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            regions: [Rect::new(0, 0, 0, 0); MAX_DAMAGE_REGIONS],
+            len: 0,
+        }
+    }
+
+    /// Create a damage set covering the complete screen.
+    #[must_use]
+    pub const fn full(width: u32, height: u32) -> Self {
+        let mut damage = Self::empty();
+        if width != 0 && height != 0 {
+            damage.regions[0] = Rect::new(0, 0, width, height);
+            damage.len = 1;
+        }
+        damage
+    }
+
+    /// Remove all damaged rectangles.
+    pub const fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// Return whether no pixels need to be redrawn.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Return the number of retained rectangles.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Borrow the retained rectangles in insertion order.
+    #[must_use]
+    pub fn regions(&self) -> &[Rect] {
+        &self.regions[..self.len]
+    }
+
+    /// Add a rectangle, coalescing the complete set when capacity is full.
+    pub const fn add(&mut self, rect: Rect) {
+        if rect.is_empty() {
+            return;
+        }
+
+        let mut i = 0;
+        while i < self.len {
+            if self.regions[i].intersection(&rect).is_some() {
+                let merged = self.regions[i].union(&rect);
+                self.regions[i] = merged;
+                self.coalesce_from(i);
+                return;
+            }
+            i += 1;
+        }
+
+        if self.len < MAX_DAMAGE_REGIONS {
+            self.regions[self.len] = rect;
+            self.len += 1;
+        } else {
+            let mut merged = rect;
+            i = 0;
+            while i < self.len {
+                merged = merged.union(&self.regions[i]);
+                i += 1;
+            }
+            self.regions[0] = merged;
+            self.len = 1;
+        }
+    }
+
+    /// Add a rectangle after clipping it to a screen bounds rectangle.
+    pub const fn add_clipped(&mut self, rect: Rect, screen: Rect) {
+        if let Some(clipped) = rect.intersection(&screen) {
+            self.add(clipped);
+        }
+    }
+
+    /// Return whether this damage set overlaps a rectangle.
+    #[must_use]
+    pub fn intersects(&self, rect: Rect) -> bool {
+        self.regions()
+            .iter()
+            .any(|region| region.intersection(&rect).is_some())
+    }
+
+    /// Return the smallest rectangle containing every damaged area.
+    #[must_use]
+    pub fn bounding_box(&self) -> Option<Rect> {
+        let mut iter = self.regions().iter();
+        let mut result = *iter.next()?;
+        for region in iter {
+            result = result.union(region);
+        }
+        Some(result)
+    }
+
+    const fn coalesce_from(&mut self, start: usize) {
+        let mut i = start;
+        while i < self.len {
+            let mut j = i + 1;
+            while j < self.len {
+                if self.regions[i].intersection(&self.regions[j]).is_some() {
+                    self.regions[i] = self.regions[i].union(&self.regions[j]);
+                    let mut k = j + 1;
+                    while k < self.len {
+                        self.regions[k - 1] = self.regions[k];
+                        k += 1;
+                    }
+                    self.len -= 1;
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+    }
 }
 
 /// 2D drawing canvas operating over a linear 32-bit pixel buffer.
@@ -253,6 +475,7 @@ pub struct Canvas<'a> {
     width: usize,
     height: usize,
     stride: usize,
+    clip: Option<Rect>,
 }
 
 impl<'a> Canvas<'a> {
@@ -263,6 +486,7 @@ impl<'a> Canvas<'a> {
             width,
             height,
             stride,
+            clip: None,
         }
     }
 
@@ -284,6 +508,26 @@ impl<'a> Canvas<'a> {
         self.stride
     }
 
+    /// Set a bounded drawing clip. The clip is intersected with the canvas.
+    pub const fn set_clip(&mut self, clip: Rect) {
+        let bounds = Rect::new(0, 0, self.width as u32, self.height as u32);
+        self.clip = Some(match bounds.intersection(&clip) {
+            Some(region) => region,
+            None => Rect::new(0, 0, 0, 0),
+        });
+    }
+
+    /// Remove the current drawing clip.
+    pub const fn clear_clip(&mut self) {
+        self.clip = None;
+    }
+
+    /// Return the current clip, if one is active.
+    #[must_use]
+    pub const fn clip_rect(&self) -> Option<Rect> {
+        self.clip
+    }
+
     /// Access the underlying pixel slice.
     #[must_use]
     pub const fn pixels(&self) -> &[u32] {
@@ -292,10 +536,17 @@ impl<'a> Canvas<'a> {
 
     /// Fill entire canvas with a solid color.
     pub fn clear(&mut self, color: Color) {
+        let bounds = Rect::new(0, 0, self.width as u32, self.height as u32);
+        let Some(region) = self
+            .clip
+            .map_or(Some(bounds), |clip| bounds.intersection(&clip))
+        else {
+            return;
+        };
         let val = color.to_u32();
-        for y in 0..self.height {
-            let row_start = y * self.stride;
-            let row_end = row_start + self.width;
+        for y in region.y.max(0) as usize..region.y.saturating_add(region.height as i32) as usize {
+            let row_start = y * self.stride + region.x.max(0) as usize;
+            let row_end = row_start + region.width as usize;
             self.pixels[row_start..row_end].fill(val);
         }
     }
@@ -307,7 +558,12 @@ impl<'a> Canvas<'a> {
         }
         let ux = x as usize;
         let uy = y as usize;
-        if ux < self.width && uy < self.height {
+        #[allow(clippy::option_if_let_else)]
+        let in_clip = match self.clip {
+            Some(clip) => clip.contains(x, y),
+            None => true,
+        };
+        if ux < self.width && uy < self.height && in_clip {
             let idx = uy * self.stride + ux;
             if color.a == 255 {
                 self.pixels[idx] = color.to_u32();
@@ -348,15 +604,21 @@ impl<'a> Canvas<'a> {
         );
     }
 
-    /// Get raw 32-bit pixel value at `(x, y)` with bounds checking.
+    /// Get raw 32-bit pixel value at `(x, y)` with bounds and clip checking.
     #[must_use]
+    #[allow(clippy::option_if_let_else)]
     pub const fn get_pixel_raw(&self, x: i32, y: i32) -> Option<u32> {
         if x < 0 || y < 0 {
             return None;
         }
         let ux = x as usize;
         let uy = y as usize;
-        if ux < self.width && uy < self.height {
+        #[allow(clippy::option_if_let_else)]
+        let in_clip = match self.clip {
+            Some(clip) => clip.contains(x, y),
+            None => true,
+        };
+        if ux < self.width && uy < self.height && in_clip {
             let idx = uy * self.stride + ux;
             Some(self.pixels[idx])
         } else {
@@ -371,7 +633,11 @@ impl<'a> Canvas<'a> {
         }
         let ux = x as usize;
         let uy = y as usize;
-        if ux < self.width && uy < self.height {
+        let in_clip = match self.clip {
+            Some(clip) => clip.contains(x, y),
+            None => true,
+        };
+        if ux < self.width && uy < self.height && in_clip {
             let idx = uy * self.stride + ux;
             self.pixels[idx] = val;
         }
@@ -379,14 +645,28 @@ impl<'a> Canvas<'a> {
 
     /// Draw a filled rectangle.
     pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: Color) {
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + w as i32).min(self.width as i32);
-        let y1 = (y + h as i32).min(self.height as i32);
-
-        if x0 >= x1 || y0 >= y1 {
+        let Some(region) = Rect::new(x, y, w, h).intersection(&Rect::new(
+            0,
+            0,
+            self.width as u32,
+            self.height as u32,
+        )) else {
+            return;
+        };
+        let clipped = match self.clip {
+            Some(clip) => match region.intersection(&clip) {
+                Some(clipped) => clipped,
+                None => return,
+            },
+            None => region,
+        };
+        if clipped.is_empty() {
             return;
         }
+        let x0 = clipped.x.max(0);
+        let y0 = clipped.y.max(0);
+        let x1 = clipped.x.saturating_add(clipped.width as i32);
+        let y1 = clipped.y.saturating_add(clipped.height as i32);
 
         let val = color.to_u32();
         for cy in y0..y1 {
@@ -809,8 +1089,22 @@ impl<'a> Canvas<'a> {
         if w == 0 || h == 0 {
             return;
         }
-        let x0 = x.max(0);
-        let x1 = (x + w as i32).min(self.width as i32);
+        let Some(region) = Rect::new(x, y, w, h).intersection(&Rect::new(
+            0,
+            0,
+            self.width as u32,
+            self.height as u32,
+        )) else {
+            return;
+        };
+        let Some(region) = self
+            .clip
+            .map_or(Some(region), |clip| region.intersection(&clip))
+        else {
+            return;
+        };
+        let x0 = region.x.max(0);
+        let x1 = region.x.saturating_add(region.width as i32);
         if x0 >= x1 {
             return;
         }
@@ -819,6 +1113,10 @@ impl<'a> Canvas<'a> {
         for row in 0..h as i32 {
             let py = y + row;
             if py < 0 || py >= self.height as i32 {
+                continue;
+            }
+            let in_clip = self.clip.is_none_or(|clip| clip.contains(x0, py));
+            if !in_clip {
                 continue;
             }
             let r = i32::from(top.r) + ((i32::from(bottom.r) - i32::from(top.r)) * row) / total_h;
@@ -1005,6 +1303,17 @@ impl<'a> Canvas<'a> {
             return;
         }
 
+        let Some(region) = self.clip.map_or_else(
+            || Some(Rect::new(0, 0, w as u32, h as u32)),
+            |clip| Rect::new(0, 0, w as u32, h as u32).intersection(&clip),
+        ) else {
+            return;
+        };
+        let x_start = region.x.max(0) as usize;
+        let y_start = region.y.max(0) as usize;
+        let x_end = (region.x.saturating_add(region.width as i32).max(0) as usize).min(w);
+        let y_end = (region.y.saturating_add(region.height as i32).max(0) as usize).min(h);
+
         let cx1 = (w as i32) * 62 / 100;
         let cy1 = (h as i32) * 38 / 100;
         let r1_sq = ((w as i64) * 55 / 100) * ((w as i64) * 55 / 100);
@@ -1017,7 +1326,7 @@ impl<'a> Canvas<'a> {
         let cy3 = (h as i32) * 60 / 100;
         let r3_sq = ((w as i64) * 35 / 100) * ((w as i64) * 35 / 100);
 
-        for py in 0..h {
+        for py in y_start..y_end {
             let row_offset = py * self.stride;
 
             let (base_r, base_g, base_b) = if py * 2 < h {
@@ -1047,7 +1356,7 @@ impl<'a> Canvas<'a> {
             let dy3 = py as i32 - cy3;
             let dy3_sq = (dy3 as i64) * (dy3 as i64);
 
-            for px in 0..w {
+            for px in x_start..x_end {
                 let dx1 = px as i32 - cx1;
                 let d1 = (dx1 as i64) * (dx1 as i64) + dy1_sq;
 
@@ -1777,6 +2086,61 @@ mod tests {
         assert!(rect.contains(109, 69));
         assert!(!rect.contains(9, 20));
         assert!(!rect.contains(110, 70));
+    }
+
+    #[test]
+    fn rectangle_operations_clip_and_merge_without_overflow() {
+        let rect = Rect::new(-5, 10, 20, 30);
+        assert_eq!(
+            rect.intersection(&Rect::new(0, 0, 12, 40)),
+            Some(Rect::new(0, 10, 12, 30))
+        );
+        assert_eq!(rect.intersection(&Rect::new(100, 100, 1, 1)), None);
+        assert_eq!(
+            Rect::new(0, 0, 5, 5).union(&Rect::new(10, 10, 2, 2)),
+            Rect::new(0, 0, 12, 12)
+        );
+        assert!(Rect::new(0, 0, 0, 4).is_empty());
+    }
+
+    #[test]
+    fn damage_region_stays_bounded_and_coalesces() {
+        let mut damage = DamageRegion::empty();
+        damage.add(Rect::new(0, 0, 10, 10));
+        damage.add(Rect::new(8, 8, 10, 10));
+        assert_eq!(damage.len(), 1);
+        assert_eq!(damage.bounding_box(), Some(Rect::new(0, 0, 18, 18)));
+
+        for i in 0..MAX_DAMAGE_REGIONS {
+            damage.add(Rect::new((i as i32) * 20, 0, 2, 2));
+        }
+        assert!(damage.len() <= MAX_DAMAGE_REGIONS);
+        assert!(damage.bounding_box().is_some());
+    }
+
+    #[test]
+    fn canvas_clip_limits_direct_and_primitive_draws() {
+        let mut buf = [0u32; 100];
+        let mut canvas = Canvas::new(&mut buf, 10, 10, 10);
+        canvas.clear(Color::BLACK);
+        canvas.set_clip(Rect::new(2, 3, 4, 5));
+        canvas.clear(Color::BLUE);
+        canvas.fill_rect(0, 0, 10, 10, Color::RED);
+        canvas.set_pixel(0, 0, Color::GREEN);
+        canvas.set_pixel(3, 4, Color::WHITE);
+        canvas.clear_clip();
+        assert_eq!(canvas.get_pixel_raw(0, 0), Some(Color::BLACK.to_u32()));
+        assert_eq!(canvas.get_pixel_raw(3, 4), Some(Color::WHITE.to_u32()));
+        assert_eq!(canvas.get_pixel_raw(2, 3), Some(Color::RED.to_u32()));
+        assert_eq!(canvas.get_pixel_raw(6, 3), Some(Color::BLACK.to_u32()));
+    }
+
+    #[test]
+    fn out_of_bounds_clip_stays_clipping() {
+        let mut buf = [0u32; 0];
+        let mut canvas = Canvas::new(&mut buf, 0, 0, 0);
+        canvas.set_clip(Rect::new(1, 1, 4, 4));
+        assert_eq!(canvas.clip_rect(), Some(Rect::new(0, 0, 0, 0)));
     }
 
     #[test]

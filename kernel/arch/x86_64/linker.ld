@@ -17,7 +17,9 @@ SECTIONS
     . += 4K;
     __stack_guard_low_end = .;
     __stack_bottom = .;
-    . += 64K;
+    /* Keep the early BSP stack large enough for debug-build return
+       temporaries in bounded driver bring-up paths. */
+    . += 256K;
     __stack_top = .;
     __stack_guard_high_start = .;
     . += 4K;

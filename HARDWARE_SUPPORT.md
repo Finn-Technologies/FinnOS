@@ -1,19 +1,19 @@
 # Hardware Support Strategy
 
-FinnOS currently supports no physical hardware. The only tested machine model is QEMU x86-64 `q35` with OVMF, an IDE-attached boot image, COM1, GOP, PIT, and xAPIC. Those platform primitives are not a general driver stack.
+FinnOS currently supports no physical hardware. The tested machine models are QEMU x86-64 `q35` with OVMF and QEMU ARM64 `virt` with AAVMF/ramfb. Those emulator paths are not general hardware support.
 
 ## Driver inventory
 
 | Class | Current state | Scope |
 |---|---|---|
 | Serial | Polling COM1 output | x86/QEMU diagnostic; no input/IRQ/timeout |
-| Display | UEFI GOP framebuffer handoff and fill | Firmware mode only; no display driver |
-| Interrupt controllers | PIC mask, BSP xAPIC | No IOAPIC, MSI/MSI-X, GIC, or device IRQs |
+| Display | UEFI GOP/ramfb framebuffer, software Peony composition, a bounded BAR-backed VirtIO-GPU control/2D setup plus Peony damage follow-up, a mapped owned display-buffer presentation path, and a verified scanout-disable/backing-detach/resource-unref teardown that then releases the owned pages | QEMU emulator evidence only; teardown is polled and a failed command retains the buffer for recovery; no continuous compositor presentation, GPU-composited frame, 3D acceleration, physical display driver, or IRQ-driven presentation |
+| Interrupt controllers | PIC mask, BSP xAPIC, ARM64 GICv2 with SPI group-1/priority routing, a bounded device-handler table, and device-SPI acknowledgement and dispatch to a registered handler | x86 has no IOAPIC or MSI-X table yet, so no device interrupt is delivered on x86; the emulated ARM64 GICv2 distributor does not latch SPI pending in this environment, so SPI delivery is unproven; routing is single-BSP only, with no SMP |
 | Timer | PIT calibration + local APIC | No clocksource abstraction, sleep queue, RTC, or power timers |
-| PCI/PCIe | Absent | Required for x86 device discovery |
-| VirtIO | Absent | Preferred first virtual block/network/input devices |
+| PCI/PCIe | Bounded bus scan, BAR/device matching, modern VirtIO capability discovery including the ISR window, MSI and MSI-X capability discovery (confirmed 3-entry MSI-X table on the emulated GPU), per-queue MSI-X vector programming, and a bounded vector allocator | No complete resource broker, no platform MSI-X table programming, no end-to-end device interrupt delivery, no restart path |
+| VirtIO | Block policy and a polled modern VirtIO-GPU control-virtqueue transport for `GET_DISPLAY_INFO`, bounded 2D resource/backing/transfer/scanout/flush setup, and one damage follow-up | No complete transport for block, continuous GPU rendering, network, or input; no physical hardware |
 | Block/NVMe/AHCI | Absent | Defer physical controllers until block/VFS contracts work |
-| USB/HID/input | Absent | No keyboard, mouse, touch, or controller |
+| USB/HID/input | x86 PS/2 mouse polling path; host-testable ordinary PS/2 scancode decoder | No VirtIO input, hardware keyboard polling, touch, or controller |
 | Network/Wi-Fi/Bluetooth | Absent | Defer wireless until basic virtual Ethernet works |
 | Audio | Absent | Post-desktop-alpha |
 | Power/battery/sensors | Absent | Post-reference-hardware selection |

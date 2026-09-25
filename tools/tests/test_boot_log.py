@@ -45,6 +45,49 @@ from tools.finnlib.qemu import (
 )
 
 class BootLogTests(unittest.TestCase):
+    def desktop_gpu_output(self, architecture: str) -> str:
+        if architecture == "x86_64":
+            gpu_markers = (
+                "FINNOS:GPU:DISPLAY_BUFFER_ALLOCATED pages=1000 address=0x1b1000",
+                "FINNOS:GPU:DISPLAY_BUFFER_MAPPED virtual=0x600000000000 pages=1000",
+                "FINNOS:GPU:VIRTIO_ISR_REGION present=1 bytes=4096",
+                "FINNOS:GPU:VIRTIO_CONTROL_QUERY_COMPLETED scanouts=1",
+                "FINNOS:GPU:VIRTIO_2D_INITIAL_COMMANDS=5",
+                "FINNOS:PEONY:GPU_DAMAGE regions=1 x=0 y=755 width=1280 height=45",
+                "FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS=2",
+                "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED resource=1 commands=7",
+                "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED resource=1 commands=3",
+                "FINNOS:GPU:DISPLAY_BUFFER_COPIED_TO_GOP",
+                "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+            )
+        else:
+            gpu_markers = (
+                "FINNOS:GPU:PCI_MSIX_PRESENT=1",
+                "FINNOS:GPU:PCI_MSIX_TABLE_SIZE=3",
+                    "FINNOS:GPU:DISPLAY_BUFFER_PAGES=469",
+                    "FINNOS:GPU:DISPLAY_BUFFER_PHYSICAL=0x402e0000",
+                "FINNOS:GPU:DISPLAY_BUFFER_VIRTUAL=0x600000000000",
+                "FINNOS:GPU:VIRTIO_ISR_REGION_PRESENT=1",
+                "FINNOS:GPU:VIRTIO_ISR_REGION_BYTES=4096",
+                "FINNOS:GPU:VIRTIO_CONTROL_QUERY_COMPLETED_SCANOUTS=1",
+                "FINNOS:GPU:VIRTIO_2D_INITIAL_COMMANDS=5",
+                "FINNOS:PEONY:GPU_DAMAGE_REGIONS=1",
+                "FINNOS:PEONY:GPU_DAMAGE_X=0",
+                "FINNOS:PEONY:GPU_DAMAGE_Y=555",
+                "FINNOS:PEONY:GPU_DAMAGE_WIDTH=800",
+                "FINNOS:PEONY:GPU_DAMAGE_HEIGHT=45",
+                "FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS=2",
+                "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMMANDS=7",
+                "FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMPLETED",
+                "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMMANDS=3",
+                "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED",
+                "FINNOS:GPU:DISPLAY_BUFFER_COPIED_TO_GOP",
+                "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+            )
+        desktop = list(DESKTOP_MARKERS)
+        desktop[-1:-1] = gpu_markers
+        return "\n".join(desktop)
+
     def preemption_context_log(self):
         numeric = {
             "FRAME_SIZE": 176, "FRAME_PREFIX_SIZE": 136, "FRAME_IRET_SIZE": 176, "FRAME_FOOTPRINT_SIZE": 191,
@@ -758,12 +801,17 @@ class BootLogTests(unittest.TestCase):
         self.assertTrue(validate_arm64_ipc(0, output + "\nFINNOS:EXCEPTION:ARM64_FATAL"))
 
     def test_desktop_complete_sequence(self):
-        self.assertEqual(validate_desktop(33, "\n".join(DESKTOP_MARKERS)), [])
+        self.assertEqual(validate_desktop(33, self.desktop_gpu_output("x86_64")), [])
 
     def test_desktop_rejects_status_missing_order_and_forbidden(self):
-        output = "\n".join(DESKTOP_MARKERS)
+        output = self.desktop_gpu_output("x86_64")
         self.assertTrue(validate_desktop(0, output))
-        self.assertTrue(validate_desktop(33, "\n".join(DESKTOP_MARKERS[:-1])))
+        self.assertTrue(validate_desktop(33, "\n".join(DESKTOP_MARKERS)))
+        without_gpu = [marker for marker in output.splitlines() if "FINNOS:GPU:" not in marker]
+        self.assertTrue(validate_desktop(33, "\n".join(without_gpu)))
+        swapped = output.splitlines()
+        swapped[-3], swapped[-2] = swapped[-2], swapped[-3]
+        self.assertTrue(validate_desktop(33, "\n".join(swapped)))
         swapped = list(DESKTOP_MARKERS)
         swapped[2], swapped[3] = swapped[3], swapped[2]
         self.assertTrue(validate_desktop(33, "\n".join(swapped)))
@@ -771,18 +819,62 @@ class BootLogTests(unittest.TestCase):
         self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:PAGE_FAULT"))
         self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:GENERAL_PROTECTION"))
         self.assertTrue(validate_desktop(33, output + "\nFINNOS:EXCEPTION:DOUBLE_FAULT"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:GPU:HARDWARE_CURSOR_PLANE_READY"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:GPU:DOUBLE_BUFFER_ACTIVE"))
+        self.assertTrue(validate_desktop(33, output + "\nFINNOS:GPU:PAGE_FLIP"))
+        wrong_damage = output.replace("y=755 width=1280 height=45", "y=700 width=1280 height=45")
+        self.assertTrue(validate_desktop(33, wrong_damage))
+        missing_isr = output.replace("FINNOS:GPU:VIRTIO_ISR_REGION present=1 bytes=4096\n", "")
+        self.assertTrue(validate_desktop(33, missing_isr))
+        missing_teardown = output.replace(
+            "FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED resource=1 commands=3\n", "")
+        self.assertTrue(validate_desktop(33, missing_teardown))
+        missing_buffer = output.replace("FINNOS:GPU:DISPLAY_BUFFER_RELEASED\n", "")
+        self.assertTrue(validate_desktop(33, missing_buffer))
+        released_first = "\n".join([
+            "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+            output.replace("FINNOS:GPU:DISPLAY_BUFFER_RELEASED", ""),
+        ])
+        self.assertTrue(validate_desktop(33, released_first))
+        retained_after_release = output + "\nFINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY"
+        self.assertTrue(validate_desktop(33, retained_after_release))
 
     def test_arm64_desktop_complete_sequence(self):
-        self.assertEqual(validate_arm64_desktop(0, "\n".join(DESKTOP_MARKERS)), [])
+        self.assertEqual(validate_arm64_desktop(0, self.desktop_gpu_output("arm64")), [])
 
     def test_arm64_desktop_rejects_status_missing_order_and_forbidden(self):
-        output = "\n".join(DESKTOP_MARKERS)
+        output = self.desktop_gpu_output("arm64")
         self.assertTrue(validate_arm64_desktop(1, output))
-        self.assertTrue(validate_arm64_desktop(0, "\n".join(DESKTOP_MARKERS[:-1])))
+        self.assertTrue(validate_arm64_desktop(0, "\n".join(DESKTOP_MARKERS)))
+        without_gpu = [marker for marker in output.splitlines() if "FINNOS:GPU:" not in marker]
+        self.assertTrue(validate_arm64_desktop(0, "\n".join(without_gpu)))
+        swapped = output.splitlines()
+        followup = swapped.index("FINNOS:GPU:VIRTIO_2D_FOLLOWUP_COMMANDS=2")
+        presentation = swapped.index("FINNOS:GPU:VIRTIO_2D_PRESENTATION_COMMANDS=7")
+        swapped[followup], swapped[presentation] = swapped[presentation], swapped[followup]
+        self.assertTrue(validate_arm64_desktop(0, "\n".join(swapped)))
         swapped = list(DESKTOP_MARKERS)
         swapped[-2], swapped[-1] = swapped[-1], swapped[-2]
         self.assertTrue(validate_arm64_desktop(0, "\n".join(swapped)))
         self.assertTrue(validate_arm64_desktop(0, output + "\nFINNOS:KERNEL:PANIC"))
         self.assertTrue(validate_arm64_desktop(0, output + "\nFINNOS:EXCEPTION:ARM64_FATAL"))
+        self.assertTrue(validate_arm64_desktop(0, output + "\nFINNOS:GPU:SCANOUT_BOUND"))
+        wrong_damage = output.replace("GPU_DAMAGE_Y=555", "GPU_DAMAGE_Y=500")
+        self.assertTrue(validate_arm64_desktop(0, wrong_damage))
+        missing_isr = output.replace("FINNOS:GPU:VIRTIO_ISR_REGION_PRESENT=1\n", "")
+        self.assertTrue(validate_arm64_desktop(0, missing_isr))
+        missing_msix = output.replace("FINNOS:GPU:PCI_MSIX_PRESENT=1\n", "")
+        self.assertTrue(validate_arm64_desktop(0, missing_msix))
+        missing_teardown = output.replace("FINNOS:GPU:VIRTIO_2D_TEARDOWN_COMPLETED\n", "")
+        self.assertTrue(validate_arm64_desktop(0, missing_teardown))
+        missing_buffer = output.replace("FINNOS:GPU:DISPLAY_BUFFER_RELEASED\n", "")
+        self.assertTrue(validate_arm64_desktop(0, missing_buffer))
+        released_first = "\n".join([
+            "FINNOS:GPU:DISPLAY_BUFFER_RELEASED",
+            output.replace("FINNOS:GPU:DISPLAY_BUFFER_RELEASED", ""),
+        ])
+        self.assertTrue(validate_arm64_desktop(0, released_first))
+        retained_after_release = output + "\nFINNOS:GPU:DISPLAY_BUFFER_RETAINED_FOR_RECOVERY"
+        self.assertTrue(validate_arm64_desktop(0, retained_after_release))
 
 if __name__ == "__main__": unittest.main()

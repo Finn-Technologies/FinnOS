@@ -1,0 +1,44 @@
+# Agent Handoff: GICv2m MSI vector for the GPU control queue
+
+- Objective: program a real MSI-X vector on the ARM64 VirtIO-GPU control queue and route it through the GIC, so completion can be interrupt-driven rather than polled.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, and MSI-X-discovery slices. No commit or push was made in this session.
+- Task state: Locally Verified. The vector is fully programmed, but **delivery is not proven**; completion still completes by polling.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `pci-pcie`, `graphics-architecture`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `interrupt-exception-handling`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Mapped the `GICv2m` frame (`0x08020000`) alongside the distributor and CPU interface, and added `v2m_spi_window`, `raise_v2m_spi`, `v2m_can_raise`, and `decode_v2m_typer`. TYPER decoding follows QEMU's own encoding, `(base_spi + 32) << 16 | num_spi`, and is host-tested.
+  - Added `spi_routing_state` so routing is read back from the distributor instead of assumed; the desktop run confirms `enabled=1`, `group1=1`, `priority=128`.
+  - `bind_gpu_control_interrupt` discovers the MSI-X table's BAR and offset, maps the table page as device memory, clears the MSI-X function mask while setting the enable bit, routes the chosen SPI, registers a single-ownership handler, and writes the table entry (v2m doorbell address, interrupt ID as data, vector-control enable) with a `dsb sy` before use.
+  - The device-side vector register is programmed and read back through the transport, so the control queue reports `QUEUE_INTERRUPT_ENABLED`.
+  - Selected `msi=gicv2m` on the ARM64 machine in the test harness, because QEMU's `virt` default (`auto`) resolves MSI to the GICv3 ITS that a GICv2 guest cannot use.
+  - Added `MSI_DELIVERIES` to the desktop report so a programmed-but-undelivered vector is distinguishable from an unprogrammed one.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, `tools/finnlib/qemu.py`, `STATUS.md`, `docs/architecture/drivers.md`, `.agents/STATE.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel` -> 236 passed (was 235; +1 v2m TYPER decode test).
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 236 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - Bare-metal: both desktop kernel targets build clean.
+  - `./tools/finn test-desktop` -> status 33, `TEST:DESKTOP:PASS`. `./tools/finn test-desktop --target arm64-qemu` -> status 0, `TEST:DESKTOP:PASS`, with `MSI_VECTOR_BOUND`, `MSI_ROUTE_ENABLED=1`, `MSI_ROUTE_GROUP1=1`, `MSI_ROUTE_PRIORITY=128`, `QUEUE_INTERRUPT_ENABLED`, and `MSI_DELIVERIES=0`.
+  - `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+- Results and evidence classification:
+  - Verified in QEMU this session: the GPU's MSI-X table is decoded, the v2m frame is live (TYPER `0x00500040`, 64 SPIs from identifier 80), the SPI is routed, the MSI-X function is enabled with mask-all clear, the table entry is written, and the device-side vector is read back.
+  - **Not** verified: that any interrupt is delivered. `MSI_DELIVERIES=0`, and a direct v2m doorbell write also delivers nothing.
+- Documentation/status changes: `STATUS.md` (interrupts row), `docs/architecture/drivers.md`, and `.agents/STATE.md` now record the fully programmed vector and the still-unproven delivery.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior.
+  - The v2m frame is confirmed readable and correctly configured, but the reason its SPI does not reach this guest's dispatcher is not established.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Determine why the `GICv2m` frame's SPI does not reach the guest IRQ dispatcher, using QEMU interrupt tracing and a traced delivery to locate the gap.
+  - Once delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity.
+  - Add a general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+- Blockers: the v2m doorbell does not raise a deliverable interrupt in this guest, so interrupt-driven completion cannot be proven. No physical GPU is available.
+- Risks/regressions to watch:
+  - Enabling the MSI-X function and clearing mask-all is a real device state change; if a later path failed to route, a vector could fire spuriously. The current order (route, register handler, then enable) avoids that.
+  - The handler table remains a single-BSP `UnsafeCell` and must be revisited before SMP.
+  - `msi=gicv2m` is now pinned for ARM64 tests; a machine default change would silently alter MSI behavior.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: run the ARM64 desktop with QEMU interrupt tracing (`-d int,guest_errors -D /tmp/qemu-int.log`) and compare the v2m doorbell write against GIC SPI pending state to find where the signal stops; that is the single unknown blocking interrupt-driven completion.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.

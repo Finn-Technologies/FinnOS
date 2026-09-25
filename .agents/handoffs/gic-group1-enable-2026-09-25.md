@@ -1,0 +1,41 @@
+# Agent Handoff: GIC group-1 enable for routed device SPIs
+
+- Objective: find why the fully programmed ARM64 MSI-X vector still never delivers, by eliminating the remaining guest-side causes.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, MSI-X-discovery, GICv2m, and frame-base slices. No commit or push was made in this session.
+- Task state: Locally Verified. A second real guest-side bug was found and fixed; delivery is still unproven, but the guest-side configuration is now demonstrably complete.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Found a second guest-side bug by reading QEMU's `gic_irq_signaling_enabled`: it returns false unless the distributor *and* the CPU interface are both enabled for the interrupt's group. The kernel was enabling group 0 only, while routed device SPIs are deliberately placed in group 1, so every routed SPI was structurally invisible to the CPU interface.
+  - Changed GIC initialization to enable group 0 and group 1 on both the distributor and the CPU interface, and strengthened the readback check to require both bits. The desktop run now reports `GICD_CTLR=0x3` and `GICC_CTLR=0x3`, confirming the change took effect.
+  - Verified the change is safe: `./tools/finn test-arm64-gic` still passes, so the existing SGI self-test and timer PPI path are unaffected.
+  - Attempted a host-side isolation of the v2m path using the QEMU monitor. The reads succeeded (`GICD_ISPENDR` 0, `GICC_IAR` 0x3ff) but the monitor's `writeq` did not reach the MMIO windows, so the probe could not be trusted as a measurement and was not used as evidence.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, `STATUS.md`, `docs/architecture/drivers.md`, `.agents/STATE.md`, this handoff.
+- Tests/commands run:
+  - `cargo test -p finn-kernel` -> 237 passed.
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 237 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `python3 -m unittest discover -s tools/tests -p 'test_*.py'` -> 86 passed.
+  - `python3 .agents/scripts/validate.py --all` -> 87 skills, no cycles. `check_links.py` -> 245 references valid.
+  - ARM64 modes `test-boot`, `test-arm64-gic`, `test-timer-interrupts`, `test-ipc`, `test-init`, `test-desktop` -> all exit 0.
+  - `./tools/finn test-desktop` (x86-64) -> status 33. `./tools/finn check-all` -> exit 0, all 17 x86-64 stages pass.
+- Results and evidence classification:
+  - Verified: group 0 and group 1 are enabled on both the GIC distributor and CPU interface, and the existing interrupt tests still pass.
+  - Verified: the routed SPI, MSI-X function control, table entry, and identifier arithmetic remain correct after the change.
+  - **Not** verified: that any interrupt is delivered. `MSI_DELIVERIES` is still 0, and a direct doorbell write leaves the distributor pending bit clear even with both control registers reading `0x3`.
+- Documentation/status changes: `STATUS.md` (interrupts row, now 85%), `docs/architecture/drivers.md`, and `.agents/STATE.md` record the group-enable fix and the remaining non-guest-side gap.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior.
+  - Every guest-side cause found so far has been eliminated, so the residual gap is no longer a guest configuration error, but the exact cause is still unestablished.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+ - Establish whether this QEMU build's v2m frame latches at all on this machine: a guest-side A/B against a different `base-spi` layout, a GICv2 SPI driven by a different device, or an upstream GICv2m regression check.
+  - Once delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity, and add the general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+- Blockers: the v2m doorbell does not latch a distributor SPI on this QEMU configuration even with the guest configuration verified correct, so interrupt-driven completion cannot be proven. No physical GPU is available.
+- Risks/regressions to watch:
+  - Enabling group 1 widens which interrupts can reach the CPU interface. Today only explicitly routed SPIs are in group 1, so this is bounded, but any future code that sets `IGROUPR` without also enabling the SPI would make an unowned interrupt deliverable.
+  - The frame-base/window-base distinction remains subtle and is covered by a host test.
+  - The handler table remains a single-BSP `UnsafeCell` and must be revisited before SMP.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: A/B the v2m path from inside the guest by routing a different identifier in the frame's window (for example SPI 49 rather than 48) and comparing pending state, which distinguishes "the frame never latches" from "this particular line is not connected". That is a cheap guest-side test that does not depend on the unreliable monitor write path.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.

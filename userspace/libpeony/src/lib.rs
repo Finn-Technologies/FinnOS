@@ -10,6 +10,7 @@ pub mod compositor;
 pub mod decoration;
 pub mod font;
 pub mod icons;
+pub mod input;
 pub mod layout;
 pub mod ui;
 pub mod wallpaper;
@@ -28,7 +29,7 @@ pub use apps::{
     render_settings_app_state, render_start_menu, render_start_menu_state, render_taskbar,
     render_terminal_app, render_top_panel,
 };
-pub use canvas::{Canvas, Color, Rect};
+pub use canvas::{Canvas, Color, DamageRegion, MAX_DAMAGE_REGIONS, Rect};
 pub use compositor::{AppId, Compositor, CompositorWindow};
 pub use font::{
     FONT_HEIGHT, FONT_WIDTH, FontSize, Glyph, LINE_HEIGHT_BODY, LINE_HEIGHT_TITLE, TEXT_ASCENT,
@@ -36,6 +37,7 @@ pub use font::{
     TITLE_GLYPHS, TITLE_LINE, glyph_advance, glyph_coverage, lookup_text, lookup_title, text_width,
     title_advance, title_width,
 };
+pub use input::{Key, KeyState, KeyboardEvent};
 pub use widget::{Button, CHROME_CONTROL_SIZE, PillBadge, ToggleSwitch, Window};
 
 #[cfg(test)]

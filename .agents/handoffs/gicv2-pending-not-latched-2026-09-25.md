@@ -1,0 +1,41 @@
+# Agent Handoff: GICv2 distributor does not latch SPI pending
+
+- Objective: run the A/B experiments that decide whether the missing MSI delivery is a FinnOS defect, a QEMU defect, or a different MSI controller.
+- Starting commit/worktree: `468ed41` on `main`, dirty worktree carrying the verified teardown, interrupt-foundation, MSI-X-discovery, GICv2m, frame-base, group-1, and delivery-localization slices. No commit or push was made in this session.
+- Task state: Locally Verified. The delivery gap is now attributed to the emulator's GICv2 model rather than to FinnOS.
+- Skills used: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `unsafe-rust-low-level-safety`, `qemu-boot-testing`, `debugging-investigation`, `evidence-status-reporting`, `build-environment-management`.
+- Work completed:
+  - Ran the handoff's A/B on the same image. Dropping `secure=off` produced the identical result, so the secure configuration is not the variable.
+  - Tried the ITS alternative (`gic-version=3,msi=its`). The GICv2 kernel panics during boot on the redistributor layout, so the ITS path is unreachable from this kernel and is a GICv3 port rather than a flag change.
+  - Ran a control experiment on a plain, machine-wired INTx line: routed GIC inputs 3, 4, and 5 (the PCIe lines on `virt`) and set pending through the distributor's own `GICD_ISPENDR`. **None latched**, and neither did the active bit.
+  - The same probe confirmed the distributor **accepts and reflects every routing write**: enabled, group 1, and priority all read back exactly as programmed. So the guest writes the correct registers to the correct distributor, and only pending/active stay clear.
+  - Removed the temporary probe helpers and their call sites, leaving the driver and routing code in their verified-correct state.
+- Files changed: `kernel/src/arch/aarch64/gic.rs`, `kernel/src/bin/aarch64.rs`, `docs/architecture/drivers.md`, this handoff.
+- Tests/commands run:
+  - `cargo test --workspace` -> 8 protocol, 10 UEFI, 238 kernel, 40 Peony, 15 libsys, 0 failed.
+  - `cargo fmt --all -- --check` -> clean. `cargo clippy --workspace --all-targets -- -D warnings` -> clean.
+  - `./tools/finn test-desktop` (x86-64) -> status 33. `./tools/finn test-desktop --target arm64-qemu` -> status 0. `./tools/finn test-arm64-gic --target arm64-qemu` -> status 0.
+  - Direct QEMU runs against the built image: `gic-version=2,msi=gicv2m` with and without `secure=off` both give `MSI_DELIVERIES=0`; `gic-version=3,msi=its` panics during boot.
+- Results and evidence classification:
+  - Verified: PPIs deliver (834 timer IRQs in the `-d int` trace) while no SPI latches.
+  - Verified: the distributor reflects every routing write the driver makes (enabled, group, priority).
+  - Verified: neither the v2m MSI doorbell nor a direct `GICD_ISPENDR` write on a wired INTx line produces a pending or active bit.
+  - **Not** verified: that any SPI is delivered. On this QEMU build the GICv2 distributor does not latch SPI pending, independent of how it is raised.
+- Documentation/status changes: `docs/architecture/drivers.md` now records the control experiment and attributes the gap to the emulator's GICv2 model.
+- Unverified assumptions:
+  - QEMU behavior is not evidence of physical hardware behavior; on real hardware the distributor would latch these writes.
+  - Only QEMU 11.1.1 is installed here, so a cross-version comparison was not possible. That is the most direct way to confirm a QEMU-side regression.
+  - Host toolchain detail carried over: bare-metal verification uses the rustup-managed toolchain, and the rustup `rust-lld` needed a local `libLLVM.dylib` symlink on this machine. Neither change is in the repository.
+- Remaining work:
+  - Install a second QEMU version and re-run the same image to confirm whether this is a QEMU 11.1 GICv2 regression. This is the decisive check and needs only a package install.
+  - Alternatively, port the ARM64 interrupt path to GICv3 so the ITS becomes usable, which would also unblock interrupt-driven completion on a modern machine.
+  - Once SPI delivery works, make the completion wait use `CompletionMode::InterruptSignalled` and add a test that an interrupt-driven completion is observed.
+  - Build the x86 IOAPIC and MSI-X path for parity, and add the general GPU resource broker, continuous presentation, 3D execution, and latency measurement.
+  - Harden the load-sensitive `test-timer-interrupts` flake noted in an earlier handoff.
+- Blockers: the emulator's GICv2 distributor does not latch SPI pending, so interrupt-driven completion cannot be proven in this environment. No physical GPU is available.
+- Risks/regressions to watch:
+  - Do not "fix" this by weakening the driver: routing, group enables, and MSI-X programming are all verified correct, and the used ring must remain the completion authority regardless.
+  - The GICv3 panic under `msi=its` means any change that assumes a redistributor layout will break the current GICv2 boot; a GICv3 port must be gated, not swapped in.
+- Current Git state: dirty worktree on `main` at `468ed41`, containing this change plus the pre-existing uncommitted GPU/Peony/input/teardown/interrupt work. No commit, push, PR, or issue update was made.
+- Suggested next action: install a second QEMU version and run the existing ARM64 desktop image against it, comparing `MSI_DELIVERIES`. That single comparison confirms or refutes a QEMU regression without any further guest change.
+- Skills next agent must load: `finnos-operating-rules`, `repository-orientation`, `task-planning`, `test-strategy`, `documentation-maintenance`, `agent-handoff`, `driver-architecture`, `virtio`, `interrupt-exception-handling`, `qemu-boot-testing`, `debugging-investigation`, `reliability-fault-injection`.
