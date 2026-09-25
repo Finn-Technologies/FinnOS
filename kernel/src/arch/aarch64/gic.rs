@@ -116,8 +116,6 @@ const GICD_ICENABLER: u64 = 0x180;
 #[cfg(target_os = "none")]
 const GICD_ICPENDR: u64 = 0x280;
 #[cfg(target_os = "none")]
-const GICD_ISPENDR: u64 = 0x200;
-#[cfg(target_os = "none")]
 const GICD_ICACTIVER: u64 = 0x380;
 #[cfg(target_os = "none")]
 const GICD_IPRIORITYR: u64 = 0x400;
@@ -784,6 +782,11 @@ pub fn spi_pending_state(interrupt_id: u32) -> Result<(bool, bool), Initializati
 /// `GICD_MSI_TYPER` reports how many SPI identifiers the frame can raise and
 /// the frame's base offset, so a driver learns which identifiers are
 /// deliverable here instead of assuming a window.
+///
+/// # Errors
+///
+/// Returns [`InitializationError::IrqNotMasked`] before the controller is
+/// initialized.
 #[cfg(target_os = "none")]
 pub fn v2m_spi_window() -> Result<(u32, u32), InitializationError> {
     if !READY.load(Ordering::Acquire) {
@@ -813,6 +816,11 @@ pub const fn v2m_can_raise(base_spi: u32, num_spi: u32, interrupt_id: u32) -> bo
 /// The identifier is masked to the ten bits `GICD_MSPIR` decodes. A zero
 /// identifier is rejected, because it is a software-generated interrupt and
 /// would not reach a device SPI.
+///
+/// # Errors
+///
+/// Returns [`InitializationError::InvalidInterruptId`] for an identifier
+/// outside the ten-bit range the doorbell decodes.
 #[cfg(target_os = "none")]
 pub fn raise_v2m_spi(interrupt_id: u32) -> Result<(), InitializationError> {
     if interrupt_id == 0 || interrupt_id > INTERRUPT_ID_MASK {
