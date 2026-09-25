@@ -171,6 +171,7 @@ def command(
             architecture=target.architecture, cpu=target.qemu_cpu,
             data_drive=data_drive_path,
             gpu=enable_gpu,
+            msi="gicv2m",
         )
         print("$ " + " ".join(args), flush=True)
         if mode.test_exit:

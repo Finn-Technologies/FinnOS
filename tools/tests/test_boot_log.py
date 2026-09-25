@@ -1,7 +1,10 @@
 import unittest
 from pathlib import Path
 import re
+import subprocess
+from unittest import mock
 
+from tools.finnlib import qemu as qemu_module
 from tools.finnlib.qemu import (
     ARM64_COOPERATIVE_TASK_MARKERS,
     ARM64_EXCEPTION_MARKERS,
@@ -21,6 +24,7 @@ from tools.finnlib.qemu import (
     TIMER_MARKERS,
     USERSPACE_MARKERS,
     qemu_command,
+    qemu_supports_machine_property,
     validate_arm64_cooperative_tasks,
     validate_arm64_desktop,
     validate_arm64_exception_fatal,
@@ -637,6 +641,77 @@ class BootLogTests(unittest.TestCase):
             gpu=True,
         )
         self.assertIn("-device virtio-gpu-pci", " ".join(cmd))
+
+    def test_arm64_gicv2m_is_used_only_when_the_emulator_supports_it(self):
+        # QEMU 8.2 has no `msi` property on `virt`. Probing keeps the
+        # diagnostic MSI controller without making the property mandatory.
+        with mock.patch.object(
+            qemu_module, "qemu_supports_machine_property", return_value=True
+        ):
+            command = qemu_command(
+                "qemu-system-aarch64",
+                "/firmware/AAVMF_CODE.fd",
+                Path("/images/finnos.img"),
+                headless=True,
+                machine="virt,gic-version=2,secure=off",
+                architecture="arm64",
+                msi="gicv2m",
+            )
+        self.assertIn(
+            "-machine virt,gic-version=2,secure=off,msi=gicv2m", " ".join(command)
+        )
+
+        with mock.patch.object(
+            qemu_module, "qemu_supports_machine_property", return_value=False
+        ):
+            command = qemu_command(
+                "qemu-system-aarch64",
+                "/firmware/AAVMF_CODE.fd",
+                Path("/images/finnos.img"),
+                headless=True,
+                machine="virt,gic-version=2,secure=off",
+                architecture="arm64",
+                msi="gicv2m",
+            )
+        rendered = " ".join(command)
+        self.assertIn("-machine virt,gic-version=2,secure=off ", rendered)
+        self.assertNotIn("msi=", rendered)
+
+    def test_machine_property_probe_reads_qemu_help_and_fails_closed(self):
+        with_qemu = subprocess.CompletedProcess(
+            args=["qemu-system-aarch64"],
+            returncode=0,
+            stdout="virt-8.2-machine options:\n  msi=<string>   - Set MSI settings\n",
+            stderr="",
+        )
+        without_qemu = subprocess.CompletedProcess(
+            args=["qemu-system-aarch64"],
+            returncode=0,
+            stdout="virt-8.2-machine options:\n  gic-version=<string>\n",
+            stderr="",
+        )
+        with mock.patch.object(qemu_module.subprocess, "run", return_value=with_qemu):
+            self.assertTrue(
+                qemu_supports_machine_property(
+                    "qemu-system-aarch64", "virt,gic-version=2,secure=off", "msi"
+                )
+            )
+        with mock.patch.object(qemu_module.subprocess, "run", return_value=without_qemu):
+            self.assertFalse(
+                qemu_supports_machine_property(
+                    "qemu-system-aarch64", "virt,gic-version=2,secure=off", "msi"
+                )
+            )
+        # A missing or unusable emulator must never raise; callers fall back
+        # to the plain machine string and let boot validation decide.
+        with mock.patch.object(
+            qemu_module.subprocess, "run", side_effect=OSError("no such qemu")
+        ):
+            self.assertFalse(
+                qemu_supports_machine_property(
+                    "qemu-system-aarch64", "virt,gic-version=2,secure=off", "msi"
+                )
+            )
 
     def test_page_allocator_markers(self):
         self.assertEqual(validate_page_allocator(33, "\n".join(PAGE_ALLOCATOR_MARKERS)), [])

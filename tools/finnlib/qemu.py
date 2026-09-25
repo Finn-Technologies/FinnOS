@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
 
 ARM64_MARKERS = (
     "FINNOS:BOOTLOADER:START",
@@ -1404,6 +1405,39 @@ def validate_arm64_desktop(status: int, output: str) -> list[str]:
             errors.append(f"forbidden marker found: {marker}")
     return errors
 
+
+def qemu_supports_machine_property(
+    qemu: str,
+    machine: str,
+    property_name: str,
+    timeout: int = 10,
+) -> bool:
+    """Return whether `machine` accepts `property_name` on this emulator.
+
+    Appending `help` to a machine string makes QEMU print that machine type's
+    supported properties, so a missing property such as `msi` on QEMU 8.2's
+    `virt` is detected without booting a guest. A missing, unusable, or
+    non-zero-exit emulator is reported as unsupported so callers fall back
+    rather than crash; boot validation, not this probe, decides whether a run
+    is acceptable.
+    """
+    try:
+        result = subprocess.run(
+            [qemu, "-machine", f"{machine},help"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return False
+    return re.search(
+        rf"^\s*{re.escape(property_name)}=<", result.stdout, re.MULTILINE
+    ) is not None
+
+
 def qemu_command(
     qemu: str,
     firmware: str,
@@ -1415,6 +1449,7 @@ def qemu_command(
     cpu: str = "",
     data_drive: Path | None = None,
     gpu: bool = False,
+    msi: str | None = None,
 ) -> list[str]:
     # Homebrew's code-only OVMF image is a pflash image; using -bios makes
     # QEMU 11 reject it before the guest starts.
@@ -1424,8 +1459,14 @@ def qemu_command(
         # The default `auto` MSI controller resolves to the GICv3 ITS, which
         # the GICv2-only guest cannot use. Selecting `gicv2m` makes the MSI
         # doorbell frame at 0x08020000 the live delivery path so a device MSI
-        # can actually reach the distributor.
-        machine_arg = f"{machine},msi=gicv2m"
+        # can actually reach the distributor. This is a diagnostic aid, not a
+        # boot requirement: QEMU 8.2 has no `msi` property on `virt`, so the
+        # property is only appended when the local emulator actually has it.
+        machine_arg = (
+            f"{machine},msi={msi}"
+            if msi and qemu_supports_machine_property(qemu, machine, "msi")
+            else machine
+        )
     else:
         machine_arg = machine
     command = [qemu, "-machine", machine_arg]
