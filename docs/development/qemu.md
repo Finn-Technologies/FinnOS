@@ -23,6 +23,19 @@ interface windows as Device RW/NX, and proves one exact SGI 1 IAR/EOIR
 lifecycle through the architectural IRQ vector. It does not claim GIC
 discovery, GICv3, SMP, or external device routing.
 
+The ARM64 machine string carries one optional, version-dependent property.
+`msi=gicv2m` makes the MSI doorbell frame the live delivery path instead of
+the GICv3 ITS, which a GICv2-only guest cannot use, but the property does not
+exist on every emulator: QEMU 8.2, the version CI installs on Ubuntu 24.04,
+has no `msi` property on `virt` and refuses to start with
+`Property 'virt-8.2-machine.msi' not found`. The tooling therefore probes the
+target machine's own property list with `-machine <machine>,help` and appends
+`msi=gicv2m` only when the local emulator actually offers it, falling back to
+the plain machine string otherwise. This keeps a local emulator with a newer
+QEMU from hiding a CI failure that a development machine with an older one
+would hit immediately, and no guest behaviour depends on the property: the
+guests boot correctly under the default `auto` controller either way.
+
 `./tools/finn test-page-allocator` builds an isolated image under
 `build/out/x86_64-qemu-page-allocator/` and validates allocation, reuse,
 deallocation, double-free rejection, allocator invariants, and QEMU status
