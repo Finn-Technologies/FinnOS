@@ -5,8 +5,8 @@
  * background, writing a PPM. This is the fast iteration loop: no VM, no
  * DRM, no rebuild-and-boot cycle.
  *
- *   cc -o dockprev dockprev.c finndock.c finnvg.c -lm
- *   ./dockprev out.ppm <screen_h> <zoom> <battery> <charging> <wifi> <volume>
+ *   make -C src/tools
+ *   src/tools/dockprev out.ppm <screen_h> <zoom> <battery> <charging> <wifi> <volume>
  *
  * battery: 0..100, or -1 for mains-only
  * wifi:    0..3, or -1 for no interface
@@ -41,8 +41,11 @@ int main(int argc, char **argv) {
     st.bluetooth = -1;
     st.wired = -1;
 
-    if (finndock_init("icons", "../assets/fonts/FixelDisplay") != 0) {
-        fprintf(stderr, "dockprev: cannot load icons (run from finn-comp/)\n");
+    /* The icons and the face are found relative to the tree, so the preview
+     * can be run from anywhere in it. */
+    if (finndock_init("../compositor/icons", "../../assets/fonts/FixelDisplay") != 0) {
+        fprintf(stderr, "dockprev: cannot load the icons and the face\n"
+                        "           (run it from src/tools/)\n");
         return 1;
     }
 

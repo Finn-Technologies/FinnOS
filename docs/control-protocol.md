@@ -143,6 +143,11 @@ The control plane is the only place in the system that starts user
 programs. The compositor asks it, a script asks it, an agent asks it, and
 every one of those goes through the same audit log.
 
+An app is started by systemd, as the user, in its own transient unit: that
+is how a program is started on a modern Linux, and it means the app is
+tracked, logged and cleaned up by the init system rather than by a daemon
+holding its process. The unit is collected when the app exits.
+
 ## The shape of a session
 
 ```

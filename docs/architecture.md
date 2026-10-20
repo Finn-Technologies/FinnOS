@@ -169,6 +169,12 @@ away from a service whose group it had to change, and the control plane
 needs that capability to start an app as the user rather than as root. The
 group is therefore set on the socket itself, which is where it matters.
 
+An app is started by systemd, as the user, in its own transient unit. The
+control plane asks systemd to do it rather than doing it itself, because
+the daemon is hardened with `NoNewPrivileges` and does not hold
+`CAP_SETUID` — and because an app that systemd started is an app systemd
+knows about, logs and cleans up.
+
 The protocol is documented in [control-protocol.md](control-protocol.md).
 
 ## The application registry

@@ -32,6 +32,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
+#include <sys/time.h>
 
 #include "finnproto.h"
 #include "finnsock.h"
@@ -107,40 +109,85 @@ static int proxy_to_comp(const char *line, int to) {
 /*
  * Start an app.
  *
- * The child is a child of the control plane and nothing else: it is detached
- * into its own session, it runs as the user rather than as the daemon, and
- * it is reaped by init rather than by us. The daemon answers the request and
- * forgets about it — a program that outlives the request is the whole point
- * of launching one.
+ * The app is started by systemd, as the user, in its own unit: that is how
+ * a program is started on a modern Linux, and it is the only way to start
+ * one as the user from a daemon that does not hold CAP_SETUID. systemd
+ * takes that capability away from a service with NoNewPrivileges, and the
+ * control plane is hardened that way on purpose.
+ *
+ * The unit is transient and collected: it exists while the app runs and
+ * leaves nothing behind. The daemon answers the request and forgets about
+ * it — a program that outlives the request is the whole point of launching
+ * one.
  */
 static int launch_app(const finn_app *a) {
+    char unit[96];
+    snprintf(unit, sizeof unit, "finn-app-%s-%d", a->id, (int)getpid());
+
+    char cmd[1400];
+    int n = snprintf(cmd, sizeof cmd,
+        "systemd-run --quiet --collect --unit=%s --service-type=exec"
+        " --uid=%u --gid=%u"
+        " --setenv=HOME=/home/finn --setenv=USER=finn --setenv=LOGNAME=finn"
+        " --setenv=SHELL=/bin/bash"
+        " --setenv=PATH=/usr/local/bin:/usr/bin:/bin"
+        " --property=Restart=no"
+        " %s",
+        unit, (unsigned)g_finn_uid, (unsigned)g_finn_gid, a->command);
+    if (n <= 0 || n >= (int)sizeof cmd) return -1;
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return -1;
+
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
 
     if (pid == 0) {
-        /* the child */
-        if (g_finn_uid != (uid_t)-1) {
-            gid_t gid = g_finn_uid;
-            setgroups(0, NULL);
-            setgid(gid);
-            if (setuid(gid) != 0)
-                fprintf(stderr, "finnd: setuid(%u) failed: %s\n",
-                        (unsigned)gid, strerror(errno));
-        } else {
-            fprintf(stderr, "finnd: no finn user; the app runs as root\n");
-        }
+        /* the child: systemd-run's own words, so the failure can be said */
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        if (pipefd[1] > STDERR_FILENO) close(pipefd[1]);
         setsid();
-
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > STDERR_FILENO) close(devnull);
-        }
-
-        execl(a->command, a->command, (char *)NULL);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
         _exit(127);
+    }
+
+    close(pipefd[1]);
+
+    /* systemd-run answers when the unit has started, which is quick. The
+     * read is bounded so a wedged systemd cannot hold the control plane
+     * still. */
+    char msg[512];
+    size_t used = 0;
+    struct timeval tv = { 3, 0 };
+    setsockopt(pipefd[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    while (used + 1 < sizeof msg) {
+        ssize_t got = read(pipefd[0], msg + used, sizeof msg - used - 1);
+        if (got <= 0) break;
+        used += (size_t)got;
+    }
+    msg[used] = 0;
+    close(pipefd[0]);
+
+    int status = 0;
+    for (int i = 0; i < 300; i++) {
+        pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid) break;
+        if (done < 0) { status = -1; break; }
+        usleep(10000);
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        /* say what systemd said, if it said anything */
+        char *why = msg;
+        while (*why == '\n' || *why == ' ') why++;
+        if (*why) {
+            char *nl = strchr(why, '\n');
+            if (nl) *nl = 0;
+            fprintf(stderr, "finnd: %s did not start: %s\n", a->id, why);
+        }
+        return -1;
     }
     return 0;
 }
@@ -306,9 +353,6 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
     signal(SIGPIPE, SIG_IGN);
-    /* apps we start are not our children to wait for: the kernel reaps them
-     * so a launch never leaves a zombie behind */
-    signal(SIGCHLD, SIG_IGN);
 
     mkdir("/run/finn", 0755);
     mkdir(FINN_STATE_DIR, 0755);
@@ -337,6 +381,10 @@ int main(int argc, char **argv) {
     fflush(stderr);
 
     while (!g_stop) {
+        /* the children of a launch are reaped here: the control plane is
+         * long-lived, and a zombie is a debt it would accumulate */
+        while (waitpid(-1, NULL, WNOHANG) > 0) { }
+
         struct pollfd pf = { lfd, POLLIN, 0 };
         if (poll(&pf, 1, 500) <= 0) continue;
 

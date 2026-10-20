@@ -19,10 +19,12 @@ ExecStart=/usr/local/bin/finnd
 # Remote control is an explicit decision by the user, not a default. This is
 # the same intent as the zero-AI-by-default policy.
 #
-# It runs in root's own group on purpose. systemd takes CAP_SETUID away from
-# a service whose group it had to change, and the control plane needs that
-# capability to start an app as the user rather than as root. The socket is
-# given to the finn group by the daemon itself, which is where it matters.
+# It runs in root's own group on purpose. The group that matters is the
+# one on the socket, and the daemon sets that itself: systemd takes
+# CAP_SETUID away from a service whose group it had to change, and the
+# control plane is hardened with NoNewPrivileges besides. An app is
+# started by systemd, as the user, in its own transient unit — so the
+# daemon never has to change a uid itself.
 User=root
 Group=root
 
