@@ -1,8 +1,8 @@
 # FinnOS control plane & MCP adapter
 
 This directory holds the agent-facing half of the FinnOS control plane. The
-device-side half lives in `../finn-comp/` (`finnd`, `finnctl`, and the
-provider hooks inside `finn-comp`).
+device-side half lives in `../src/control/` (`finnd`, `finnctl`) and in
+`../src/compositor/` (`finn-comp`, the provider underneath it).
 
 ```
 agent (Claude, opencode, any MCP client)
@@ -45,7 +45,7 @@ instead of an inline PNG.
 finn-mcp -> finn@10.211.55.6
   ping: FINNCTL/1
   framebuffer: 2560x1600
-  tools: 11
+  tools: 13
 ```
 
 ## Configuration
@@ -70,7 +70,15 @@ finn-mcp -> finn@10.211.55.6
 | `finn_screen_info` | framebuffer resolution and UI density |
 | `finn_screenshot` | capture the framebuffer, cursor included |
 | `finn_log` | recent `finn-comp` log lines |
+| `finn_app_list` | the application registry: id, name, and whether it is installed |
+| `finn_app_launch` | start an app by its id, as the user |
 | `finn_power` | reboot / power off / restart the compositor |
+
+The registry is two files on the device: the catalogue the OS ships and
+the install list the package manager keeps. So an app can be in the
+catalogue and still not be on this machine, and `finn_app_list` says
+which is which rather than pretending every app is there. An app that
+is not installed cannot be started, and the device says so.
 
 ## Registering with a client
 

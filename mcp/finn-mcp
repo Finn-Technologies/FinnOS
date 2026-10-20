@@ -113,6 +113,22 @@ def parse_kv(text):
     return out
 
 
+def parse_apps(text):
+    """Turn `count=3 [id|state|name] [id|state|name]` into a list of apps.
+
+    The registry is the one place where an app is honestly "not
+    installed", so the state is carried through rather than smoothed
+    over: the caller can see which apps this machine actually has.
+    """
+    apps = []
+    for chunk in text.split("[")[1:]:
+        chunk = chunk.strip().rstrip("]")
+        parts = chunk.split("|")
+        if len(parts) >= 3:
+            apps.append({"id": parts[0], "state": parts[1], "name": parts[2]})
+    return apps
+
+
 # ---------------------------------------------------------------- tools
 
 def tool_state_get(_a):
@@ -247,6 +263,29 @@ def tool_power(a):
     return "requested %s" % action, False
 
 
+def tool_app_list(_a):
+    ok, out, err = ctl("app.list")
+    if not ok:
+        return err or "device unreachable", True
+    apps = parse_apps(out)
+    if not apps:
+        return "the registry is empty", False
+    lines = []
+    for app in apps:
+        lines.append("%s  %-12s %s" % (app["id"], app["state"], app["name"]))
+    return "\n".join(lines), False
+
+
+def tool_app_launch(a):
+    app_id = a.get("id") or a.get("app") or ""
+    if not app_id:
+        return "no app id given (the id from finn_app_list)", True
+    ok, out, err = ctl("app.launch", app_id)
+    if not ok:
+        return err or "app.launch failed", True
+    return out or ("launched %s" % app_id), False
+
+
 TOOLS = [
     {
         "name": "finn_state_get",
@@ -354,6 +393,28 @@ TOOLS = [
             "additionalProperties": False,
         },
         "handler": tool_log,
+    },
+    {
+        "name": "finn_app_list",
+        "description": "List the applications the OS knows about: the id, the name and "
+                       "whether the app is installed on this machine. The catalogue and "
+                       "the install list are separate, so an app can be listed and still "
+                       "not be here.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_app_list,
+    },
+    {
+        "name": "finn_app_launch",
+        "description": "Start a FinnOS application by its id, as the user. The id comes "
+                       "from finn_app_list; an app that is not installed cannot be "
+                       "started, and the device says so.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "the app id, e.g. notes"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_app_launch,
     },
     {
         "name": "finn_power",

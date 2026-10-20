@@ -8,49 +8,13 @@ The language is small on purpose. It describes *what the interface is*, and
 never *how the machine draws it* — that is the compositor's business, and
 the shell surfaces are drawn by hand in C for exactly that reason.
 
-## The grammar
-
-The language is small. In full:
-
-```
-file     := item*
-item     := 'screen' IDENT '{' body '}'
-          | 'theme'  IDENT '{' decl* '}'
-          | 'target' IDENT '{' decl* '}'
-body     := stmt*
-stmt     := property | element
-property := IDENT ['(' args ')'] ':' value
-element  := IDENT ['(' args ')'] ['{' body '}']
-args     := arg (',' arg)*
-arg      := IDENT ':' value | value
-value    := atom+          -- a phrase, when there is more than one atom
-atom     := STRING | NUMBER [unit] | COLOUR | IDENT ('.' IDENT)*
-          | '[' value_list ']' | '(' value_list ')' | '{' map '}'
-          | atom '->' atom
-```
-
-A statement ends at the end of the line. A newline inside brackets or
-parentheses is only whitespace, which is what lets a property be a
-phrase — `focus_ring: 2px accent when keyboard_nav` — without the
-grammar having to know about every kind of phrase there is.
-
-The operators that matter:
-
-| | |
-|---|---|
-| `+` | composition: `token.wallpaper_desktop + token.wallpaper_flute` |
-| `->` | a mapping: `adapt(Desktop:5, Mobile:3)` sets a value per target |
-| `:` | a named argument, or a property's value |
-| `,` | a list |
-
 ## A screen
 
 ```fui
 screen Settings {
   Column(padding:20, gap:12) {
-    Text("Settings", style:title)
+    Text("Settings", style:token.title, ink:token.ink)
     Row { Text("Theme"); Segmented(bind: system.theme, options:[Light,Dark]) }
-    Row { Text("Local AI (opt-in)"); Toggle(bind: settings.ai_enabled, default:false) }
   }
 }
 ```
@@ -65,19 +29,23 @@ the motion.
 
 ```fui
 theme FinnTokens {
-  color: surface_light #F7F9FC, surface_dark #0B0E14
-  radius: sm 8, md 12, lg 24, pill 999
-  font: family "Fixel Display", weights [Regular 400, Medium 500, SemiBold 600, Bold 700]
-  type: body 14/20 "Fixel Display" 400, title 20/28 "Fixel Display" 600
-  motion: theme_xfade 180ms linear, dock_pop 120ms ease-out
+  color: bone_light #F6F1E7, bone_dark #23262E
+  color: ink_light #1A1D24, ink_dark #F4F0E8
+  radius: r_panel 20.8
+  type: label 12/16 "Fixel Display" 400
+  motion: surface_open 280ms out_back
 }
 ```
 
-A token has one name and two values — the light one and the dark one —
+A colour is one name with two halves, the light one and the dark one,
 because the appearance switch is a property of the whole theme and never
-of a single surface. The compositor carries the same palette in
-`finndraw.c`, and the two are kept in step by hand, which is a debt the
-compiler will eventually pay.
+of a single surface. `bone_light` and `bone_dark` are one token, `bone`,
+and a screen that refers to `token.bone` gets both.
+
+Everything else is declared once. The compositor carries the same palette
+in `src/compositor/finndraw.c` and the same timings in
+`src/compositor/finnmotion.h`; the C is the truth and this file is kept in
+step with it by hand, which is a debt the compiler will eventually pay.
 
 ## Targets
 
@@ -113,12 +81,12 @@ the dock. It is the reference the compositor's shell surfaces were drawn
 from — the dock, the Control Center, the clock page and the Start Menu all
 follow it, and all four live in `src/compositor` as cached layers.
 
-`ui/StartMenu.fui` is the Start Menu: the app grid, the app's own state,
-and the power row.
+`ui/StartMenu.fui` is the Start Menu: the centred card, the app grid, the
+app's own state, and the power row.
 
 ## The apps
 
-`apps/<name>/<Name>.fui` is one first-party app. The names follow
+`apps/<id>/<Name>.fui` is one first-party app. The names follow
 `NAMING.md`: a brand and a plain English noun — **Finn Code**, **Finn
 Files**, **Finn Store**.
 
@@ -128,12 +96,58 @@ turns into a `.fbin` and the system does not yet draw. The application
 registry (`assets/apps.registry`) is what the Start Menu shows, and it
 carries the honest state of each app: installed or not.
 
+## The grammar
+
+The language is small. In full:
+
+```
+file     := item*
+item     := 'screen' IDENT '{' body '}'
+          | 'theme'  IDENT '{' decl* '}'
+          | 'target' IDENT '{' decl* '}'
+body     := stmt*
+stmt     := property | element
+property := IDENT ['(' args ')'] ':' value
+element  := IDENT ['(' args ')'] ['{' body '}']
+args     := arg (',' arg)*
+arg      := IDENT ':' value | value
+value    := atom+          -- a phrase, when there is more than one atom
+atom     := STRING | NUMBER [unit] | COLOUR | IDENT ('.' IDENT)*
+          | '[' value_list ']' | '(' value_list ')' | '{' map '}'
+          | atom '->' atom
+          | atom '@' atom
+```
+
+A statement ends at the end of the line, or at a `;`. A newline inside
+brackets or parentheses is only whitespace, which is what lets a property
+be a phrase — `focus_ring: 2px accent when keyboard_nav` — without the
+grammar having to know about every kind of phrase there is. A property's
+value may also run onto the next line when it ends with a comma.
+
+The operators that matter:
+
+| | |
+|---|---|
+| `+` | composition: `token.wallpaper_desktop + token.wallpaper_flute` |
+| `->` | a mapping: `adapt(Desktop:5, Mobile:3)` sets a value per target |
+| `@` | an attenuation: `token.ink @ 0.10` is the ink at ten percent |
+| `:` | a named argument, or a property's value |
+| `,` | a list |
+
+A call is an element with arguments: `Row(gap: 24px) { ... }`. Its
+arguments may be named or positional, and a positional one is the
+element's own content — `Text("Settings")` is a text element whose text
+is "Settings".
+
 ## Compiling
 
 ```sh
-sdk/fuic/fuic ui/StartMenu.fui -o StartMenu.fbin
+sdk/bin/fuic compile ui/StartMenu.fui -o StartMenu.fbin
+sdk/bin/fuic check   ui/StartMenu.fui     # parse it and report
+sdk/bin/fuic dump    ui/StartMenu.fui     # print the tree
+sdk/bin/fuic new     notes                # an app from the template
 ```
 
 The compiler is part of [FinnSDK](../sdk/README.md). It is a Python
-program with no dependencies, and it is the first piece of the SDK that
-exists as more than a plan.
+program with no dependencies, and the format it writes is specified byte
+for byte in [FORMAT.md](../sdk/findsdk/fuic/FORMAT.md).

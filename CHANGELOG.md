@@ -32,6 +32,25 @@ the system's apps at all. There is now a fourth surface.
   group it had to change, and the control plane needs that capability to
   start an app as the user rather than as root.
 
+### The SDK
+
+- **`fuic`**, the `.fui` compiler: `.fui` in, `.fbin` out. The binary
+  format is specified byte for byte in `sdk/findsdk/fuic/FORMAT.md`, and
+  the writer and the reader are the same code, so the two cannot drift.
+- **The dialect the tree actually uses.** Calls with named or positional
+  arguments, `+` for composition, `->` for a per-target mapping, `@` for
+  an attenuation, `;` as a statement separator, comma-continued values,
+  and the theme and target declaration forms. Every `.fui` file in the
+  tree compiles with no warnings.
+- **A client library.** `findsdk.FinnClient` turns the protocol's verbs
+  into calls, and `finn-sdk` puts the same verbs on the command line.
+- **App templates**, and `fuic new` to make an app from one.
+- **The MCP adapter** gained `finn_app_list` and `finn_app_launch`, so an
+  agent can see the catalogue and start an app.
+- Two client bugs fixed: the state field is `battery_pct` and not
+  `battery`, and the device's `] ` separators were being left on the end
+  of every app name and notification title.
+
 ### The tree
 
 - `src/core`, `src/compositor`, `src/control`, `src/pkg`, `src/tools`: the

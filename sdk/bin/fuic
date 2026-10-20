@@ -1,0 +1,12 @@
+#!/bin/sh
+# fuic — the FinnUI compiler, run from a checkout.
+#
+# The SDK has no dependencies and does not have to be installed to be
+# used: this wrapper puts the SDK on the path and runs the compiler.
+set -e
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHONPATH="$here/..${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+exec python3 -m findsdk.fuic.cli "$@"
