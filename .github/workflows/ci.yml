@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: the test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: the tests
+        run: make test
+      - name: the style checks
+        run: make lint
+
+  build:
+    name: the build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libdrm-dev libwebp-dev libfreetype-dev libasound2-dev \
+            libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
+      - name: build
+        run: make
+      - name: the host-side tools
+        run: make tools
+      - name: the tree is clean
+        run: git diff --exit-code

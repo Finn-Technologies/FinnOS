@@ -15,7 +15,7 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 VM      ?= finn@10.211.55.6
 
-.PHONY: all core compositor control tools test check install clean deploy \
+.PHONY: all core compositor control tools test check lint install clean deploy \
         docs help
 
 all: core compositor control tools
@@ -37,6 +37,9 @@ test: all
 
 check: test
 
+lint:
+	@scripts/lint.sh
+
 install: all
 	$(MAKE) -C src/compositor install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/control install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
@@ -49,8 +52,8 @@ deploy:
 
 clean:
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done
-	@rm -rf tests/__pycache__ sdk/python/**/__pycache__
+	@rm -rf tests/__pycache__ sdk/findsdk/__pycache__ sdk/findsdk/fuic/__pycache__
 
 help:
-	@echo "targets: all test install deploy clean"
+	@echo "targets: all test lint install deploy clean"
 	@echo "         core compositor control tools"

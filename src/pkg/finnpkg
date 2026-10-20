@@ -1,13 +1,213 @@
 #!/bin/bash
-# finnpkg - minimal .finn installer + OTA stub (replaces pacman for apps)
-set -e
-REPO="/var/lib/finnpkg"
-mkdir -p "$REPO"
-cmd="$1"; shift || true
-case "$cmd" in
-  install) for f in "$@"; do echo "install $f"; mkdir -p "$REPO/$(basename $f .finn)"; cp "$f" "$REPO/"; done;;
-  list) ls "$REPO";;
-  update) echo "OTA check (stub): no AI, system only";;
-  *) echo "usage: finnpkg install|list|update"; exit 1;;
+# finnpkg — the FinnOS package manager.
+#
+#   finnpkg list                 what is installed
+#   finnpkg search <text>        what the catalogue has
+#   finnpkg info <id>            everything known about one app
+#   finnpkg install <id>         install an app from the catalogue
+#   finnpkg install <file.finn>  install a package file
+#   finnpkg remove <id>          uninstall it
+#   finnpkg update                check the system for updates
+#
+# Two files, two owners:
+#
+#   /usr/share/finn/apps.registry   the catalogue, shipped with the OS
+#   /var/lib/finnpkg/installed      what is on this machine
+#
+# The catalogue is read-only data: it says which apps exist, never whether
+# they are here. That belongs here, in the package manager's own list —
+# which is also the list the Start Menu reads to decide whether a tile is
+# lit or grey.
+set -euo pipefail
+
+CATALOGUE="${FINN_APPS_CATALOGUE:-/usr/share/finn/apps.registry}"
+INSTALLED="${FINN_APPS_INSTALLED:-/var/lib/finnpkg/installed}"
+APPS_DIR="${FINN_APPS_DIR:-/opt/finn-apps}"
+
+die() { echo "finnpkg: $*" >&2; exit 1; }
+
+need_root() {
+    [ -w "$INSTALLED" ] || [ "$(id -u)" = "0" ] || \
+        die "this needs root: it writes $INSTALLED"
+}
+
+# The catalogue is pipe separated:
+#   id | Name | icon | command | note
+catalogue_field() {
+    local id="$1" field="$2"
+    [ -f "$CATALOGUE" ] || return 1
+    awk -F'|' -v id="$id" -v field="$field" '
+        /^[[:space:]]*#/ { next }
+        NF < 3 { next }
+        {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+            if ($1 != id) next
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $field)
+            print $field
+            exit
+        }' "$CATALOGUE"
+}
+
+catalogue_ids() {
+    [ -f "$CATALOGUE" ] || return 0
+    awk -F'|' '/^[[:space:]]*#/ { next } NF >= 3 {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+        if ($1 != "") print $1
+    }' "$CATALOGUE"
+}
+
+is_installed() {
+    [ -f "$INSTALLED" ] || return 1
+    grep -qxF "$1" "$INSTALLED"
+}
+
+mark_installed() {
+    need_root
+    mkdir -p "$(dirname "$INSTALLED")"
+    touch "$INSTALLED"
+    grep -qxF "$1" "$INSTALLED" || echo "$1" >> "$INSTALLED"
+}
+
+mark_removed() {
+    need_root
+    [ -f "$INSTALLED" ] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    grep -vxF "$1" "$INSTALLED" > "$tmp" || true
+    cat "$tmp" > "$INSTALLED"
+    rm -f "$tmp"
+}
+
+cmd_list() {
+    local found=0
+    for id in $(catalogue_ids); do
+        if is_installed "$id"; then
+            printf '%-10s %-10s %s\n' "$id" "installed" "$(catalogue_field "$id" 2 || true)"
+            found=1
+        fi
+    done
+    if [ "$found" = "0" ]; then
+        echo "nothing is installed yet"
+    fi
+}
+
+cmd_search() {
+    local text="${1:-}"
+    [ -n "$text" ] || die "search needs something to search for"
+    local id
+    for id in $(catalogue_ids); do
+        local name note
+        name="$(catalogue_field "$id" 2 || true)"
+        note="$(catalogue_field "$id" 5 || true)"
+        case "$id $name $note" in
+            *"$text"*) printf '%-10s %-10s %s\n' "$id" "$(state_of "$id")" "$name" ;;
+        esac
+    done
+}
+
+state_of() {
+    if is_installed "$1"; then echo "installed"; else echo "available"; fi
+}
+
+cmd_info() {
+    local id="${1:-}"
+    [ -n "$id" ] || die "info needs an app id"
+    local name icon command note
+    name="$(catalogue_field "$id" 2 || true)"
+    [ -n "$name" ] || die "no app called '$id' in the catalogue"
+    icon="$(catalogue_field "$id" 3 || true)"
+    command="$(catalogue_field "$id" 4 || true)"
+    note="$(catalogue_field "$id" 5 || true)"
+    echo "id        $id"
+    echo "name      $name"
+    echo "icon      $icon"
+    echo "command   $command"
+    echo "note      $note"
+    echo "state     $(state_of "$id")"
+}
+
+cmd_install() {
+    local what="${1:-}"
+    [ -n "$what" ] || die "install needs an app id or a package file"
+
+    if [ -f "$what" ]; then
+        install_package "$what"
+        return
+    fi
+
+    local name command
+    name="$(catalogue_field "$what" 2 || true)"
+    [ -n "$name" ] || die "no app called '$what' in the catalogue"
+    command="$(catalogue_field "$what" 4 || true)"
+
+    # An app is installed when its command can actually be run. Marking an
+    # app installed whose program is not there would make the Start Menu
+    # light a tile that does nothing when it is pressed.
+    if [ -z "$command" ] || [ ! -x "$command" ]; then
+        die "'$name' cannot be installed: its command is not on this machine (${command:-none})"
+    fi
+
+    mark_installed "$what"
+    echo "installed $name"
+}
+
+# A .finn package is a tarball with a manifest and the app's files:
+#
+#   manifest.toml   the app's id, name and the files it owns
+#   <files>         the app itself
+#
+# It is unpacked into /opt/finn-apps/<id>/ and the id goes on the install
+# list, which is what the Start Menu reads.
+install_package() {
+    local file="$1"
+    need_root
+    local work
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' RETURN
+
+    tar -xf "$file" -C "$work" 2>/dev/null || die "'$file' is not a package"
+    [ -f "$work/manifest.toml" ] || die "'$file' has no manifest.toml"
+
+    local id
+    id="$(awk -F'=' '/^[[:space:]]*id[[:space:]]*=/ { gsub(/["[:space:]]/, "", $2); print $2; exit }' "$work/manifest.toml")"
+    [ -n "$id" ] || die "the manifest has no id"
+
+    mkdir -p "$APPS_DIR/$id"
+    cp -r "$work"/* "$APPS_DIR/$id/" 2>/dev/null || true
+    rm -f "$APPS_DIR/$id/manifest.toml.orig"
+
+    mark_installed "$id"
+    echo "installed $id"
+}
+
+cmd_remove() {
+    local id="${1:-}"
+    [ -n "$id" ] || die "remove needs an app id"
+    is_installed "$id" || die "'$id' is not installed"
+    mark_removed "$id"
+    rm -rf "${APPS_DIR:?}/$id"
+    echo "removed $id"
+}
+
+cmd_update() {
+    # The OTA frontend is a stub: the A/B slots are a design, not a
+    # feature. It never fetches a model, and it never runs a network call
+    # on its own.
+    echo "finnpkg: system updates are not available in this build"
+    echo "finnpkg: no AI is installed, and none is fetched"
+}
+
+case "${1:-}" in
+    list)    shift; cmd_list "$@" ;;
+    search)  shift; cmd_search "$@" ;;
+    info)    shift; cmd_info "$@" ;;
+    install) shift; cmd_install "$@" ;;
+    remove)  shift; cmd_remove "$@" ;;
+    update)  shift; cmd_update "$@" ;;
+    ""|-h|--help|help)
+        sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        die "unknown command '$1' (try 'finnpkg help')"
+        ;;
 esac
-# .finn = tar+zst with manifest.toml + fbin + assets. OTA = A/B slots (stub for beta).
