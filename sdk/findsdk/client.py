@@ -13,7 +13,6 @@ program wants to make, and the protocol's key=value payloads into values.
 """
 
 import os
-import shlex
 
 from .protocol import (
     COMP_SOCKET,
@@ -145,10 +144,15 @@ class FinnClient:
         The payload is the text after "OK ", or None when the reply was a
         bare "OK". An "ERR" reply raises FinnError with the message the
         device gave.
+
+        The protocol has no quoting: a request is a line, and an argument
+        is a word. A title that contains a space goes in as a pipe
+        separated pair — `notify.post "Title|Body"` — which is why the
+        device can read it without a parser.
         """
         line = verb
         if args:
-            line += " " + " ".join(shlex.quote(str(a)) for a in args)
+            line += " " + " ".join(str(a) for a in args)
         if kwargs:
             line += " " + " ".join("%s=%s" % (k, v) for k, v in kwargs.items())
 
