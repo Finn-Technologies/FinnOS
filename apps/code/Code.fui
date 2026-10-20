@@ -1,0 +1,77 @@
+// Finn Code — the editor.
+//
+// A design, not a running program: there is no compositor client protocol
+// yet, so an app cannot draw itself. `fuic` compiles this to a .fbin and
+// the system does not draw it yet — see docs/architecture.md, "What is not
+// here yet".
+//
+// It is drawn in the shell's language: the same glass, the same radii, the
+// same type scale, the same motion.
+
+screen FinnCode {
+  target: Desktop (primary)
+  adapt(Mobile): sidebar->none, tabs->overflow
+  adapt(MobileXL): split_view_max2
+  adapt(TV): type_scale 1.5
+
+  Frame {
+    glass: token.glass_panel
+    radius: token.r_panel
+    padding: 10.4px
+    gap: 10.4px
+  }
+
+  // ---- the file tree ----
+  // The sidebar carries the project, and the current file is the one that
+  // is lit.
+
+  Sidebar(width: 220px) {
+    Label(text: "Project", style: token.micro, ink: token.mute)
+    Tree {
+      Item(text: "main.fui", icon: file, state: active)
+      Item(text: "finndraw.c", icon: file, state: idle)
+      Item(text: "finnmenu.c", icon: file, state: idle)
+      Item(text: "finnmotion.h", icon: file, state: idle)
+    }
+  }
+
+  // ---- the tabs ----
+  // A tab is a name and a close mark. The active tab is in the ink; the
+  // others are dim, and they step down a size rather than being cut.
+
+  Tabs {
+    Tab(text: "main.fui", state: active)
+    Tab(text: "finndraw.c", state: idle)
+    Tab(text: "finnmenu.c", state: idle)
+  }
+
+  // ---- the text ----
+  // The editor's own face is a monospace face and nothing else: the
+  // shell's scale is for the shell's words, and code is not prose. The
+  // gutter is the quietest thing on the screen.
+
+  Code {
+    font: monospace
+    gutter_width: 44px
+    gutter_ink: token.mute
+    ink: token.ink
+    selection_ink: token.on
+    selection_alpha: 0.25
+    caret: token.ink
+  }
+
+  // ---- the status line ----
+  // What the file is and where the cursor is. Quiet, at the bottom, in
+  // the smallest type the shell has.
+
+  StatusLine {
+    Row(gap: 16px) {
+      Text(text: "main.fui", style: token.micro, ink: token.mute)
+      Text(text: "Ln 42, Col 17", style: token.micro, ink: token.mute)
+      Text(text: "UTF-8", style: token.micro, ink: token.mute)
+    }
+    Row {
+      Text(text: "Ready", style: token.micro, ink: token.dim)
+    }
+  }
+}

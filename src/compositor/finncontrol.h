@@ -44,6 +44,10 @@ float finncontrol_openness(void);     /* 0..1, the animated open value */
 /* A control went down, or FINNCONTROL_NONE for a release. */
 void finncontrol_press(int act);
 
+/* The pointer moved. The control under it takes a wash of ink; nothing else
+ * moves, and a control whose hardware is absent takes nothing at all. */
+void finncontrol_hover_at(int px, int py);
+
 int  finncontrol_tick(float dt);      /* 1 while any track moved this frame */
 int  finncontrol_running(void);       /* 1 while another frame is still due */
 

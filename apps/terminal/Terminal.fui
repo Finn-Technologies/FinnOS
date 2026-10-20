@@ -1,0 +1,58 @@
+// Finn Terminal — the shell host.
+//
+// A design, not a running program: there is no compositor client protocol
+// yet, so an app cannot draw itself. `fuic` compiles this to a .fbin and
+// the system does not draw it yet — see docs/architecture.md, "What is not
+// here yet".
+//
+// A terminal is mostly text, so it is the one app where the shell's type
+// scale gives way: a monospace face, at the shell's label size, and
+// nothing else. The prompt is the only ink on the screen that is not the
+// transcript.
+
+screen FinnTerminal {
+  target: Desktop (primary)
+  adapt(Mobile): font->smaller, padding->none
+  adapt(MobileXL): split_view_max2
+  adapt(TV): type_scale 1.5
+
+  Frame {
+    glass: token.glass_panel
+    radius: token.r_panel
+    padding: 10.4px
+    gap: 10.4px
+  }
+
+  // ---- the tabs ----
+  // One tab per session, and the tab that is running is the one in the
+  // ink.
+
+  Tabs {
+    Tab(text: "finn@abelfinn: ~", state: active)
+    Tab(text: "finn@abelfinn: /etc", state: idle)
+  }
+
+  // ---- the transcript ----
+  // The prompt is ink; the output is the dim. Nothing is bold, because
+  // nothing here is a heading.
+
+  Transcript {
+    font: monospace
+    size: token.label
+    Prompt(text: "finn@abelfinn:~$", ink: token.ink)
+    Line(text: "finnctl state.get", ink: token.dim)
+    Line(text: "appearance=dark  battery=100  charging=yes", ink: token.mute)
+    Line(text: "finnctl state.get", ink: token.dim)
+    Line(text: "appearance=dark  battery=100  charging=yes", ink: token.mute)
+  }
+
+  // ---- the prompt ----
+  // The only line that is editable, and the only ink that is the ink.
+
+  Prompt {
+    font: monospace
+    size: token.label
+    text: "finn@abelfinn:~$"
+    caret: token.ink
+  }
+}

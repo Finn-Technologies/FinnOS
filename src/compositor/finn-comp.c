@@ -55,6 +55,7 @@
 #include "finndraw.h"
 #include "finnblur.h"
 #include "finnanim.h"
+#include "finnmotion.h"
 #include "finnstate.h"
 #include "finnaudio.h"
 #include "finnpointer.h"
@@ -79,9 +80,10 @@
 /*
  * The scrim behind the Start Menu. The desktop does not go away when the
  * menu opens, it stops being the thing you are looking at — so the menu is
- * the only thing in the room that is lit.
+ * the only thing in the room that is lit. Its strength and its timing are
+ * the shell's (finnmotion.h), and the menu owns the track: the room dims
+ * before the door opens and brightens before it shuts.
  */
-#define MENU_SCRIM   0.30f
 
 #define ICON_DIR "/usr/share/finn/icons"
 #define FONT_DIR "/usr/share/fonts/OTF"
@@ -599,7 +601,7 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
     if (finnmenu_visible()) {
         /* the scrim goes down before the menu goes up, so the menu is the
          * only thing in the room that is lit */
-        float dim = MENU_SCRIM * finnmenu_openness();
+        float dim = finnmenu_scrim();
         if (dim > 0.004f) finn_frame_dim(base, (size_t)w * h, dim);
         if (finnmenu_settled()) finnmenu_blit(base, w, h, 0, 0);
         else                    finnmenu_blit_scaled(base, w, h);
@@ -758,7 +760,7 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
      * Control Center owns that control — so the menu is not part of the
      * dissolve.
      */
-    float dim = MENU_SCRIM * finnmenu_openness();
+    float dim = finnmenu_scrim();
     if (dim > 0.004f && g->tex_scrim)
         finngpu_paste(g->gpu, g->tex_scrim, 0, 0, (float)w, (float)h, dim);
     if (ml)
@@ -784,12 +786,23 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
 static int g_prev_buttons = 0;
 static int g_drag = FINNCONTROL_NONE;
 
+/*
+ * A control that can act, and only those.
+ *
+ * A machine with no wireless adapter cannot be switched to Wi-Fi, and one
+ * with no radio cannot be switched to Bluetooth: the tile says "No adapter"
+ * and the state must say the same thing. Turning a missing radio on would
+ * be inventing hardware, and the state file is what every other part of
+ * the system reads.
+ */
 static int cc_activate(int act, float v01, const finn_state *st) {
     switch (act) {
     case FINNCONTROL_WIFI:
+        if (st->wifi < 0) return 0;
         finn_state_set_wifi(st->wifi > 0 ? 0 : 1);
         return 1;
     case FINNCONTROL_BLUETOOTH:
+        if (st->bluetooth < 0) return 0;
         finn_state_set_bluetooth(st->bluetooth > 0 ? 0 : 1);
         return 1;
     case FINNCONTROL_APPEARANCE:
@@ -806,11 +819,21 @@ static int cc_activate(int act, float v01, const finn_state *st) {
     }
 }
 
-static int cc_set_level(int act, float v01) {
+/* The same rule on the way a slider is dragged: a level the machine does
+ * not have is not a level the pointer can set. */
+static int cc_set_level(int act, float v01, const finn_state *st) {
     if (v01 < 0.0f) return 0;
     int pct = (int)(v01 * 100.0f + 0.5f);
-    if (act == FINNCONTROL_BRIGHTNESS) { finn_state_set_brightness(pct); return 1; }
-    if (act == FINNCONTROL_VOLUME)     { finn_state_set_volume(pct);     return 1; }
+    if (act == FINNCONTROL_BRIGHTNESS) {
+        if (st->brightness < 0) return 0;
+        finn_state_set_brightness(pct);
+        return 1;
+    }
+    if (act == FINNCONTROL_VOLUME) {
+        if (st->volume < 0) return 0;
+        finn_state_set_volume(pct);
+        return 1;
+    }
     return 0;
 }
 
@@ -980,7 +1003,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
 
     /* press-and-drag keeps setting the slider the press landed on */
     if (now && g_drag != FINNCONTROL_NONE)
-        return cc_set_level(g_drag, finncontrol_drag(g_drag, p->x));
+        return cc_set_level(g_drag, finncontrol_drag(g_drag, p->x), st);
 
     return 0;
 }
@@ -1312,13 +1335,15 @@ int main(int argc, char **argv) {
             }
             if (base_prev) memcpy(base_prev, base, (size_t)w * h * 4);
             finn_anim_jump(&theme_fade, 0.0f);
-            finn_anim_to(&theme_fade, 1.0f, 0.45f, 0.0f, FINN_EASE_IN_OUT);
+            finn_anim_to(&theme_fade, 1.0f, FINN_MOTION_THEME, 0.0f, FINN_EASE_IN_OUT);
         }
 
         /* the tray's status block is the only thing that answers a hover:
          * the pointer position decides, and a non-answer changes nothing */
         finndock_hover_at(ptr.x, ptr.y);
         finnmenu_hover_at(ptr.x, ptr.y);
+        finncontrol_hover_at(ptr.x, ptr.y);
+        finnclock_hover_at(ptr.x, ptr.y);
 
         int anim = finndock_tick(adt);
         anim |= finncontrol_tick(adt);

@@ -57,4 +57,8 @@ const uint32_t *finnclock_layer(int *x, int *y, int *w, int *h, unsigned *rev);
 /* Which part of the page is at this scanout position. */
 int  finnclock_hit(int px, int py);
 
+/* The pointer moved. The Clear control takes a wash of ink; nothing else
+ * moves, because nothing else on the page does anything. */
+void finnclock_hover_at(int px, int py);
+
 #endif

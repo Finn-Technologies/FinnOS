@@ -1,50 +1,102 @@
-// FinnOS Desktop-Home - complete, faithful to sketch
-// Sketch had: wallpaper + floating dock only. No topbar. We preserve that.
+// FinnOS Desktop — the shell.
+//
+// This is the desktop as the compositor draws it today: the wallpaper, the
+// window area, and the dock. The dock is drawn by hand in
+// src/compositor/finndock.c, and this file is the reference it was drawn
+// from — the numbers here are that file's numbers.
+//
+// What is honest here: there is no window manager, so there is no window
+// area. It is written as absent rather than as an empty box with a hint
+// in it, because a box that says "nothing here yet" is a box the shell
+// cannot put anything in.
+
 screen DesktopHome {
   target: Desktop (primary)
   adapt(Mobile): windows->fullscreen, dock->bottom_nav_fullwidth
   adapt(MobileXL): windows->split_max2, dock->left_rail
   adapt(TV): windows->fullscreen_single, dock->launcher_row_96h
 
-  // 1. BACKGROUND - static cached texture, zero per-frame cost
+  // ---- 1. the wallpaper ----
+  // Decoded once and never redrawn. The appearance switch does not touch
+  // it: the picture is what the room looks like, and the shell re-grades
+  // on top of it.
+
   Wallpaper {
     fill: token.wallpaper_desktop + token.wallpaper_flute
     mode: fill, cache: gpu_static_1080p
-    // pre-rendered AVIF, not computed per-frame for HD Graphics
   }
 
-  // 2. WINDOW LAYER - empty in Home sketch
+  // ---- 2. the window area ----
+  // There is no window manager, so there are no windows and the Control
+  // Center cannot move one.
+
   WindowArea {
+    present: false
     layout: freeform, snap: 8pt_grid
-    empty_hint: none, // keep clean per sketch, no text overlay
-    decor: radius 12, border 1px rgba(0,0,0,0.12)
+    empty_hint: none
   }
 
-  // 3. DOCK - bottom-center floating pill, bone color from sketch
-  Dock {
-    placement: bottom_center, margin_bottom: 18px
-    size: auto(wrap_content), height: 36px
-    bg: token.dock_bone, radius: token.md, elevation: 0
-    // no blur - solid fill for i3-4130 / HD Graphics
+  // ---- 3. the dock ----
+  // Frosted glass, the same material as the panels: the blurred wallpaper
+  // brought toward bone at 0.70. No shadow — the reference's edges are a
+  // hard one-pixel step, and a soft drop shadow would fight the glass.
 
-    Row(padding: 6px 8px, gap: 10px, align:center) {
-      Button(id: launcher, icon: grid_2x2, size:20, color:dock_ink,
-        on_tap: shell.open_launcher, shortcut: Super+Space)
-      Divider(vertical, 16px, rgba(0,0,0,0.1))
-      TaskList(bind: wm.tasks, max: 6, active_dot: true)
-      Divider(vertical, 16px, rgba(0,0,0,0.1))
-      StatusRow(gap:10) {
-        Icon(volume, bind: audio.level)
-        Icon(wifi, bind: net.state)
-        Icon(battery, bind: power.level)
-        Clock(style: clock_13, bind: system.time) // inside dock, no topbar
+  Dock {
+    placement: bottom_center, margin_bottom: 34px
+    glass: token.glass_panel
+    radius: token.r_bubble
+    elevation: 0
+    gap: 19.5px
+
+    Row(gap: 19.5px, align: center) {
+
+      // The reserved slot, for pinned and running apps. Nothing can be
+      // pinned or run yet, so it is drawn empty: a mute glyph, and no
+      // press. A slot that lights up under the finger and then does
+      // nothing is a promise the shell cannot keep.
+
+      Bubble(id: apps, icon: grid_2x2, ink: token.mute, size: 65px,
+             radius: token.r_bubble, enabled: false,
+             note: "reserved for pinned and running apps") {
+        state: empty
+      }
+
+      // The launcher. It opens the Start Menu.
+
+      Bubble(id: launcher, icon: grid_2x2, ink: token.ink, size: 65px,
+             radius: token.r_bubble, on_tap: shell.open_start_menu) {
+        state: idle
+      }
+
+      // The tray. It holds two controls and nothing else: the status
+      // block, which opens the Control Center, and the clock, which opens
+      // the clock page. The pads either side of them and the gap between
+      // them are surface, not controls.
+
+      Tray {
+        glass: token.glass_panel
+        radius: token.r_bubble
+        padding: 21px
+
+        StatusBlock(id: tray, inset: 9px, padding_x: 12px,
+                    on_tap: shell.open_control_center) {
+          Icon(id: volume, ink: 22px, bind: audio.level)
+          Icon(id: wifi, ink: 22px, bind: net.state,
+               present_when: net.has_adapter)
+          Icon(id: battery, ink: 19px, bind: power.level,
+               present_when: power.has_battery)
+        }
+
+        Clock(id: clock, style: token.clock, bind: system.time,
+              on_tap: shell.open_clock_page)
       }
     }
-    focus_ring: 2px accent when keyboard_nav
   }
 
-  // TV override: scale dock -> 10-foot row
-  override TV {
-    Dock { height: 96px, type_scale: 1.5, icons: 48px, focus_ring: 3px }
-  }
+  // The pointer answers in colour, never in movement: a control takes a
+  // wash of ink, and nothing moves under the pointer.
+
+  motion: hover token.wash_hover, press token.wash_press
+  motion: hover_in token.hover_in, hover_out token.hover_out
+  motion: press_in token.press_in, press_out token.press_out
 }

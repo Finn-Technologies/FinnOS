@@ -43,6 +43,12 @@ int  finnmenu_visible(void);
 int  finnmenu_settled(void);
 float finnmenu_openness(void);
 
+/* How dark the room goes behind the menu, 0..1 of FINN_MOTION_SCRIM. The
+ * compositor dims the frame by this much, so the menu is the only lit thing
+ * in the room. The track is the menu's own: the room dims before the menu
+ * opens and brightens before it shuts. */
+float finnmenu_scrim(void);
+
 int  finnmenu_tick(float dt);       /* 1 while any track moved this frame */
 int  finnmenu_running(void);
 

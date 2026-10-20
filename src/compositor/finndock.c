@@ -4,6 +4,7 @@
 #include "finndraw.h"
 #include "finntext.h"
 #include "finnanim.h"
+#include "finnmotion.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,11 +45,17 @@
 #define TRAY_GAP      23.4f     /* 18 */
 #define DOCK_GAP      19.5f     /* 15 */
 #define DOCK_BOTTOM   34.0f     /* 26 */
-/* The reference draws both bubbles at full weight: the launcher and the app
+/*
+ * The reference draws both bubbles at full weight: the launcher and the app
  * grid are the same glyph there, and one of them being greyed out reads as a
- * disabled control rather than as an empty one. Full weight until the app
- * grid actually carries pinned apps. */
-#define PLACEHOLDER_A 1.0f
+ * disabled control rather than as an empty one.
+ *
+ * The first bubble is the reserved slot for pinned and running apps, and this
+ * shell has no way to pin or run anything yet — so it is drawn empty: the
+ * glyph is in the mute ink rather than the ink, and it takes no press wash.
+ * A slot that lights up under the finger and then does nothing is a promise
+ * the shell cannot keep.
+ */
 
 /* the tray clock: cap 10 in the reference, which is 18px of Fixel Display */
 #define CLOCK_GAP     27.0f     /* 21 */
@@ -70,13 +77,10 @@
  * taking a wash of ink, which is the same patch the Control Center lays down
  * behind the tray when it opens — only darker, because a hover is a hint that
  * a press is a confirmation, and the open panel is the thing being promised.
+ *
+ * The numbers are the shell's (finnmotion.h): the dock and the panels answer
+ * the pointer with the same wash, at the same strength, in the same time.
  */
-#define HOVER_WASH    0.055f
-#define PRESS_WASH    0.090f
-#define HOVER_IN_DUR  0.11f
-#define HOVER_OUT_DUR 0.20f
-#define PRESS_IN_DUR  0.08f
-#define PRESS_OUT_DUR 0.17f
 
 /* ---------------- assets ---------------- */
 static fsvg g_ic_start, g_ic_vol, g_ic_wifi, g_ic_bat, g_ic_bolt;
@@ -87,14 +91,6 @@ static finn_font g_font;
 static float     g_font_scale = -1.0f;
 static char      g_font_dir[512];
 
-static void tile_dim(uint32_t *t, int n, float f) {
-    if (!t) return;
-    for (int i = 0; i < n; i++) {
-        uint32_t a = (t[i] >> 24) & 0xFF;
-        t[i] = (t[i] & 0x00FFFFFFu) | ((uint32_t)(a * f) << 24);
-    }
-}
-
 /* ---------------- icon providers ----------------
  *
  * Each hands back a raster from the icon cache rather than blitting it,
@@ -104,11 +100,11 @@ static void tile_dim(uint32_t *t, int n, float f) {
  * was rasterised for the previous one.
  */
 
-static const uint32_t *icon_start(int px, float alpha) {
-    /* the app bubble stays dimmed: it is a reserved slot, not a running app */
-    uint32_t *t = finn_icon_tile(&g_ic_start, px, FINN_INK, FINN_INK, 0);
-    if (t && alpha < 1.0f) tile_dim(t, px * px, alpha);
-    return t;
+static const uint32_t *icon_start(int px, uint32_t ink) {
+    /* The reserved slot is drawn in the mute ink: it holds nothing yet, and
+     * a slot that looks exactly like the button beside it is a button the
+     * shell cannot honour. */
+    return finn_icon_tile(&g_ic_start, px, ink, ink, 0);
 }
 
 /*
@@ -236,9 +232,9 @@ void finndock_set_clock_well(float amount) {
 void finndock_press(int which) {
     g_pressed = which;
     if (which == FINNDOCK_HIT_NONE)
-        finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     else
-        finn_anim_to(&g_a_press, 1.0f, PRESS_IN_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
 }
 
 /*
@@ -260,6 +256,12 @@ static finn_anim g_a_hover_c;
 static float     g_hover_c = 0.0f;
 static int       g_hover_clock = 0;
 
+/* the launcher's own answer: the bubble that opens the Start Menu is a
+ * control like any other, and the pointer arriving at it says so */
+static finn_anim g_a_hover_l;
+static float     g_hover_l = 0.0f;
+static int       g_hover_launcher = 0;
+
 /* the tray's status block in scanout pixels, as of the last render — the one
  * region of the dock that answers a hover */
 static int g_segx = 0, g_segy = 0, g_segw = 0, g_segh = 0;
@@ -276,18 +278,29 @@ void finndock_hover_at(int px, int py) {
     if (on != g_hover_on) {
         g_hover_on = on;
         if (on)
-            finn_anim_to(&g_a_hover, 1.0f, HOVER_IN_DUR, 0.0f, FINN_EASE_OUT);
+            finn_anim_to(&g_a_hover, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
         else
-            finn_anim_to(&g_a_hover, 0.0f, HOVER_OUT_DUR, 0.0f, FINN_EASE_OUT);
+            finn_anim_to(&g_a_hover, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 
     int onc = (hit == FINNDOCK_HIT_CLOCK);
     if (onc != g_hover_clock) {
         g_hover_clock = onc;
         if (onc)
-            finn_anim_to(&g_a_hover_c, 1.0f, HOVER_IN_DUR, 0.0f, FINN_EASE_OUT);
+            finn_anim_to(&g_a_hover_c, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
         else
-            finn_anim_to(&g_a_hover_c, 0.0f, HOVER_OUT_DUR, 0.0f, FINN_EASE_OUT);
+            finn_anim_to(&g_a_hover_c, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    }
+
+    /* The reserved slot takes no answer at all: it holds nothing yet, so
+     * there is nothing for the pointer to arrive at. */
+    int onl = (hit == FINNDOCK_HIT_LAUNCHER);
+    if (onl != g_hover_launcher) {
+        g_hover_launcher = onl;
+        if (onl)
+            finn_anim_to(&g_a_hover_l, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
+        else
+            finn_anim_to(&g_a_hover_l, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 }
 
@@ -295,27 +308,38 @@ int finndock_tick(float dt) {
     int moved = finn_anim_tick(&g_a_press, dt);
     moved |= finn_anim_tick(&g_a_hover, dt);
     moved |= finn_anim_tick(&g_a_hover_c, dt);
+    moved |= finn_anim_tick(&g_a_hover_l, dt);
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; moved = 1; }
     float hc = finn_anim_v(&g_a_hover_c);
     if (hc != g_hover_c) { g_hover_c = hc; moved = 1; }
+    float hl = finn_anim_v(&g_a_hover_l);
+    if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
     return moved;
 }
 
 int finndock_running(void) {
     return finn_anim_running(&g_a_press) || finn_anim_running(&g_a_hover) ||
-           finn_anim_running(&g_a_hover_c);
+           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_l);
 }
 
 /* The press, resolved per control. There is no geometry in it: a control
  * never changes size or position under the pointer, it only darkens. */
-typedef struct { float wash; } dock_bump;
+typedef struct { float wash; float hover; } dock_bump;
 
 static dock_bump bump_at(int slot, float f) {
     (void)f;
-    float p = (g_pressed == slot + FINNDOCK_HIT_APPS) ? finn_anim_v(&g_a_press) : 0.0f;
     dock_bump b;
-    b.wash = p;
+    b.wash = 0.0f;
+    b.hover = 0.0f;
+
+    /* The reserved slot holds nothing, so it takes no press: there is
+     * nothing behind the finger to promise. */
+    if (slot == SLOT_APPS) return b;
+
+    b.wash = (g_pressed == slot + FINNDOCK_HIT_APPS)
+           ? finn_anim_v(&g_a_press) : 0.0f;
+    if (slot == SLOT_LAUNCHER) b.hover = g_hover_l;
     return b;
 }
 
@@ -354,8 +378,11 @@ static int g_x0 = 0, g_y0 = 0, g_btn = 0, g_gap = 0, g_pillx = 0, g_pillw = 0;
 
 static void load_clock_font(float s) {
     finn_font_free(&g_font);
+    /* One weight. The shell's hierarchy comes from size and from ink against
+     * dim, never from a heavier cut of the face — the clock is the largest
+     * text in the dock, and it is large enough on its own. */
     char p[600];
-    snprintf(p, sizeof p, "%s/FixelDisplay-Medium.otf", g_font_dir);
+    snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
     int px = (int)lroundf(CLOCK_PX * s);
     if (finn_font_load(&g_font, p, px) != 0)
         fprintf(stderr, "finndock: cannot load %s\n", p);
@@ -409,8 +436,12 @@ static void bubble(uint32_t *L, int lw, int lh, int ox, int oy,
      * it is drawn, so the bubble carries the same light as the panel */
     finn_frost_rrect(L, lw, lh, ox, oy, x, y, w, h, rad,
                      FINN_GLASS, GLASS_TINT);
-    if (b.wash > 0.004f)
-        finn_fill_rrect(L, lw, lh, x, y, w, h, rad, ink_wash(PRESS_WASH * b.wash));
+
+    /* The pointer's answer, and the press that follows it: the same patch,
+     * the same strengths, as every other surface in the shell. */
+    float wash = FINN_MOTION_HOVER_WASH * b.hover + FINN_MOTION_PRESS_WASH * b.wash;
+    if (wash > 0.004f)
+        finn_fill_rrect(L, lw, lh, x, y, w, h, rad, ink_wash(wash));
     if (!icon) return;
 
     if (icon_alpha >= 1.0f)
@@ -484,6 +515,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX((int)(g_well_clock * 64.0f));
     MIX((int)(g_hover * 64.0f));
     MIX((int)(g_hover_c * 64.0f));
+    MIX((int)(g_hover_l * 64.0f));
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
     #undef MIX
 
@@ -511,8 +543,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                         (int)lroundf(bx + btn * 0.5f),
                         (int)lroundf(by + btn * 0.5f), &ipx, &iox, &ioy);
         bubble(g_layer, lw, lh, g_lx, g_ly, bx, by, btn, btn, rad,
-               bump_at(SLOT_APPS, f), icon_start(ipx, PLACEHOLDER_A), ipx,
-               iox, ioy, PLACEHOLDER_A);
+               bump_at(SLOT_APPS, f), icon_start(ipx, FINN_MUTE), ipx,
+               iox, ioy, 1.0f);
     }
 
     /* launcher */
@@ -523,7 +555,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                         (int)lroundf(lxx + btn * 0.5f),
                         (int)lroundf(by + btn * 0.5f), &ipx, &iox, &ioy);
         bubble(g_layer, lw, lh, g_lx, g_ly, lxx, by, btn, btn, rad,
-               bump_at(SLOT_LAUNCHER, f), icon_start(ipx, 1.0f), ipx,
+               bump_at(SLOT_LAUNCHER, f), icon_start(ipx, FINN_INK), ipx,
                iox, ioy, 1.0f);
     }
 
@@ -587,7 +619,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
          * both are darker than the open panel's anchor, because neither of
          * them *is* the open panel. They fade out as the well takes over.
          */
-        float wash_a = (HOVER_WASH * g_hover + PRESS_WASH * tb.wash)
+        float wash_a = (FINN_MOTION_HOVER_WASH * g_hover + FINN_MOTION_PRESS_WASH * tb.wash)
                      * (1.0f - g_well);
         if (wash_a > 0.004f)
             finn_fill_rrect(g_layer, lw, lh, seg_l, seg_t, seg_w, seg_h, seg_r,
@@ -657,7 +689,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                                  kw, seg_h, seg_r,
                                  FINN_GLASS, GLASS_WELL * g_well_clock);
 
-            float cwash = HOVER_WASH * g_hover_c * (1.0f - g_well_clock);
+            float cwash = FINN_MOTION_HOVER_WASH * g_hover_c * (1.0f - g_well_clock);
             if (cwash > 0.004f)
                 finn_fill_rrect(g_layer, lw, lh, kl, seg_t, kw, seg_h, seg_r,
                                 ink_wash(cwash));

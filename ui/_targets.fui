@@ -1,17 +1,27 @@
 // FinnOS Adaptive Targets v1
-// Write once, scale everywhere. Compositor selects target at boot + on hotplug/fold.
+//
+// Write once, scale everywhere. The compositor selects a target at boot
+// and on hotplug or fold.
+//
+// What is honest here: the shell that exists today is a dock, a Control
+// Center, a clock page and a Start Menu. There is no window manager, so
+// the window area in these targets is a design intent and not a feature —
+// see docs/architecture.md, "What is not here yet". Only Desktop is
+// implemented; the other three are the language's shape on other kinds of
+// machine.
 
 target Desktop {
   viewport: min 1024x600, base 1920x1080
   density: 1.0x, type_scale: 1.0
-  input: pointer + keyboard
-  nav: windowed_workspace + floating_dock
+  // A pointer and nothing else: the compositor reads no keyboard yet.
+  input: pointer
+  nav: shell_surfaces + floating_dock
   shell: {
-    topbar: none,          // matches sketch: no topbar, dock holds tray
+    topbar: none,          // the tray holds the status, in the dock
     dock: bottom_center_floating,
-    windows: freeform_tiled
+    windows: none_yet      // no window manager: see docs/architecture.md
   }
-  focus: mouse_hover + Super_keys
+  focus: mouse_hover
 }
 
 target Mobile {

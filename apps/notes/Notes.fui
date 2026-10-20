@@ -1,0 +1,49 @@
+// Finn Notes — the notes.
+//
+// A design, not a running program: there is no compositor client protocol
+// yet, so an app cannot draw itself. `fuic` compiles this to a .fbin and
+// the system does not draw it yet — see docs/architecture.md, "What is not
+// here yet".
+//
+// A note is a title, a date and a line of it. The list is the app; the
+// editor is a sheet over it.
+
+screen FinnNotes {
+  target: Desktop (primary)
+  adapt(Mobile): list->sheet, detail->fullscreen
+  adapt(MobileXL): split_view_max2
+  adapt(TV): type_scale 1.5
+
+  Frame {
+    glass: token.glass_panel
+    radius: token.r_panel
+    padding: 10.4px
+    gap: 10.4px
+  }
+
+  // ---- the list ----
+  // Newest first, because a note is written to be found again soon, and
+  // the date is the detail line rather than the title.
+
+  List(gap: 10.4px) {
+    Item(title: "The shell is one family", date: "today", state: active)
+    Item(title: "Motion is a decision", date: "yesterday", state: idle)
+    Item(title: "What the machine actually has", date: "Monday", state: idle)
+    Item(title: "A note with no title", date: "Friday", state: idle)
+  }
+
+  // ---- the note ----
+  // The title is the shell's title size; the body is the shell's body.
+  // There is no toolbar: a note is a note.
+
+  Editor {
+    Title(text: "The shell is one family", style: token.title, ink: token.ink)
+    Date(text: "Tuesday, 20 October 2026", style: token.micro, ink: token.mute)
+    Body {
+      Text(text: "The dock, the Control Center, the clock page and the Start Menu share their glass, their corner radii, their type scale and their motion. A surface that invents its own looks like a different operating system.",
+           style: token.label, ink: token.ink)
+      Text(text: "That is also why the timings live in one header, and why the open is slower than the close.",
+           style: token.label, ink: token.ink)
+    }
+  }
+}

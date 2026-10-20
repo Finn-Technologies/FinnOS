@@ -1,23 +1,119 @@
-// FinnOS Theme Tokens - extracted from sketches
-theme FinnTokens {
-  // surfaces
-  color: surface_light #F7F9FC, surface_dark #0B0E14
-  color: ink_light #111318, ink_dark #E8ECF1
-  color: dock_bone #F6F1E7, dock_ink #1A1D24
+// FinnOS Theme Tokens — the shell's tokens.
+//
+// This file is the design system's statement of intent. The compositor
+// carries the same palette in src/compositor/finndraw.c and the same
+// timings in src/compositor/finnmotion.h. The C is the truth; this file
+// is kept in step with it by hand, which is a debt the compiler will
+// eventually pay.
+//
+// A colour is one name with two halves, the light one and the dark one,
+// because the appearance switch is a property of the whole theme and
+// never of a single surface. Everything else is declared once.
 
-  // desktop wallpaper (from Desktop-Home sketch)
+theme FinnTokens {
+  // ---- the palette ----------------------------------------------------
+  // Bone and ink. The chrome is bone; the text on it is ink.
+
+  color: bone_light #F6F1E7, bone_dark #23262E
+  color: tile_light #E7E1D5, tile_dark #2F333C
+  color: tile_on_light #D3E6FF, tile_on_dark #2B4A78
+  color: hair_light #22FFFFFF, hair_dark #1AFFFFFF
+
+  color: ink_light #1A1D24, ink_dark #F4F0E8
+  color: mute_light #969696, mute_dark #8B9099
+  color: dim_light #7B7776, dim_dark #A9A59E
+
+  // The family accent is the same in both appearances: it is the brand's
+  // colour, not the appearance's.
+  color: accent_light #7AB8FF, accent_dark #7AB8FF
+
+  color: track_light #CFC7B8, track_dark #3B4048
+  color: knob_light #FFFFFF, knob_dark #EDE9E1
+
+  // `on` and `fill` are the accent and the track at full strength. The
+  // pastel accent reads well as a glyph on bone and turns to mush as a
+  // 31-pixel disc, so a filled shape has a token of its own.
+  color: on_light #006FFF, on_dark #0A84FF
+  color: fill_light #998481, fill_dark #EDE9E1
+
+  // The tint of the frosted chrome: near-white in the light appearance,
+  // and the deep bone in the dark one, where frosted has to mean darkened
+  // rather than brightened.
+  color: glass_light #FFFFFF, glass_dark #23262E
+
+  // ---- the radii ------------------------------------------------------
+  // A surface's radius is a fraction of its smallest dimension.
+
+  radius: r_bubble 19.5    // the dock's bubbles and the tray's pill
+  radius: r_panel 20.8     // the Control Center and the clock page
+  radius: r_tile 9.7       // a tile inside a panel
+  radius: r_card 34        // the Start Menu's panel
+  radius: r_app 22         // an app's tile in the Start Menu
+  radius: r_pill 999       // a slider row: half its height
+
+  // ---- the type -------------------------------------------------------
+  // One family, one weight. Hierarchy comes from size and from ink
+  // against dim, never from a heavier cut of the face. Four weights ship;
+  // the shell loads one of them.
+
+  font: family "Fixel Display", weights [Regular 400, Medium 500, SemiBold 600, Bold 700]
+    files: assets/fonts/FixelDisplay/*.otf, fallback: [DejaVu Sans, sans-serif]
+  type: time 34/40 "Fixel Display" 400
+  type: title 17/22 "Fixel Display" 400
+  type: clock 18/22 "Fixel Display" 400
+  type: label 12/16 "Fixel Display" 400
+  type: label_sm 11/15 "Fixel Display" 400
+  type: detail 10/14 "Fixel Display" 400
+  type: micro 9/12 "Fixel Display" 400
+
+  // ---- the material ---------------------------------------------------
+  // The glass is the blurred wallpaper brought toward bone. A tile over a
+  // panel is a second pass, and it compounds: 0.70 + 0.30 x 0.50 = 0.85.
+  // There are no shadows: the reference's edges are a hard one-pixel step.
+
+  weight: glass_panel 0.70, glass_tile 0.50, glass_well 0.53
+  weight: surface_scale 0.92
+
+  // ---- the wallpaper --------------------------------------------------
+
   color: wp_edge #DCD2F2, wp_mid #E99AA4, wp_core #FF7A5C, wp_glow #FFB347
   gradient: wallpaper_desktop linear(180deg, wp_edge 0%, wp_mid 35%, wp_core 65%, wp_glow 100%)
   effect: wallpaper_flute repeating-x(lines, 1px rgba(255,255,255,0.18) every 8px)
 
-  // setup hero
-  gradient: hero_beam diagonal(#0A1628 0%, #1A4D9E 45%, #7AB8FF 55%, #0A1628 100%)
-  color: accent #7AB8FF
+  // ---- the motion -----------------------------------------------------
+  // One copy of the shell's timings, and they are the ones in
+  // src/compositor/finnmotion.h. A surface takes longer to arrive than to
+  // leave, and the pointer's answer is quicker than the pointer's
+  // withdrawal.
 
-  radius: sm 8, md 12, lg 24, pill 999
-  font: family "Fixel Display", weights [Regular 400, Medium 500, SemiBold 600, Bold 700]
-    files: assets/fonts/FixelDisplay/*.otf, fallback: [DejaVu Sans, sans-serif]
-  type: body 14/20 "Fixel Display" 400, title 20/28 "Fixel Display" 600, clock 13/16 "Fixel Display" 500
+  motion: surface_open 280ms out_back
+  motion: surface_close 180ms in_out
+  motion: scrim_in 200ms out
+  motion: scrim_out 140ms in_out
+  motion: hover_in 110ms out
+  motion: hover_out 200ms out
+  motion: press_in 80ms out
+  motion: press_out 180ms out
+  motion: fill 200ms out
+  motion: grid_cell 200ms out
+  motion: grid_step 22ms linear
+  motion: grid_delay 60ms linear
+  motion: clock_tick 260ms linear
+  motion: note 220ms out
+  motion: theme 360ms in_out
+
+  // The pointer's wash: a hint when the pointer arrives, a confirmation
+  // when it is pressed.
+  weight: wash_hover 0.055, wash_press 0.090
+
+  // ---- the setup hero -------------------------------------------------
+
+  gradient: hero_beam diagonal(#0A1628 0%, #1A4D9E 45%, #7AB8FF 55%, #0A1628 100%)
+
+  // ---- the type scale on a television ---------------------------------
+  // A television is read from across a room, so the same body text is
+  // larger there. The same reasoning sizes a dock in points rather than
+  // in pixels.
+
   tv_type_scale: 1.5, min_tv 32sp
-  motion: theme_xfade 180ms linear, dock_pop 120ms ease-out
 }

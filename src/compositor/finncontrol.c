@@ -4,6 +4,7 @@
 #include "finndraw.h"
 #include "finntext.h"
 #include "finnanim.h"
+#include "finnmotion.h"
 #include "finnvg.h"
 
 #include <stdio.h>
@@ -87,14 +88,9 @@
  */
 #define PANEL_H 351.0f
 
-/* motion, authored the same way */
-#define OPEN_DUR     0.28f
-#define CLOSE_DUR    0.18f
-#define OPEN_SCALE   0.90f   /* the panel starts at 90% and grows to 1 */
-#define PRESS_WASH   0.090f  /* the same wash the dock uses, so the two agree */
-#define PRESS_IN_DUR 0.08f
-#define PRESS_OUT_DUR 0.16f
-#define FILL_DUR     0.20f
+/* motion, from the shell's one place (finnmotion.h): the panel opens and
+ * closes like every other surface, and a press is the same wash the dock
+ * lays down under the finger. */
 
 /* ---------------- assets + fonts ---------------- */
 static fsvg g_ic_wifi, g_ic_bt, g_ic_eth, g_ic_sun, g_ic_moon, g_ic_vol, g_ic_bat;
@@ -129,11 +125,17 @@ static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app,
 /* ---------------- motion ---------------- */
 static finn_anim g_a_open;                 /* 0 closed .. 1 open  */
 static finn_anim g_a_press;                /* 0 up .. 1 held down */
+static finn_anim g_a_hover;                /* 0 off .. 1 under the pointer */
 static finn_anim g_a_vol, g_a_bright;      /* the level the bars draw */
+static float     g_hover = 0.0f;
+static int       g_hover_act = FINNCONTROL_NONE;
 static int      g_press = FINNCONTROL_NONE;
 /* 1 while the connection slot is showing the wired link instead of a radio */
 static int      g_conn_wired = 0;
 static int      g_fill_primed = 0;
+
+/* the panel's own hit rectangles, tested by the pointer */
+static int in_rect(const cc_rect *r, int x, int y);
 
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
@@ -150,15 +152,24 @@ static void fill_circle(uint32_t *L, int lw, int lh, float cx, float cy, float r
  * A pressed control answers with a wash, not a shrink: the tile keeps its
  * exact box and darkens under the finger. Nothing in this shell changes size
  * when it is clicked — a control that shrinks reads as flinching away.
+ *
+ * The wash is the shell's one answer to the pointer, and it is the same
+ * patch the dock lays down, so `amount` is the shell's wash scale and not a
+ * number of this panel's own.
  */
-static void press_wash(uint32_t *L, int lw, int lh, int s, cc_rect r,
-                       float press) {
-    if (press <= 0.004f) return;
-    unsigned a = (unsigned)(PRESS_WASH * press * 255.0f + 0.5f);
+static void control_wash(uint32_t *L, int lw, int lh, int s, cc_rect r,
+                         float amount) {
+    if (amount <= 0.004f) return;
+    unsigned a = (unsigned)(amount * 255.0f + 0.5f);
     if (a > 255) a = 255;
     if (a == 0) return;
     finn_fill_rrect(L, lw, lh, (float)r.x, (float)r.y, (float)r.w, (float)r.h,
                     s * CC_R_TILE, (FINN_INK & 0x00FFFFFFu) | (a << 24));
+}
+
+static void press_wash(uint32_t *L, int lw, int lh, int s, cc_rect r,
+                       float press) {
+    control_wash(L, lw, lh, s, r, FINN_MOTION_PRESS_WASH * press);
 }
 
 /* ---------------- tiles ---------------- */
@@ -380,11 +391,11 @@ void finncontrol_set_open(int open) {
     if (open) {
         /* a small overshoot on the way out reads as the panel being flung
          * open rather than fading in */
-        finn_anim_to(&g_a_open, 1.0f, OPEN_DUR, 0.0f, FINN_EASE_OUT_BACK);
+        finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
     } else {
-        finn_anim_to(&g_a_open, 0.0f, CLOSE_DUR, 0.0f, FINN_EASE_IN_OUT);
+        finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
         g_press = FINNCONTROL_NONE;
-        finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     }
 }
 
@@ -399,21 +410,53 @@ int finncontrol_settled(void) {
 void finncontrol_press(int act) {
     g_press = act;
     if (act == FINNCONTROL_NONE)
-        finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     else
-        finn_anim_to(&g_a_press, 1.0f, PRESS_IN_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
+}
+
+/*
+ * The pointer arrived at a control.
+ *
+ * The panel answers the pointer the way the dock does: a wash of ink under
+ * the thing that is under the pointer, and nothing anywhere else. A tile
+ * whose hardware is absent is not a control — there is nothing behind it to
+ * promise — so it takes no wash, exactly as it takes no press.
+ */
+void finncontrol_hover_at(int px, int py) {
+    int act = FINNCONTROL_NONE;
+
+    if (g_open && g_layer && finn_anim_v(&g_a_open) >= 0.90f) {
+        int x = px - g_lx0, y = py - g_ly0;
+        if (x >= 0 && y >= 0 && x < g_lw && y < g_lh) {
+            if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) act = FINNCONTROL_WIFI;
+            else if (in_rect(&g_r_bt, x, y))             act = FINNCONTROL_BLUETOOTH;
+            else if (in_rect(&g_r_app, x, y))            act = FINNCONTROL_APPEARANCE;
+        }
+    }
+
+    if (act == g_hover_act) return;
+    g_hover_act = act;
+    if (act != FINNCONTROL_NONE)
+        finn_anim_to(&g_a_hover, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
+    else
+        finn_anim_to(&g_a_hover, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
 }
 
 int finncontrol_tick(float dt) {
     int ch = finn_anim_tick(&g_a_open, dt);
     ch |= finn_anim_tick(&g_a_press, dt);
+    ch |= finn_anim_tick(&g_a_hover, dt);
     ch |= finn_anim_tick(&g_a_vol, dt);
     ch |= finn_anim_tick(&g_a_bright, dt);
+    float hv = finn_anim_v(&g_a_hover);
+    if (hv != g_hover) { g_hover = hv; ch = 1; }
     return ch;
 }
 
 int finncontrol_running(void) {
     return finn_anim_running(&g_a_open) || finn_anim_running(&g_a_press) ||
+           finn_anim_running(&g_a_hover) ||
            finn_anim_running(&g_a_vol)  || finn_anim_running(&g_a_bright);
 }
 
@@ -421,7 +464,7 @@ int finncontrol_running(void) {
  * calling this on every rebuild does not restart a sweep that is under way. */
 static void follow(finn_anim *a, int value) {
     if (value < 0) return;
-    finn_anim_to(a, (float)value, FILL_DUR, 0.0f, FINN_EASE_OUT);
+    finn_anim_to(a, (float)value, FINN_MOTION_FILL, 0.0f, FINN_EASE_OUT);
 }
 
 /* ---------------- render ---------------- */
@@ -442,6 +485,8 @@ static uint32_t build_key(float s, int pw, int ph,
     MIX(st->dark + 2);
     MIX(g_press);
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
+    MIX((int)(finn_anim_v(&g_a_hover) * 64.0f));
+    MIX(g_hover_act);
     MIX((int)(finn_anim_v(&g_a_vol) * 8.0f));
     MIX((int)(finn_anim_v(&g_a_bright) * 8.0f));
     #undef MIX
@@ -552,6 +597,7 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
                      s * CC_R_PANEL, FINN_GLASS, CC_GLASS);
 
     float press = finn_anim_v(&g_a_press);
+    float hover = g_hover;
 
     /*
      * One connection slot, not two. The reference has a single "how am I
@@ -579,20 +625,42 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
                     wifi_ok ? (st->wifi > 0 ? "Connected" : "Off") : "No adapter",
                     wifi_ok && st->wifi > 0, lf);
 
-    /* a wire is not a switch: the tile is inert while it shows one, so it
-     * gives no press feedback for an action it cannot take */
-    if (!g_conn_wired && g_press == FINNCONTROL_WIFI)
-        press_wash(g_layer, lw, lh, s, g_r_wifi, press);
+    /*
+     * The pointer's answer, and the press that follows it.
+     *
+     * Both are the same patch the dock puts under the finger, at the same
+     * strengths, so the panel and the dock answer the pointer the same way.
+     *
+     * A tile whose hardware is absent takes neither: there is nothing behind
+     * it to promise, and a control that lights up under the pointer and then
+     * does nothing is a lie told in two steps.
+     */
+    if (!g_conn_wired && wifi_ok) {
+        if (g_hover_act == FINNCONTROL_WIFI)
+            control_wash(g_layer, lw, lh, s, g_r_wifi,
+                         FINN_MOTION_HOVER_WASH * hover);
+        if (g_press == FINNCONTROL_WIFI)
+            press_wash(g_layer, lw, lh, s, g_r_wifi, press);
+    }
 
     int bt_ok = st->bluetooth >= 0;
     status_tile(g_layer, lw, lh, s, g_r_bt, &g_ic_bt, 0, "Bluetooth",
                 bt_ok ? (st->bluetooth ? "On" : "Off") : "No adapter",
                 bt_ok && st->bluetooth > 0, lf);
-    if (g_press == FINNCONTROL_BLUETOOTH) press_wash(g_layer, lw, lh, s, g_r_bt, press);
+    if (bt_ok) {
+        if (g_hover_act == FINNCONTROL_BLUETOOTH)
+            control_wash(g_layer, lw, lh, s, g_r_bt,
+                         FINN_MOTION_HOVER_WASH * hover);
+        if (g_press == FINNCONTROL_BLUETOOTH)
+            press_wash(g_layer, lw, lh, s, g_r_bt, press);
+    }
 
     status_tile(g_layer, lw, lh, s, g_r_app,
                 st->dark ? &g_ic_moon : &g_ic_sun, 0,
                 "Appearance", st->dark ? "Dark" : "Light", st->dark, lf);
+    if (g_hover_act == FINNCONTROL_APPEARANCE)
+        control_wash(g_layer, lw, lh, s, g_r_app,
+                     FINN_MOTION_HOVER_WASH * hover);
     if (g_press == FINNCONTROL_APPEARANCE) press_wash(g_layer, lw, lh, s, g_r_app, press);
 
     /*
@@ -622,9 +690,9 @@ void finncontrol_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
  */
 void finncontrol_transform(float *x, float *y, float *w, float *h, float *alpha) {
     float v = finn_anim_v(&g_a_open);
-    float a = v * 1.15f;
+    float a = v * FINN_MOTION_FADE;
     if (a > 1.0f) a = 1.0f;
-    float k = OPEN_SCALE + (1.0f - OPEN_SCALE) * v;
+    float k = FINN_MOTION_OPEN_SCALE + (1.0f - FINN_MOTION_OPEN_SCALE) * v;
 
     float ax = (float)g_ax, ay = (float)g_ay;
     if (x) *x = ax + ((float)g_lx0 - ax) * k;

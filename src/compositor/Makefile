@@ -12,6 +12,7 @@
 #   finndraw     the shared drawing primitives
 #   finnblur     the blurred wallpaper the frosted surfaces sample
 #   finnanim     the animation tracks
+#   finnmotion   the shell's motion, in one place
 #   finnnotify   the shell's notification queue
 #   finnpointer  evdev pointer + cursor sprite
 #   finngpu      GBM/EGL/GLES2 compositing, when the machine has it
@@ -34,8 +35,8 @@ SHELL_   = finnvg.c finntext.c finndraw.c finnblur.c finnanim.c \
            finnclock.c finnmenu.c
 
 HDRS     = finnvg.h finntext.h finndraw.h finnblur.h finnanim.h \
-           finnnotify.h finnpointer.h finngpu.h finndock.h finncontrol.h \
-           finnclock.h finnmenu.h \
+           finnmotion.h finnnotify.h finnpointer.h finngpu.h finndock.h \
+           finncontrol.h finnclock.h finnmenu.h \
            ../core/finnapps.h ../core/finnproto.h ../core/finnstate.h
 
 all: finn-comp

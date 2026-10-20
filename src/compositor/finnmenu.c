@@ -5,6 +5,7 @@
 #include "finndraw.h"
 #include "finntext.h"
 #include "finnanim.h"
+#include "finnmotion.h"
 #include "finnapps.h"
 #include "finnvg.h"
 
@@ -50,16 +51,10 @@
 #define ROW_GAP     18.0f
 #define FOOT_H      46.0f   /* the power row                           */
 
-/* motion: the Control Center's, so the surfaces move as one family */
-#define OPEN_DUR     0.26f
-#define CLOSE_DUR    0.18f
-#define OPEN_SCALE   0.92f
-#define HOVER_WASH    0.055f
-#define PRESS_WASH    0.090f
-#define HOVER_IN_DUR  0.11f
-#define HOVER_OUT_DUR 0.20f
-#define PRESS_IN_DUR  0.08f
-#define PRESS_OUT_DUR 0.17f
+/* motion: the Control Center's, so the surfaces move as one family. The
+ * numbers live in finnmotion.h, which is where every surface's motion
+ * lives; the menu is the same object as the panel, with different
+ * contents. */
 
 /* ---------------- fonts ---------------- */
 static finn_font g_f_head, g_f_label, g_f_sub, g_f_micro;
@@ -101,13 +96,64 @@ static menu_rect g_r_panel, g_r_restart, g_r_shutdown;
 static menu_rect g_r_app[FINN_APP_MAX];
 static int       g_n_apps = 0;
 
+/* ---------------- the panel and its cells ----------------
+ *
+ * The layer is built in two pieces, because the grid moves and the glass
+ * does not.
+ *
+ * The glass — the panel, the header and the footer — is rasterised once per
+ * geometry and kept. The app cells are rasterised one at a time and kept
+ * too, because the grid's arrival moves them: re-rasterising eight names
+ * sixty times a second would cost far more than the motion is worth, and
+ * the shell is meant to be cheap enough to leave running.
+ *
+ * What is left per frame is a copy of the glass and eight blits.
+ */
+static uint32_t *g_frost = NULL;      /* the glass, the header and the footer */
+static int       g_fw = 0, g_fh = 0;
+static uint32_t  g_frost_key = 0;
+static int       g_frost_built = 0;
+
+typedef struct {
+    uint32_t *px;
+    int       w, h;
+    uint32_t  key;
+    int       ok;
+} cell_raster;
+static cell_raster g_cell[FINN_APP_MAX];
+
+/* where each cell sits inside the layer */
+static int g_cell_x[FINN_APP_MAX], g_cell_y[FINN_APP_MAX];
+
 /* ---------------- motion ---------------- */
 static finn_anim g_a_open;
+static finn_anim g_a_scrim;      /* the room dimming behind the menu */
+static finn_anim g_a_grid;        /* the apps arriving into the grid */
 static finn_anim g_a_hover, g_a_press;
 static float     g_hover = 0.0f;
 static int       g_hover_idx = -1;     /* which control the pointer is on */
 static int       g_press_idx = -1;
 static int       g_press = FINNMENU_NONE;
+
+/*
+ * The grid's arrival.
+ *
+ * The panel is the room; the apps are the people coming in. They arrive
+ * after the room does, one after another, each rising a little into its
+ * place — which is what a grid of things that was not there a moment ago
+ * looks like.
+ *
+ * The step is small on purpose: eight tiles at a quarter of a second each
+ * would read as a queue, and the point is that the menu fills, not that it
+ * performs.
+ */
+#define GRID_DELAY 0.060f   /* the room is ready before anyone walks in */
+#define GRID_STEP  0.022f   /* between two arrivals                        */
+#define GRID_CELL  0.200f   /* one arrival                                 */
+#define GRID_RISE  10.0f    /* how far below its place a tile starts      */
+
+/* how long the whole arrival takes, in seconds */
+static float g_grid_total = GRID_CELL;
 
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
@@ -150,6 +196,10 @@ void finnmenu_free(void) {
         if (g_icons[i].loaded) fsvg_free(&g_icons[i].svg);
         g_icons[i].loaded = 0;
         g_icons[i].id[0] = 0;
+        free(g_cell[i].px);
+        g_cell[i].px = NULL;
+        g_cell[i].w = g_cell[i].h = 0;
+        g_cell[i].ok = 0;
     }
     finn_font_free(&g_f_head);
     finn_font_free(&g_f_label);
@@ -157,8 +207,12 @@ void finnmenu_free(void) {
     finn_font_free(&g_f_micro);
     free(g_layer);
     g_layer = NULL;
+    free(g_frost);
+    g_frost = NULL;
     g_lw = g_lh = 0;
+    g_fw = g_fh = 0;
     g_built = 0;
+    g_frost_built = 0;
     g_font_scale = -1.0f;
 }
 
@@ -176,12 +230,29 @@ void finnmenu_set_open(int open) {
          * something installed in the meantime. */
         finn_apps_load(g_registry, NULL);
         g_built = 0;
-        finn_anim_to(&g_a_open, 1.0f, OPEN_DUR, 0.0f, FINN_EASE_OUT_BACK);
+        finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
+        /* The room dims first and the door opens after it, so the menu is
+         * never a bright card that suddenly has a dark room behind it. */
+        finn_anim_to(&g_a_scrim, 1.0f, FINN_MOTION_SCRIM_IN, 0.0f, FINN_EASE_OUT);
+
+        /* and the apps walk in after the room is ready */
+        int count = finn_apps_count();
+        if (count > FINN_APP_MAX) count = FINN_APP_MAX;
+        float total = GRID_DELAY + (float)(count - 1) * GRID_STEP + GRID_CELL;
+        if (count < 1) total = GRID_DELAY + GRID_CELL;
+        g_grid_total = total;
+        finn_anim_jump(&g_a_grid, 0.0f);
+        finn_anim_to(&g_a_grid, 1.0f, total, 0.0f, FINN_EASE_LINEAR);
     } else {
-        finn_anim_to(&g_a_open, 0.0f, CLOSE_DUR, 0.0f, FINN_EASE_IN_OUT);
+        finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
+        /* and the room brightens first when the door shuts */
+        finn_anim_to(&g_a_scrim, 0.0f, FINN_MOTION_SCRIM_OUT, 0.0f, FINN_EASE_IN_OUT);
+        /* the grid does not walk back out: it is simply there when the room
+         * is empty, and the room closing takes it with it */
+        finn_anim_jump(&g_a_grid, 1.0f);
         g_press = FINNMENU_NONE;
         g_press_idx = -1;
-        finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     }
 }
 
@@ -189,12 +260,21 @@ int finnmenu_is_open(void) { return g_open; }
 int finnmenu_visible(void) { return finn_anim_v(&g_a_open) > 0.004f; }
 float finnmenu_openness(void) { return finn_anim_v(&g_a_open); }
 
+/* How dark the room is behind the menu, 0..1 of FINN_MOTION_SCRIM. The
+ * compositor dims the frame by this much, so the menu is the only lit thing
+ * in the room. */
+float finnmenu_scrim(void) {
+    return FINN_MOTION_SCRIM * finn_anim_v(&g_a_scrim);
+}
+
 int finnmenu_settled(void) {
     return !finn_anim_running(&g_a_open) && finn_anim_v(&g_a_open) >= 0.999f;
 }
 
 int finnmenu_tick(float dt) {
     int ch = finn_anim_tick(&g_a_open, dt);
+    ch |= finn_anim_tick(&g_a_scrim, dt);
+    ch |= finn_anim_tick(&g_a_grid, dt);
     ch |= finn_anim_tick(&g_a_hover, dt);
     ch |= finn_anim_tick(&g_a_press, dt);
     float hv = finn_anim_v(&g_a_hover);
@@ -203,8 +283,9 @@ int finnmenu_tick(float dt) {
 }
 
 int finnmenu_running(void) {
-    return finn_anim_running(&g_a_open) || finn_anim_running(&g_a_hover) ||
-           finn_anim_running(&g_a_press);
+    return finn_anim_running(&g_a_open) || finn_anim_running(&g_a_scrim) ||
+           finn_anim_running(&g_a_grid) ||
+           finn_anim_running(&g_a_hover) || finn_anim_running(&g_a_press);
 }
 
 /* ---------------- the catalogue ---------------- */
@@ -280,10 +361,197 @@ static uint32_t build_key(float s, int pw, int ph,
         for (const char *p = a->name; *p; p++) MIX(*p);
     }
     MIX((int)(g_hover * 64.0f));
+    MIX(g_hover_idx + 2);
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
     MIX(g_press_idx + 2);
+    /* the grid's arrival: every cell moves, so the layer moves */
+    MIX((int)(finn_anim_v(&g_a_grid) * 256.0f));
     #undef MIX
     return h ? h : 1u;
+}
+
+/* ---------------- the glass ----------------
+ *
+ * The panel, the header and the footer. None of it moves while the menu is
+ * opening, so it is rasterised once per geometry and copied into the layer;
+ * only the grid is redrawn while the apps arrive.
+ */
+static void build_frost(float s, int pw, int ph, int n,
+                        float wash_r, float wash_s) {
+    uint32_t *L = g_frost;
+    int lw = pw, lh = ph;
+    int x0 = rs(MENU_PAD, s);
+    int y = rs(MENU_PAD, s);
+    int full = pw - 2 * x0;
+
+    finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, 0.0f, 0.0f,
+                     (float)pw, (float)ph, s * MENU_R, FINN_GLASS, MENU_GLASS);
+
+    /* ---- the header ---- */
+    finn_text_draw(&g_f_head, L, lw, lh,
+                   (float)x0, (float)(y + rs(20, s)), "Applications", FINN_INK);
+
+    int ready = finn_apps_installed_count();
+    char head[64];
+    if (n == 0)
+        snprintf(head, sizeof head, "no apps");
+    else
+        snprintf(head, sizeof head, "%d of %d ready", ready, n);
+    text_r(L, lw, lh, &g_f_micro, (float)(x0 + full),
+           (float)(y + rs(19, s)), head, FINN_MUTE);
+
+    /* ---- the footer ---- */
+    int rows = (n + COLS - 1) / COLS;
+    if (rows < 1) rows = 1;
+    float grid_h = (float)rows * CELL_H + (float)(rows - 1) * ROW_GAP;
+
+    y += rs(HEAD_H, s) + rs(HEAD_GAP, s);
+    y += rs(grid_h, s) + rs(MENU_GAP, s);
+
+    finn_fill_rrect(L, lw, lh, (float)x0, (float)y, (float)full,
+                    (float)rs(1, s), 0.0f, FINN_HAIR);
+    y += rs(1, s) + rs(20, s);
+
+    const char *restart = "Restart";
+    const char *shutdown = "Shut down";
+    float rw = finn_text_width(&g_f_label, restart);
+    float sw = finn_text_width(&g_f_label, shutdown);
+
+    /* the wordmark: this is FinnOS's own front door */
+    finn_text_draw(&g_f_head, L, lw, lh, (float)x0, (float)(y + rs(15, s)),
+                   "FinnOS", FINN_INK);
+
+    /*
+     * The power row answers the pointer the way every other control in the
+     * shell does: a wash of ink behind the word, at the same strength the
+     * dock uses. Restart and Shut down are the two things the menu can do
+     * that are not an app, and they are drawn like everything else rather
+     * than as a line of quiet text that happens to be clickable.
+     */
+    {
+        int rx = x0 + full - (int)sw - (int)rw - rs(24, s);
+        int sx = x0 + full - (int)sw;
+
+        if (wash_r > 0.004f) {
+            unsigned al = (unsigned)(wash_r * 255.0f + 0.5f);
+            finn_fill_rrect(L, lw, lh, (float)(rx - rs(8, s)), (float)(y - rs(6, s)),
+                            (float)((int)rw + rs(16, s)), (float)rs(26, s),
+                            s * TILE_R, (FINN_INK & 0x00FFFFFFu) | (al << 24));
+        }
+        if (wash_s > 0.004f) {
+            unsigned al = (unsigned)(wash_s * 255.0f + 0.5f);
+            finn_fill_rrect(L, lw, lh, (float)(sx - rs(8, s)), (float)(y - rs(6, s)),
+                            (float)((int)sw + rs(16, s)), (float)rs(26, s),
+                            s * TILE_R, (FINN_INK & 0x00FFFFFFu) | (al << 24));
+        }
+
+        finn_text_draw(&g_f_label, L, lw, lh, (float)rx,
+                       (float)(y + rs(13, s)), restart, FINN_DIM);
+        text_r(L, lw, lh, &g_f_label, (float)(x0 + full), (float)(y + rs(13, s)),
+               shutdown, FINN_DIM);
+    }
+
+    /* the power row's targets: they live with the glass, because the glass
+     * is where the row is drawn */
+    g_r_restart.x = x0 + full - (int)sw - (int)rw - rs(24, s) - rs(8, s);
+    g_r_restart.y = y - rs(6, s);
+    g_r_restart.w = (int)rw + rs(16, s);
+    g_r_restart.h = rs(26, s);
+
+    g_r_shutdown.x = x0 + full - (int)sw - rs(8, s);
+    g_r_shutdown.y = y - rs(6, s);
+    g_r_shutdown.w = (int)sw + rs(16, s);
+    g_r_shutdown.h = rs(26, s);
+}
+
+/* ---------------- a cell ----------------
+ *
+ * One app: its tile, its glyph, its name and what it is. The cell is
+ * rasterised once and kept, because the grid's arrival moves it and the
+ * name under it does not change.
+ */
+static void build_cell(int i, const finn_app *a, float s,
+                       int cw, int ch, float cell_w, float box, float wash,
+                       float fx, float fy) {
+    cell_raster *c = &g_cell[i];
+
+    if (c->w != cw || c->h != ch) {
+        free(c->px);
+        c->px = malloc((size_t)cw * ch * 4);
+        c->w = cw; c->h = ch;
+    }
+    if (!c->px) { c->ok = 0; return; }
+    memset(c->px, 0, (size_t)cw * ch * 4);
+
+    uint32_t *L = c->px;
+    int lw = cw, lh = ch;
+
+    /* the tile is centred in its cell, so a row of tiles reads as a row
+     * rather than as a staircase */
+    float tx = (cell_w - box) * 0.5f + fx;
+    float bw = cell_w - s * 18.0f;
+    float ty = fy;
+
+    /*
+     * The tile is the app's own square: the accent for an app the machine
+     * can open, a quiet wash for one it cannot. A muted tile says "not
+     * here" more honestly than a coloured one that does nothing when it is
+     * pressed.
+     */
+    uint32_t glyph = a->installed ? FINN_KNOB : FINN_MUTE;
+    uint32_t cap_col = a->installed ? FINN_INK : FINN_DIM;
+
+    if (a->installed)
+        finn_fill_rrect(L, lw, lh, tx, ty, box, box, s * TILE_R, FINN_ON);
+    else
+        finn_fill_rrect(L, lw, lh, tx, ty, box, box, s * TILE_R,
+                        (FINN_INK & 0x00FFFFFFu) | 0x1A000000u);
+
+    /* the hover and press washes, the shell's only answer to a pointer */
+    if (a->installed && wash > 0.004f) {
+        unsigned al = (unsigned)(wash * 255.0f + 0.5f);
+        finn_fill_rrect(L, lw, lh, tx, ty, box, box, s * TILE_R,
+                        (FINN_INK & 0x00FFFFFFu) | (al << 24));
+    }
+
+    fsvg *svg = icon_for(i, a);
+    if (svg) {
+        int ipx, iox, ioy;
+        finn_icon_frame(svg, rs(ICON_INK, s),
+                        (int)lroundf(tx + box * 0.5f),
+                        (int)lroundf(ty + box * 0.5f), &ipx, &iox, &ioy);
+        const uint32_t *t = finn_icon_ref(svg, ipx, glyph, glyph, 0);
+        if (t) finn_blit(L, lw, lh, t, ipx, ipx, iox, ioy);
+    }
+
+    char cap[64];
+    fit_str(&g_f_label, a->name, bw, cap, sizeof cap);
+    float capw = finn_text_width(&g_f_label, cap);
+    float cap_base = ty + box + s * CAP_GAP + rs(11, s);
+    finn_text_draw(&g_f_label, L, lw, lh,
+                   tx + (box - capw) * 0.5f, cap_base, cap, cap_col);
+
+    /* the detail line: what the app is, or the truth about this machine */
+    const char *detail = a->installed ? a->note : "Not installed";
+    char det[64];
+    fit_str(&g_f_micro, detail, bw, det, sizeof det);
+    float detw = finn_text_width(&g_f_micro, det);
+    finn_text_draw(&g_f_micro, L, lw, lh,
+                   tx + (box - detw) * 0.5f, cap_base + rs(12, s),
+                   det, FINN_MUTE);
+
+    c->ok = 1;
+}
+
+/* How far along its arrival one cell is, 0..1. */
+static float cell_progress(int i) {
+    float v = finn_anim_v(&g_a_grid);
+    if (v >= 1.0f) return 1.0f;
+    float t = v * g_grid_total;
+    float p = (t - (GRID_DELAY + (float)i * GRID_STEP)) / GRID_CELL;
+    if (p <= 0.0f) return 0.0f;
+    if (p >= 1.0f) return 1.0f;
+    return finn_ease_at(FINN_EASE_OUT, p);
 }
 
 void finnmenu_render(int screen_w, int screen_h, float scale,
@@ -330,6 +598,95 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
     g_ax = px0 + pw / 2;
     g_ay = py0 + ph / 2;
 
+    int x0 = rs(MENU_PAD, s);
+    int y = rs(MENU_PAD, s);
+    int full = pw - 2 * x0;
+
+    g_r_panel.x = 0; g_r_panel.y = 0; g_r_panel.w = pw; g_r_panel.h = ph;
+
+    float cell_w = (float)full / (float)COLS;
+    float box = s * ICON_BOX;
+    int grid_y = y + rs(HEAD_H, s) + rs(HEAD_GAP, s);
+
+    /* the power row's washes: they are part of the glass */
+    float press_v = finn_anim_v(&g_a_press);
+    float wash_r = (FINN_MOTION_HOVER_WASH * g_hover *
+                    (g_hover_idx == FINN_APP_MAX ? 1.0f : 0.0f) +
+                    FINN_MOTION_PRESS_WASH * press_v *
+                    (g_press_idx == FINN_APP_MAX ? 1.0f : 0.0f));
+    float wash_s = (FINN_MOTION_HOVER_WASH * g_hover *
+                    (g_hover_idx == FINN_APP_MAX + 1 ? 1.0f : 0.0f) +
+                    FINN_MOTION_PRESS_WASH * press_v *
+                    (g_press_idx == FINN_APP_MAX + 1 ? 1.0f : 0.0f));
+
+    /* ---- the glass ---- */
+    {
+        uint32_t fk = 2166136261u;
+        #define MIX(v) do { fk ^= (uint32_t)(v); fk *= 16777619u; } while (0)
+        MIX((int)(s * 1000.0f)); MIX(pw); MIX(ph); MIX(g_lx0); MIX(g_ly0);
+        MIX(st->dark + 2); MIX(n); MIX(finn_apps_installed_count());
+        MIX((int)(wash_r * 255.0f)); MIX((int)(wash_s * 255.0f));
+        #undef MIX
+        if (!fk) fk = 1u;
+
+        if (!g_frost_built || fk != g_frost_key ||
+            pw != g_fw || ph != g_fh) {
+            if (pw != g_fw || ph != g_fh) {
+                free(g_frost);
+                g_frost = malloc((size_t)pw * ph * 4);
+                g_fw = pw; g_fh = ph;
+            }
+            if (!g_frost) { g_frost_built = 0; return; }
+            g_frost_key = fk;
+            g_frost_built = 1;
+            memset(g_frost, 0, (size_t)pw * ph * 4);
+            build_frost(s, pw, ph, n, wash_r, wash_s);
+        }
+    }
+
+    /* ---- the cells ---- */
+    int cw = (int)ceilf(cell_w), ch = (int)ceilf(CELL_H * s);
+    for (int i = 0; i < n; i++) {
+        const finn_app *a = finn_apps_at(i);
+        if (!a) break;
+
+        int col = i % COLS, row = i / COLS;
+        float cx = (float)x0 + (float)col * cell_w;
+        float cy = (float)grid_y + (float)row * (CELL_H + ROW_GAP) * s;
+
+        g_r_app[i].x = (int)(cx + (cell_w - box) * 0.5f);
+        g_r_app[i].y = (int)cy;
+        g_r_app[i].w = (int)box;
+        g_r_app[i].h = (int)box;
+
+        g_cell_x[i] = (int)floorf(cx);
+        g_cell_y[i] = (int)floorf(cy);
+
+        /* what the cell is drawn from: its app, its size and its wash */
+        float wash = 0.0f;
+        if (a->installed)
+            wash = (FINN_MOTION_HOVER_WASH * g_hover * (g_hover_idx == i ? 1.0f : 0.0f) +
+                    FINN_MOTION_PRESS_WASH * press_v * (g_press_idx == i ? 1.0f : 0.0f));
+
+        uint32_t ck = 2166136261u;
+        #define MIX(v) do { ck ^= (uint32_t)(v); ck *= 16777619u; } while (0)
+        MIX(i); MIX(cw); MIX(ch); MIX((int)(s * 1000.0f));
+        MIX(st->dark + 2); MIX(a->installed ? 1 : 0);
+        for (const char *p = a->name; *p; p++) MIX(*p);
+        if (a->installed)
+            for (const char *p = a->note; *p; p++) MIX(*p);
+        MIX((int)(wash * 255.0f));
+        #undef MIX
+        if (!ck) ck = 1u;
+
+        if (!g_cell[i].ok || g_cell[i].key != ck) {
+            g_cell[i].key = ck;
+            build_cell(i, a, s, cw, ch, cell_w, box, wash,
+                       cx - (float)g_cell_x[i], cy - (float)g_cell_y[i]);
+        }
+    }
+
+    /* ---- the layer ---- */
     uint32_t key = build_key(s, pw, ph, px0, py0, pw, ph, st);
     if (g_built && key == g_build_key) return;
     g_build_key = key;
@@ -342,145 +699,20 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
         g_lw = pw; g_lh = ph;
     }
     if (!g_layer) return;
-    memset(g_layer, 0, (size_t)pw * ph * 4);
 
-    uint32_t *L = g_layer;
-    int lw = pw, lh = ph;
-
-    finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, 0.0f, 0.0f,
-                     (float)pw, (float)ph, s * MENU_R, FINN_GLASS, MENU_GLASS);
-
-    int x0 = rs(MENU_PAD, s);
-    int y = rs(MENU_PAD, s);
-    int full = pw - 2 * x0;
-
-    g_r_panel.x = 0; g_r_panel.y = 0; g_r_panel.w = pw; g_r_panel.h = ph;
-    g_r_restart.w = g_r_restart.h = 0;
-    g_r_shutdown.w = g_r_shutdown.h = 0;
-
-    /* ---- the header ---- */
-    finn_text_draw(&g_f_head, L, lw, lh,
-                   (float)x0, (float)(y + rs(20, s)), "Applications", FINN_INK);
-
-    int ready = finn_apps_installed_count();
-    char head[64];
-    if (n == 0)
-        snprintf(head, sizeof head, "no apps");
-    else
-        snprintf(head, sizeof head, "%d of %d ready", ready, n);
-    text_r(L, lw, lh, &g_f_micro, (float)(x0 + full),
-           (float)(y + rs(19, s)), head, FINN_MUTE);
-
-    y += rs(HEAD_H, s) + rs(HEAD_GAP, s);
-
-    /* ---- the grid ---- */
-    float cell_w = (float)full / (float)COLS;
-    float box = s * ICON_BOX;
+    /* the glass first, then the apps on top of it */
+    memcpy(g_layer, g_frost, (size_t)pw * ph * 4);
 
     for (int i = 0; i < n; i++) {
-        const finn_app *a = finn_apps_at(i);
-        if (!a) break;
-
-        int col = i % COLS, row = i / COLS;
-        float cx = (float)x0 + (float)col * cell_w;
-        float cy = (float)y + (float)row * (CELL_H + ROW_GAP) * s;
-        float bw = cell_w - s * 18.0f;
-
-        /* the tile is centred in its cell, so a row of tiles reads as a row
-         * rather than as a staircase */
-        float bx = cx + (cell_w - box) * 0.5f;
-
-        g_r_app[i].x = (int)bx;
-        g_r_app[i].y = (int)cy;
-        g_r_app[i].w = (int)box;
-        g_r_app[i].h = (int)box;
-
-        /*
-         * The tile is the app's own square: the accent for an app the machine
-         * can open, a quiet wash for one it cannot. A muted tile says "not
-         * here" more honestly than a coloured one that does nothing when
-         * pressed.
-         */
-        uint32_t glyph = a->installed ? FINN_KNOB : FINN_MUTE;
-        uint32_t cap_col = a->installed ? FINN_INK : FINN_DIM;
-
-        if (a->installed)
-            finn_fill_rrect(L, lw, lh, bx, cy, box, box, s * TILE_R, FINN_ON);
-        else
-            finn_fill_rrect(L, lw, lh, bx, cy, box, box, s * TILE_R,
-                            (FINN_INK & 0x00FFFFFFu) | 0x1A000000u);
-
-        /* the hover and press washes, the shell's only answer to a pointer */
-        if (a->installed) {
-            float wash = (HOVER_WASH * g_hover * (g_hover_idx == i ? 1.0f : 0.0f) +
-                          PRESS_WASH * finn_anim_v(&g_a_press) *
-                          (g_press_idx == i ? 1.0f : 0.0f));
-            if (wash > 0.004f) {
-                unsigned al = (unsigned)(wash * 255.0f + 0.5f);
-                if (al > 255) al = 255;
-                finn_fill_rrect(L, lw, lh, bx, cy, box, box, s * TILE_R,
-                                (FINN_INK & 0x00FFFFFFu) | (al << 24));
-            }
-        }
-
-        fsvg *svg = icon_for(i, a);
-        if (svg) {
-            int ipx, iox, ioy;
-            finn_icon_frame(svg, rs(ICON_INK, s),
-                            (int)lroundf(bx + box * 0.5f),
-                            (int)lroundf(cy + box * 0.5f), &ipx, &iox, &ioy);
-            const uint32_t *t = finn_icon_ref(svg, ipx, glyph, glyph, 0);
-            if (t) finn_blit(L, lw, lh, t, ipx, ipx, iox, ioy);
-        }
-
-        char cap[64];
-        fit_str(&g_f_label, a->name, bw, cap, sizeof cap);
-        float capw = finn_text_width(&g_f_label, cap);
-        float cap_base = cy + box + s * CAP_GAP + rs(11, s);
-        finn_text_draw(&g_f_label, L, lw, lh,
-                       bx + (box - capw) * 0.5f, cap_base, cap, cap_col);
-
-        /* the detail line: what the app is, or the truth about this machine */
-        const char *detail = a->installed ? a->note : "Not installed";
-        char det[64];
-        fit_str(&g_f_micro, detail, bw, det, sizeof det);
-        float detw = finn_text_width(&g_f_micro, det);
-        finn_text_draw(&g_f_micro, L, lw, lh,
-                       bx + (box - detw) * 0.5f, cap_base + rs(12, s),
-                       det, FINN_MUTE);
+        if (!g_cell[i].ok) continue;
+        float p = cell_progress(i);
+        if (p <= 0.004f) continue;
+        int dy = (int)lroundf((1.0f - p) * GRID_RISE * s);
+        finn_blit_scaled(g_layer, g_lw, g_lh, g_cell[i].px,
+                         g_cell[i].w, g_cell[i].h,
+                         (float)g_cell_x[i], (float)(g_cell_y[i] + dy),
+                         (float)g_cell[i].w, (float)g_cell[i].h, p);
     }
-
-    y += rs(grid_h, s) + rs(MENU_GAP, s);
-
-    /* ---- the footer ---- */
-    finn_fill_rrect(L, lw, lh, (float)x0, (float)y, (float)full,
-                    (float)rs(1, s), 0.0f, FINN_HAIR);
-    y += rs(1, s) + rs(20, s);
-
-    const char *restart = "Restart";
-    const char *shutdown = "Shut down";
-    float rw = finn_text_width(&g_f_label, restart);
-    float sw = finn_text_width(&g_f_label, shutdown);
-
-    /* the wordmark: this is FinnOS's own front door */
-    finn_text_draw(&g_f_head, L, lw, lh, (float)x0, (float)(y + rs(15, s)),
-                   "FinnOS", FINN_INK);
-
-    finn_text_draw(&g_f_label, L, lw, lh,
-                   (float)(x0 + full - sw - rw - rs(24, s)),
-                   (float)(y + rs(13, s)), restart, FINN_DIM);
-    text_r(L, lw, lh, &g_f_label, (float)(x0 + full), (float)(y + rs(13, s)),
-           shutdown, FINN_DIM);
-
-    g_r_restart.x = x0 + full - (int)sw - (int)rw - rs(24, s) - rs(8, s);
-    g_r_restart.y = y - rs(6, s);
-    g_r_restart.w = (int)rw + rs(16, s);
-    g_r_restart.h = rs(26, s);
-
-    g_r_shutdown.x = x0 + full - (int)sw - rs(8, s);
-    g_r_shutdown.y = y - rs(6, s);
-    g_r_shutdown.w = (int)sw + rs(16, s);
-    g_r_shutdown.h = rs(26, s);
 }
 
 /* ---------------- compositing ---------------- */
@@ -492,9 +724,9 @@ void finnmenu_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
 
 void finnmenu_transform(float *x, float *y, float *w, float *h, float *alpha) {
     float v = finn_anim_v(&g_a_open);
-    float a = v * 1.15f;
+    float a = v * FINN_MOTION_FADE;
     if (a > 1.0f) a = 1.0f;
-    float k = OPEN_SCALE + (1.0f - OPEN_SCALE) * v;
+    float k = FINN_MOTION_OPEN_SCALE + (1.0f - FINN_MOTION_OPEN_SCALE) * v;
 
     /* The menu grows out of its own middle, so the scaled rectangle keeps
      * that middle where it is: the centre moves with the scale, and the
@@ -573,20 +805,20 @@ void finnmenu_hover_at(int px, int py) {
     if (next == g_hover_idx) return;
     g_hover_idx = next;
     if (next >= 0)
-        finn_anim_to(&g_a_hover, 1.0f, HOVER_IN_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_hover, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
     else
-        finn_anim_to(&g_a_hover, 0.0f, HOVER_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_hover, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
 }
 
 void finnmenu_press(int what) {
     g_press = what;
     if (what == FINNMENU_NONE) {
         g_press_idx = -1;
-        finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     } else {
         if (what == FINNMENU_APP) g_press_idx = g_hover_idx;
         else if (what == FINNMENU_RESTART)  g_press_idx = FINN_APP_MAX;
         else if (what == FINNMENU_SHUTDOWN) g_press_idx = FINN_APP_MAX + 1;
-        finn_anim_to(&g_a_press, 1.0f, PRESS_IN_DUR, 0.0f, FINN_EASE_OUT);
+        finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
     }
 }

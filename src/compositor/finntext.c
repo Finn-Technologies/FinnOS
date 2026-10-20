@@ -72,6 +72,13 @@ void finn_text_draw(const finn_font *f, uint32_t *buf, int w, int h,
                     float x, float y, const char *s, uint32_t color) {
     FT_Face face = (FT_Face)f->face;
     const unsigned char *p = (const unsigned char *)s;
+
+    /* The token's own alpha is part of the ink: a label that is fading out
+     * fades by its colour, not by a second mechanism. Every token the shell
+     * draws with is opaque, so this changes nothing until something asks it
+     * to. */
+    float ca = (float)((color >> 24) & 0xFFu) / 255.0f;
+
     while (*p) {
         unsigned cp = utf8_next(&p);
         if (FT_Load_Char(face, cp, FT_LOAD_RENDER | FT_LOAD_TARGET_NORMAL)) continue;
@@ -87,7 +94,8 @@ void finn_text_draw(const finn_font *f, uint32_t *buf, int w, int h,
                 uint8_t a = g->bitmap.buffer[row * g->bitmap.pitch + col];
                 if (!a) continue;
                 uint32_t *d = &buf[(size_t)py * w + px];
-                float sa = a / 255.0f;
+                float sa = (a / 255.0f) * ca;
+                if (sa <= 0.0f) continue;
                 /* Composite in straight alpha: the shell surfaces are
                  * transparent layers, so text that wrote an opaque result
                  * would punch black holes through them. */
