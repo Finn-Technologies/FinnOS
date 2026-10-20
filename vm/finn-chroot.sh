@@ -1,6 +1,9 @@
 #!/bin/bash
-# FinnOS chroot config (runs inside /mnt via arch-chroot)
-exec > >(tee /tmp/finn-chroot.log) 2>&1
+# FinnOS chroot config — runs inside /mnt via arch-chroot.
+#
+# It lays down the base image: the user, the services, the fonts, the
+# assets and the sources. It does not build the compositor — that happens
+# on the machine itself, with the toolchain that is now installed.
 set -x
 HOST=http://10.211.55.2:8765
 post() { curl -s -X POST --data-binary @/tmp/finn-chroot.log "$HOST/log" -o /dev/null 2>/dev/null || true; }
@@ -29,15 +32,9 @@ systemctl enable seatd 2>/dev/null || true
 systemctl enable systemd-timesyncd 2>/dev/null || true
 post
 
-echo "=== autologin + compositor autostart ==="
+echo "=== autologin on tty1 ==="
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin finn --noclear %%I $TERM\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf
-cat > /home/finn/.bash_profile <<'EOF'
-if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  exec /usr/local/bin/finn-comp
-fi
-EOF
-chown finn:finn /home/finn/.bash_profile
 post
 
 echo "=== Fixel Display fonts ==="
@@ -50,32 +47,39 @@ fc-cache -f >/dev/null 2>&1 || true
 fc-match "Fixel Display" || true
 post
 
-echo "=== wallpaper + apps + finnpkg ==="
-mkdir -p /usr/share/finn/wallpaper /opt/finn-apps /usr/local/bin
+echo "=== the payload: wallpaper, icons, registry, the package manager ==="
+mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/local/bin
 curl -sLo /usr/share/finn/wallpaper/default.webp "$HOST/assets/wallpaper/default.webp"
-for a in Desktop _tokens _targets; do curl -sLo "/opt/finn-apps/$a.fui" "$HOST/ui/$a.fui"; done
-for a in launcher/Launcher settings/Settings files/Files; do
-  mkdir -p "/opt/finn-apps/$(dirname $a)"
-  curl -sLo "/opt/finn-apps/$a.fui" "$HOST/apps/$a.fui"
+curl -sLo /usr/share/finn/apps.registry "$HOST/assets/apps.registry"
+for icon in battery battery_bolt bluetooth code cursor ethernet files moon notes start_button store studio sun sync terminal vault volume wifi; do
+  curl -sLo "/usr/share/finn/icons/$icon.svg" "$HOST/src/compositor/icons/$icon.svg"
 done
-curl -sLo /usr/local/bin/finnpkg "$HOST/finnpkg/finnpkg" && chmod +x /usr/local/bin/finnpkg
-ls -R /opt/finn-apps
+curl -sLo /usr/local/bin/finnpkg "$HOST/src/pkg/finnpkg" && chmod +x /usr/local/bin/finnpkg
+chown -R root:finn /usr/share/finn /var/lib/finnpkg
+ls /usr/share/finn/icons/
 post
 
-echo "=== finn-comp (boot placeholder until Rust build) ==="
-cat > /usr/local/bin/finn-comp <<'EOF'
-#!/bin/bash
-# FinnOS compositor placeholder - proves the shell handoff works on boot.
-clear
-echo "finn-comp 0.1 - FinnOS"
-echo "target: Desktop | wallpaper: /usr/share/finn/wallpaper/default.webp"
-echo "font: $(fc-match -f '%{family}' 'Fixel Display' 2>/dev/null || echo Fixel)"
-echo
-echo "layers: wallpaper < windows < dock < overlay"
-echo "Super+Space = launcher (stub)"
-exec sleep infinity
-EOF
-chmod +x /usr/local/bin/finn-comp
+echo "=== the system units ==="
+curl -sLo /etc/systemd/system/finn-comp.service "$HOST/arch-base/finn-comp.service"
+curl -sLo /etc/systemd/system/finnd.service "$HOST/arch-base/finnd.service"
+curl -sLo /usr/lib/tmpfiles.d/finn.conf "$HOST/arch-base/finn-tmpfiles.conf"
+systemctl daemon-reload
+systemctl enable finn-comp finnd 2>/dev/null || true
+post
+
+echo "=== the sources, so the machine can build the compositor ==="
+# The host serves the repository as a tarball: `tar -czf /tmp/finnos.tar.gz
+# --exclude=.git -C <repo> .` and the installer picks it up from the same
+# place as everything else.
+mkdir -p /opt/finnos
+if curl -sfLo /tmp/finnos.tar.gz "$HOST/finnos.tar.gz"; then
+  tar -C /opt/finnos -xzf /tmp/finnos.tar.gz
+  chown -R finn:finn /opt/finnos
+  echo "SOURCES=installed"
+else
+  echo "WARN: the source tarball was not available; push it with vm/deploy.sh"
+  echo "SOURCES=missing"
+fi
 post
 
 echo "=== initramfs + bootloader ==="
@@ -84,7 +88,7 @@ post
 ROOTUUID=$(blkid -s UUID -o value /dev/sda2)
 echo "ROOTUUID=$ROOTUUID"
 KERNEL=/Image
-[ -f /boot/Image ] || KERNEL=/vmlinuz-linux
+[ -f /boot/Image ] || KERNEL=vmlinuz-linux
 echo "KERNEL=$KERNEL"
 ls -la /boot/ | head -20
 if grub-install --target=arm64-efi --efi-directory=/boot --bootloader-id=FinnOS --removable 2>&1 | tail -5; then

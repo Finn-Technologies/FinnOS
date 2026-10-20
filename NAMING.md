@@ -17,24 +17,36 @@
 | **FinnOS Compose** | The framework that composes FinnUI into a running shell — compiler + state + renderer |
 | **FinnOS Update** | Atomic A/B OTA subsystem, driven by `finnpkg` |
 | **FinnAI** | Opt-in local inference runtime. Ships off. No models in the base image |
-| **FinnSDK** | Public toolkit: `fuic`, docs, emulator, app templates |
+| **FinnSDK** | Public toolkit: `fuic`, the client library, the app templates, the docs |
 
-## System components (internal)
+## System components
 | Binary | Role |
 |---|---|
-| `finn-comp` | The compositor / rendering engine (direct DRM/KMS, dumb buffers; no X11, no Wayland, no EGL) |
-| `finnd` | The control plane: the single permissioned entry point for state, input, display and power |
+| `finn-comp` | The compositor / rendering engine and the shell (direct DRM/KMS, dumb buffers; no X11, no Wayland, no EGL) |
+| `finnd` | The control plane: the single permissioned entry point for state, input, display, power and apps |
 | `finnctl` | Control-plane client — every `finnd` verb is scriptable from a shell |
 | `finn-mcp` | MCP adapter. Exposes the control plane to agents. Runs where the agent runs, not on the device |
-| `finn-shell` | Desktop shell: dock, launcher, status |
 | `finnpkg` | Package manager + OTA frontend (`.finn` packages) |
 | `fuic` | FinnUI compiler: `.fui` → `.fbin` |
+
+### The shell
+
+The desktop shell — the dock, the Control Center, the clock page and the
+Start Menu — is **not a separate binary**. It is a set of surfaces inside
+`finn-comp`, because a surface that lives in the compositor's own frame
+costs a blit rather than a round trip over a socket. `finn-shell` is
+reserved for the name if that ever changes; today there is no such
+process, and there should not be one.
 
 ### Compositor modules
 Named for what they render, not for how: `finnvg` (vector rasteriser), `finntext`
 (Fixel Display text), `finnstate` (the system state the chrome reflects),
-`finndock` (desktop shell chrome), `finnpointer` (evdev pointer + cursor),
-`finnsock` (unix-socket helpers), `finnproto` (the control wire protocol).
+`finndock` (the dock), `finncontrol` (the Control Center), `finnclock` (the clock
+page), `finnmenu` (the Start Menu), `finnpointer` (evdev pointer + cursor),
+`finnsock` (unix-socket helpers), `finnproto` (the control wire protocol),
+`finnapps` (the application registry), `finndraw` (the shared drawing
+primitives), `finnblur` (the blurred wallpaper), `finnanim` (the animation
+tracks), `finnnotify` (the notification queue), `finngpu` (GBM/EGL compositing).
 
 ### Control-plane rule
 `finnd` is the OS API. MCP is one binding of it, and lives outside the OS.
@@ -57,7 +69,7 @@ as the zero-AI rule.
 | **Finn Sync** | Device-to-device sync |
 
 ## Reserved — do not use
-`Findex` (conflicts with the JDK indexer), `Finka`, `Finnix` (existing Linux distro), `FinnX`, `Finn Shell` as a *product* name (it is a component).
+`Findex` (conflicts with the JDK indexer), `Finka`, `Finnix` (existing Linux distro), `FinnX`, `Finn Shell` as a *product* name (the shell is a compositor subsystem).
 
 ## Visual lockup
 The boot mark is four dots in a 2×2 grid plus a sparkle — always rendered in the family accent `#7AB8FF` over `#0B0E14`, or inverted on light surfaces. The wordmark is "FinnOS" in **Fixel Display SemiBold**; never letterspaced, never all-caps, never with a space.

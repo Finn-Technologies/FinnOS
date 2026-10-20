@@ -1,8 +1,23 @@
-# FinnOS - minimal Arch base (dev: ARM64 for Parallels on M-series, release: x86_64 for i3-4130)
+# FinnOS base image
+#
+# The base is Arch Linux: FinnOS ships its own display server and shell, and
+# everything else — the init system, the toolchain, the network stack — is
+# the distribution's. What is *not* here is as important as what is: no
+# X11, no Wayland, no GTK, no Qt, no XWayland. A machine running FinnOS has
+# no display server but the one it was built with.
+#
+# The two targets:
+#
+#   ARM64   the dev VM, on Apple Silicon under Parallels
+#   X86_64  the release target: an i3-4130 with HD Graphics and 4 GB
+#
+# The compositor needs the DRM headers, GBM, EGL and FreeType; the GPU
+# stack differs between the two.
+
 BASE=base linux linux-firmware systemd networkmanager sudo openssh
 AUDIO=alsa-lib alsa-utils alsa-ucm-conf
-GRAPHICS_ARM=mesa mali? no: mesa wayland wayland-protocols egl-wayland libdrm libinput seatd
-GRAPHICS_X86=mesa xf86-video-intel vulkan-intel intel-ucode libdrm libinput seatd
+GRAPHICS_ARM=mesa gbm egl libdrm libinput seatd
+GRAPHICS_X86=mesa vulkan-intel intel-ucode libdrm libinput seatd
 FONTS=ttf-dejavu ttf-liberation
-TOOLS=python python-pip cairo wayland-protocols git foot
-# no X11, no GTK, no Qt, no XWayland - enforced in setup.sh
+TOOLS=python python-pip git tar
+BUILD=base-devel pkgconf

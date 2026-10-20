@@ -1,39 +1,69 @@
 #!/bin/bash
-# FinnOS setup - runs INSIDE Arch VM (ARM dev or x86_64 release)
+# FinnOS base setup — runs INSIDE the Arch VM, after the base image is on
+# the disk.
+#
+#   arch-base/setup.sh            the dev VM: ARM64
+#   arch-base/setup.sh x86_64     the release target
+#
+# It does four things, in order: make the machine FinnOS's rather than
+# Arch's, put the system units in place, put the assets in place, and make
+# the compositor come up on the console.
 set -eux
+
+ARCH="${1:-aarch64}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$HERE")"
+
 # 1. remove any X11/GTK/Qt if present (standalone ecosystem)
 pacman -Rns --noconfirm xorg-server xwayland gtk3 gtk4 qt5-base qt6-base 2>/dev/null || true
+
 # 2. install base
 pacman -Syu --noconfirm
-pacman -S --noconfirm base linux linux-firmware systemd networkmanager sudo openssh mesa wayland wayland-protocols libdrm libinput seatd fontconfig ttf-dejavu git python python-pip cairo foot
+pacman -S --noconfirm base linux linux-firmware systemd networkmanager sudo openssh \
+    mesa gbm egl libdrm libinput seatd fontconfig ttf-dejavu ttf-liberation \
+    python python-pip git tar base-devel pkgconf
+
 # 3. finn user, no password sudo for dev
 id finn 2>/dev/null || useradd -m -G wheel,input,video,seat -s /bin/bash finn
 echo "finn ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/finn
+chmod 440 /etc/sudoers.d/finn
+
 # 4. enable seatd + network
 systemctl enable seatd NetworkManager systemd-networkd
-# 5. install finn-comp + apps + finnpkg (copied from host via shared folder or git)
-DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(dirname "$DIR")"
-install -Dm755 "$ROOT/finnpkg/finnpkg" /usr/local/bin/finnpkg
-install -Dm755 "$ROOT/finn-comp/target/release/finn-comp" /usr/local/bin/finn-comp
-cp -r "$ROOT/apps" /opt/finn-apps
-mkdir -p /usr/share/finn/wallpaper
-cp "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
-mkdir -p /usr/share/fonts/OTF
+
+# 5. the system units
+install -Dm644 "$HERE/finn-comp.service" /etc/systemd/system/finn-comp.service
+install -Dm644 "$HERE/finnd.service"      /etc/systemd/system/finnd.service
+install -Dm644 "$HERE/finn-tmpfiles.conf" /usr/lib/tmpfiles.d/finn.conf
+install -Dm755 "$ROOT/src/pkg/finnpkg"    /usr/local/bin/finnpkg
+systemctl daemon-reload
+systemctl enable finn-comp finnd
+
+# 6. the assets: fonts, wallpaper, icons, the app registry
+mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg
 cp "$ROOT/assets/fonts/FixelDisplay/"*.otf /usr/share/fonts/OTF/
+cp "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
+cp "$ROOT/src/compositor/icons/"*.svg     /usr/share/finn/icons/
+install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
-# 6. systemd autologin + compositor autostart on tty1
+
+# 7. the shell's data: the icons' own directory, and the install list the
+#    package manager owns
+chown -R root:finn /usr/share/finn /var/lib/finnpkg
+chmod 755 /usr/share/finn /var/lib/finnpkg
+
+# 8. autologin on tty1, and the compositor takes the console
 mkdir -p /etc/systemd/system/getty@tty1.service.d
 cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<'EOF'
 [Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin finn --noclear %I $TERM
 EOF
-cat > /home/finn/.bash_profile <<'EOF'
-if [ -z "$WAYLAND_DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-  exec /usr/local/bin/finn-comp
-fi
-EOF
-chown finn:finn /home/finn/.bash_profile
-echo "FinnOS base ready. reboot."
+
+# 9. the sources, so the machine can build the compositor
+mkdir -p /opt/finnos
+cp -r "$ROOT/src" "$ROOT/assets" "$ROOT/ui" "$ROOT/apps" /opt/finnos/ 2>/dev/null || true
+chown -R finn:finn /opt/finnos
+
+echo "FinnOS base ready on $ARCH. Build with: cd /opt/finnos && make && sudo make install"
