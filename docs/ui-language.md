@@ -8,6 +8,41 @@ The language is small on purpose. It describes *what the interface is*, and
 never *how the machine draws it* — that is the compositor's business, and
 the shell surfaces are drawn by hand in C for exactly that reason.
 
+## The grammar
+
+The language is small. In full:
+
+```
+file     := item*
+item     := 'screen' IDENT '{' body '}'
+          | 'theme'  IDENT '{' decl* '}'
+          | 'target' IDENT '{' decl* '}'
+body     := stmt*
+stmt     := property | element
+property := IDENT ['(' args ')'] ':' value
+element  := IDENT ['(' args ')'] ['{' body '}']
+args     := arg (',' arg)*
+arg      := IDENT ':' value | value
+value    := atom+          -- a phrase, when there is more than one atom
+atom     := STRING | NUMBER [unit] | COLOUR | IDENT ('.' IDENT)*
+          | '[' value_list ']' | '(' value_list ')' | '{' map '}'
+          | atom '->' atom
+```
+
+A statement ends at the end of the line. A newline inside brackets or
+parentheses is only whitespace, which is what lets a property be a
+phrase — `focus_ring: 2px accent when keyboard_nav` — without the
+grammar having to know about every kind of phrase there is.
+
+The operators that matter:
+
+| | |
+|---|---|
+| `+` | composition: `token.wallpaper_desktop + token.wallpaper_flute` |
+| `->` | a mapping: `adapt(Desktop:5, Mobile:3)` sets a value per target |
+| `:` | a named argument, or a property's value |
+| `,` | a list |
+
 ## A screen
 
 ```fui
