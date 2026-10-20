@@ -32,7 +32,9 @@ control: core
 tools:
 	$(MAKE) -C src/tools
 
-test: all
+# The tests do not need the C toolchain: they cover the parts that can be
+# tested without a display, and they run anywhere Python does.
+test:
 	$(MAKE) -C tests
 
 check: test
