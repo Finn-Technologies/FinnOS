@@ -24,20 +24,20 @@ echo "==> syncing $ROOT -> $HOST:$REMOTE"
 tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='.git' \
     --exclude='*.o' \
-    --exclude='finn-comp/finn-comp' \
-    --exclude='finn-comp/finnd' \
-    --exclude='finn-comp/finnctl' \
-    --exclude='finn-comp/dockprev' \
-    --exclude='finn-comp/fvtest' \
+    --exclude='*.a' \
+    --exclude='src/compositor/finn-comp' \
+    --exclude='src/control/finnd' \
+    --exclude='src/control/finnctl' \
+    --exclude='src/tools/vgtest' \
+    --exclude='src/tools/dockprev' \
     . | ssh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 
 echo "==> building"
-ssh "$HOST" "cd $REMOTE/finn-comp && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
+ssh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
 
 echo "==> installing"
-ssh "$HOST" "cd $REMOTE/finn-comp && sudo make install && \
+ssh "$HOST" "cd $REMOTE && sudo make install && \
              sudo install -d /var/lib/finnpkg && \
-             sudo install -m644 $REMOTE/assets/apps.registry /usr/share/finn/apps.registry && \
              sudo chgrp -R finn /usr/share/finn /var/lib/finnpkg"
 
 if [ "$RESTART" = "1" ]; then

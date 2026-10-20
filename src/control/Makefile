@@ -1,0 +1,39 @@
+# finnd and finnctl — the FinnOS control plane and its client.
+#
+#   finnd     the control plane: the single permissioned entry point for
+#             state, input, display, power and apps
+#   finnctl   the client: every verb is scriptable from a shell
+#
+# The two are the same source tree because they are the same protocol from
+# two ends, and the protocol is one header (core/finnproto.h).
+
+CC      ?= gcc
+CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
+CFLAGS  += -I../core
+PKGS     = alsa
+LDLIBS  += $(shell pkg-config --libs $(PKGS))
+
+CORE     = ../core/libfinncore.a
+
+HDRS     = ../core/finnapps.h ../core/finnproto.h ../core/finnsock.h \
+           ../core/finnstate.h
+
+all: finnd finnctl
+
+finnd: finnd.c $(CORE) $(HDRS)
+	$(CC) $(CFLAGS) -o $@ finnd.c $(CORE) $(LDLIBS)
+
+finnctl: finnctl.c $(CORE) $(HDRS)
+	$(CC) $(CFLAGS) -o $@ finnctl.c $(CORE) $(LDLIBS)
+
+PREFIX  ?= /usr/local
+BINDIR  ?= $(PREFIX)/bin
+
+install: all
+	install -Dm755 finnd   $(DESTDIR)$(BINDIR)/finnd
+	install -Dm755 finnctl $(DESTDIR)$(BINDIR)/finnctl
+
+clean:
+	rm -f finnd finnctl
+
+.PHONY: all install clean

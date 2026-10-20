@@ -11,7 +11,7 @@
  *   finntext     Fixel Display text
  *   finnstate    the system state the chrome reflects
  *   finndock     the desktop shell chrome, as a cached layer
- *   finncc       the Control Center, as a cached layer
+ *   finncontrol  the Control Center, as a cached layer
  *   finnclock    the clock page, as a cached layer
  *   finnmenu     the Start Menu, as a cached layer
  *   finnpointer  evdev pointer + cursor sprite
@@ -48,7 +48,7 @@
 #include <webp/decode.h>
 
 #include "finndock.h"
-#include "finncc.h"
+#include "finncontrol.h"
 #include "finnclock.h"
 #include "finnmenu.h"
 #include "finnnotify.h"
@@ -341,7 +341,7 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
                  "OK cc=%d openness=%.3f cc_anim=%d clock=%d clock_openness=%.3f "
                  "menu=%d menu_openness=%.3f "
                  "dock_anim=%d dock=%d,%d,%d,%d pointer=%d,%d buttons=%d\n",
-                 finncc_is_open(), finncc_openness(), finncc_running(),
+                 finncontrol_is_open(), finncontrol_openness(), finncontrol_running(),
                  finnclock_is_open(), finnclock_openness(),
                  finnmenu_is_open(), finnmenu_openness(),
                  finndock_running(),
@@ -553,13 +553,13 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
      * the mark that ties the pill to the panel above it, so it is driven by
      * the panel's own openness and fades out with it.
      */
-    finndock_set_well(finncc_openness());
+    finndock_set_well(finncontrol_openness());
     finndock_set_clock_well(finnclock_openness());
     finndock_render(w, h, scale * DOCK_SCALE, st);
-    if (finncc_visible()) {
+    if (finncontrol_visible()) {
         int dx, dy, dw, dh;
         finndock_geometry(&dx, &dy, &dw, &dh);
-        finncc_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
+        finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
     }
     /* The clock page shares the tray's well with nothing: the well marks the
      * pill that opens the Control Center, and this page opens from the clock
@@ -588,9 +588,9 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
     /* the panel is in the base layer too, so a pointer move over it costs a
      * blit and nothing more. While it is mid-open it is transformed instead:
      * the raster is unchanged, only where and how large it lands. */
-    if (finncc_visible()) {
-        if (finncc_settled()) finncc_blit(base, w, h, 0, 0);
-        else                  finncc_blit_scaled(base, w, h);
+    if (finncontrol_visible()) {
+        if (finncontrol_settled()) finncontrol_blit(base, w, h, 0, 0);
+        else                  finncontrol_blit_scaled(base, w, h);
     }
     if (finnclock_visible()) {
         if (finnclock_settled()) finnclock_blit(base, w, h, 0, 0);
@@ -615,7 +615,7 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
  * per-pixel software blend.
  *
  * The two chrome layers are uploaded only when their revision moves, which is
- * why finndock and finncc both carry one. Everything else is static.
+ * why finndock and finncontrol both carry one. Everything else is static.
  */
 typedef struct {
     finngpu *gpu;
@@ -670,11 +670,11 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
 
     int cx = 0, cy = 0, cw = 0, ch = 0;
     unsigned crev = 0;
-    const uint32_t *cl = finncc_layer(&cx, &cy, &cw, &ch, &crev);
+    const uint32_t *cl = finncontrol_layer(&cx, &cy, &cw, &ch, &crev);
     unsigned ctex = gpu_upload(g, cl, cw, ch, crev, &g->tex_cc, &g->cc_rev);
 
     float tx = 0, ty = 0, tw = 0, th = 0, ta = 0;
-    if (cl) finncc_transform(&tx, &ty, &tw, &th, &ta);
+    if (cl) finncontrol_transform(&tx, &ty, &tw, &th, &ta);
 
     int kx = 0, ky = 0, kw = 0, kh = 0;
     unsigned krev = 0;
@@ -782,23 +782,23 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
  * There is no toolkit in the middle to do hit-testing for us.
  */
 static int g_prev_buttons = 0;
-static int g_drag = FINNCC_NONE;
+static int g_drag = FINNCONTROL_NONE;
 
 static int cc_activate(int act, float v01, const finn_state *st) {
     switch (act) {
-    case FINNCC_WIFI:
+    case FINNCONTROL_WIFI:
         finn_state_set_wifi(st->wifi > 0 ? 0 : 1);
         return 1;
-    case FINNCC_BLUETOOTH:
+    case FINNCONTROL_BLUETOOTH:
         finn_state_set_bluetooth(st->bluetooth > 0 ? 0 : 1);
         return 1;
-    case FINNCC_APPEARANCE:
+    case FINNCONTROL_APPEARANCE:
         finn_state_set_dark(!st->dark);
         return 1;
-    case FINNCC_BRIGHTNESS:
-    case FINNCC_VOLUME:
+    case FINNCONTROL_BRIGHTNESS:
+    case FINNCONTROL_VOLUME:
         if (v01 < 0.0f) return 0;
-        if (act == FINNCC_BRIGHTNESS) finn_state_set_brightness((int)(v01 * 100.0f + 0.5f));
+        if (act == FINNCONTROL_BRIGHTNESS) finn_state_set_brightness((int)(v01 * 100.0f + 0.5f));
         else                          finn_state_set_volume((int)(v01 * 100.0f + 0.5f));
         return 1;
     default:
@@ -809,8 +809,8 @@ static int cc_activate(int act, float v01, const finn_state *st) {
 static int cc_set_level(int act, float v01) {
     if (v01 < 0.0f) return 0;
     int pct = (int)(v01 * 100.0f + 0.5f);
-    if (act == FINNCC_BRIGHTNESS) { finn_state_set_brightness(pct); return 1; }
-    if (act == FINNCC_VOLUME)     { finn_state_set_volume(pct);     return 1; }
+    if (act == FINNCONTROL_BRIGHTNESS) { finn_state_set_brightness(pct); return 1; }
+    if (act == FINNCONTROL_VOLUME)     { finn_state_set_volume(pct);     return 1; }
     return 0;
 }
 
@@ -917,24 +917,24 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         if (phit == FINNCLOCK_PANEL)
             return 0;
 
-        int act = finncc_hit(p->x, p->y, &v01);
+        int act = finncontrol_hit(p->x, p->y, &v01);
 
-        g_drag = (act == FINNCC_BRIGHTNESS || act == FINNCC_VOLUME) ? act : FINNCC_NONE;
+        g_drag = (act == FINNCONTROL_BRIGHTNESS || act == FINNCONTROL_VOLUME) ? act : FINNCONTROL_NONE;
 
         /* Only the controls that can act, and can act as a button, give press
          * feedback: a squeeze on a tile with no hardware behind it would be a
          * promise it cannot keep, and a slider must not move under the drag. */
         switch (act) {
-        case FINNCC_WIFI: case FINNCC_BLUETOOTH: case FINNCC_APPEARANCE:
-            finncc_press(act);
+        case FINNCONTROL_WIFI: case FINNCONTROL_BLUETOOTH: case FINNCONTROL_APPEARANCE:
+            finncontrol_press(act);
             break;
         default:
             break;
         }
 
-        if (act != FINNCC_NONE && act != FINNCC_PANEL)
+        if (act != FINNCONTROL_NONE && act != FINNCONTROL_PANEL)
             return cc_activate(act, v01, st);
-        if (act == FINNCC_PANEL)
+        if (act == FINNCONTROL_PANEL)
             return 0;                       /* swallowed by the panel */
 
         int hit = finndock_hit(p->x, p->y);
@@ -947,40 +947,40 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         if (hit == FINNDOCK_HIT_CLOCK) {
             int open = !finnclock_is_open();
             finnmenu_set_open(0);
-            finncc_set_open(0);
+            finncontrol_set_open(0);
             finnclock_set_open(open);
             return 1;
         }
         if (hit == FINNDOCK_HIT_TRAY) {
-            int open = !finncc_is_open();
+            int open = !finncontrol_is_open();
             finnmenu_set_open(0);
             finnclock_set_open(0);
-            finncc_set_open(open);
+            finncontrol_set_open(open);
             return 1;
         }
         if (hit == FINNDOCK_HIT_LAUNCHER) {
             int open = !finnmenu_is_open();
-            finncc_set_open(0);
+            finncontrol_set_open(0);
             finnclock_set_open(0);
             finnmenu_set_open(open);
             return 1;
         }
         if (finnclock_is_open()) { finnclock_set_open(0); return 1; }
-        if (finncc_is_open())    { finncc_set_open(0);    return 1; }
+        if (finncontrol_is_open())    { finncontrol_set_open(0);    return 1; }
         return 0;
     }
 
     if (!now && was) {
-        g_drag = FINNCC_NONE;
+        g_drag = FINNCONTROL_NONE;
         finndock_press(FINNDOCK_HIT_NONE);
-        finncc_press(FINNCC_NONE);
+        finncontrol_press(FINNCONTROL_NONE);
         finnmenu_press(FINNMENU_NONE);
         return 0;
     }
 
     /* press-and-drag keeps setting the slider the press landed on */
-    if (now && g_drag != FINNCC_NONE)
-        return cc_set_level(g_drag, finncc_drag(g_drag, p->x));
+    if (now && g_drag != FINNCONTROL_NONE)
+        return cc_set_level(g_drag, finncontrol_drag(g_drag, p->x));
 
     return 0;
 }
@@ -993,7 +993,7 @@ int main(int argc, char **argv) {
 
     if (finndock_init(ICON_DIR, FONT_DIR) != 0)
         fprintf(stderr, "finn-comp: running without shell chrome\n");
-    if (finncc_init(ICON_DIR, FONT_DIR) != 0)
+    if (finncontrol_init(ICON_DIR, FONT_DIR) != 0)
         fprintf(stderr, "finn-comp: control center unavailable\n");
     if (finnclock_init(FONT_DIR) != 0)
         fprintf(stderr, "finn-comp: clock page unavailable\n");
@@ -1106,7 +1106,7 @@ int main(int argc, char **argv) {
     {
         int dx, dy, dw, dh;
         finndock_geometry(&dx, &dy, &dw, &dh);
-        finncc_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
+        finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
         finnclock_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
         finnmenu_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
     }
@@ -1200,7 +1200,7 @@ int main(int argc, char **argv) {
         /* A frame is only due while something is actually moving — or while a
          * capture is waiting on one to read back. Between animations the
          * compositor blocks on input exactly as before. */
-        int busy = finndock_running() || finncc_running() || finnclock_running()
+        int busy = finndock_running() || finncontrol_running() || finnclock_running()
                    || finnmenu_running() || finn_anim_running(&theme_fade)
                    || cx.capture_fd >= 0;
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
@@ -1321,7 +1321,7 @@ int main(int argc, char **argv) {
         finnmenu_hover_at(ptr.x, ptr.y);
 
         int anim = finndock_tick(adt);
-        anim |= finncc_tick(adt);
+        anim |= finncontrol_tick(adt);
         anim |= finnclock_tick(adt);
         anim |= finnmenu_tick(adt);
         anim |= finn_anim_tick(&theme_fade, adt);
@@ -1385,7 +1385,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i] >= 0) close(clients[i]);
     if (ctl >= 0) { close(ctl); unlink(FINN_COMP_SOCK); }
     finn_pointer_close(&ptr);
-    finncc_free();
+    finncontrol_free();
     finndock_free();
     finnclock_free();
     finnmenu_free();

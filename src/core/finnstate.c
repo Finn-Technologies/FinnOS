@@ -1,6 +1,7 @@
 /* finnstate — the system state the FinnOS shell reflects. */
 #include "finnstate.h"
 #include "finnaudio.h"
+#include "finnproto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,9 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-#define STATE_DIR   "/run/finn/state"
+/* The override directory is the one the protocol names, so there is
+ * exactly one place in the tree that says where it lives. */
+#define STATE_DIR   FINN_STATE_DIR
 #define PERSIST_DIR "/var/lib/finn"
 
 /* ---------------- small helpers ---------------- */

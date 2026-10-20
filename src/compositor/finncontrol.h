@@ -1,11 +1,11 @@
-#ifndef FINNCC_H
-#define FINNCC_H
+#ifndef FINNCONTROL_H
+#define FINNCONTROL_H
 
 #include <stdint.h>
 #include "finnstate.h"
 
 /*
- * finncc — the FinnOS Control Center.
+ * finncontrol — the FinnOS Control Center.
  *
  * A system surface, not a window: it floats above the wallpaper like the
  * dock does, anchored to the tray pill that opens it. The arrangement follows
@@ -20,57 +20,57 @@
  */
 
 enum {
-    FINNCC_NONE = 0,
-    FINNCC_PANEL,        /* inside the panel, but not on a control */
-    FINNCC_WIFI,
-    FINNCC_BLUETOOTH,
-    FINNCC_APPEARANCE,
-    FINNCC_BRIGHTNESS,
-    FINNCC_VOLUME
+    FINNCONTROL_NONE = 0,
+    FINNCONTROL_PANEL,        /* inside the panel, but not on a control */
+    FINNCONTROL_WIFI,
+    FINNCONTROL_BLUETOOTH,
+    FINNCONTROL_APPEARANCE,
+    FINNCONTROL_BRIGHTNESS,
+    FINNCONTROL_VOLUME
 };
 
-int  finncc_init(const char *icon_dir, const char *font_dir);
-void finncc_free(void);
+int  finncontrol_init(const char *icon_dir, const char *font_dir);
+void finncontrol_free(void);
 
 /* The logical state: whether the panel accepts input. */
-void finncc_set_open(int open);
-int  finncc_is_open(void);
+void finncontrol_set_open(int open);
+int  finncontrol_is_open(void);
 
 /* The visual state, which lags the logical one by the length of a close. */
-int  finncc_visible(void);
-int  finncc_settled(void);
-float finncc_openness(void);     /* 0..1, the animated open value */
+int  finncontrol_visible(void);
+int  finncontrol_settled(void);
+float finncontrol_openness(void);     /* 0..1, the animated open value */
 
-/* A control went down, or FINNCC_NONE for a release. */
-void finncc_press(int act);
+/* A control went down, or FINNCONTROL_NONE for a release. */
+void finncontrol_press(int act);
 
-int  finncc_tick(float dt);      /* 1 while any track moved this frame */
-int  finncc_running(void);       /* 1 while another frame is still due */
+int  finncontrol_tick(float dt);      /* 1 while any track moved this frame */
+int  finncontrol_running(void);       /* 1 while another frame is still due */
 
 /* Rebuild the panel, anchored to the tray pill's left edge and above the
  * dock. The dock geometry is passed for the fallback and the build key; the
  * pill rect itself comes from finndock_tray(). */
-void finncc_render(int screen_w, int screen_h, float scale,
+void finncontrol_render(int screen_w, int screen_h, float scale,
                    int dock_x, int dock_y, int dock_w, int dock_h,
                    const finn_state *st);
-void finncc_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
+void finncontrol_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
 
 /* Blit through the open/close transform: the panel grows out of the tray
  * corner it is anchored to rather than fading in place. */
-void finncc_blit_scaled(uint32_t *dst, int dw, int dh);
+void finncontrol_blit_scaled(uint32_t *dst, int dw, int dh);
 
 /* The same transform, resolved for a backend that draws the layer as a quad
  * instead of resampling it. */
-void finncc_transform(float *x, float *y, float *w, float *h, float *alpha);
+void finncontrol_transform(float *x, float *y, float *w, float *h, float *alpha);
 
 /* The layer and its revision, for a backend that keeps it on the GPU. */
-const uint32_t *finncc_layer(int *x, int *y, int *w, int *h, unsigned *rev);
+const uint32_t *finncontrol_layer(int *x, int *y, int *w, int *h, unsigned *rev);
 
 /* Which control is at this scanout position. Sliders report the fraction
  * they would take at that x through out01. */
-int  finncc_hit(int px, int py, float *out01);
+int  finncontrol_hit(int px, int py, float *out01);
 
 /* Fraction a slider would take at this x, for press-and-drag. */
-float finncc_drag(int action, int px);
+float finncontrol_drag(int action, int px);
 
 #endif

@@ -1,5 +1,5 @@
-/* finncc — the FinnOS Control Center. */
-#include "finncc.h"
+/* finncontrol — the FinnOS Control Center. */
+#include "finncontrol.h"
 #include "finndock.h"
 #include "finndraw.h"
 #include "finntext.h"
@@ -130,7 +130,7 @@ static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app,
 static finn_anim g_a_open;                 /* 0 closed .. 1 open  */
 static finn_anim g_a_press;                /* 0 up .. 1 held down */
 static finn_anim g_a_vol, g_a_bright;      /* the level the bars draw */
-static int      g_press = FINNCC_NONE;
+static int      g_press = FINNCONTROL_NONE;
 /* 1 while the connection slot is showing the wired link instead of a radio */
 static int      g_conn_wired = 0;
 static int      g_fill_primed = 0;
@@ -325,7 +325,7 @@ static int load_fonts(float s) {
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
     if (finn_font_load(&g_f_label, p, font_px(s, 12.0f)) != 0) {
-        fprintf(stderr, "finncc: cannot load %s\n", p);
+        fprintf(stderr, "finncontrol: cannot load %s\n", p);
         return -1;
     }
     /* the same weight one step down, only reached by a name that cannot fit */
@@ -335,7 +335,7 @@ static int load_fonts(float s) {
     return 0;
 }
 
-int finncc_init(const char *icon_dir, const char *font_dir) {
+int finncontrol_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir);
 
     char p[512];
@@ -348,12 +348,12 @@ int finncc_init(const char *icon_dir, const char *font_dir) {
     snprintf(p, sizeof p, "%s/volume.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_vol) == 0;
     snprintf(p, sizeof p, "%s/battery.svg", icon_dir);   ok &= fsvg_load(p, &g_ic_bat) == 0;
 
-    if (!ok) fprintf(stderr, "finncc: icon set incomplete in %s\n", icon_dir);
+    if (!ok) fprintf(stderr, "finncontrol: icon set incomplete in %s\n", icon_dir);
     g_ready = ok;
     return ok ? 0 : -1;
 }
 
-void finncc_free(void) {
+void finncontrol_free(void) {
     fsvg_free(&g_ic_wifi); fsvg_free(&g_ic_bt);  fsvg_free(&g_ic_eth);
     fsvg_free(&g_ic_sun);  fsvg_free(&g_ic_moon); fsvg_free(&g_ic_vol);
     fsvg_free(&g_ic_bat);
@@ -371,11 +371,11 @@ void finncc_free(void) {
 
 /* ---------------- open / close ---------------- */
 
-void finncc_set_open(int open) {
+void finncontrol_set_open(int open) {
     open = open ? 1 : 0;
     if (open == g_open) return;
     g_open = open;
-    fprintf(stderr, "finncc: control center %s\n", open ? "open" : "closed");
+    fprintf(stderr, "finncontrol: control center %s\n", open ? "open" : "closed");
 
     if (open) {
         /* a small overshoot on the way out reads as the panel being flung
@@ -383,28 +383,28 @@ void finncc_set_open(int open) {
         finn_anim_to(&g_a_open, 1.0f, OPEN_DUR, 0.0f, FINN_EASE_OUT_BACK);
     } else {
         finn_anim_to(&g_a_open, 0.0f, CLOSE_DUR, 0.0f, FINN_EASE_IN_OUT);
-        g_press = FINNCC_NONE;
+        g_press = FINNCONTROL_NONE;
         finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
     }
 }
 
-int finncc_is_open(void) { return g_open; }
-int finncc_visible(void) { return finn_anim_v(&g_a_open) > 0.004f; }
-float finncc_openness(void) { return finn_anim_v(&g_a_open); }
+int finncontrol_is_open(void) { return g_open; }
+int finncontrol_visible(void) { return finn_anim_v(&g_a_open) > 0.004f; }
+float finncontrol_openness(void) { return finn_anim_v(&g_a_open); }
 
-int finncc_settled(void) {
+int finncontrol_settled(void) {
     return !finn_anim_running(&g_a_open) && finn_anim_v(&g_a_open) >= 0.999f;
 }
 
-void finncc_press(int act) {
+void finncontrol_press(int act) {
     g_press = act;
-    if (act == FINNCC_NONE)
+    if (act == FINNCONTROL_NONE)
         finn_anim_to(&g_a_press, 0.0f, PRESS_OUT_DUR, 0.0f, FINN_EASE_OUT);
     else
         finn_anim_to(&g_a_press, 1.0f, PRESS_IN_DUR, 0.0f, FINN_EASE_OUT);
 }
 
-int finncc_tick(float dt) {
+int finncontrol_tick(float dt) {
     int ch = finn_anim_tick(&g_a_open, dt);
     ch |= finn_anim_tick(&g_a_press, dt);
     ch |= finn_anim_tick(&g_a_vol, dt);
@@ -412,7 +412,7 @@ int finncc_tick(float dt) {
     return ch;
 }
 
-int finncc_running(void) {
+int finncontrol_running(void) {
     return finn_anim_running(&g_a_open) || finn_anim_running(&g_a_press) ||
            finn_anim_running(&g_a_vol)  || finn_anim_running(&g_a_bright);
 }
@@ -448,7 +448,7 @@ static uint32_t build_key(float s, int pw, int ph,
     return h ? h : 1u;
 }
 
-void finncc_render(int screen_w, int screen_h, float scale,
+void finncontrol_render(int screen_w, int screen_h, float scale,
                    int dock_x, int dock_y, int dock_w, int dock_h,
                    const finn_state *st) {
     if (!g_ready) return;
@@ -581,19 +581,19 @@ void finncc_render(int screen_w, int screen_h, float scale,
 
     /* a wire is not a switch: the tile is inert while it shows one, so it
      * gives no press feedback for an action it cannot take */
-    if (!g_conn_wired && g_press == FINNCC_WIFI)
+    if (!g_conn_wired && g_press == FINNCONTROL_WIFI)
         press_wash(g_layer, lw, lh, s, g_r_wifi, press);
 
     int bt_ok = st->bluetooth >= 0;
     status_tile(g_layer, lw, lh, s, g_r_bt, &g_ic_bt, 0, "Bluetooth",
                 bt_ok ? (st->bluetooth ? "On" : "Off") : "No adapter",
                 bt_ok && st->bluetooth > 0, lf);
-    if (g_press == FINNCC_BLUETOOTH) press_wash(g_layer, lw, lh, s, g_r_bt, press);
+    if (g_press == FINNCONTROL_BLUETOOTH) press_wash(g_layer, lw, lh, s, g_r_bt, press);
 
     status_tile(g_layer, lw, lh, s, g_r_app,
                 st->dark ? &g_ic_moon : &g_ic_sun, 0,
                 "Appearance", st->dark ? "Dark" : "Light", st->dark, lf);
-    if (g_press == FINNCC_APPEARANCE) press_wash(g_layer, lw, lh, s, g_r_app, press);
+    if (g_press == FINNCONTROL_APPEARANCE) press_wash(g_layer, lw, lh, s, g_r_app, press);
 
     /*
      * The sliders do not squeeze when pressed. A toggle is a button and can
@@ -609,8 +609,8 @@ void finncc_render(int screen_w, int screen_h, float scale,
     power_tile(g_layer, lw, lh, s, g_r_power, st, lf);
 }
 
-void finncc_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
-    if (!finncc_visible() || !g_layer) return;
+void finncontrol_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
+    if (!finncontrol_visible() || !g_layer) return;
     finn_blit(dst, dw, dh, g_layer, g_lw, g_lh, g_lx0 + dx, g_ly0 + dy);
 }
 
@@ -620,7 +620,7 @@ void finncc_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
  * hands the same rectangle to the GPU as a quad. There is one description of
  * where the panel is, which is the point.
  */
-void finncc_transform(float *x, float *y, float *w, float *h, float *alpha) {
+void finncontrol_transform(float *x, float *y, float *w, float *h, float *alpha) {
     float v = finn_anim_v(&g_a_open);
     float a = v * 1.15f;
     if (a > 1.0f) a = 1.0f;
@@ -634,21 +634,21 @@ void finncc_transform(float *x, float *y, float *w, float *h, float *alpha) {
     if (alpha) *alpha = a;
 }
 
-void finncc_blit_scaled(uint32_t *dst, int dw, int dh) {
+void finncontrol_blit_scaled(uint32_t *dst, int dw, int dh) {
     if (!g_layer) return;
     float x, y, w, h, alpha;
-    finncc_transform(&x, &y, &w, &h, &alpha);
+    finncontrol_transform(&x, &y, &w, &h, &alpha);
     if (alpha <= 0.004f) return;
     finn_blit_scaled(dst, dw, dh, g_layer, g_lw, g_lh, x, y, w, h, alpha);
 }
 
-const uint32_t *finncc_layer(int *x, int *y, int *w, int *h, unsigned *rev) {
+const uint32_t *finncontrol_layer(int *x, int *y, int *w, int *h, unsigned *rev) {
     if (x) *x = g_lx0;
     if (y) *y = g_ly0;
     if (w) *w = g_lw;
     if (h) *h = g_lh;
     if (rev) *rev = g_cc_rev;
-    return finncc_visible() ? g_layer : NULL;
+    return finncontrol_visible() ? g_layer : NULL;
 }
 
 /* ---------------- input ---------------- */
@@ -668,32 +668,32 @@ static float slider_frac(const cc_rect *r, int x, float s) {
     return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
 }
 
-int finncc_hit(int px, int py, float *out01) {
+int finncontrol_hit(int px, int py, float *out01) {
     /* the panel only takes the pointer once it is essentially open: during
      * the pop it is drawn smaller than the box it is hit-tested against */
-    if (!g_open || !g_layer || finncc_visible() == 0) return FINNCC_NONE;
-    if (finn_anim_v(&g_a_open) < 0.90f) return FINNCC_NONE;
+    if (!g_open || !g_layer || finncontrol_visible() == 0) return FINNCONTROL_NONE;
+    if (finn_anim_v(&g_a_open) < 0.90f) return FINNCONTROL_NONE;
 
     int x = px - g_lx0, y = py - g_ly0;
-    if (x < 0 || y < 0 || x >= g_lw || y >= g_lh) return FINNCC_NONE;
+    if (x < 0 || y < 0 || x >= g_lw || y >= g_lh) return FINNCONTROL_NONE;
     if (out01) *out01 = -1.0f;
 
-    if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) return FINNCC_WIFI;
-    if (in_rect(&g_r_bt, x, y))     return FINNCC_BLUETOOTH;
-    if (in_rect(&g_r_app, x, y))    return FINNCC_APPEARANCE;
+    if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) return FINNCONTROL_WIFI;
+    if (in_rect(&g_r_bt, x, y))     return FINNCONTROL_BLUETOOTH;
+    if (in_rect(&g_r_app, x, y))    return FINNCONTROL_APPEARANCE;
     if (in_rect(&g_r_bright, x, y)) {
         if (out01) *out01 = slider_frac(&g_r_bright, x, g_scale);
-        return FINNCC_BRIGHTNESS;
+        return FINNCONTROL_BRIGHTNESS;
     }
     if (in_rect(&g_r_vol, x, y)) {
         if (out01) *out01 = slider_frac(&g_r_vol, x, g_scale);
-        return FINNCC_VOLUME;
+        return FINNCONTROL_VOLUME;
     }
-    return in_rect(&g_r_panel, x, y) ? FINNCC_PANEL : FINNCC_NONE;
+    return in_rect(&g_r_panel, x, y) ? FINNCONTROL_PANEL : FINNCONTROL_NONE;
 }
 
-float finncc_drag(int action, int px) {
-    if (action == FINNCC_BRIGHTNESS) return slider_frac(&g_r_bright, px - g_lx0, g_scale);
-    if (action == FINNCC_VOLUME)     return slider_frac(&g_r_vol, px - g_lx0, g_scale);
+float finncontrol_drag(int action, int px) {
+    if (action == FINNCONTROL_BRIGHTNESS) return slider_frac(&g_r_bright, px - g_lx0, g_scale);
+    if (action == FINNCONTROL_VOLUME)     return slider_frac(&g_r_vol, px - g_lx0, g_scale);
     return -1.0f;
 }
