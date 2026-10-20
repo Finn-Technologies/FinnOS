@@ -1,0 +1,26 @@
+# FinnOS application registry
+#
+# The catalogue of apps the OS knows about. It ships with the OS and says what
+# each app is called, what it looks like and what runs it — never whether it
+# is on this machine. That belongs to the package manager, which keeps its
+# own list in /var/lib/finnpkg/installed.
+#
+# Format: id | Name | icon | command | note
+#
+#   id       the name the rest of the system uses
+#   Name     what the user sees
+#   icon     an SVG in /usr/share/finn/icons
+#   command  what to run when the app is launched
+#   note     free text, shown as the app's detail line
+#
+# The first-party apps are the ones NAMING.md reserves the family name for.
+# The names are the brand and a plain English noun: Finn Code, Finn Files.
+
+code    | Finn Code     | code.svg     | /usr/bin/finn-code    | Editor
+files   | Finn Files    | files.svg    | /usr/bin/finn-files   | File manager
+notes   | Finn Notes    | notes.svg    | /usr/bin/finn-notes   | Notes
+studio  | Finn Studio   | studio.svg   | /usr/bin/finn-studio  | Visual FinnUI designer
+store   | Finn Store    | store.svg    | /usr/bin/finn-store   | App distribution
+sync    | Finn Sync     | sync.svg     | /usr/bin/finn-sync    | Device-to-device sync
+vault   | Finn Vault    | vault.svg    | /usr/bin/finn-vault   | Credentials and keys
+term    | Finn Terminal | terminal.svg | /usr/bin/finn-term    | Shell host

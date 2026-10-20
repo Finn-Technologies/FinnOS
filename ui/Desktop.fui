@@ -1,0 +1,50 @@
+// FinnOS Desktop-Home - complete, faithful to sketch
+// Sketch had: wallpaper + floating dock only. No topbar. We preserve that.
+screen DesktopHome {
+  target: Desktop (primary)
+  adapt(Mobile): windows->fullscreen, dock->bottom_nav_fullwidth
+  adapt(MobileXL): windows->split_max2, dock->left_rail
+  adapt(TV): windows->fullscreen_single, dock->launcher_row_96h
+
+  // 1. BACKGROUND - static cached texture, zero per-frame cost
+  Wallpaper {
+    fill: token.wallpaper_desktop + token.wallpaper_flute
+    mode: fill, cache: gpu_static_1080p
+    // pre-rendered AVIF, not computed per-frame for HD Graphics
+  }
+
+  // 2. WINDOW LAYER - empty in Home sketch
+  WindowArea {
+    layout: freeform, snap: 8pt_grid
+    empty_hint: none, // keep clean per sketch, no text overlay
+    decor: radius 12, border 1px rgba(0,0,0,0.12)
+  }
+
+  // 3. DOCK - bottom-center floating pill, bone color from sketch
+  Dock {
+    placement: bottom_center, margin_bottom: 18px
+    size: auto(wrap_content), height: 36px
+    bg: token.dock_bone, radius: token.md, elevation: 0
+    // no blur - solid fill for i3-4130 / HD Graphics
+
+    Row(padding: 6px 8px, gap: 10px, align:center) {
+      Button(id: launcher, icon: grid_2x2, size:20, color:dock_ink,
+        on_tap: shell.open_launcher, shortcut: Super+Space)
+      Divider(vertical, 16px, rgba(0,0,0,0.1))
+      TaskList(bind: wm.tasks, max: 6, active_dot: true)
+      Divider(vertical, 16px, rgba(0,0,0,0.1))
+      StatusRow(gap:10) {
+        Icon(volume, bind: audio.level)
+        Icon(wifi, bind: net.state)
+        Icon(battery, bind: power.level)
+        Clock(style: clock_13, bind: system.time) // inside dock, no topbar
+      }
+    }
+    focus_ring: 2px accent when keyboard_nav
+  }
+
+  // TV override: scale dock -> 10-foot row
+  override TV {
+    Dock { height: 96px, type_scale: 1.5, icons: 48px, focus_ring: 3px }
+  }
+}

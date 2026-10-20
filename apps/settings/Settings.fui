@@ -1,0 +1,10 @@
+// Settings - follows Setup Light/Dark tokens, includes AI opt-in toggle (off by default, Beta = no AI)
+screen Settings {
+  Column(padding:20, gap:12) {
+    Text("Settings", style:title)
+    Row { Text("Theme"); Segmented(bind: system.theme, options:[Light,Dark]) }
+    Row { Text("Local AI (opt-in)"); Toggle(bind: settings.ai_enabled, default:false) }
+    Text("AI off: no models downloaded. Turn on to fetch weights on demand via finnpkg.", style:body_dim)
+    Row { Text("Language"); Select(bind: setup.locale, options:[en-US]) }
+  }
+}

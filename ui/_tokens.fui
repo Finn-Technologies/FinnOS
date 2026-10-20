@@ -1,0 +1,23 @@
+// FinnOS Theme Tokens - extracted from sketches
+theme FinnTokens {
+  // surfaces
+  color: surface_light #F7F9FC, surface_dark #0B0E14
+  color: ink_light #111318, ink_dark #E8ECF1
+  color: dock_bone #F6F1E7, dock_ink #1A1D24
+
+  // desktop wallpaper (from Desktop-Home sketch)
+  color: wp_edge #DCD2F2, wp_mid #E99AA4, wp_core #FF7A5C, wp_glow #FFB347
+  gradient: wallpaper_desktop linear(180deg, wp_edge 0%, wp_mid 35%, wp_core 65%, wp_glow 100%)
+  effect: wallpaper_flute repeating-x(lines, 1px rgba(255,255,255,0.18) every 8px)
+
+  // setup hero
+  gradient: hero_beam diagonal(#0A1628 0%, #1A4D9E 45%, #7AB8FF 55%, #0A1628 100%)
+  color: accent #7AB8FF
+
+  radius: sm 8, md 12, lg 24, pill 999
+  font: family "Fixel Display", weights [Regular 400, Medium 500, SemiBold 600, Bold 700]
+    files: assets/fonts/FixelDisplay/*.otf, fallback: [DejaVu Sans, sans-serif]
+  type: body 14/20 "Fixel Display" 400, title 20/28 "Fixel Display" 600, clock 13/16 "Fixel Display" 500
+  tv_type_scale: 1.5, min_tv 32sp
+  motion: theme_xfade 180ms linear, dock_pop 120ms ease-out
+}

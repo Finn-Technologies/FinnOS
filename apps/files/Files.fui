@@ -1,0 +1,7 @@
+// Files - minimal, touch + pointer, split-ready for MobileXL
+screen Files {
+  Row {
+    Sidebar(w:180, collapsed_on: Mobile) { Item("Home") Item("Documents") }
+    FileGrid(bind: files.cwd, columns: adapt(Desktop:5, Mobile:3, TV:6))
+  }
+}

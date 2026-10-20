@@ -1,0 +1,31 @@
+# Build output. Nothing compiled is ever committed: the tree is sources.
+*.o
+*.a
+*.so
+/src/compositor/finn-comp
+/src/control/finnd
+/src/control/finnctl
+/src/tools/vgtest
+/src/tools/dockprev
+
+# Captures. The compositor writes PPM frames while it is being worked on;
+# they are artefacts of a session, not part of the OS.
+*.ppm
+*.pgm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Editors and operating systems
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

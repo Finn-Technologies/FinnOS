@@ -1,0 +1,8 @@
+# FinnOS - minimal Arch base (dev: ARM64 for Parallels on M-series, release: x86_64 for i3-4130)
+BASE=base linux linux-firmware systemd networkmanager sudo openssh
+AUDIO=alsa-lib alsa-utils alsa-ucm-conf
+GRAPHICS_ARM=mesa mali? no: mesa wayland wayland-protocols egl-wayland libdrm libinput seatd
+GRAPHICS_X86=mesa xf86-video-intel vulkan-intel intel-ucode libdrm libinput seatd
+FONTS=ttf-dejavu ttf-liberation
+TOOLS=python python-pip cairo wayland-protocols git foot
+# no X11, no GTK, no Qt, no XWayland - enforced in setup.sh

@@ -1,0 +1,13 @@
+#!/bin/bash
+# finnpkg - minimal .finn installer + OTA stub (replaces pacman for apps)
+set -e
+REPO="/var/lib/finnpkg"
+mkdir -p "$REPO"
+cmd="$1"; shift || true
+case "$cmd" in
+  install) for f in "$@"; do echo "install $f"; mkdir -p "$REPO/$(basename $f .finn)"; cp "$f" "$REPO/"; done;;
+  list) ls "$REPO";;
+  update) echo "OTA check (stub): no AI, system only";;
+  *) echo "usage: finnpkg install|list|update"; exit 1;;
+esac
+# .finn = tar+zst with manifest.toml + fbin + assets. OTA = A/B slots (stub for beta).
