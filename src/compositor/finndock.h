@@ -50,6 +50,8 @@ int  finndock_rest_top(int screen_h, float scale);
 void finndock_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
 
 int  finndock_height(float scale);
+/* Centre of the taskbar app tile in scanout pixels (for the minimize zoom). */
+void finndock_app_icon(int *x, int *y);
 int  finndock_visible(void);
 
 /* Bounding box of the last render, in scanout pixels. */

@@ -251,6 +251,8 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
     for (int py = y0; py < y1; py++) {
         /* sampling at pixel centres makes the identity transform exact */
         float v = ((float)py + 0.5f - y) * sy - 0.5f;
+        /* the dissolve drifts toward the top-right: sample down-left */
+        if (g_blit_dust > 0.001f) v += g_blit_dust * 0.05f * sy;
         if (v < 0.0f) v = 0.0f;
         if (v > lastv) v = lastv;
         int v0 = (int)v, v1 = v0 + 1;
@@ -263,6 +265,7 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
 
         for (int px = x0; px < x1; px++) {
             float u = ((float)px + 0.5f - x) * sx - 0.5f;
+            if (g_blit_dust > 0.001f) u -= g_blit_dust * 0.06f * sx;
             if (u < 0.0f) u = 0.0f;
             if (u > lastu) u = lastu;
             int u0 = (int)u, u1 = u0 + 1;
@@ -285,8 +288,16 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
                 unsigned hh = (unsigned)px * 374761393u + (unsigned)py * 668265263u;
                 hh = (hh ^ (hh >> 13)) * 1274126177u;
                 float n = (float)((hh >> 8) & 0xFFFFu) / 65535.0f;
-                if (n < g_blit_dust) continue;
-                dust_edge = (n - g_blit_dust) * 8.0f;
+                /* the top-right corner is the far end of the wind: it leaves
+                 * first, and the cut sweeps down-left behind it */
+                float nx = ((float)px + 0.5f - x) / rw;
+                float ny = ((float)py + 0.5f - y) / rh;
+                if (nx < 0.0f) nx = 0.0f; else if (nx > 1.0f) nx = 1.0f;
+                if (ny < 0.0f) ny = 0.0f; else if (ny > 1.0f) ny = 1.0f;
+                float sweep = nx * 0.72f + (1.0f - ny) * 0.28f;
+                float cut = g_blit_dust * (1.35f - 0.72f * sweep);
+                if (n < cut) continue;
+                dust_edge = (n - cut) * 8.0f;
                 if (dust_edge > 1.0f) dust_edge = 1.0f;
             }
 

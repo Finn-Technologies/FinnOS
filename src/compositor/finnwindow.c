@@ -88,6 +88,14 @@ static unsigned g_rev = 0;
 
 static int g_ax = 0, g_ay = 0;
 
+/* Maximize/unmaximize zoom: the layer rect travels between the old window and
+ * the new one. Minimize adds a second leg, from the window to its dock tile. */
+static finn_anim g_a_zoom, g_a_min;
+static int   g_zoom_active = 0;
+static float g_zfx, g_zfy, g_zfw, g_zfh, g_ztx, g_zty, g_ztw, g_zth;
+static int   g_min_active = 0, g_min_win = 0;
+static float g_mfx, g_mfy, g_mfw, g_mfh, g_mtx, g_mty, g_mtw, g_mth;
+
 static finn_anim g_a_open;
 static finn_anim g_a_hover, g_a_press;
 static float     g_hover = 0.0f;
@@ -328,9 +336,30 @@ int finnwindow_focus(int id) {
 }
 
 int finnwindow_minimize(int id) {
+    if (g_min_active) return 0;
     int idx = find_idx(id);
     if (idx < 0) return -1;
-    g_wins[idx].minimized = !g_wins[idx].minimized;
+    finn_win *w = &g_wins[idx];
+
+    /* Fold into the taskbar tile: one visible window means the layer is that
+     * window, so the shared rect can carry the move and the scale. */
+    if (!w->minimized && finnwindow_visible_count() == 1 && !g_min_active) {
+        int ax = 0, ay = 0;
+        finndock_app_icon(&ax, &ay);
+        int tw = rs(26.0f, g_scale), th = tw;
+        g_mfx = (float)w->x; g_mfy = (float)w->y;
+        g_mfw = (float)w->w; g_mfh = (float)w->h;
+        g_mtx = (float)(ax - tw / 2); g_mty = (float)(ay - th / 2);
+        g_mtw = (float)tw; g_mth = (float)th;
+        g_min_active = 1;
+        g_min_win = w->id;
+        g_zoom_active = 0;
+        finn_anim_jump(&g_a_min, 0.0f);
+        finn_anim_to(&g_a_min, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_IN);
+        return 0;
+    }
+
+    w->minimized = !w->minimized;
     g_built = 0;
     if (finnwindow_visible_count() == 0)
         finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
@@ -344,6 +373,7 @@ int finnwindow_maximize(int id) {
     if (idx < 0) return -1;
     finn_win *w = &g_wins[idx];
     w->minimized = 0;
+    int oldx = w->x, oldy = w->y, oldw = w->w, oldh = w->h;
     if (!w->maximized) {
         w->saved_x = w->x; w->saved_y = w->y;
         w->saved_w = w->w; w->saved_h = w->h;
@@ -369,6 +399,21 @@ int finnwindow_maximize(int id) {
     }
     bring_to_front(idx);
     g_built = 0;
+
+    /* One visible window means the layer is that window, so the compositor's
+     * rect can carry the whole zoom. With a stack behind it the window still
+     * snaps, because moving the shared layer would drag the others along. */
+    if (finnwindow_visible_count() == 1 && !g_min_active) {
+        g_zfx = (float)oldx; g_zfy = (float)oldy;
+        g_zfw = (float)oldw; g_zfh = (float)oldh;
+        g_ztx = (float)w->x; g_zty = (float)w->y;
+        g_ztw = (float)w->w; g_zth = (float)w->h;
+        if (g_zfx != g_ztx || g_zfy != g_zty || g_zfw != g_ztw || g_zfh != g_zth) {
+            finn_anim_jump(&g_a_zoom, 0.0f);
+            finn_anim_to(&g_a_zoom, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT);
+            g_zoom_active = 1;
+        }
+    }
     return 0;
 }
 
@@ -383,6 +428,7 @@ int finnwindow_move(int id, int x, int y) {
 }
 
 void finnwindow_taskbar_toggle(void) {
+    if (g_min_active) return;
     if (g_n_wins == 0) {
         finnwindow_open("window");
         return;
@@ -438,15 +484,35 @@ int finnwindow_tick(float dt) {
     int ch = finn_anim_tick(&g_a_open, dt);
     ch |= finn_anim_tick(&g_a_hover, dt);
     ch |= finn_anim_tick(&g_a_press, dt);
+    ch |= finn_anim_tick(&g_a_zoom, dt);
+    ch |= finn_anim_tick(&g_a_min, dt);
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; ch = 1; }
+
+    if (g_zoom_active && !finn_anim_running(&g_a_zoom) &&
+        finn_anim_v(&g_a_zoom) >= 0.999f) {
+        g_zoom_active = 0;
+    }
+
+    if (g_min_active && !finn_anim_running(&g_a_min)) {
+        int idx = find_idx(g_min_win);
+        if (idx >= 0) g_wins[idx].minimized = 1;
+        g_min_active = 0;
+        g_min_win = 0;
+        if (finnwindow_visible_count() == 0)
+            finn_anim_jump(&g_a_open, 0.0f);
+        g_built = 0;
+        ch = 1;
+    }
     return ch;
 }
 
 int finnwindow_running(void) {
     return finn_anim_running(&g_a_open) ||
            finn_anim_running(&g_a_hover) ||
-           finn_anim_running(&g_a_press);
+           finn_anim_running(&g_a_press) ||
+           finn_anim_running(&g_a_zoom) ||
+           finn_anim_running(&g_a_min);
 }
 
 static void opt_pill_rect(const finn_win *w, float s,
@@ -462,6 +528,7 @@ static void opt_pill_rect(const finn_win *w, float s,
 
 int finnwindow_hit(int px, int py, int *out_win_id) {
     if (out_win_id) *out_win_id = 0;
+    if (g_min_active) return FINNWINDOW_HIT_NONE;
     if (finnwindow_visible_count() == 0 || finn_anim_v(&g_a_open) < 0.85f)
         return FINNWINDOW_HIT_NONE;
 
@@ -838,6 +905,27 @@ void finnwindow_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
 }
 
 void finnwindow_transform(float *x, float *y, float *w, float *h, float *alpha) {
+    if (g_min_active) {
+        float m = finn_anim_v(&g_a_min);
+        float a = m < 0.72f ? 1.0f : (1.0f - m) / 0.28f;
+        if (a < 0.0f) a = 0.0f;
+        if (x) *x = g_mfx + (g_mtx - g_mfx) * m;
+        if (y) *y = g_mfy + (g_mty - g_mfy) * m;
+        if (w) *w = g_mfw + (g_mtw - g_mfw) * m;
+        if (h) *h = g_mfh + (g_mth - g_mfh) * m;
+        if (alpha) *alpha = a;
+        return;
+    }
+    if (g_zoom_active) {
+        float m = finn_anim_v(&g_a_zoom);
+        if (x) *x = g_zfx + (g_ztx - g_zfx) * m;
+        if (y) *y = g_zfy + (g_zty - g_zfy) * m;
+        if (w) *w = g_zfw + (g_ztw - g_zfw) * m;
+        if (h) *h = g_zfh + (g_zth - g_zfh) * m;
+        if (alpha) *alpha = 1.0f;
+        return;
+    }
+
     float v = finn_anim_v(&g_a_open);
     float a = v * FINN_MOTION_FADE;
     if (a > 1.0f) a = 1.0f;
@@ -876,17 +964,16 @@ const uint32_t *finnwindow_layer(int *x, int *y, int *w, int *h, unsigned *rev) 
 }
 
 void finnwindow_overlay_transform(float *x, float *y, float *w, float *h, float *alpha) {
-    float v = finn_anim_v(&g_a_open);
-    float a = v * FINN_MOTION_FADE;
-    if (a > 1.0f) a = 1.0f;
-    float k = FINN_MOTION_OPEN_SCALE + (1.0f - FINN_MOTION_OPEN_SCALE) * v;
+    float lx, ly, lw, lh, la;
+    finnwindow_transform(&lx, &ly, &lw, &lh, &la);
+    float sx = g_lw > 0 ? lw / (float)g_lw : 1.0f;
+    float sy = g_lh > 0 ? lh / (float)g_lh : 1.0f;
 
-    float ax = (float)g_ax, ay = (float)g_ay;
-    if (x) *x = ax + ((float)g_ovx0 - ax) * k;
-    if (y) *y = ay + ((float)g_ovy0 - ay) * k;
-    if (w) *w = (float)g_ovw * k;
-    if (h) *h = (float)g_ovh * k;
-    if (alpha) *alpha = a;
+    if (x) *x = lx + ((float)g_ovx0 - (float)g_lx0) * sx;
+    if (y) *y = ly + ((float)g_ovy0 - (float)g_ly0) * sy;
+    if (w) *w = (float)g_ovw * sx;
+    if (h) *h = (float)g_ovh * sy;
+    if (alpha) *alpha = la;
 }
 
 void finnwindow_overlay_blit_scaled(uint32_t *dst, int dw, int dh) {

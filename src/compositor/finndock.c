@@ -865,6 +865,12 @@ void finndock_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
 }
 
 int finndock_height(float scale) { return rs(BTN, scale); }
+
+/* The centre of the taskbar tile: where a minimizing window folds into. */
+void finndock_app_icon(int *x, int *y) {
+    if (x) *x = g_x0 + g_btn / 2;
+    if (y) *y = g_y0 + g_btn / 2;
+}
 int finndock_visible(void) { return g_visible; }
 
 int finndock_rest_top(int screen_h, float scale) {
