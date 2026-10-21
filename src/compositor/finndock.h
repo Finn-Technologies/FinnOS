@@ -86,6 +86,9 @@ void finndock_set_well(float amount);
 /* The clock's well, driven by the clock page's openness. Two controls, two
  * anchors: the pill lifts at whichever end was asked for. */
 void finndock_set_clock_well(float amount);
+
+/* The taskbar button's well, driven by open windows. */
+void finndock_set_apps_well(float amount);
 int  finndock_tick(float dt);     /* 1 while the squeeze moved this frame */
 int  finndock_running(void);      /* 1 while another frame is still due */
 

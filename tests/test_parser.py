@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import support  # noqa: E402,F401  (puts the SDK on the path)
 
-from findsdk.fuic.parser import ParseError, parse
+from finnsdk.fuic.parser import ParseError, parse
 
 
 class ParserTest(unittest.TestCase):

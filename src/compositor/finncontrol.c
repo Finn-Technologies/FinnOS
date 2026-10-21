@@ -1,4 +1,4 @@
-/* finncontrol — the FinnOS Control Center. */
+/* finncontrol — the FinnOS Control Center (Figma 10:3). */
 #include "finncontrol.h"
 #include "finndock.h"
 #include "finndraw.h"
@@ -15,10 +15,10 @@
 /* ---------------- tokens ----------------
  * The panel and its tiles are glass, not paint: each is the blurred wallpaper
  * brought toward bone by a fixed weight. The two weights are the ones the
- * reference measures — 0.70 for the panel, 0.50 for a tile laid over it.
- * finn_frost_rrect mixes toward the tint over whatever the layer already
- * carries, so the tile's second pass compounds to the lighter inset the
- * reference shows, and the pair re-grades together when Appearance flips.
+ * Figma reference (10:3) specifies — 0.70 for the panel, 0.50 for a tile laid
+ * over it. finn_frost_rrect mixes toward the tint over whatever the layer
+ * already carries, so the tile's second pass compounds to the lighter inset
+ * the reference shows, and the pair re-grades together when Appearance flips.
  */
 #define CC_GLASS       0.70f
 #define CC_TILE_GLASS  0.50f
@@ -34,72 +34,51 @@
 
 /* ---------------- metrics, authored for a 1080p canvas ----------------
  *
- * Every number here is the attachment's own, divided by 0.770 — the density
- * its 1280x832 frame implies against this canvas. Measured off the reference:
- *   panel 260x260 r16, pad 8, tiles 116x36 r7.5, tile gap 12,
- *   status disc 24 inset 5, two slider rows 244x30 r15 eight apart,
- *   slider thumb 37 wide (the row's own left cap), bars filled to 100%.
- * Rounding to whole authored units keeps the panel exactly square to within
- * a pixel of the reference.
+ * Every number here is the Figma 10:3 measurement in 1280x832 units multiplied
+ * by 1.298077 (1080 / 832):
+ *   panel 260x260 r=15, pad 8, tiles 118x36 r=8, tile gap 8,
+ *   status disc 24 inset 6, two slider rows 244x30 r=15 eight apart,
+ *   slider thumb 37 wide (the row's own left cap),
+ *   open middle area, bottom footer at y=226 h=18 (inset 16 from edges) with
+ *   battery + percentage/Mains on the left and edit + settings icons on the right.
  */
-/*
- * 260 reference pixels, plus the 4% the longest real label needs.
- *
- * The reference's own labels are short ("Wi-Fi"), so its tile fits a title at
- * the reference's size. "Wired Connection" is 156px at 18 and the reference's
- * insets leave 149.7 in a 260 panel, which is what had been forcing the whole
- * panel a size down — one shared size is the point, so the panel gives the 4%
- * instead and every other number here keeps the reference's proportion.
- */
-#define CC_W        351.0f  /* panel width  (reference 260 + 4%) */
-#define CC_PAD       10.4f  /* panel padding (reference 8) */
-#define CC_GAP       10.4f  /* row gap      (reference 8) */
-#define CC_R_PANEL   20.8f  /* reference 16 */
-#define CC_R_TILE     9.7f  /* reference 7.5 */
-#define TILE_H       46.7f  /* the two-up status tile rows (reference 36) */
-#define ROW_H        38.9f  /* a slider row: a pill, so its radius is ROW_H/2 */
+#define CC_W        338.0f  /* reference 260 */
+#define CC_PAD       10.4f  /* reference 8 */
+#define CC_GAP       10.4f  /* reference 8 */
+#define CC_R_PANEL   19.5f  /* reference 15 */
+#define CC_R_TILE    10.4f  /* reference 8 */
+#define TILE_H       46.7f  /* reference 36 */
+#define ROW_H        38.9f  /* reference 30: a pill, so its radius is ROW_H/2 */
 #define THUMB_W      48.0f  /* the slider's white left cap (reference 37) */
-#define TILE_GAP     15.6f  /* between the two tiles of a row (reference 12) */
+#define TILE_GAP     10.4f  /* between the two tiles of a row (reference 8) */
 #define STATUS_C     31.2f  /* the status tiles' filled disc (reference 24) */
 #define ANCHOR_GAP   19.5f  /* panel to dock: reference 15 */
-#define HALF_W      ((CC_W - CC_PAD * 2.0f - TILE_GAP) * 0.5f)   /* 150.6 */
+#define HALF_W      ((CC_W - CC_PAD * 2.0f - TILE_GAP) * 0.5f)   /* 153.4 (ref 118) */
 
-/* the tile's inner rhythm: disc inset, glyph size, and the gap to the text.
- * The disc sits 6 reference pixels in and the label only 5 off its edge, so
- * the pair reads as one unit rather than as two things in a box.
- *
- * Glyph sizes are ink, not viewBox (finn_icon_frame): the assets fill their
- * boxes by anything from a half to all of it, so equal boxes gave the disc a
- * glyph noticeably smaller than the slider's. These are the reference's own
- * ink sizes — 14 reference pixels on a disc, 16 in a knob. */
-#define STATUS_INSET     7.8f
+#define STATUS_INSET     7.8f   /* reference 6 */
 #define STATUS_GLYPH    18.0f   /* ink 14 */
-#define SLIDER_GLYPH     21.0f  /* ink 16 */
-#define STATUS_TEXT_GAP  6.5f
+#define SLIDER_GLYPH    21.0f   /* ink 16 */
+#define STATUS_TEXT_GAP  7.8f   /* reference 6 */
 #define STATUS_TEXT_PAD  4.0f
 
-#define PANEL_W CC_W
-/*
- * The attachment is square — 260x260 with its content stacked at the top and
- * the rest left open, because that open half is where macOS puts widgets and
- * this shell has none yet. Keeping the panel square is what makes the shape
- * read as the reference rather than as a box that hugged its contents, so the
- * height is a constant and the empty strip below the controls is honest.
- */
-#define PANEL_H 351.0f
+/* Footer (Figma 10:3: y=226, h=18, left inset 16, right icons at x=200 & x=226) */
+#define FOOTER_Y       293.4f   /* reference 226 */
+#define FOOTER_H        23.4f   /* reference 18 */
+#define FOOTER_INSET    20.8f   /* reference 16 */
+#define FOOTER_ICO      21.0f   /* ink ~16 (18x18 box) */
+#define FOOTER_BAT      21.0f   /* ink ~16 */
+#define FOOTER_GAP      10.4f   /* reference 8 */
+#define FOOTER_HIT      33.8f   /* reference 26 hit target around 18x18 icon */
 
-/* motion, from the shell's one place (finnmotion.h): the panel opens and
- * closes like every other surface, and a press is the same wash the dock
- * lays down under the finger. */
+#define PANEL_W CC_W
+#define PANEL_H 338.0f
 
 /* ---------------- assets + fonts ---------------- */
 static fsvg g_ic_wifi, g_ic_bt, g_ic_eth, g_ic_sun, g_ic_moon, g_ic_vol, g_ic_bat;
+static fsvg g_ic_edit, g_ic_settings;
 static int  g_ready = 0;
 
-/* One weight, four sizes. The panel sets no bold: hierarchy comes from size
- * and from ink against dim, which is how the reference's own labels separate
- * from their detail lines without going heavy. */
-static finn_font g_f_label, g_f_label_sm, g_f_sub, g_f_micro;
+static finn_font g_f_footer, g_f_label, g_f_label_sm, g_f_sub, g_f_micro;
 static float g_font_scale = -1.0f;
 static char  g_font_dir[512];
 
@@ -112,15 +91,13 @@ static float g_scale = 1.0f;
 /* the tray corner the panel grows out of, in scanout pixels */
 static int g_ax = 0, g_ay = 0;
 
-/* the layer's identity: everything above that changes a pixel goes in here,
- * so the panel can keep its raster while only its transform animates */
 static uint32_t g_build_key = 0;
 static int      g_built = 0;
-static unsigned g_cc_rev = 0;   /* moves only when the raster is redrawn */
+static unsigned g_cc_rev = 0;
 
 typedef struct { int x, y, w, h; } cc_rect;
-static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app,
-               g_r_bright, g_r_vol, g_r_power;
+static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app, g_r_settings,
+               g_r_bright, g_r_vol;
 
 /* ---------------- motion ---------------- */
 static finn_anim g_a_open;                 /* 0 closed .. 1 open  */
@@ -129,14 +106,11 @@ static finn_anim g_a_hover;                /* 0 off .. 1 under the pointer */
 static finn_anim g_a_vol, g_a_bright;      /* the level the bars draw */
 static float     g_hover = 0.0f;
 static int       g_hover_act = FINNCONTROL_NONE;
-static int      g_press = FINNCONTROL_NONE;
-/* 1 while the connection slot is showing the wired link instead of a radio */
-static int      g_conn_wired = 0;
-static int      g_fill_primed = 0;
+static int       g_press = FINNCONTROL_NONE;
+static int       g_conn_wired = 0;
+static int       g_fill_primed = 0;
 
-/* the panel's own hit rectangles, tested by the pointer */
 static int in_rect(const cc_rect *r, int x, int y);
-
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
 static void text_r(uint32_t *L, int lw, int lh, const finn_font *f,
@@ -148,38 +122,28 @@ static void fill_circle(uint32_t *L, int lw, int lh, float cx, float cy, float r
     finn_fill_rrect(L, lw, lh, cx - r, cy - r, r * 2.0f, r * 2.0f, r, c);
 }
 
-/*
- * A pressed control answers with a wash, not a shrink: the tile keeps its
- * exact box and darkens under the finger. Nothing in this shell changes size
- * when it is clicked — a control that shrinks reads as flinching away.
- *
- * The wash is the shell's one answer to the pointer, and it is the same
- * patch the dock lays down, so `amount` is the shell's wash scale and not a
- * number of this panel's own.
- */
-static void control_wash(uint32_t *L, int lw, int lh, int s, cc_rect r,
-                         float amount) {
+static void control_wash_r(uint32_t *L, int lw, int lh, cc_rect r, float rad,
+                           float amount) {
     if (amount <= 0.004f) return;
     unsigned a = (unsigned)(amount * 255.0f + 0.5f);
     if (a > 255) a = 255;
     if (a == 0) return;
     finn_fill_rrect(L, lw, lh, (float)r.x, (float)r.y, (float)r.w, (float)r.h,
-                    s * CC_R_TILE, (FINN_INK & 0x00FFFFFFu) | (a << 24));
+                    rad, (FINN_INK & 0x00FFFFFFu) | (a << 24));
 }
 
-static void press_wash(uint32_t *L, int lw, int lh, int s, cc_rect r,
+static void control_wash(uint32_t *L, int lw, int lh, float s, cc_rect r,
+                         float amount) {
+    control_wash_r(L, lw, lh, r, s * CC_R_TILE, amount);
+}
+
+static void press_wash(uint32_t *L, int lw, int lh, float s, cc_rect r,
                        float press) {
     control_wash(L, lw, lh, s, r, FINN_MOTION_PRESS_WASH * press);
 }
 
 /* ---------------- tiles ---------------- */
 
-/*
- * The largest face in the ladder whose width still leaves the tile's right
- * padding intact. Nothing in this panel is clipped and nothing overruns its
- * box: a name too long for its tile steps down a size instead, which is the
- * only reason the same weight is loaded four times.
- */
 static const finn_font *fit(const char *s, float avail,
                             const finn_font *a, const finn_font *b,
                             const finn_font *c, const finn_font *d) {
@@ -189,9 +153,6 @@ static const finn_font *fit(const char *s, float avail,
     return d;
 }
 
-/* One size for every label in the panel. The tiles are repeated units, so a
- * tile that shrank on its own would read as a different kind of tile; the
- * longest name in the set instead sets the size for all of them. */
 static const finn_font *fit_all(const char *const *names, int n, float avail) {
     const finn_font *ladder[4] = { &g_f_label, &g_f_label_sm, &g_f_sub, &g_f_micro };
     for (int i = 0; i < 4; i++) {
@@ -203,21 +164,11 @@ static const finn_font *fit_all(const char *const *names, int n, float avail) {
     return &g_f_micro;
 }
 
-/* the width a label has once the disc, its inset and the tile's padding are
- * taken out — the budget every string in a tile has to live inside */
 static float tile_text_avail(const cc_rect *r, float s) {
     return (float)r->w -
            s * (STATUS_INSET + STATUS_C + STATUS_TEXT_GAP + STATUS_TEXT_PAD);
 }
 
-/*
- * A status tile is the reference's unit: a lighter frosted tile, a filled
- * circle carrying the glyph, then a label with a grey detail under it. Size
- * and ink carry the hierarchy; the label is the same weight as the detail.
- * The circle is the state — accent when the control is on, grey when it is
- * off or the hardware is absent — while the label and detail keep their
- * colours so "No adapter" reads as information rather than as damage.
- */
 static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
                         fsvg *icon, uint32_t vkey, const char *name,
                         const char *detail, int on, const finn_font *lf_set) {
@@ -247,23 +198,12 @@ static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
                    (float)(r.y + rs(35, s)), detail, FINN_DIM);
 }
 
-/*
- * A slider row is one pill, not a disc with a track beside it. Its left
- * THUMB_W is white — the row's own left cap, which is why the value fill in
- * the reference emerges from under it with a square edge instead of a curve.
- * The value is drawn from the row's left edge so the fill's round cap stays
- * hidden under the thumb; nothing is drawn at all when there is no level to
- * draw, so an absent control is a bare track with "n/a", never a fake 100%.
- */
 static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
                        fsvg *icon, int fill, int available) {
     float x = (float)r.x, y = (float)r.y, w = (float)r.w, h = (float)r.h;
     float rad = h * 0.5f;
     float tw = s * THUMB_W;
 
-    /* the unfilled part is the fill colour held back, not a second grey: a
-     * fifth of it over the glass reads as "this much is not in use" and
-     * inherits the appearance without a track token of its own. */
     finn_fill_rrect(L, lw, lh, x, y, w, h, rad,
                     (FINN_FILL & 0x00FFFFFFu) | 0x38000000u);
 
@@ -272,10 +212,6 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
                         tw + (w - tw) * (float)fill / 100.0f, h, rad, FINN_FILL);
 
     finn_fill_rrect(L, lw, lh, x, y, tw, h, rad, FINN_KNOB);
-    /* The thumb is the row's own left cap, so its right edge is a straight
-     * cut where the value emerges from under it. A full pill would bulge a
-     * second round cap into the fill and the row would read as a ball on a
-     * stick instead of a well with a level behind it. */
     finn_fill_rrect(L, lw, lh, x + tw - rad, y, rad, h, 0.0f, FINN_KNOB);
 
     uint32_t gc = available ? CC_KNOB_INK : FINN_MUTE;
@@ -292,32 +228,62 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
 }
 
 /*
- * Power is a gauge, not a toggle, but it sits in the tile grid with the same
- * disc and the same two lines: the disc is accent while the machine is on
- * mains and grey on battery, and the charge level is the battery glyph's own
- * clipped bar, so the percentage is drawn twice from the same reading.
+ * Bottom footer row (Figma 10:3):
+ * Left: battery icon + percentage ("96%") or "Mains" when no battery hardware.
+ * Right: edit icon (toggles Light/Dark appearance) and settings gear icon.
  */
-static void power_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
-                       const finn_state *st, const finn_font *lf) {
-    int have = st->battery_pct >= 0;
-    int pct = have ? st->battery_pct : 0;
+static void footer_row(uint32_t *L, int lw, int lh, float s,
+                       const finn_state *st, float hover, float press) {
+    float fy = s * FOOTER_Y;
+    float fh = s * FOOTER_H;
+    float cy = fy + fh * 0.5f;
+
+    int have_bat = st->battery_pct >= 0;
+    int pct = have_bat ? st->battery_pct : 0;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
-    g_ic_bat.shapes[1].visible = have ? 1 : 0;
+    g_ic_bat.shapes[1].visible = have_bat ? 1 : 0;
     g_ic_bat.shapes[1].clip_x = 4.0f + 14.0f * (float)pct / 100.0f;
     if (g_ic_bat.n > 2) g_ic_bat.shapes[2].visible = 0;
 
-    char v[48];
-    if (have)
-        snprintf(v, sizeof v, "%d%%  %s", pct,
-                 st->charging ? "Charging" : "On battery");
-    else
-        snprintf(v, sizeof v, "Mains");
+    float bat_cx = s * FOOTER_INSET + s * (FOOTER_BAT * 0.5f);
+    finn_icon_blit_ink(&g_ic_bat, L, lw, lh,
+                       (int)lroundf(bat_cx), (int)lroundf(cy),
+                       rs(FOOTER_BAT, s), FINN_INK, FINN_INK,
+                       4000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u));
 
-    status_tile(L, lw, lh, s, r, &g_ic_bat,
-                4000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u),
-                "Power", v, st->charging && have, lf);
+    char bat_s[32];
+    if (have_bat)
+        snprintf(bat_s, sizeof bat_s, "%d%%", pct);
+    else
+        snprintf(bat_s, sizeof bat_s, "Mains");
+
+    float cap = finn_text_cap_height(&g_f_footer);
+    float tx = s * FOOTER_INSET + s * FOOTER_BAT + s * FOOTER_GAP;
+    finn_text_draw(&g_f_footer, L, lw, lh, tx, cy + cap * 0.5f, bat_s, FINN_INK);
+
+    /* Right action buttons: edit (appearance toggle) and settings */
+    float hit_r = (float)g_r_app.h * 0.5f;
+    if (g_hover_act == FINNCONTROL_APPEARANCE)
+        control_wash_r(L, lw, lh, g_r_app, hit_r, FINN_MOTION_HOVER_WASH * hover);
+    if (g_press == FINNCONTROL_APPEARANCE)
+        control_wash_r(L, lw, lh, g_r_app, hit_r, FINN_MOTION_PRESS_WASH * press);
+
+    finn_icon_blit_ink(&g_ic_edit, L, lw, lh,
+                       g_r_app.x + g_r_app.w / 2,
+                       g_r_app.y + g_r_app.h / 2,
+                       rs(FOOTER_ICO, s), FINN_INK, FINN_INK, 0);
+
+    if (g_hover_act == FINNCONTROL_SETTINGS)
+        control_wash_r(L, lw, lh, g_r_settings, hit_r, FINN_MOTION_HOVER_WASH * hover);
+    if (g_press == FINNCONTROL_SETTINGS)
+        control_wash_r(L, lw, lh, g_r_settings, hit_r, FINN_MOTION_PRESS_WASH * press);
+
+    finn_icon_blit_ink(&g_ic_settings, L, lw, lh,
+                       g_r_settings.x + g_r_settings.w / 2,
+                       g_r_settings.y + g_r_settings.h / 2,
+                       rs(FOOTER_ICO, s), FINN_INK, FINN_INK, 0);
 }
 
 /* ---------------- fonts ---------------- */
@@ -328,6 +294,7 @@ static int font_px(float s, float base) {
 }
 
 static int load_fonts(float s) {
+    finn_font_free(&g_f_footer);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_label_sm);
     finn_font_free(&g_f_sub);
@@ -335,11 +302,11 @@ static int load_fonts(float s) {
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_label, p, font_px(s, 12.0f)) != 0) {
+    if (finn_font_load(&g_f_footer, p, font_px(s, 14.0f)) != 0) {
         fprintf(stderr, "finncontrol: cannot load %s\n", p);
         return -1;
     }
-    /* the same weight one step down, only reached by a name that cannot fit */
+    if (finn_font_load(&g_f_label, p, font_px(s, 12.0f)) != 0) return -1;
     if (finn_font_load(&g_f_label_sm, p, font_px(s, 11.0f)) != 0) return -1;
     if (finn_font_load(&g_f_sub, p, font_px(s, 10.0f)) != 0) return -1;
     if (finn_font_load(&g_f_micro, p, font_px(s, 8.5f)) != 0) return -1;
@@ -358,6 +325,8 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
     snprintf(p, sizeof p, "%s/moon.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_moon) == 0;
     snprintf(p, sizeof p, "%s/volume.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_vol) == 0;
     snprintf(p, sizeof p, "%s/battery.svg", icon_dir);   ok &= fsvg_load(p, &g_ic_bat) == 0;
+    snprintf(p, sizeof p, "%s/edit.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_edit) == 0;
+    snprintf(p, sizeof p, "%s/settings.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_settings) == 0;
 
     if (!ok) fprintf(stderr, "finncontrol: icon set incomplete in %s\n", icon_dir);
     g_ready = ok;
@@ -367,7 +336,8 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
 void finncontrol_free(void) {
     fsvg_free(&g_ic_wifi); fsvg_free(&g_ic_bt);  fsvg_free(&g_ic_eth);
     fsvg_free(&g_ic_sun);  fsvg_free(&g_ic_moon); fsvg_free(&g_ic_vol);
-    fsvg_free(&g_ic_bat);
+    fsvg_free(&g_ic_bat);  fsvg_free(&g_ic_edit); fsvg_free(&g_ic_settings);
+    finn_font_free(&g_f_footer);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_label_sm);
     finn_font_free(&g_f_sub);
@@ -389,8 +359,6 @@ void finncontrol_set_open(int open) {
     fprintf(stderr, "finncontrol: control center %s\n", open ? "open" : "closed");
 
     if (open) {
-        /* a small overshoot on the way out reads as the panel being flung
-         * open rather than fading in */
         finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
     } else {
         finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
@@ -415,14 +383,6 @@ void finncontrol_press(int act) {
         finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
 }
 
-/*
- * The pointer arrived at a control.
- *
- * The panel answers the pointer the way the dock does: a wash of ink under
- * the thing that is under the pointer, and nothing anywhere else. A tile
- * whose hardware is absent is not a control — there is nothing behind it to
- * promise — so it takes no wash, exactly as it takes no press.
- */
 void finncontrol_hover_at(int px, int py) {
     int act = FINNCONTROL_NONE;
 
@@ -430,8 +390,9 @@ void finncontrol_hover_at(int px, int py) {
         int x = px - g_lx0, y = py - g_ly0;
         if (x >= 0 && y >= 0 && x < g_lw && y < g_lh) {
             if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) act = FINNCONTROL_WIFI;
-            else if (in_rect(&g_r_bt, x, y))             act = FINNCONTROL_BLUETOOTH;
-            else if (in_rect(&g_r_app, x, y))            act = FINNCONTROL_APPEARANCE;
+            else if (in_rect(&g_r_bt, x, y))               act = FINNCONTROL_BLUETOOTH;
+            else if (in_rect(&g_r_app, x, y))              act = FINNCONTROL_APPEARANCE;
+            else if (in_rect(&g_r_settings, x, y))         act = FINNCONTROL_SETTINGS;
         }
     }
 
@@ -460,8 +421,6 @@ int finncontrol_running(void) {
            finn_anim_running(&g_a_vol)  || finn_anim_running(&g_a_bright);
 }
 
-/* Follow the hardware, but only re-aim when the target actually moves, so
- * calling this on every rebuild does not restart a sweep that is under way. */
 static void follow(finn_anim *a, int value) {
     if (value < 0) return;
     finn_anim_to(a, (float)value, FINN_MOTION_FILL, 0.0f, FINN_EASE_OUT);
@@ -508,16 +467,9 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
 
     int pw = rs(PANEL_W, s), ph = rs(PANEL_H, s);
 
-    /*
-     * The reference sets the panel's left edge on the tray pill's left edge
-     * (680 vs 681: flush) and its bottom one gap above the dock's top. The
-     * pill's rect has to come from the dock itself, because the pill's width
-     * is content-driven (the clock is inside it) and the dock's bounding box
-     * cannot say where the pill starts.
-     */
     int tx = 0, ty = 0, tw = 0, th = 0;
     finndock_tray(&tx, &ty, &tw, &th);
-    if (tw <= 0 || th <= 0) {          /* dock has not been laid out yet */
+    if (tw <= 0 || th <= 0) {
         tx = dock_x; ty = dock_y; tw = dock_w; th = dock_h;
     }
 
@@ -530,12 +482,9 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     if (px0 + pw > screen_w - margin) px0 = screen_w - margin - pw;
     if (py0 + ph > screen_h - margin) py0 = screen_h - margin - ph;
 
-    /* no shadow: the reference's edges are a hard one-pixel step, so the
-     * layer is exactly the panel and there is no margin to spare */
     g_lx0 = px0;
     g_ly0 = py0;
 
-    /* the panel grows out of the tray pill's bottom-left corner */
     g_ax = tx;
     g_ay = ty + th;
 
@@ -556,13 +505,22 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     y += rowh + gap;
 
     g_r_vol.x = x0; g_r_vol.y = y; g_r_vol.w = full; g_r_vol.h = rowh;
-    y += rowh + gap;
 
-    g_r_app.x   = x0;              g_r_app.y   = y; g_r_app.w   = half; g_r_app.h   = tht;
-    g_r_power.x = x0 + half + gap; g_r_power.y = y; g_r_power.w = half; g_r_power.h = tht;
+    /* Footer buttons on the right (Figma 10:3: edit at x=200, settings at x=226, y=226, 18x18) */
+    int hit = rs(FOOTER_HIT, s);
+    int fcy = rs(FOOTER_Y + FOOTER_H * 0.5f, s);
+    int edit_cx = rs(209.0f * 1.298077f, s);
+    int set_cx  = rs(235.0f * 1.298077f, s);
+    g_r_app.x      = edit_cx - hit / 2;
+    g_r_app.y      = fcy - hit / 2;
+    g_r_app.w      = hit;
+    g_r_app.h      = hit;
 
-    /* the bars settle to the hardware's value the first time the panel is
-     * built; after that they chase it */
+    g_r_settings.x = set_cx - hit / 2;
+    g_r_settings.y = fcy - hit / 2;
+    g_r_settings.w = hit;
+    g_r_settings.h = hit;
+
     if (!g_fill_primed) {
         finn_anim_jump(&g_a_vol, st->volume >= 0 ? (float)st->volume : 0.0f);
         finn_anim_jump(&g_a_bright, st->brightness >= 0 ? (float)st->brightness : 0.0f);
@@ -575,7 +533,7 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
 
     uint32_t key = build_key(s, pw, ph, dock_x, dock_y, dock_w, dock_h,
                              tx, ty, tw, th, st);
-    if (g_built && key == g_build_key) return;   /* raster already matches */
+    if (g_built && key == g_build_key) return;
     g_build_key = key;
     g_built = 1;
     g_cc_rev++;
@@ -589,9 +547,6 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     if (!g_layer) return;
     memset(g_layer, 0, (size_t)lw * lh * 4);
 
-    /* panel: frosted glass over the wallpaper it actually covers. The layer
-     * origin is the settled panel origin, so the blur is sampled from the
-     * right place rather than from the layer's top-left. */
     finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                      0.0f, 0.0f, (float)pw, (float)ph,
                      s * CC_R_PANEL, FINN_GLASS, CC_GLASS);
@@ -599,42 +554,24 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     float press = finn_anim_v(&g_a_press);
     float hover = g_hover;
 
-    /*
-     * One connection slot, not two. The reference has a single "how am I
-     * online" tile, so when the machine has no radio the slot shows the wire
-     * it actually has instead of standing empty next to a second Wired tile.
-     * Both interfaces would otherwise compete for the same sentence, and the
-     * honest one is the one carrying traffic.
-     */
     int wifi_ok  = st->wifi >= 0;
     int wired_ok = st->wired >= 0;
     g_conn_wired = (!wifi_ok && wired_ok);
 
-    /* One size for every label in the panel, set by the longest name. */
-    const char *conn_name = g_conn_wired ? "Wired Connection" : "Wi-Fi";
-    const char *labels[4] = { conn_name, "Bluetooth", "Appearance", "Power" };
-    const finn_font *lf = fit_all(labels, 4, tile_text_avail(&g_r_wifi, s));
+    const char *conn_name = g_conn_wired ? "Wired" : "Wi-Fi";
+    const char *labels[2] = { conn_name, "Bluetooth" };
+    const finn_font *lf = fit_all(labels, 2, tile_text_avail(&g_r_wifi, s));
 
     if (g_conn_wired)
         status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_eth, 0,
                     conn_name,
-                    st->wired ? "Connected to LAN" : "No link",
+                    st->wired ? "Connected" : "No link",
                     st->wired > 0, lf);
     else
         status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_wifi, 0, conn_name,
                     wifi_ok ? (st->wifi > 0 ? "Connected" : "Off") : "No adapter",
                     wifi_ok && st->wifi > 0, lf);
 
-    /*
-     * The pointer's answer, and the press that follows it.
-     *
-     * Both are the same patch the dock puts under the finger, at the same
-     * strengths, so the panel and the dock answer the pointer the same way.
-     *
-     * A tile whose hardware is absent takes neither: there is nothing behind
-     * it to promise, and a control that lights up under the pointer and then
-     * does nothing is a lie told in two steps.
-     */
     if (!g_conn_wired && wifi_ok) {
         if (g_hover_act == FINNCONTROL_WIFI)
             control_wash(g_layer, lw, lh, s, g_r_wifi,
@@ -655,26 +592,12 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
             press_wash(g_layer, lw, lh, s, g_r_bt, press);
     }
 
-    status_tile(g_layer, lw, lh, s, g_r_app,
-                st->dark ? &g_ic_moon : &g_ic_sun, 0,
-                "Appearance", st->dark ? "Dark" : "Light", st->dark, lf);
-    if (g_hover_act == FINNCONTROL_APPEARANCE)
-        control_wash(g_layer, lw, lh, s, g_r_app,
-                     FINN_MOTION_HOVER_WASH * hover);
-    if (g_press == FINNCONTROL_APPEARANCE) press_wash(g_layer, lw, lh, s, g_r_app, press);
-
-    /*
-     * The sliders do not squeeze when pressed. A toggle is a button and can
-     * give under the finger, but the whole point of a slider is that the
-     * surface stays still while the value travels across it — shrinking the
-     * row mid-drag reads as the control flinching away from the pointer.
-     */
     slider_row(g_layer, lw, lh, s, g_r_bright,
                &g_ic_sun, fill_bright, st->brightness >= 0);
     slider_row(g_layer, lw, lh, s, g_r_vol,
                &g_ic_vol, fill_vol, st->volume >= 0);
 
-    power_tile(g_layer, lw, lh, s, g_r_power, st, lf);
+    footer_row(g_layer, lw, lh, s, st, hover, press);
 }
 
 void finncontrol_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
@@ -682,12 +605,6 @@ void finncontrol_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
     finn_blit(dst, dw, dh, g_layer, g_lw, g_lh, g_lx0 + dx, g_ly0 + dy);
 }
 
-/*
- * The open/close transform, resolved once and used by both backends: the
- * software path scales the raster as it blits it, and the accelerated path
- * hands the same rectangle to the GPU as a quad. There is one description of
- * where the panel is, which is the point.
- */
 void finncontrol_transform(float *x, float *y, float *w, float *h, float *alpha) {
     float v = finn_anim_v(&g_a_open);
     float a = v * FINN_MOTION_FADE;
@@ -725,9 +642,6 @@ static int in_rect(const cc_rect *r, int x, int y) {
     return x >= r->x && y >= r->y && x < r->x + r->w && y < r->y + r->h;
 }
 
-/* The value's span is the row from the thumb's right edge to the row's right
- * edge; the fraction is the pointer's position across that span, so a click
- * on the thumb reads as zero rather than as a value of a twelfth. */
 static float slider_frac(const cc_rect *r, int x, float s) {
     float bx = (float)r->x + s * THUMB_W;
     float bw = (float)r->w - s * THUMB_W;
@@ -737,8 +651,6 @@ static float slider_frac(const cc_rect *r, int x, float s) {
 }
 
 int finncontrol_hit(int px, int py, float *out01) {
-    /* the panel only takes the pointer once it is essentially open: during
-     * the pop it is drawn smaller than the box it is hit-tested against */
     if (!g_open || !g_layer || finncontrol_visible() == 0) return FINNCONTROL_NONE;
     if (finn_anim_v(&g_a_open) < 0.90f) return FINNCONTROL_NONE;
 
@@ -747,8 +659,9 @@ int finncontrol_hit(int px, int py, float *out01) {
     if (out01) *out01 = -1.0f;
 
     if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) return FINNCONTROL_WIFI;
-    if (in_rect(&g_r_bt, x, y))     return FINNCONTROL_BLUETOOTH;
-    if (in_rect(&g_r_app, x, y))    return FINNCONTROL_APPEARANCE;
+    if (in_rect(&g_r_bt, x, y))       return FINNCONTROL_BLUETOOTH;
+    if (in_rect(&g_r_app, x, y))      return FINNCONTROL_APPEARANCE;
+    if (in_rect(&g_r_settings, x, y)) return FINNCONTROL_SETTINGS;
     if (in_rect(&g_r_bright, x, y)) {
         if (out01) *out01 = slider_frac(&g_r_bright, x, g_scale);
         return FINNCONTROL_BRIGHTNESS;

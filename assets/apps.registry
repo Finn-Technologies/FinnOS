@@ -14,13 +14,6 @@
 #   note     free text, shown as the app's detail line
 #
 # The first-party apps are the ones NAMING.md reserves the family name for.
-# The names are the brand and a plain English noun: Finn Code, Finn Files.
+# The names are the brand and a plain English noun: Finn Window.
 
-code    | Finn Code     | code.svg     | /usr/bin/finn-code    | Editor
-files   | Finn Files    | files.svg    | /usr/bin/finn-files   | File manager
-notes   | Finn Notes    | notes.svg    | /usr/bin/finn-notes   | Notes
-studio  | Finn Studio   | studio.svg   | /usr/bin/finn-studio  | Visual FinnUI designer
-store   | Finn Store    | store.svg    | /usr/bin/finn-store   | App distribution
-sync    | Finn Sync     | sync.svg     | /usr/bin/finn-sync    | Device-to-device sync
-vault   | Finn Vault    | vault.svg    | /usr/bin/finn-vault   | Credentials and keys
-term    | Finn Terminal | terminal.svg | /usr/bin/finn-term    | Shell host
+window  | Finn Window   | start_button.svg | /usr/local/bin/finn-window | Window

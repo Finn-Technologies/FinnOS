@@ -1,0 +1,144 @@
+name: ISO image
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  base:
+    name: the base tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the shell scripts parse
+        run: |
+          bash -n base/mkfinniso base/setup.sh
+          test -x base/mkfinniso
+          test -x base/setup.sh
+      - name: the tree checks out
+        # The profile, the boot menus against the profile's label and
+        # layout, the package lists, the pacman guard rail, the two copies
+        # of the units, and that nothing on the disc names another
+        # distribution. It runs anywhere; only the build needs Arch.
+        run: |
+          base/mkfinniso --check
+          base/mkfinniso --check --arch=aarch64
+      - name: the two package names are the same list
+        run: |
+          test -L base/packages.x86
+          test -L base/packages.arm
+          cmp base/packages.x86 base/packages.x86_64
+          cmp base/packages.arm base/packages.aarch64
+      - name: the style checks
+        # The house linter, on this directory: trailing whitespace, a file
+        # that does not end in a newline, and the executable bit. base/ is
+        # not in scripts/lint.sh's default paths yet.
+        run: |
+          scripts/lint.sh base
+          ! grep -rIn 'Arch Linux' base/boot base/airootfs/etc/issue base/airootfs/etc/motd
+
+  iso:
+    name: build and boot the FinnOS install ISO
+    needs: base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tools that write the image
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorriso squashfs-tools qemu-system-x86
+      - name: the Arch Linux base
+        # The remaster path: a GitHub runner is not an Arch machine, so
+        # mkarchiso cannot run here. base/mkfinniso is the native builder,
+        # and base/README.md says which machine it needs.
+        run: |
+          mkdir -p .cache
+          curl -fsSLo .cache/archlinux-x86_64.iso \
+            https://geo.mirror.pkgbuild.com/iso/latest/archlinux-x86_64.iso
+          curl -fsSLo sha256sums.txt \
+            https://geo.mirror.pkgbuild.com/iso/latest/sha256sums.txt
+          (cd .cache && grep 'archlinux-x86_64.iso' ../sha256sums.txt | sha256sum -c -)
+      - name: build the ISO
+        # Root so the file capabilities in the live root survive the
+        # repack; the disc itself stays readable by the runner.
+        run: |
+          sudo vm/build-iso.sh finnos.iso
+          sudo chown "$(id -u):$(id -g)" finnos.iso
+      - name: the disc is bootable
+        run: |
+          xorriso -indev finnos.iso -report_el_torito plain
+      - name: the payload is in the live root
+        run: |
+          xorriso -osirrox on -indev finnos.iso \
+            -extract /arch/x86_64/airootfs.sfs /tmp/airootfs.sfs
+          rm -rf /tmp/live
+          unsquashfs -q -d /tmp/live /tmp/airootfs.sfs \
+            opt/finnos/vm/finn-install.sh \
+            opt/finnos/vm/finn-chroot.sh \
+            opt/finnos/base/mkfinniso \
+            opt/finnos/base/profiledef.sh \
+            opt/finnos/base/airootfs/etc/os-release \
+            opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
+            usr/local/bin/finn-install \
+            etc/os-release etc/issue etc/motd etc/hostname \
+            etc/systemd/system/finn-comp.service etc/systemd/system/finnd.service \
+            usr/lib/tmpfiles.d/finn.conf \
+            root/.zprofile root/.bash_profile
+          # The installer is run, not read, so the mode is part of it.
+          test -x /tmp/live/opt/finnos/vm/finn-install.sh
+          test -x /tmp/live/opt/finnos/vm/finn-chroot.sh
+          test -x /tmp/live/opt/finnos/base/mkfinniso
+          test -x /tmp/live/usr/local/bin/finn-install
+          # The live shell is what starts the installer, so the hook has to
+          # be in the file that shell reads: the live environment's root
+          # shell is zsh.
+          grep -q 'finn.install' /tmp/live/root/.zprofile
+          grep -q 'finn.install' /tmp/live/root/.bash_profile
+          # The disc is FinnOS's, not the distribution it was remastered
+          # from: what it calls itself at the console is part of that, and
+          # so is the installer's own branding and the units. Each of them
+          # is the same file the tree carries, so they are compared rather
+          # than eyeballed.
+          grep -q '^ID=finnos$' /tmp/live/etc/os-release
+          for f in etc/os-release etc/issue etc/motd etc/hostname \
+                   etc/systemd/system/finn-comp.service \
+                   etc/systemd/system/finnd.service \
+                   usr/lib/tmpfiles.d/finn.conf \
+                   usr/local/bin/finn-install; do
+            cmp "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f"
+          done
+          test "$(cat /tmp/live/etc/hostname)" = finnos
+      - name: the menus say FinnOS
+        run: |
+          xorriso -osirrox on -indev finnos.iso \
+            -extract /boot/syslinux /tmp/syslinux
+          grep -rE 'MENU TITLE FinnOS' /tmp/syslinux
+          grep -E 'DEFAULT finnos' /tmp/syslinux/archiso_sys-linux.cfg
+          grep -E 'MENU LABEL Install FinnOS' /tmp/syslinux/archiso_sys-linux.cfg
+          grep -E 'MENU LABEL FinnOS live shell' /tmp/syslinux/archiso_sys-linux.cfg
+          ! grep -rE 'Arch Linux' /tmp/syslinux/*.cfg
+          xorriso -osirrox on -indev finnos.iso \
+            -extract /loader/entries /tmp/entries
+          cat /tmp/entries/00-finnos.conf
+          grep -E 'title +Install FinnOS' /tmp/entries/00-finnos.conf
+          grep -E 'finn\.install' /tmp/entries/00-finnos.conf
+          ! grep -rE 'Arch Linux' /tmp/entries
+      - name: boot it
+        run: vm/test-boot.sh finnos.iso
+      - name: look at the menu
+        run: vm/menu-shot.sh finnos.iso /tmp/menu
+      - name: the menu frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-menu
+          path: |
+            /tmp/menu/frame-*.png
+            /tmp/menu/frame-*.ppm
+          if-no-files-found: warn
+      - name: upload the ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: finnos-iso
+          path: finnos.iso

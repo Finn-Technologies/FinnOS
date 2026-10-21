@@ -31,7 +31,7 @@ enum {
     FINNCLOCK_CLEAR       /* the Clear control, when there is something to clear */
 };
 
-int  finnclock_init(const char *font_dir);
+int  finnclock_init(const char *icon_dir, const char *font_dir);
 void finnclock_free(void);
 
 /* The logical state: whether the page accepts input. */

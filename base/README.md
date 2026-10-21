@@ -1,0 +1,255 @@
+# The FinnOS base
+
+This directory is the operating system's base: the package set, the
+configuration, the boot menus, the live root and the units that make a
+machine FinnOS's rather than the distribution's it was assembled from.
+
+The base is Arch Linux's. FinnOS does not fork pacman, it does not fork
+systemd, and it does not maintain its own kernel: those are the parts that
+already work, and a fork of them would be maintenance for its own sake.
+What FinnOS does is edit the source base directly — the package list, the
+configuration, the branding and the boot path — until what is left is one
+display server, one control plane and nothing else between the kernel and
+the screen.
+
+The Arch release ISO is a different thing from this. That one is a live
+desktop medium; this one is the same toolchain with the desktop taken out,
+built from these files.
+
+## What is stripped, and why
+
+Everything here is a decision with a reason, and the reasons are the
+product:
+
+| Removed | Why |
+|---|---|
+| X11 — `xorg-server`, `xorg-server-common`, `xorg-xwayland` | The compositor owns DRM/KMS directly. An X server on the machine would be a second thing claiming the scanout buffer. |
+| Wayland — `weston`, `sway`, `mutter`, `kwin`, `wlroots` | Same: `finn-comp` is the display server, and it is not a Wayland compositor. A client protocol does not exist yet; when it does it will be FinnOS's own, in `src/core/finnproto.h`. The `wayland` *library* is a different thing and is not removed — see below. |
+| GTK and Qt — `gtk2`, `gtk3`, `gtk4`, `qt5-base`, `qt6-base` | Toolkit stacks exist to draw for a display server. There is no second display server to draw for, and a toolkit in the image is a hundred megabytes of libraries that nothing links against. |
+| The desktops — `gnome`, `plasma`, `sddm`, `gdm`, `lightdm` | A session manager would start a shell that is not FinnOS's. `finn-comp` is started by systemd, on tty1, before `getty`. |
+| Arch branding | `os-release`, `issue`, `motd`, the hostname, the boot menus and the volume label all say FinnOS, because a person reading the console should be told what they are running. |
+| A live desktop | The medium is a console that installs FinnOS. Shipping a shell on it that is not the shell the machine will run would be a demonstration, not a product. |
+
+`pacman.conf` refuses those packages by name. That is a guard rail and not
+a sandbox, and the file says so: an ignored package is not installed, not
+even to satisfy a dependency — pacman logs `ignoring package …` and fails
+the transaction when nothing else can satisfy it — but naming the package
+on the command line installs it after a warning, and a package installed
+from a file with `-U` never consults the list.
+
+One name is deliberately not on it. `wayland` is a client library, and
+Mesa's EGL links `libwayland-client`; ignoring it would make `mesa`, and
+with it the base's own package list, unresolvable. So the list refuses the
+compositors and leaves the library, and `mkfinniso --check` holds the two
+halves to that: a package list that carries `mesa` and a guard rail that
+refuses `wayland` cannot both hold.
+
+## What replaces them
+
+| Arch's | FinnOS's |
+|---|---|
+| X server or Wayland compositor | `finn-comp` — the display server and the shell, in one process (`src/compositor`) |
+| `dbus`-mediated session services | `finnd` — one permissioned unix socket, `/run/finn/control.sock` (`src/control`) |
+| A desktop's settings app | the Control Center, a surface of `finn-comp`, driven by `finnctl` |
+| A store or an AUR helper | `finnpkg` and `/usr/share/finn/apps.registry` (`src/pkg`) |
+| A toolkit and a UI framework | FinnUI: `.fui` in, `.fbin` out, compiled by `fuic` (`sdk/`) |
+
+## The tree
+
+```
+README.md            this
+profiledef.sh        the archiso profile: name, label, layout, boot modes
+pacman.conf          the configuration, with the desktop refused by name
+packages.x86_64      the release target's package set
+packages.aarch64     the ARM dev machine's package set
+packages.x86         -> packages.x86_64
+packages.arm         -> packages.aarch64
+mkfinniso            the ISO builder
+setup.sh             the same base, applied to a running machine
+finn-comp.service    the compositor's unit
+finnd.service        the control plane's unit
+finn-tmpfiles.conf   /run/finn, the IPC namespace
+airootfs/            the live root: branding, hooks, units, autologin
+boot/                the three boot menus
+pkgbuilds/           the local packages: finn-filesystem, finnos-compose,
+                     finnpkg, finnsdk
+```
+
+Two names for two package lists is not a compatibility shim that was
+forgotten: `packages.x86` and `packages.arm` are the names the dev VM
+scripts have always used, and they are symlinks so that there is one copy
+of the list.
+
+What is in `airootfs` is the live root and only the live root:
+
+```
+airootfs/etc/os-release          NAME and PRETTY_NAME "FinnOS", ID=finnos
+airootfs/etc/issue, motd         what a person reads at the console
+airootfs/etc/hostname            finnos
+airootfs/etc/mkinitcpio.conf     the live hooks: kms, then archiso
+airootfs/etc/mkinitcpio.d/       one image, no fallback, one disc
+airootfs/etc/systemd/system/     finn-comp.service, finnd.service,
+                                 getty@tty1 autologin as root,
+                                 NetworkManager enabled
+airootfs/usr/lib/tmpfiles.d/     /run/finn, the IPC namespace
+airootfs/usr/local/bin/          finn-install: the name the boot entry calls
+airootfs/root/.bash_profile      the finn.install hook, for bash and zsh
+```
+
+The compositor's unit is on the disc and not enabled: the medium is a
+console that installs FinnOS, and the machine it installs on is where the
+shell is built. A unit enabled with no binary to run is a unit that fails
+at every boot.
+
+`boot/` is the three menus, which say the same thing three ways because a
+machine gets one of them and not the others:
+
+```
+boot/syslinux/syslinux.cfg       the BIOS menu; syslinux
+boot/loader/loader.conf          the UEFI menu; systemd-boot
+boot/loader/entries/01-…         Install FinnOS, with finn.install
+boot/loader/entries/02-…         FinnOS live shell
+boot/grub/grub.cfg               GRUB, for the firmware that boots neither
+```
+
+## The units are one file, twice
+
+`finn-comp.service`, `finnd.service` and `finn-tmpfiles.conf` exist in two
+places: here, where `setup.sh` installs them from, and in `airootfs/`,
+where the disc carries them. They are the same file. `mkfinniso --check`
+compares them and refuses to build when they have drifted, because a disc
+that ships a unit the machine does not have is a bug that only shows up
+after an install.
+
+## Building the medium
+
+Two ways, and the builder says which one it used.
+
+**Native**, from this tree alone, on an Arch machine:
+
+```sh
+sudo base/mkfinniso finnos.iso
+```
+
+It stages the profile for `mkarchiso`, which resolves `packages.<arch>`
+against the repositories, runs `mkinitcpio` with the hooks in
+`airootfs/etc/mkinitcpio.conf`, and writes all three boot menus. The
+sources go into the live root at `/opt/finnos`, where the installer reads
+them. This is the real build and needs a network.
+
+It needs root, the `archiso` package, and the tools archiso itself calls:
+`syslinux` for the BIOS boot sector, `mtools` and `dosfstools` for the EFI
+system partition, `squashfs-tools` and `xorriso` for the image. Those are
+the *build machine's* dependencies, which is why they are not in
+`packages.<arch>` — the medium does not carry what was used to write it.
+
+**Assemble**, when there is no archiso:
+
+```sh
+base/mkfinniso --mode=assemble --kernel=/boot/vmlinuz-linux \
+  --initramfs=/boot/archiso-initramfs.img finnos.iso
+```
+
+It builds the live root from `airootfs` with `mksquashfs`, writes the boot
+menus from `boot/` with `xorriso`, and needs a kernel and an initramfs
+that can find an archiso disc — the archiso hook is what does that, and
+nothing in this tree can build one without the archiso package. The
+script checks the initramfs for the hook and refuses rather than writing a
+disc that stops at the kernel. It also needs `syslinux` for the BIOS boot
+and `systemd` + `mtools` + `dosfstools` for UEFI; without them it writes
+what it can and says what is missing, and the last line of its output says
+which boot images the disc actually got.
+
+Either way, the tree is checked first, and the check runs anywhere:
+
+```sh
+base/mkfinniso --check
+```
+
+It is the CI's job too: it verifies the profile, the boot menus against
+the profile's label and layout, the package lists, the `IgnorePkg` guard
+rail, the unit copies, and that nothing on the disc names another
+distribution.
+
+`vm/build-iso.sh` is the third way and a different thing: it remasters an
+Arch release ISO, putting the tree into that ISO's live root inside the
+existing squashfs. It needs no archiso and no network beyond one download,
+and it is what the ISO workflow uses, because a GitHub runner is not an
+Arch machine. The image it produces is the Arch live environment with
+FinnOS in it; the image `mkfinniso` produces is FinnOS.
+
+## Applying the base to a running machine
+
+```sh
+sudo base/setup.sh            # the machine's own architecture
+sudo base/setup.sh x86_64     # the release target
+```
+
+It reads the same `packages.<arch>` the disc does, installs
+`pacman.conf` (keeping the previous one as `/etc/pacman.conf.finn-backup`),
+removes any X server, Wayland compositor, GTK or Qt stack that is on the
+machine (the `wayland` client library stays, because `mesa` links it),
+creates the
+`finn` user, enables `seatd` and `NetworkManager`, and installs the units,
+the fonts, both wallpapers, every icon, the app registry, `finnpkg`, and
+the branding: `os-release`, `issue`, `motd` and the hostname.
+
+The hostname is set only when the machine still has the default one, and
+`FINN_KEEP_HOSTNAME=1` leaves it alone whatever it is. A machine whose
+name a person chose is that person's machine.
+
+The units are installed but not enabled: enabling a unit whose binary is
+not on the machine is a machine that fails at every boot. Build first —
+
+```sh
+cd /opt/finnos && make && sudo make install
+sudo systemctl enable --now finn-comp finnd
+```
+
+`airootfs/etc/mkinitcpio.conf` is not part of this. It is the live
+medium's initramfs, and its archiso hooks would be wrong on a machine that
+boots from a partition.
+
+## The packages
+
+`base/pkgbuilds/` holds the local side of the base — the packages that
+come from this tree rather than from a repository:
+
+| Package | What it is |
+|---|---|
+| `finn-filesystem` | the directories FinnOS owns, and `/run/finn` |
+| `finnos-compose` | `finn-comp`, `finnd`, `finnctl`, their units, the icons, the wallpapers and the fonts |
+| `finnpkg` | the package manager |
+| `finnsdk` | the `.fui` compiler and the control-plane client |
+
+They are not in `packages.<arch>`, because a package list that names a
+package no repository has is a list that does not resolve. Each builds
+from the checkout it sits in:
+
+```sh
+FINNOS_SRC=/path/to/finnos makepkg -f
+```
+
+Everything they install goes under `/usr/local`, which is the tree's own
+convention: `src/compositor/Makefile`'s default prefix, the `ExecStart` in
+`finn-comp.service` and these packages all name `/usr/local/bin/finn-comp`,
+and the failure to avoid is two of them disagreeing.
+
+## What is not here
+
+- **No window manager, no keyboard input, no client protocol.** See
+  `docs/architecture.md`; the shell's own gaps are listed there rather
+  than papered over here.
+- **No Wayland compositor and no Wayland client protocol.** The `wayland`
+  library is on the disc because Mesa links it, and that is all it is: no
+  compositor starts it and nothing speaks its protocol. A `wayland`
+  compositor would be a second display server, and the base has one.
+- **No AI, and no weights.** FinnAI is opt-in and off by default, and
+  nothing in this directory talks to a model.
+- **No OTA.** `finnpkg update` is a stub. The A/B slots are a design in
+  `docs/roadmap.md`, not a feature.
+- **No repository.** `packages.<arch>` is resolved from Arch's mirrors.
+  FinnOS has no mirror of its own yet, so a machine installed from this
+  base updates from Arch — minus the packages `pacman.conf` refuses.
+- **No syslinux on ARM.** The ARM profile boots through UEFI only, which
+  is what an ARM board has.

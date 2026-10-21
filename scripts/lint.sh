@@ -14,7 +14,7 @@ cd "$ROOT"
 
 PATHS=("$@")
 if [ ${#PATHS[@]} -eq 0 ]; then
-    PATHS=(src sdk mcp vm arch-base ui apps tests docs)
+    PATHS=(src sdk mcp vm base ui apps tests docs)
 fi
 
 fail=0

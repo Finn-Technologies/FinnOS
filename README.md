@@ -14,11 +14,12 @@ permissioned unix socket that any script, and any agent, can drive.
 
 | | |
 |---|---|
-| **the compositor** | `finn-comp` — DRM/KMS, a GPU path and a software path, and the shell: the dock, the Control Center, the clock page and the [Start Menu](docs/images/start-menu-light.png) |
-| **the control plane** | `finnd` and `finnctl` — one permissioned entry point for state, input, display, power and apps, audited on every call |
+| **the compositor** | `finn-comp` — DRM/KMS, a GPU path and a software path, and the shell: the boot splash (`finnboot`), first-boot setup (`finnsetup`), the dock (`finndock`), the [Control Center](docs/images/control-center-light.png) (`finncontrol`), the [Notification Center](docs/images/notification-center-light.png) (`finnclock`), the [Start Menu](docs/images/start-menu-light.png) (`finnmenu`) and frosted [windows](docs/images/window-light.png) (`finnwindow`) |
+| **the control plane** | `finnd` and `finnctl` — one permissioned entry point for state, input, display, power, windows, setup and apps, audited on every call |
 | **the registry** | the catalogue of apps the OS ships and the install list the package manager owns |
-| **the SDK** | `fuic`, the `.fui` compiler; a Python client; app templates |
+| **the SDK** | `fuic`, the `.fui` compiler; `finnsdk`, the Python client; app templates |
 | **the adapter** | `finn-mcp` — the control plane as MCP tools, for an agent |
+| **the base OS** | `base/` — self-contained FinnOS rootfs, bootloaders (UEFI + BIOS), kernel preset, installer (`finn-install`), and `mkfinniso` builder |
 
 ## The rules it is built on
 

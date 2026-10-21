@@ -1,0 +1,84 @@
+# FinnOS base image — x86_64, the release target.
+#
+# One package per line, as mkarchiso reads it: no variables, no shell, and
+# a comment only at the start of a line. base/setup.sh reads the same file,
+# so what the disc carries and what a machine installs cannot drift.
+#
+# The target is an i3-4130 with HD Graphics 4400, 4 GB of RAM and a 1080p
+# panel. The compositor's budget there is under 120 MB of RAM and 60 MB of
+# VRAM, and an idle desktop redraws nothing at all.
+#
+# What is deliberately absent is as much of the list as what is present:
+# no X server, no Wayland compositor, no GTK, no Qt, no desktop environment.
+# base/pacman.conf refuses them by name.
+
+# The init system and the shell the disc boots into.
+base
+systemd
+systemd-sysvcompat
+sudo
+util-linux
+kbd
+
+# The kernel, its firmware and the DRM/KMS stack the compositor drives.
+# linux-firmware carries the GPU firmware for Intel, AMD and NVIDIA parts;
+# it is large, and the alternative is a machine with no accelerated path.
+linux
+linux-firmware
+intel-ucode
+libdrm
+libinput
+seatd
+
+# Mesa provides the GBM and EGL the accelerated path uses; libglvnd is the
+# EGL/GLES dispatch, which is what pkg-config's egl and glesv2 look for.
+# Mesa's own dependencies name `wayland`, the client library; it is not what
+# pacman.conf refuses (that is the compositors), and this is why.
+mesa
+libglvnd
+
+# What finn-comp links against.
+freetype2
+fontconfig
+libwebp
+alsa-lib
+alsa-ucm-conf
+
+# A font to fall back to when Fixel Display is missing. The shell ships its
+# own face; this is what a text editor on the machine can use.
+ttf-dejavu
+
+# The network, and a way into the machine that is not its own console.
+networkmanager
+openssh
+curl
+
+# The installer and the tools it needs: pacstrap is arch-install-scripts,
+# and a disk is partitioned and formatted before it is installed on.
+arch-install-scripts
+dosfstools
+e2fsprogs
+parted
+gptfdisk
+
+# The bootloader the installed machine gets. GRUB is installed on the
+# machine by the installer, from the machine's own package set; it is on
+# the medium too, so that a machine can also be installed by hand.
+grub
+efibootmgr
+# syslinux, mtools, squashfs-tools and xorriso are not here: they are what
+# the machine that writes the disc needs, not what the disc needs. See
+# "Building the medium" in README.md.
+
+# Python for FinnSDK and the shell's tooling; git and the compiler because
+# the machine the disc is installed on builds the compositor from the
+# sources the disc carries.
+python
+git
+nano
+vim
+base-devel
+pkgconf
+# The local packages in base/pkgbuilds are deliberately not in this list:
+# nothing on the disc installs from a repository that does not exist. The
+# compositor and the SDK are built by the machine, from the sources.

@@ -24,7 +24,8 @@ enum {
     FINNCONTROL_PANEL,        /* inside the panel, but not on a control */
     FINNCONTROL_WIFI,
     FINNCONTROL_BLUETOOTH,
-    FINNCONTROL_APPEARANCE,
+    FINNCONTROL_APPEARANCE,   /* footer edit/appearance button */
+    FINNCONTROL_SETTINGS,     /* footer settings gear button */
     FINNCONTROL_BRIGHTNESS,
     FINNCONTROL_VOLUME
 };

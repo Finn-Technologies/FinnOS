@@ -29,11 +29,11 @@ dependencies = []
 images = ["pillow>=9"]
 
 [project.scripts]
-fuic = "findsdk.fuic.cli:main"
-finn-sdk = "findsdk.cli:main"
+fuic = "finnsdk.fuic.cli:main"
+finn-sdk = "finnsdk.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/finnos/finnos"
 
 [tool.setuptools.packages.find]
-include = ["findsdk*"]
+include = ["finnsdk*"]

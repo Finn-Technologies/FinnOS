@@ -148,6 +148,30 @@ is how a program is started on a modern Linux, and it means the app is
 tracked, logged and cleaned up by the init system rather than by a daemon
 holding its process. The unit is collected when the app exits.
 
+### Windows
+
+Provided by the compositor (`finnwindow`), proxied by the control plane.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `window.list` | `OK count=… [id\|app\|state\|title]…` | list open windows and their state (`normal`, `minimized`, `maximized`) |
+| `window.open [app=<id>\|title=<title>]` | `OK id=…` | open an empty window or an app window |
+| `window.close [id=<id>]` | `OK` | close the window (or the top visible window when `id` is omitted) |
+| `window.focus [id=<id>]` | `OK` | unminimize and raise the window to the front |
+| `window.minimize [id=<id>]` | `OK` | toggle the window's minimized state |
+| `window.maximize [id=<id>]` | `OK` | toggle the window's maximized state |
+| `window.move id=<id> x=<x> y=<y>` | `OK` | move the window's top-left corner |
+
+### First-boot setup
+
+Provided by the compositor (`finnsetup`), proxied by the control plane.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `setup.get` | `OK active=… done=… lang=…` | read whether the setup screen is active, completed, and its selected language |
+| `setup.show` | `OK` | show the first-boot setup screen |
+| `setup.complete` | `OK` | mark setup complete (`/var/lib/finn/setup-done`) and dismiss the setup screen |
+
 ## The shape of a session
 
 ```

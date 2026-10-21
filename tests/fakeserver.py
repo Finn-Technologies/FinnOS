@@ -140,6 +140,24 @@ def default_handler(request, server):
             return "OK launched %s" % rest
         return "ERR unknown app"
 
+    if verb == "window.list":
+        return ("OK count=2"
+                " [1|notes|normal|Finn Notes]"
+                " [2|code|maximized|Finn Code]")
+
+    if verb == "window.open":
+        return "OK id=3"
+
+    if verb in ("window.close", "window.focus", "window.minimize",
+                "window.maximize", "window.move"):
+        return "OK"
+
+    if verb == "setup.get":
+        return "OK active=1 done=0 lang=en"
+
+    if verb == "setup.show" or verb == "setup.complete":
+        return "OK"
+
     if verb == "notify.list":
         return "OK count=1 [Hello|World|09:41]"
 

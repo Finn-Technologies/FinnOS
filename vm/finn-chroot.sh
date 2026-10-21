@@ -1,12 +1,27 @@
 #!/bin/bash
-# FinnOS chroot config — runs inside /mnt via arch-chroot.
+# FinnOS chroot config - runs inside /mnt via arch-chroot.
 #
 # It lays down the base image: the user, the services, the fonts, the
-# assets and the sources. It does not build the compositor — that happens
-# on the machine itself, with the toolchain that is now installed.
+# assets and the sources, and then builds the compositor and the control
+# plane from those sources. The build happens here, in the chroot, because
+# the machine the disc is installed on is the one with the DRM headers and
+# the toolchain.
+#
+# The payload comes from /root/finnos-src, which the installer copied off
+# the install disc. If that is not there, it is fetched from the host.
 set -x
-HOST=http://10.211.55.2:8765
+HOST=http://192.168.44.1:8765
+SRC=/root/finnos-src
 post() { curl -s -X POST --data-binary @/tmp/finn-chroot.log "$HOST/log" -o /dev/null 2>/dev/null || true; }
+
+# get <destination> <path-in-the-tree>
+get() {
+  if [ -f "$SRC/$2" ]; then
+    install -D -m 644 "$SRC/$2" "$1"
+  else
+    curl -sLo "$1" "$HOST/$2"
+  fi
+}
 
 echo "=== base config ==="
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
@@ -14,7 +29,16 @@ hwclock --systohc 2>/dev/null || true
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
 echo "LANG=en_US.UTF-8" > /etc/locale.conf
-echo "finnos" > /etc/hostname
+# What the machine calls itself comes from base/, the same files the disc
+# carries and base/setup.sh installs: one copy of "what this machine is"
+# rather than a second one written here. The pacman configuration is the
+# base's too, so the desktop the base refuses is refused on the machine as
+# well, and not only on the medium it was installed from.
+get /etc/hostname base/airootfs/etc/hostname
+get /etc/os-release base/airootfs/etc/os-release
+get /etc/issue base/airootfs/etc/issue
+get /etc/motd base/airootfs/etc/motd
+get /etc/pacman.conf base/pacman.conf
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 finnos.localdomain finnos\n' > /etc/hosts
 echo "root:finn" | chpasswd
 post
@@ -40,7 +64,7 @@ post
 echo "=== Fixel Display fonts ==="
 mkdir -p /usr/share/fonts/OTF
 for f in FixelDisplay-Regular FixelDisplay-Medium FixelDisplay-SemiBold FixelDisplay-Bold; do
-  curl -sLo "/usr/share/fonts/OTF/$f.otf" "$HOST/assets/fonts/FixelDisplay/$f.otf"
+  get "/usr/share/fonts/OTF/$f.otf" "assets/fonts/FixelDisplay/$f.otf"
 done
 ls -la /usr/share/fonts/OTF/
 fc-cache -f >/dev/null 2>&1 || true
@@ -49,51 +73,95 @@ post
 
 echo "=== the payload: wallpaper, icons, registry, the package manager ==="
 mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/local/bin
-curl -sLo /usr/share/finn/wallpaper/default.webp "$HOST/assets/wallpaper/default.webp"
-curl -sLo /usr/share/finn/apps.registry "$HOST/assets/apps.registry"
-for icon in battery battery_bolt bluetooth code cursor ethernet files moon notes start_button store studio sun sync terminal vault volume wifi; do
-  curl -sLo "/usr/share/finn/icons/$icon.svg" "$HOST/src/compositor/icons/$icon.svg"
-done
-curl -sLo /usr/local/bin/finnpkg "$HOST/src/pkg/finnpkg" && chmod +x /usr/local/bin/finnpkg
+get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
+get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
+get /usr/share/finn/apps.registry assets/apps.registry
+echo window > /var/lib/finnpkg/installed
+# Every icon, when the payload is the tree. A list of names is a second
+# place to forget one, and an icon the shell cannot find is a tile drawn
+# as an empty square. The list below is only for the host-server flow,
+# where the tree is not on the disc: it is written out to match what is
+# there today, and the tree copy is the one that is complete.
+if compgen -G "$SRC/src/compositor/icons/*.svg" >/dev/null 2>&1; then
+  for f in "$SRC"/src/compositor/icons/*.svg; do
+    install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
+  done
+else
+  for icon in accessibility battery battery_bolt bluetooth chevron_down chevron_right \
+              code cursor edit ethernet files language moon notes settings start_button \
+              store studio sun sync terminal vault volume wifi window_close \
+              window_expand window_minimize; do
+    get "/usr/share/finn/icons/$icon.svg" "src/compositor/icons/$icon.svg"
+  done
+fi
+get /usr/local/bin/finnpkg src/pkg/finnpkg
+chmod +x /usr/local/bin/finnpkg
 chown -R root:finn /usr/share/finn /var/lib/finnpkg
 ls /usr/share/finn/icons/
 post
 
 echo "=== the system units ==="
-curl -sLo /etc/systemd/system/finn-comp.service "$HOST/arch-base/finn-comp.service"
-curl -sLo /etc/systemd/system/finnd.service "$HOST/arch-base/finnd.service"
-curl -sLo /usr/lib/tmpfiles.d/finn.conf "$HOST/arch-base/finn-tmpfiles.conf"
+get /etc/systemd/system/finn-comp.service base/finn-comp.service
+get /etc/systemd/system/finnd.service base/finnd.service
+get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
 systemctl daemon-reload
 systemctl enable finn-comp finnd 2>/dev/null || true
 post
 
 echo "=== the sources, so the machine can build the compositor ==="
-# The host serves the repository as a tarball: `tar -czf /tmp/finnos.tar.gz
-# --exclude=.git -C <repo> .` and the installer picks it up from the same
-# place as everything else.
 mkdir -p /opt/finnos
-if curl -sfLo /tmp/finnos.tar.gz "$HOST/finnos.tar.gz"; then
-  tar -C /opt/finnos -xzf /tmp/finnos.tar.gz
+if [ -d "$SRC" ]; then
+  tar -C "$SRC" -cf - . | tar -C /opt/finnos -xf -
   chown -R finn:finn /opt/finnos
   echo "SOURCES=installed"
 else
-  echo "WARN: the source tarball was not available; push it with vm/deploy.sh"
-  echo "SOURCES=missing"
+  if curl -sfLo /tmp/finnos.tar.gz "$HOST/finnos.tar.gz"; then
+    tar -C /opt/finnos -xzf /tmp/finnos.tar.gz
+    chown -R finn:finn /opt/finnos
+    echo "SOURCES=installed"
+  else
+    echo "WARN: the sources were not available; push them with vm/deploy.sh"
+    echo "SOURCES=missing"
+  fi
 fi
+post
+
+echo "=== build the shell and the control plane ==="
+# The disc carries the sources; the machine they land on is the one that
+# has the DRM headers and the toolchain, so the build happens here. Without
+# it the machine would boot with no compositor to start.
+if [ -d /opt/finnos ]; then
+  cd /opt/finnos
+  if make -j"$(nproc)" >/tmp/finn-build.log 2>&1; then
+    if make install >>/tmp/finn-build.log 2>&1; then
+      echo "SHELL=built"
+    else
+      echo "WARN: the install failed; see /tmp/finn-build.log"
+      tail -20 /tmp/finn-build.log
+      echo "SHELL=notinstalled"
+    fi
+  else
+    echo "WARN: the build failed; see /tmp/finn-build.log"
+    tail -20 /tmp/finn-build.log
+    echo "SHELL=notbuilt"
+  fi
+else
+  echo "WARN: no sources to build; the shell will not start"
+  echo "SHELL=nosources"
+fi
+chown -R finn:finn /opt/finnos
 post
 
 echo "=== initramfs + bootloader ==="
 mkinitcpio -P 2>&1 | tail -5
 post
-ROOTUUID=$(blkid -s UUID -o value /dev/sda2)
+ROOTUUID=$(blkid -s UUID -o value /mnt)
 echo "ROOTUUID=$ROOTUUID"
-KERNEL=/Image
-[ -f /boot/Image ] || KERNEL=vmlinuz-linux
-echo "KERNEL=$KERNEL"
+KERNEL=vmlinuz-linux
 ls -la /boot/ | head -20
-if grub-install --target=arm64-efi --efi-directory=/boot --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
+if grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
   grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5
-  echo "BOOTLOADER=grub"
+  echo "BOOTLOADER=grub-efi"
 else
   bootctl --esp-path=/boot install 2>&1 | tail -5 || true
   mkdir -p /boot/loader/entries
@@ -101,7 +169,24 @@ else
   printf 'title FinnOS\nlinux %s\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3\n' "$KERNEL" "$ROOTUUID" > /boot/loader/entries/finnos.conf
   echo "BOOTLOADER=systemd-boot"
 fi
+# A machine that starts with a BIOS rather than EFI needs the boot code
+# in the MBR as well: the EFI loader on the partition is not enough, and
+# the install would be on the disk with no way to reach it. On a GPT disk
+# GRUB keeps that code in the BIOS boot partition the installer made.
+if grub-install --target=i386-pc /dev/sda 2>&1 | tail -5; then
+  grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5
+  echo "BOOTLOADER=grub-bios"
+else
+  echo "WARN: no BIOS boot code; this machine has to start with EFI"
+fi
 post
 
 curl -s -X POST --data-binary @/tmp/finn-chroot.log "$HOST/log" -o /dev/null 2>/dev/null || true
+# The bootloader is in place either way, so the machine boots; but a
+# machine without a shell is not a finished install, and the installer has
+# to hear that from here.
+if [ "$SHELL" != "built" ]; then
+  echo "FINN_CHROOT_FAILED: the shell was not built"
+  exit 1
+fi
 echo "FINN_CHROOT_COMPLETE"

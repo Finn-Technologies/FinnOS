@@ -9,4 +9,4 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PYTHONPATH="$here/..${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
 
-exec python3 -m findsdk.cli "$@"
+exec python3 -m finnsdk.cli "$@"

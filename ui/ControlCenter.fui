@@ -1,0 +1,32 @@
+// FinnOS Control Center (Figma 10:3).
+// Drawn by src/compositor/finncontrol.c.
+
+screen ControlCenter {
+  target: Desktop (primary)
+
+  Panel(width: 338px, height: 338px, radius: token.r_panel,
+        glass: token.glass_panel, padding: 10.4px, gap: 10.4px) {
+
+    Row(gap: 10.4px) {
+      StatusTile(id: wifi, width: 153.4px, height: 46.7px, radius: token.r_tile,
+                 glass: token.glass_tile, icon: wifi.svg, title: "Wi-Fi",
+                 bind: net.wifi)
+      StatusTile(id: bluetooth, width: 153.4px, height: 46.7px, radius: token.r_tile,
+                 glass: token.glass_tile, icon: bluetooth.svg, title: "Bluetooth",
+                 bind: net.bluetooth)
+    }
+
+    Slider(id: brightness, width: 317.2px, height: 38.9px, radius: token.r_pill,
+           icon: sun.svg, bind: display.brightness)
+    Slider(id: volume, width: 317.2px, height: 38.9px, radius: token.r_pill,
+           icon: volume.svg, bind: audio.volume)
+
+    Footer(inset: 20.8px, height: 23.4px) {
+      BatteryReadout(icon: battery.svg, bind: power.battery)
+      Row(gap: 10.4px) {
+        IconButton(id: appearance, icon: edit.svg, on_tap: appearance.toggle)
+        IconButton(id: settings, icon: settings.svg, on_tap: shell.open_settings)
+      }
+    }
+  }
+}

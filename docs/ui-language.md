@@ -150,4 +150,4 @@ sdk/bin/fuic new     notes                # an app from the template
 
 The compiler is part of [FinnSDK](../sdk/README.md). It is a Python
 program with no dependencies, and the format it writes is specified byte
-for byte in [FORMAT.md](../sdk/findsdk/fuic/FORMAT.md).
+for byte in [FORMAT.md](../sdk/finnsdk/fuic/FORMAT.md).

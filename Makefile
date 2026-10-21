@@ -54,7 +54,7 @@ deploy:
 
 clean:
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done
-	@rm -rf tests/__pycache__ sdk/findsdk/__pycache__ sdk/findsdk/fuic/__pycache__
+	@rm -rf tests/__pycache__ sdk/finnsdk/__pycache__ sdk/finnsdk/fuic/__pycache__
 
 help:
 	@echo "targets: all test lint install deploy clean"

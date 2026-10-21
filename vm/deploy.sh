@@ -13,7 +13,7 @@
 # minimal Arch install and does not have rsync on it.
 set -euo pipefail
 
-HOST="${FINN_HOST:-finn@10.211.55.6}"
+HOST="${FINN_HOST:-finn@192.168.44.128}"
 REMOTE="${FINN_REMOTE:-~/finnos}"
 RESTART=1
 [ "${1:-}" = "--no-restart" ] && RESTART=0
@@ -28,6 +28,7 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/compositor/finn-comp' \
     --exclude='src/control/finnd' \
     --exclude='src/control/finnctl' \
+    --exclude='src/control/finn-window' \
     --exclude='src/tools/vgtest' \
     --exclude='src/tools/dockprev' \
     . | ssh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
@@ -36,8 +37,15 @@ echo "==> building"
 ssh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
 
 echo "==> installing"
+# The wallpapers are data, not build output, so `make install` does not
+# put them on the machine; they are copied here or a deploy leaves the
+# shell running with a wallpaper from an older install. Both of them:
+# finn-comp opens default.webp, and the first-run screen draws setup.webp.
 ssh "$HOST" "cd $REMOTE && sudo make install && \
+             sudo install -Dm644 assets/wallpaper/default.webp /usr/share/finn/wallpaper/default.webp && \
+             sudo install -Dm644 assets/wallpaper/setup.webp /usr/share/finn/wallpaper/setup.webp && \
              sudo install -d /var/lib/finnpkg && \
+             echo window | sudo tee /var/lib/finnpkg/installed >/dev/null && \
              sudo chgrp -R finn /usr/share/finn /var/lib/finnpkg"
 
 if [ "$RESTART" = "1" ]; then

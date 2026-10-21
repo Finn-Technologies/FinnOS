@@ -1,0 +1,11 @@
+# The live kernel's preset. There is one image because there is one
+# machine it has to boot on: the disc carries the modules it carries, and
+# a fallback image with autodetect's result removed would double the size
+# of the medium to help a machine the medium was not built for.
+
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-linux"
+
+PRESETS=('default')
+
+default_image="/boot/initramfs-linux.img"

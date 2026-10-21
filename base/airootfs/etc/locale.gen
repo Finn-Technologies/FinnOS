@@ -1,0 +1,4 @@
+# The live medium's locale. One locale, because it is a console that
+# installs a machine and not a desktop; the installed machine's is set by
+# the installer.
+en_US.UTF-8 UTF-8

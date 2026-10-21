@@ -10,7 +10,7 @@
 # left where it was and its path is printed.
 set -euo pipefail
 
-HOST="${FINN_HOST:-finn@10.211.55.6}"
+HOST="${FINN_HOST:-finn@192.168.44.128}"
 OUT="${1:-/tmp/finn-shot.png}"
 STEP="${2:-1}"
 

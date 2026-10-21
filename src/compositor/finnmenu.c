@@ -20,35 +20,31 @@
  * invented its own weights or its own corner radius would read as a
  * different OS.
  */
-#define MENU_GLASS       0.72f
+#define MENU_GLASS       0.70f
 #define MENU_TILE_GLASS  0.50f
 
 /*
- * Metrics authored for the 1080p canvas.
- *
- * The Start Menu is the one surface that is not anchored to anything: it is
- * the system's front door, so it sits in the middle of the screen and the
- * desktop reads as a room it is standing in. Its width is therefore its own
- * — a launcher has to hold a grid, and a grid does not fit in the width of a
- * control panel — but everything inside it is the Control Center's language:
- * the same glass, the same corner radii, the same ink.
+ * Metrics authored for the 1080p canvas, aligned with the Figma surface
+ * language (r=15 panel -> 19.5, r=12 tiles -> 15.6, 0.70 panel glass,
+ * 0.50 inset tile and footer pills).
  */
 #define MENU_W   760.0f
-#define MENU_PAD  28.0f
-#define MENU_GAP  24.0f
-#define MENU_R    34.0f
-#define TILE_R    22.0f
+#define MENU_PAD  24.0f
+#define MENU_GAP  20.0f
+#define MENU_R    19.5f   /* reference r=15 */
+#define TILE_R    15.6f   /* reference r=12 */
 
 #define HEAD_H     30.0f   /* the "Applications" line                */
-#define HEAD_GAP   24.0f
-#define ICON_BOX   76.0f   /* the square an app's glyph sits in      */
-#define ICON_INK   40.0f   /* the glyph's own size inside that square */
+#define HEAD_GAP   20.0f
+#define ICON_BOX   68.0f   /* the square an app's glyph sits in      */
+#define ICON_INK   36.0f   /* the glyph's own size inside that square */
 #define CAP_GAP    12.0f
 #define CAP_H      22.0f   /* the caption's line                      */
 #define DET_H      18.0f   /* the detail line under it                */
-#define CELL_H     (ICON_BOX + CAP_GAP + CAP_H + DET_H)
+#define CELL_PAD   14.0f
+#define CELL_H     (CELL_PAD * 2.0f + ICON_BOX + CAP_GAP + CAP_H + DET_H)
 #define COLS         4
-#define ROW_GAP     18.0f
+#define ROW_GAP     14.0f
 #define FOOT_H      46.0f   /* the power row                           */
 
 /* motion: the Control Center's, so the surfaces move as one family. The
@@ -429,39 +425,54 @@ static void build_frost(float s, int pw, int ph, int n,
      * than as a line of quiet text that happens to be clickable.
      */
     {
-        int rx = x0 + full - (int)sw - (int)rw - rs(24, s);
-        int sx = x0 + full - (int)sw;
+        int pill_h = rs(30, s);
+        int pill_pad = rs(14, s);
+        int rw_pill = (int)rw + pill_pad * 2;
+        int sw_pill = (int)sw + pill_pad * 2;
+        int sx_pill = x0 + full - sw_pill;
+        int rx_pill = sx_pill - rs(10, s) - rw_pill;
+        int py_pill = y - rs(8, s);
+        float prad = (float)pill_h * 0.5f;
+
+        finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
+                         (float)rx_pill, (float)py_pill,
+                         (float)rw_pill, (float)pill_h,
+                         prad, FINN_GLASS, MENU_TILE_GLASS);
+        finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
+                         (float)sx_pill, (float)py_pill,
+                         (float)sw_pill, (float)pill_h,
+                         prad, FINN_GLASS, MENU_TILE_GLASS);
 
         if (wash_r > 0.004f) {
             unsigned al = (unsigned)(wash_r * 255.0f + 0.5f);
-            finn_fill_rrect(L, lw, lh, (float)(rx - rs(8, s)), (float)(y - rs(6, s)),
-                            (float)((int)rw + rs(16, s)), (float)rs(26, s),
-                            s * TILE_R, (FINN_INK & 0x00FFFFFFu) | (al << 24));
+            finn_fill_rrect(L, lw, lh, (float)rx_pill, (float)py_pill,
+                            (float)rw_pill, (float)pill_h,
+                            prad, (FINN_INK & 0x00FFFFFFu) | (al << 24));
         }
         if (wash_s > 0.004f) {
             unsigned al = (unsigned)(wash_s * 255.0f + 0.5f);
-            finn_fill_rrect(L, lw, lh, (float)(sx - rs(8, s)), (float)(y - rs(6, s)),
-                            (float)((int)sw + rs(16, s)), (float)rs(26, s),
-                            s * TILE_R, (FINN_INK & 0x00FFFFFFu) | (al << 24));
+            finn_fill_rrect(L, lw, lh, (float)sx_pill, (float)py_pill,
+                            (float)sw_pill, (float)pill_h,
+                            prad, (FINN_INK & 0x00FFFFFFu) | (al << 24));
         }
 
-        finn_text_draw(&g_f_label, L, lw, lh, (float)rx,
-                       (float)(y + rs(13, s)), restart, FINN_DIM);
-        text_r(L, lw, lh, &g_f_label, (float)(x0 + full), (float)(y + rs(13, s)),
-               shutdown, FINN_DIM);
+        finn_text_draw(&g_f_label, L, lw, lh,
+                       (float)(rx_pill + pill_pad),
+                       (float)(y + rs(13, s)), restart, FINN_INK);
+        finn_text_draw(&g_f_label, L, lw, lh,
+                       (float)(sx_pill + pill_pad),
+                       (float)(y + rs(13, s)), shutdown, FINN_INK);
+
+        g_r_restart.x = rx_pill;
+        g_r_restart.y = py_pill;
+        g_r_restart.w = rw_pill;
+        g_r_restart.h = pill_h;
+
+        g_r_shutdown.x = sx_pill;
+        g_r_shutdown.y = py_pill;
+        g_r_shutdown.w = sw_pill;
+        g_r_shutdown.h = pill_h;
     }
-
-    /* the power row's targets: they live with the glass, because the glass
-     * is where the row is drawn */
-    g_r_restart.x = x0 + full - (int)sw - (int)rw - rs(24, s) - rs(8, s);
-    g_r_restart.y = y - rs(6, s);
-    g_r_restart.w = (int)rw + rs(16, s);
-    g_r_restart.h = rs(26, s);
-
-    g_r_shutdown.x = x0 + full - (int)sw - rs(8, s);
-    g_r_shutdown.y = y - rs(6, s);
-    g_r_shutdown.w = (int)sw + rs(16, s);
-    g_r_shutdown.h = rs(26, s);
 }
 
 /* ---------------- a cell ----------------
@@ -486,18 +497,20 @@ static void build_cell(int i, const finn_app *a, float s,
     uint32_t *L = c->px;
     int lw = cw, lh = ch;
 
-    /* the tile is centred in its cell, so a row of tiles reads as a row
-     * rather than as a staircase */
-    float tx = (cell_w - box) * 0.5f + fx;
-    float bw = cell_w - s * 18.0f;
-    float ty = fy;
+    float card_pad = s * 6.0f;
+    float card_x = fx + card_pad;
+    float card_y = fy;
+    float card_w = cell_w - card_pad * 2.0f;
+    float card_h = (float)ch - s * 2.0f;
 
-    /*
-     * The tile is the app's own square: the accent for an app the machine
-     * can open, a quiet wash for one it cannot. A muted tile says "not
-     * here" more honestly than a coloured one that does nothing when it is
-     * pressed.
-     */
+    /* Subtle frosted card backing matching Figma r=12 tiles */
+    finn_fill_rrect(L, lw, lh, card_x, card_y, card_w, card_h, s * TILE_R,
+                    (FINN_GLASS & 0x00FFFFFFu) | (a->installed ? 0x38000000u : 0x18000000u));
+
+    float tx = (cell_w - box) * 0.5f + fx;
+    float bw = card_w - s * 14.0f;
+    float ty = fy + s * CELL_PAD;
+
     uint32_t glyph = a->installed ? FINN_KNOB : FINN_MUTE;
     uint32_t cap_col = a->installed ? FINN_INK : FINN_DIM;
 
@@ -507,10 +520,9 @@ static void build_cell(int i, const finn_app *a, float s,
         finn_fill_rrect(L, lw, lh, tx, ty, box, box, s * TILE_R,
                         (FINN_INK & 0x00FFFFFFu) | 0x1A000000u);
 
-    /* the hover and press washes, the shell's only answer to a pointer */
     if (a->installed && wash > 0.004f) {
         unsigned al = (unsigned)(wash * 255.0f + 0.5f);
-        finn_fill_rrect(L, lw, lh, tx, ty, box, box, s * TILE_R,
+        finn_fill_rrect(L, lw, lh, card_x, card_y, card_w, card_h, s * TILE_R,
                         (FINN_INK & 0x00FFFFFFu) | (al << 24));
     }
 
@@ -651,13 +663,16 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
         if (!a) break;
 
         int col = i % COLS, row = i / COLS;
-        float cx = (float)x0 + (float)col * cell_w;
+        int cols_in_row = n - row * COLS;
+        if (cols_in_row > COLS) cols_in_row = COLS;
+        float row_x0 = (float)x0 + (float)(COLS - cols_in_row) * cell_w * 0.5f;
+        float cx = row_x0 + (float)col * cell_w;
         float cy = (float)grid_y + (float)row * (CELL_H + ROW_GAP) * s;
 
-        g_r_app[i].x = (int)(cx + (cell_w - box) * 0.5f);
+        g_r_app[i].x = (int)(cx + s * 6.0f);
         g_r_app[i].y = (int)cy;
-        g_r_app[i].w = (int)box;
-        g_r_app[i].h = (int)box;
+        g_r_app[i].w = (int)(cell_w - s * 12.0f);
+        g_r_app[i].h = ch - rs(2, s);
 
         g_cell_x[i] = (int)floorf(cx);
         g_cell_y[i] = (int)floorf(cy);

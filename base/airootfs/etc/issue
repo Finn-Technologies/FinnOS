@@ -1,0 +1,7 @@
+FinnOS \r — \n on \m
+
+This is the FinnOS live medium. It is not an installed system: nothing
+written here survives a reboot unless it is written to a disk.
+
+Run "finn-install" to install FinnOS onto a disk, or boot the disc's
+"Install FinnOS" entry, which does the same thing.

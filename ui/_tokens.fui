@@ -44,12 +44,14 @@ theme FinnTokens {
   // ---- the radii ------------------------------------------------------
   // A surface's radius is a fraction of its smallest dimension.
 
-  radius: r_bubble 19.5    // the dock's bubbles and the tray's pill
-  radius: r_panel 20.8     // the Control Center and the clock page
-  radius: r_tile 9.7       // a tile inside a panel
-  radius: r_card 34        // the Start Menu's panel
-  radius: r_app 22         // an app's tile in the Start Menu
-  radius: r_pill 999       // a slider row: half its height
+  radius: r_bubble 19.5    // the dock's bubbles and the tray's pill (ref 15)
+  radius: r_panel 19.5     // the Control Center and Notification Center (ref 15)
+  radius: r_tile 10.4      // a status tile inside Control Center (ref 8)
+  radius: r_note 15.6      // a notification card or menu card (ref 12)
+  radius: r_card 19.5      // the Start Menu and Window panel (ref 15)
+  radius: r_app 15.6       // an app's tile in the Start Menu (ref 12)
+  radius: r_hero 39.0      // the Setup hero card (ref 30)
+  radius: r_pill 999       // a slider row or action pill: half its height
 
   // ---- the type -------------------------------------------------------
   // One family, one weight. Hierarchy comes from size and from ink

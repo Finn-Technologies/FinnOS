@@ -100,10 +100,13 @@ finnanim         the animation tracks
 finnpointer      evdev pointer and the cursor sprite
 finngpu          GBM/EGL/GLES2 compositing, when the machine has it
 finnnotify       the shell's notification queue
-finndock         the dock
+finnboot         the boot screen: the mark and the progress line
+finnsetup        the first-boot setup screen (language, appearance, start)
+finndock         the dock (taskbar bubble, launcher bubble, system tray pill)
 finncontrol      the Control Center
-finnclock        the clock page
+finnclock        the Notification Center and clock page
 finnmenu         the Start Menu
+finnwindow       frosted windows and first-party app views
 ```
 
 ### Two backends, one frame
@@ -132,16 +135,19 @@ to blocking on input with zero redraws.
 
 ### The shell surfaces
 
-All four surfaces are drawn in the same language: the same frosted glass,
+All surfaces are drawn in the same language: the same frosted glass,
 the same corner radii, the same type scale, the same motion. They are
 rasterised into transparent layers, and the compositor blits them.
 
 | Surface | Anchored to | Opens from |
 |---|---|---|
-| the dock | the bottom of the screen | always there |
-| the Control Center | the tray pill | the tray's status block |
-| the clock page | the clock | the clock itself |
-| the Start Menu | the middle of the screen | the dock's launcher button |
+| the boot screen (`finnboot`) | centered on `#000000` | compositor wake-up |
+| the setup screen (`finnsetup`) | full screen | first boot or `setup.show` |
+| the dock (`finndock`) | the bottom of the screen | always there |
+| the Control Center (`finncontrol`) | the tray pill | the tray's status block |
+| the Notification Center (`finnclock`) | the clock | the clock itself |
+| the Start Menu (`finnmenu`) | the middle of the screen | the dock's middle launcher button |
+| windows (`finnwindow`) | free-floating on the desktop | the dock's left taskbar button, the Start Menu, or `window.open` |
 
 The Start Menu is the one surface that is not anchored to a control: it is
 the system's front door, so it stands in the middle of the room and the
@@ -207,13 +213,13 @@ Honesty is a property of the documentation too. These are the parts of the
 system that do not exist yet, stated plainly so that nobody looks for
 them:
 
-- **No window manager.** There are no windows, and the Control Center
-  cannot move one.
+- **No external client surface protocol.** `finnwindow` manages frosted
+  desktop windows (`window.open`, `window.list`, `window.close`,
+  `window.minimize`, `window.maximize`, `window.move`) and draws the
+  compositor's built-in views, but an external process started by
+  `app.launch` cannot yet stream its own pixel buffer over a socket.
 - **No keyboard input.** The compositor reads a pointer and nothing else.
   The `key.*` verbs are reserved.
-- **No compositor client protocol.** An app cannot draw itself yet;
-  `app.launch` starts a program, and that program has no way to talk to the
-  compositor.
 - **No OTA.** `finnpkg update` is a stub, and the A/B slots are a design
   in [roadmap.md](roadmap.md), not a feature.
 - **No FinnAI.** It is off by default and there are no weights in the base

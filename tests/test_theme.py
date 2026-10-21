@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import support  # noqa: E402,F401  (puts the SDK on the path)
 
-from findsdk.fuic.parser import parse
-from findsdk.fuic.theme import Theme
+from finnsdk.fuic.parser import parse
+from finnsdk.fuic.theme import Theme
 
 
 def theme_of(text):

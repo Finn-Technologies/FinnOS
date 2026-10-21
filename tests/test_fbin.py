@@ -1,6 +1,6 @@
 """The `.fbin` format: the writer and the reader, and the round trip.
 
-The format is specified in `sdk/findsdk/fuic/FORMAT.md`. These tests
+The format is specified in `sdk/finnsdk/fuic/FORMAT.md`. These tests
 are the other half of that document: if the code and the document ever
 disagree, one of these fails.
 """
@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import support  # noqa: E402,F401  (puts the SDK on the path)
 
-from findsdk.fuic import fbin
+from finnsdk.fuic import fbin
 
 
 def value(kind, payload):
@@ -157,7 +157,7 @@ class FbinTest(unittest.TestCase):
               }
             }
         """
-        from findsdk.fuic.parser import parse
+        from finnsdk.fuic.parser import parse
         node = parse(source)[0]
 
         data = fbin.write([("screen", fbin.compile_screen(node))])

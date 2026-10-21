@@ -1,0 +1,444 @@
+#!/bin/bash
+# mkfinniso — build the FinnOS install medium from this directory.
+#
+#   base/mkfinniso [out.iso]           build it
+#   base/mkfinniso --check             check the tree, build nothing
+#   base/mkfinniso --mode=assemble     force the xorriso path
+#   base/mkfinniso --arch=aarch64      the ARM profile
+#
+# The tree this builds from is the one it sits in: profiledef.sh is the
+# profile, packages.<arch> is what goes on the disc, airootfs is the live
+# root, boot is the three boot menus, and the sources are copied into the
+# live root at /opt/finnos so the installer can put them on a machine.
+#
+# There are two ways to write the disc, and which one was used is printed
+# rather than left to be guessed:
+#
+#   native    mkarchiso, from Arch's archiso package. It resolves the
+#             package list against the repositories, runs mkinitcpio with
+#             this profile's hooks, and builds syslinux, systemd-boot and
+#             GRUB for the disc. It needs an Arch machine, root, and a
+#             network. This is the real build.
+#
+#   assemble  xorriso and mksquashfs, for a machine that has neither
+#             archiso nor root. The live root is airootfs plus the sources,
+#             the boot menus come from boot/, and the kernel and initramfs
+#             are supplied by the caller — they have to be a kernel and an
+#             initramfs that know how to find an archiso disc, because
+#             nothing in this tree can build one without archiso. The
+#             script checks that they do, and refuses rather than writing a
+#             disc that stops at the kernel.
+#
+# What neither mode does is invent a shell: the live medium is a console
+# that installs FinnOS, and the compositor is built on the machine the
+# disc is installed on. See base/README.md.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$HERE")"
+
+MODE=auto
+ARCH=''
+OUT=''
+KERNEL=''
+INITRAMFS=''
+CHECK_ONLY=0
+# What the finished disc boots from, filled in by whichever build ran, so
+# the last line of the output is a report rather than a promise.
+BOOTS=''
+
+usage() {
+  cat <<'EOF'
+usage: mkfinniso [options] [out.iso]
+
+  --check             check the tree and exit; writes nothing
+  --mode=auto|native|assemble
+                      which way to write the disc (default: auto)
+  --arch=x86_64|aarch64
+                      the profile to build (default: this machine)
+  --kernel=<file>     the kernel to put on the disc (assemble only)
+  --initramfs=<file>  the initramfs to put on the disc (assemble only)
+  -h, --help          this
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check) CHECK_ONLY=1 ;;
+    --mode=*) MODE="${1#*=}" ;;
+    --arch=*) ARCH="${1#*=}" ;;
+    --kernel=*) KERNEL="${1#*=}" ;;
+    --initramfs=*) INITRAMFS="${1#*=}" ;;
+    -h|--help) usage; exit 0 ;;
+    -*) echo "mkfinniso: unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) OUT="$1" ;;
+  esac
+  shift
+done
+
+say() { printf '==> %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+if [ -z "$ARCH" ]; then
+  case "$(uname -m)" in
+    arm64|aarch64) ARCH='aarch64' ;;
+    *) ARCH='x86_64' ;;
+  esac
+fi
+[ "$ARCH" = 'x86_64' ] || [ "$ARCH" = 'aarch64' ] || die "no profile for $ARCH"
+
+PKGS="$HERE/packages.$ARCH"
+[ -f "$PKGS" ] || die "no package list: $PKGS"
+
+# ---------------------------------------------------------------------------
+# the tree
+#
+# Everything below is a rule the tree promises and a build would otherwise
+# only discover at boot: a profile that names a label the menus do not, a
+# unit in airootfs that has drifted from the one setup.sh installs, another
+# distribution's name left in a menu. --check runs exactly this much and
+# stops, so it can run anywhere, including a machine that cannot build.
+# ---------------------------------------------------------------------------
+
+PROBLEMS=0
+problem() { printf '  %s\n' "$*" >&2; PROBLEMS=$((PROBLEMS + 1)); }
+
+check_tree() {
+  say "checking the profile"
+  for v in iso_name iso_label iso_publisher iso_application install_dir bootmodes; do
+    grep -qE "^$v=" "$HERE/profiledef.sh" || problem "profiledef.sh does not set $v"
+  done
+  grep -q "iso_name='finnos'" "$HERE/profiledef.sh" || problem "the ISO is not named finnos"
+  grep -q "iso_label='FINNOS'" "$HERE/profiledef.sh" || problem "the volume label is not FINNOS"
+  grep -q "install_dir='finn'" "$HERE/profiledef.sh" || problem "the disc is not laid out under /finn"
+
+  # The label and the layout are written twice: once in the profile, and
+  # once in each boot menu, because a bootloader cannot read a shell
+  # variable. Two copies that disagree boot to a kernel panic, so they are
+  # compared here rather than discovered on a machine.
+  say "checking that the boot menus agree with the profile"
+  local menu
+  for menu in "$HERE"/boot/syslinux/syslinux.cfg \
+              "$HERE"/boot/loader/entries/*.conf \
+              "$HERE"/boot/grub/grub.cfg; do
+    [ -f "$menu" ] || { problem "missing boot menu: $menu"; continue; }
+    grep -q 'archisolabel=FINNOS' "$menu" || problem "$(basename "$menu") does not name archisolabel=FINNOS"
+    grep -q 'archisobasedir=finn' "$menu" || problem "$(basename "$menu") does not name archisobasedir=finn"
+    # /finn/boot/<arch>/, written out or through a variable the menu sets.
+    grep -qE '/finn/boot/(x86_64|aarch64)|\$finn_basedir' "$menu" ||
+      problem "$(basename "$menu") does not load a kernel from /finn/boot"
+  done
+
+  # The disc installs FinnOS. It is built from another distribution's
+  # archiso, and that name must not survive into what a person reads at the
+  # console. The documentation is a different thing: base/README.md says
+  # what the base is, because a reader deserves to know.
+  say "checking that the console does not name another distribution"
+  local f
+  while IFS= read -r f; do
+    problem "$f names Arch"
+  done < <(grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" "$HERE/airootfs/etc/issue" \
+             "$HERE/airootfs/etc/motd" 2>/dev/null || true)
+
+  say "checking the package list"
+  # shellcheck disable=SC2013
+  [ "$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$PKGS" | grep -c .)" -ge 20 ] ||
+    problem "$PKGS is suspiciously short"
+  while read -r want; do
+    grep -qE "^[[:space:]]*$want([[:space:]]|$)" "$PKGS" ||
+      problem "the package list does not carry $(echo "$want" | tr -d '()?')"
+  done <<'EOF'
+linux(-aarch64)?
+systemd
+networkmanager
+openssh
+freetype2
+libwebp
+alsa-lib
+libdrm
+seatd
+python
+EOF
+
+  say "checking that the desktop stays out"
+  # The servers, not the client library: wayland is checked just below,
+  # because Mesa links it and the guard rail has to yield there.
+  for want in xorg-server weston gtk3 gtk4 qt5-base qt6-base gnome plasma; do
+    grep -qE "^IgnorePkg[[:space:]]*=.*(^|[[:space:]])$want([[:space:]]|$)" "$HERE/pacman.conf" ||
+      problem "pacman.conf does not ignore $want"
+  done
+  # Mesa links libwayland-client, so a package list that carries mesa and a
+  # guard rail that refuses wayland cannot both hold: the build would stop
+  # with "cannot resolve wayland, a dependency of mesa". It is the one name
+  # the guard rail yields, and it is checked rather than remembered.
+  if grep -qE "^[[:space:]]*mesa([[:space:]]|$)" "$PKGS" &&
+     grep -qE "^IgnorePkg[[:space:]]*=.*(^|[[:space:]])wayland([[:space:]]|$)" "$HERE/pacman.conf"; then
+    problem "pacman.conf ignores wayland, but $PKGS carries mesa, which depends on it"
+  fi
+  # The other half of the same rule: the package list must not name what the
+  # guard rail refuses, or the list does not resolve.
+  while read -r w; do
+    [ -n "$w" ] || continue
+    if grep -qE "^[[:space:]]*$w([[:space:]]|$)" "$PKGS"; then
+      problem "$PKGS names $w, which pacman.conf refuses"
+    fi
+  done < <(sed -n 's/^IgnorePkg[[:space:]]*=[[:space:]]*//p' "$HERE/pacman.conf" | tr ' ' '\n')
+
+  say "checking the units against the ones setup.sh installs"
+  # Two copies of one file: the one the disc carries and the one a machine
+  # gets. A build that ships a unit the machine does not have is a bug that
+  # only shows up after an install, so they are compared here.
+  local pair
+  for pair in "finn-comp.service:etc/systemd/system/finn-comp.service" \
+              "finnd.service:etc/systemd/system/finnd.service" \
+              "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
+    local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
+    [ -f "$src" ] || { problem "missing $src"; continue; }
+    [ -f "$dst" ] || { problem "missing $dst"; continue; }
+    cmp -s "$src" "$dst" || problem "$dst has drifted from $src; the first is the source"
+  done
+
+  say "checking the held-out files"
+  [ -x "$HERE/../vm/finn-install.sh" ] || problem "vm/finn-install.sh is not executable"
+  [ -f "$HERE/../vm/finn-chroot.sh" ] || problem "vm/finn-chroot.sh is missing"
+  grep -q '^ID=finnos$' "$HERE/airootfs/etc/os-release" || problem "os-release is not ID=finnos"
+  grep -q '^PRETTY_NAME="FinnOS"$' "$HERE/airootfs/etc/os-release" || problem "os-release is not PRETTY_NAME=FinnOS"
+  [ "$(cat "$HERE/airootfs/etc/hostname")" = 'finnos' ] || problem "the live hostname is not finnos"
+  grep -q 'finn.install' "$HERE/airootfs/root/.bash_profile" ||
+    problem "the install entry's hook is not in root/.bash_profile"
+}
+
+check_tree
+if [ "$PROBLEMS" != 0 ]; then
+  die "$PROBLEMS problems in the base tree; nothing was built"
+fi
+say "the tree checks out"
+
+if [ "$CHECK_ONLY" = 1 ]; then
+  exit 0
+fi
+
+OUT="${OUT:-$ROOT/finnos-$ARCH.iso}"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/mkfinniso.XXXXXX")"
+trap 'chmod -R u+rwX "$WORK" 2>/dev/null || true; rm -rf "$WORK" 2>/dev/null || true' EXIT
+
+# The sources are part of the medium: the installer copies them onto the
+# machine, and the machine builds the compositor from them there. Build
+# output and captures are not sources.
+stage_sources() {
+  local dest="$1"
+  say "staging the sources into $dest"
+  mkdir -p "$dest"
+  tar -C "$ROOT" -cf - \
+      --exclude='.git' \
+      --exclude='.cache' \
+      --exclude='*.o' \
+      --exclude='*.a' \
+      --exclude='*.iso' \
+      --exclude='*.ppm' \
+      --exclude='src/compositor/finn-comp' \
+      --exclude='src/control/finnd' \
+      --exclude='src/control/finnctl' \
+      --exclude='src/tools/vgtest' \
+      --exclude='src/tools/dockprev' \
+      . | tar -C "$dest" -xf -
+  # A checkout on a machine that does not keep the executable bit (Windows,
+  # some archive tools) leaves the installer flat, and then the install
+  # entry boots a disc whose installer cannot run. A file that starts with
+  # a shebang is meant to be run.
+  local f
+  while IFS= read -r -d '' f; do
+    if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then chmod 755 "$f"; fi
+  done < <(find "$dest" -type f -print0)
+}
+
+# The boot menus live under boot/ so that the three of them sit together;
+# archiso reads grub/, syslinux/ and efiboot/ from the profile directory, so
+# the staged copy is arranged the way it expects. syslinux only exists for
+# x86: an ARM board has no BIOS to hand a boot sector to.
+stage_boot_menus() {
+  local profile="$1"
+  mkdir -p "$profile/grub" "$profile/efiboot/loader/entries"
+  cp -a "$HERE/boot/grub/." "$profile/grub/"
+  cp -a "$HERE/boot/loader/." "$profile/efiboot/"
+  if [ "$ARCH" = 'x86_64' ]; then
+    mkdir -p "$profile/syslinux"
+    cp -a "$HERE/boot/syslinux/." "$profile/syslinux/"
+  fi
+  if [ "$ARCH" != 'x86_64' ]; then
+    # The menus name the kernel directory, which is the one thing that
+    # differs between the two profiles. GRUB reads it from $finn_arch and
+    # needs nothing done to it; the systemd-boot entries are written out.
+    sed -i.bak 's#/finn/boot/x86_64#/finn/boot/aarch64#g' \
+        "$profile"/efiboot/loader/entries/*.conf
+    rm -f "$profile"/efiboot/loader/entries/*.bak
+  fi
+}
+
+build_native() {
+  command -v mkarchiso >/dev/null 2>&1 ||
+    die "mkarchiso is not on this machine; it comes from Arch's archiso package. Use --mode=assemble for the xorriso path, or vm/build-iso.sh for the remaster path."
+  [ "$(id -u)" = 0 ] || die "mkarchiso has to run as root: sudo base/mkfinniso"
+  say "mode: native (mkarchiso)"
+
+  local profile="$WORK/profile"
+  mkdir -p "$profile"
+  cp "$HERE/profiledef.sh" "$HERE/pacman.conf" "$PKGS" "$profile/"
+  cp -a "$HERE/airootfs" "$profile/airootfs"
+  stage_boot_menus "$profile"
+  stage_sources "$profile/airootfs/opt/finnos"
+
+  mkdir -p "$WORK/out"
+  say "running mkarchiso"
+  mkarchiso -v -w "$WORK/archiso" -o "$WORK/out" "$profile"
+  local built
+  built="$(find "$WORK/out" -name '*.iso' -print -quit)"
+  [ -n "$built" ] || die "mkarchiso wrote no ISO into $WORK/out"
+  install -m644 "$built" "$OUT"
+  BOOTS="BIOS (syslinux), UEFI (systemd-boot) and GRUB"
+}
+
+build_assemble() {
+  say "mode: assemble (xorriso and mksquashfs, no archiso)"
+  local tool
+  for tool in xorriso mksquashfs; do
+    command -v "$tool" >/dev/null 2>&1 ||
+      die "need $tool (xorriso and squashfs-tools); or install archiso and use --mode=native"
+  done
+
+  # Nothing here can turn a kernel into one that finds a squashfs inside a
+  # disc. The archiso hook is what does that, and it arrives with the
+  # archiso package. A kernel from the build machine's /boot alone boots
+  # and stops, so the initramfs is checked for the hook before it is used.
+  KERNEL="${KERNEL:-/boot/vmlinuz-linux}"
+  INITRAMFS="${INITRAMFS:-/boot/initramfs-linux.img}"
+  [ -f "$KERNEL" ] || die "no kernel at $KERNEL; pass --kernel=<file>"
+  [ -f "$INITRAMFS" ] || die "no initramfs at $INITRAMFS; pass --initramfs=<file>"
+  if command -v lsinitcpio >/dev/null 2>&1; then
+    lsinitcpio -l "$INITRAMFS" 2>/dev/null | grep -q 'hooks/archiso' ||
+      die "$INITRAMFS has no archiso hook; it cannot find the live root. Build one with: mkinitcpio -c $HERE/airootfs/etc/mkinitcpio.conf -g $INITRAMFS"
+  elif [ -f /usr/lib/initcpio/install/archiso ]; then
+    warn "no lsinitcpio to check $INITRAMFS against; assuming it carries the archiso hook"
+  elif [ "${FINN_ALLOW_UNVERIFIED_INITRAMFS:-0}" = 1 ]; then
+    warn "$INITRAMFS has not been checked for the archiso hook, and this machine has none"
+  else
+    die "cannot tell whether $INITRAMFS finds an archiso disc; install mkinitcpio, or set FINN_ALLOW_UNVERIFIED_INITRAMFS=1 to write it anyway"
+  fi
+
+  local iso="$WORK/iso"
+  local live="$WORK/live"
+  mkdir -p "$iso/finn/$ARCH" "$iso/finn/boot/$ARCH" "$iso/boot/syslinux" "$iso/loader/entries"
+  cp -a "$HERE/airootfs/." "$live/"
+  stage_sources "$live/opt/finnos"
+  cp "$KERNEL" "$iso/finn/boot/$ARCH/vmlinuz-linux"
+  cp "$INITRAMFS" "$iso/finn/boot/$ARCH/initramfs-linux.img"
+
+  say "packing the live root"
+  mksquashfs "$live" "$iso/finn/$ARCH/airootfs.sfs" \
+      -noappend -comp zstd -all-root -no-progress >/dev/null
+  (cd "$iso/finn/$ARCH" && sha512sum airootfs.sfs > airootfs.sha512)
+
+  # The menus are read from the ISO9660 filesystem: syslinux from
+  # /boot/syslinux, systemd-boot from /loader. Both are the tree's own,
+  # staged the same way the native build stages them.
+  local menus="$WORK/menus"
+  stage_boot_menus "$menus"
+  [ -f "$menus/syslinux/syslinux.cfg" ] &&
+    cp "$menus/syslinux/syslinux.cfg" "$iso/boot/syslinux/"
+  cp "$menus/efiboot/loader/loader.conf" "$iso/loader/"
+  cp "$menus"/efiboot/loader/entries/*.conf "$iso/loader/entries/"
+  # GRUB is not written here: its core image is built by archiso, and a
+  # grub.cfg with no core.img behind it is a file nobody reads.
+
+  # syslinux: the boot sector's payload and the modules it loads next. They
+  # are the syslinux package's, found in the places it puts them; a machine
+  # without them gets no BIOS boot and is told so rather than handed a disc
+  # that only boots on UEFI silently.
+  local sxbin='' sxc32='' hdpx=''
+  local d
+  for d in /usr/lib/syslinux/bios /usr/share/syslinux /usr/lib/ISOLINUX; do
+    [ -z "$sxbin" ] && [ -f "$d/isolinux.bin" ] && sxbin="$d/isolinux.bin"
+    [ -z "$sxc32" ] && [ -f "$d/ldlinux.c32" ] && sxc32="$d/ldlinux.c32"
+  done
+  for d in /usr/lib/syslinux/bios /usr/share/syslinux /usr/lib/ISOLINUX; do
+    [ -z "$hdpx" ] && [ -f "$d/isohdpfx.bin" ] && hdpx="$d/isohdpfx.bin"
+  done
+
+  local bios_args=()
+  if [ -n "$sxbin" ] && [ -n "$sxc32" ]; then
+    cp "$sxbin" "$iso/boot/syslinux/isolinux.bin"
+    cp "$sxc32" "$iso/boot/syslinux/ldlinux.c32"
+    for d in /usr/lib/syslinux/bios /usr/share/syslinux; do
+      for f in libcom32.c32 libutil.c32 menu.c32; do
+        [ -f "$d/$f" ] && cp -n "$d/$f" "$iso/boot/syslinux/"
+      done
+    done
+    bios_args=(-b boot/syslinux/isolinux.bin -c boot/syslinux/boot.cat
+               -no-emul-boot -boot-load-size 4 -boot-info-table)
+    [ -n "$hdpx" ] && bios_args+=(-isohybrid-mbr "$hdpx")
+    BOOTS="BIOS (syslinux)"
+  else
+    warn "no isolinux.bin/ldlinux.c32 on this machine: the disc gets no BIOS boot"
+  fi
+
+  # UEFI: systemd-boot on an El Torito FAT image. It reads loader.conf and
+  # the entries from the disc's ISO9660 root, which is why they are above
+  # and not in the image.
+  local efi_args=() bootefi=''
+  # The architecture's own binary first: a machine that has both packages
+  # installed must not get the other architecture's loader.
+  local efis=(systemd-bootx64.efi systemd-bootaa64.efi)
+  [ "$ARCH" = 'aarch64' ] && efis=(systemd-bootaa64.efi systemd-bootx64.efi)
+  for d in /usr/lib/systemd/boot/efi /usr/share/systemd/boot/efi; do
+    for n in "${efis[@]}"; do
+      [ -z "$bootefi" ] && [ -f "$d/$n" ] && bootefi="$d/$n"
+    done
+  done
+  if [ -n "$bootefi" ] && command -v mkfs.vfat >/dev/null 2>&1 && command -v mcopy >/dev/null 2>&1; then
+    export MTOOLS_SKIP_CHECK=1
+    # The firmware looks for one name on the ESP, and it is a different one
+    # on each architecture. systemd-boot's binary is copied to it.
+    local efiname='BOOTX64.EFI'
+    [ "$ARCH" = 'aarch64' ] && efiname='BOOTAA64.EFI'
+    dd if=/dev/zero of="$iso/boot/efi.img" bs=1M count=4 status=none
+    mkfs.vfat -F32 -n FINNOS_EFI "$iso/boot/efi.img" >/dev/null
+    mmd -i "$iso/boot/efi.img" ::/EFI ::/EFI/BOOT
+    mcopy -i "$iso/boot/efi.img" "$bootefi" "::/EFI/BOOT/$efiname"
+    efi_args=(-eltorito-alt-boot -e boot/efi.img -no-emul-boot -isohybrid-gpt-basdat)
+    BOOTS="${BOOTS:+$BOOTS and }UEFI (systemd-boot)"
+    say "UEFI boot: $(basename "$bootefi") as $efiname"
+  else
+    warn "no systemd-boot EFI image, mkfs.vfat or mcopy on this machine: the disc gets no UEFI boot"
+  fi
+
+  [ ${#bios_args[@]} -gt 0 ] || [ ${#efi_args[@]} -gt 0 ] ||
+    die "the disc would have no boot image at all; install syslinux, or systemd + mtools + dosfstools"
+
+  say "writing $OUT"
+  rm -f "$OUT"
+  xorriso -as mkisofs -iso-level 3 -full-iso9660-filenames -joliet \
+      -volid FINNOS -publisher 'Finn Technologies <https://finnos.org>' \
+      -appid 'FinnOS Live/Install Medium' \
+      ${bios_args[@]+"${bios_args[@]}"} \
+      ${efi_args[@]+"${efi_args[@]}"} \
+      -o "$OUT" "$iso" >/dev/null
+}
+
+case "$MODE" in
+  native)   build_native ;;
+  assemble) build_assemble ;;
+  auto)
+    if command -v mkarchiso >/dev/null 2>&1; then build_native; else build_assemble; fi
+    ;;
+  *) die "no such mode: $MODE" ;;
+esac
+
+if command -v xorriso >/dev/null 2>&1; then
+  say "boot images on $OUT"
+  xorriso -indev "$OUT" -report_el_torito plain 2>/dev/null | sed 's/^/    /' || true
+fi
+echo
+echo "ISO written to $OUT"
+echo "It boots: ${BOOTS:-nothing was written as a boot image}"
+echo "Look at it before you trust it: vm/menu-shot.sh $OUT /tmp/menu"

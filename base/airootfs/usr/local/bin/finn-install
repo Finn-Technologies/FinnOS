@@ -1,0 +1,9 @@
+#!/bin/bash
+# Install FinnOS onto the machine's first disk, from the disc that is
+# running. The sources are in the live root at /opt/finnos, which is where
+# mkfinniso puts them and where the installer's chroot step reads them.
+#
+# The installer is a script in the tree, not a second copy of one here:
+# this is the name a person types and the name the boot entry calls, and
+# both of them land on vm/finn-install.sh.
+exec /opt/finnos/vm/finn-install.sh "$@"

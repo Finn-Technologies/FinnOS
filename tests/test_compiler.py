@@ -21,10 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import support  # noqa: E402,F401  (puts the SDK on the path)
 
-from findsdk.fuic import compile_file, compile_source, read_fbin
-from findsdk.fuic.compiler import CompileError, find_theme
-from findsdk.fuic.lexer import LexError
-from findsdk.fuic.parser import ParseError, parse
+from finnsdk.fuic import compile_file, compile_source, read_fbin
+from finnsdk.fuic.compiler import CompileError, find_theme
+from finnsdk.fuic.lexer import LexError
+from finnsdk.fuic.parser import ParseError, parse
 
 
 class RepoSourcesTest(unittest.TestCase):
@@ -135,13 +135,13 @@ class CompileTest(unittest.TestCase):
         theme = os.path.join(support.UI_DIR, "_tokens.fui")
         if not os.path.exists(theme):
             self.skipTest("this tree has no ui/_tokens.fui")
-        found = find_theme(os.path.join(support.APPS_DIR, "notes", "Notes.fui"))
+        found = find_theme(os.path.join(support.APPS_DIR, "window", "Window.fui"))
         self.assertIsNotNone(found)
         self.assertEqual(os.path.basename(found), "_tokens.fui")
 
 
 def fbin_write(sections):
-    from findsdk.fuic import fbin
+    from finnsdk.fuic import fbin
     return fbin.write(sections)
 
 
@@ -149,7 +149,7 @@ class TemplateTest(unittest.TestCase):
     """`fuic new` writes files that compile."""
 
     def new_app(self, name):
-        from findsdk.fuic.cli import main
+        from finnsdk.fuic.cli import main
         tmp = tempfile.mkdtemp(prefix="finn-test-")
         with support.quiet():
             self.assertEqual(main(["new", name, "-d", tmp]), 0)

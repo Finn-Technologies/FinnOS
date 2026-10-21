@@ -51,6 +51,9 @@
 #include "finncontrol.h"
 #include "finnclock.h"
 #include "finnmenu.h"
+#include "finnwindow.h"
+#include "finnsetup.h"
+#include "finnboot.h"
 #include "finnnotify.h"
 #include "finndraw.h"
 #include "finnblur.h"
@@ -529,6 +532,75 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
 
+    /* ---- windows (Figma 12:2) ---- */
+    if (!strcmp(verb, "window.list")) {
+        char b[1024];
+        if (finnwindow_list(b, sizeof b) == 0) finn_write_str(fd, b);
+        else finn_write_str(fd, "ERR window.list failed\n");
+        return;
+    }
+    if (!strcmp(verb, "window.open")) {
+        int id = finnwindow_open(rest);
+        if (id < 0) { finn_write_str(fd, "ERR cannot open window\n"); return; }
+        cx->dirty = 1;
+        char b[64];
+        snprintf(b, sizeof b, "OK id=%d\n", id);
+        finn_write_str(fd, b);
+        return;
+    }
+    if (!strcmp(verb, "window.close") || !strcmp(verb, "window.focus") ||
+        !strcmp(verb, "window.minimize") || !strcmp(verb, "window.maximize")) {
+        int id = 0;
+        if (!kv_int(rest, "id", &id) && *rest) id = atoi(rest);
+        int rc = 0;
+        if (!strcmp(verb, "window.close"))         rc = finnwindow_close(id);
+        else if (!strcmp(verb, "window.focus"))    rc = finnwindow_focus(id);
+        else if (!strcmp(verb, "window.minimize")) rc = finnwindow_minimize(id);
+        else if (!strcmp(verb, "window.maximize")) rc = finnwindow_maximize(id);
+        if (rc != 0) { finn_write_str(fd, "ERR no such window\n"); return; }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+    if (!strcmp(verb, "window.move")) {
+        int id = 0, x = 0, y = 0;
+        if (!kv_int(rest, "id", &id)) id = atoi(rest);
+        if (!kv_int(rest, "x", &x) || !kv_int(rest, "y", &y)) {
+            finn_write_str(fd, "ERR window.move needs id= x= y=\n");
+            return;
+        }
+        if (finnwindow_move(id, x, y) != 0) {
+            finn_write_str(fd, "ERR no such window\n");
+            return;
+        }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+
+    /* ---- first-boot setup (Figma 2:14 & 7:10) ---- */
+    if (!strcmp(verb, "setup.get")) {
+        char b[160];
+        snprintf(b, sizeof b, "OK active=%d done=%d lang=%s\n",
+                 finnsetup_is_open() ? 1 : 0,
+                 finnsetup_is_completed() ? 1 : 0,
+                 finnsetup_language());
+        finn_write_str(fd, b);
+        return;
+    }
+    if (!strcmp(verb, "setup.show")) {
+        finnsetup_set_open(1);
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+    if (!strcmp(verb, "setup.complete")) {
+        finnsetup_complete();
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+
     finn_write_str(fd, "ERR unknown verb\n");
 }
 
@@ -557,34 +629,37 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
      */
     finndock_set_well(finncontrol_openness());
     finndock_set_clock_well(finnclock_openness());
+    finndock_set_apps_well(finnwindow_visible_count() > 0 ? 1.0f
+                           : (finnwindow_count() > 0 ? 0.45f : 0.0f));
     finndock_render(w, h, scale * DOCK_SCALE, st);
-    if (finncontrol_visible()) {
-        int dx, dy, dw, dh;
-        finndock_geometry(&dx, &dy, &dw, &dh);
+
+    int dx, dy, dw, dh;
+    finndock_geometry(&dx, &dy, &dw, &dh);
+
+    if (finnwindow_visible_count() > 0 || finnwindow_visible())
+        finnwindow_render(w, h, scale * DOCK_SCALE, dx, dy, dw, dh, st);
+
+    if (finncontrol_visible())
         finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
-    }
-    /* The clock page shares the tray's well with nothing: the well marks the
-     * pill that opens the Control Center, and this page opens from the clock
-     * itself, which is why it is a second surface rather than a tab. */
-    if (finnclock_visible()) {
-        int dx, dy, dw, dh;
-        finndock_geometry(&dx, &dy, &dw, &dh);
+
+    if (finnclock_visible())
         finnclock_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
-    }
-    /* The Start Menu is an overlay above the shell chrome: it is opened from
-     * the dock, but it covers the desktop rather than sitting beside the
-     * dock, so it is drawn after everything the dock owns. */
-    if (finnmenu_visible()) {
-        int dx, dy, dw, dh;
-        finndock_geometry(&dx, &dy, &dw, &dh);
+
+    if (finnmenu_visible())
         finnmenu_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
-    }
+
+    if (finnsetup_is_open() || finnsetup_visible())
+        finnsetup_render(w, h, scale, st);
 }
 
 static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
                          float scale, const finn_state *st) {
     build_chrome(w, h, scale, st);
     memcpy(base, wall, (size_t)w * h * 4);
+
+    if (finnwindow_visible())
+        finnwindow_blit_scaled(base, w, h);
+
     finndock_blit(base, w, h, 0, 0);
 
     /* the panel is in the base layer too, so a pointer move over it costs a
@@ -592,7 +667,7 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
      * the raster is unchanged, only where and how large it lands. */
     if (finncontrol_visible()) {
         if (finncontrol_settled()) finncontrol_blit(base, w, h, 0, 0);
-        else                  finncontrol_blit_scaled(base, w, h);
+        else                       finncontrol_blit_scaled(base, w, h);
     }
     if (finnclock_visible()) {
         if (finnclock_settled()) finnclock_blit(base, w, h, 0, 0);
@@ -606,17 +681,19 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
         if (finnmenu_settled()) finnmenu_blit(base, w, h, 0, 0);
         else                    finnmenu_blit_scaled(base, w, h);
     }
+    if (finnsetup_visible())
+        finnsetup_blit_scaled(base, w, h);
 }
 
 /* ---------------- accelerated path ----------------
  *
- * The same four surfaces the software path composites, kept as textures and
+ * The same surfaces the software path composites, kept as textures and
  * pasted as quads. What this buys is not just speed: the wallpaper stops being
  * copied 16 MB at a time, the panel's transform becomes a vertex transform,
  * and the appearance dissolve happens in the texture unit instead of in a
  * per-pixel software blend.
  *
- * The two chrome layers are uploaded only when their revision moves, which is
+ * The chrome layers are uploaded only when their revision moves, which is
  * why finndock and finncontrol both carry one. Everything else is static.
  */
 typedef struct {
@@ -629,11 +706,16 @@ typedef struct {
     unsigned tex_cc,   tex_cc_prev,   cc_rev;
     unsigned tex_clock, tex_clock_prev, clock_rev;
     unsigned tex_menu,  tex_menu_prev,  menu_rev;
+    unsigned tex_win,   tex_win_prev,   win_rev;
+    unsigned tex_setup, tex_setup_prev, setup_rev;
 
     /* One black pixel, stretched over the screen: the scrim behind the Start
      * Menu. A texture is cheaper than a second framebuffer and does not need
      * a shader of its own. */
     unsigned tex_scrim;
+
+    /* the boot screen's layer: the mark and the line */
+    unsigned tex_boot, boot_rev;
 
     /* The chrome the current theme is dissolving away from. The wallpaper is
      * not part of it: the picture is the one thing an appearance change does
@@ -665,6 +747,13 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
                           float theme_t, uint32_t *shot) {
     build_chrome(w, h, scale, st);
 
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    unsigned wrev = 0;
+    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &wrev);
+    unsigned wtex = gpu_upload(g, wl, ww, wh, wrev, &g->tex_win, &g->win_rev);
+    float wtx = 0, wty = 0, wtw = 0, wth = 0, wta = 0;
+    if (wl) finnwindow_transform(&wtx, &wty, &wtw, &wth, &wta);
+
     int dx = 0, dy = 0, dw = 0, dh = 0;
     unsigned drev = 0;
     const uint32_t *dl = finndock_layer(&dx, &dy, &dw, &dh, &drev);
@@ -694,17 +783,13 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     float sx = 0, sy = 0, sw = 0, sh = 0, sa = 0;
     if (ml) finnmenu_transform(&sx, &sy, &sw, &sh, &sa);
 
-    /*
-     * The dissolve. The picture takes no part in it: an appearance change
-     * re-grades what the shell draws on top of the wallpaper and leaves the
-     * wallpaper itself alone, so there is nothing there to crossfade. What
-     * changes is the chrome, and the two versions of it overlap, so drawing
-     * the new dock and panel straight over the old ones at the fade's value
-     * would attenuate the old chrome a second time underneath them and let it
-     * show through the new. The new composite goes offscreen as one image
-     * first, and the two whole images are then crossfaded. It costs a render
-     * target for the 0.45s it runs.
-     */
+    int stx = 0, sty = 0, stw = 0, sth = 0;
+    unsigned strev = 0;
+    const uint32_t *stl = finnsetup_layer(&stx, &sty, &stw, &sth, &strev);
+    unsigned sttex = gpu_upload(g, stl, stw, sth, strev, &g->tex_setup, &g->setup_rev);
+    float sux = 0, suy = 0, suw = 0, suh = 0, sua = 0;
+    if (stl) finnsetup_transform(&sux, &suy, &suw, &suh, &sua);
+
     int fading = theme_t < 0.999f && g->has_prev;
     unsigned wall = g->tex_wall;
 
@@ -726,14 +811,16 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     if (fading && g->fbo) {
         finngpu_target(g->gpu, g->fbo);
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        if (wl) finngpu_paste(g->gpu, wtex, wtx, wty, wtw, wth, wta);
         if (dl) finngpu_paste(g->gpu, dtex, (float)dx, (float)dy, (float)dw, (float)dh, 1.0f);
         if (cl) finngpu_paste(g->gpu, ctex, tx, ty, tw, th, ta);
         if (kl) finngpu_paste(g->gpu, ktex, qx, qy, qw, qh, qa);
+        if (stl) finngpu_paste(g->gpu, sttex, sux, suy, suw, suh, sua);
         finngpu_target(g->gpu, 0);
 
-        /* the chrome that was on screen, over the picture, then the new one
-         * crossfading in over it */
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        if (wl && g->tex_win_prev)
+            finngpu_paste(g->gpu, g->tex_win_prev, wtx, wty, wtw, wth, wta);
         if (dl && g->tex_dock_prev)
             finngpu_paste(g->gpu, g->tex_dock_prev, (float)dx, (float)dy,
                           (float)dw, (float)dh, 1.0f);
@@ -741,9 +828,13 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
             finngpu_paste(g->gpu, g->tex_cc_prev, tx, ty, tw, th, ta);
         if (kl && g->tex_clock_prev)
             finngpu_paste(g->gpu, g->tex_clock_prev, qx, qy, qw, qh, qa);
+        if (stl && g->tex_setup_prev)
+            finngpu_paste(g->gpu, g->tex_setup_prev, sux, suy, suw, suh, sua);
         finngpu_paste_raw(g->gpu, g->fbo_tex, 0, 0, (float)w, (float)h, theme_t);
     } else {
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        if (wl)
+            finngpu_paste(g->gpu, wtex, wtx, wty, wtw, wth, wta);
         if (dl)
             finngpu_paste(g->gpu, dtex, (float)dx, (float)dy,
                           (float)dw, (float)dh, 1.0f);
@@ -751,15 +842,10 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
             finngpu_paste(g->gpu, ctex, tx, ty, tw, th, ta);
         if (kl)
             finngpu_paste(g->gpu, ktex, qx, qy, qw, qh, qa);
+        if (stl)
+            finngpu_paste(g->gpu, sttex, sux, suy, suw, suh, sua);
     }
 
-    /*
-     * The scrim and the menu are drawn last, over everything: the menu is
-     * the front door, and nothing in the room is allowed to be in front of
-     * it. The appearance switch never happens with the menu open — the
-     * Control Center owns that control — so the menu is not part of the
-     * dissolve.
-     */
     float dim = finnmenu_scrim();
     if (dim > 0.004f && g->tex_scrim)
         finngpu_paste(g->gpu, g->tex_scrim, 0, 0, (float)w, (float)h, dim);
@@ -807,6 +893,10 @@ static int cc_activate(int act, float v01, const finn_state *st) {
         return 1;
     case FINNCONTROL_APPEARANCE:
         finn_state_set_dark(!st->dark);
+        return 1;
+    case FINNCONTROL_SETTINGS:
+        finncontrol_set_open(0);
+        finnwindow_open("app=window");
         return 1;
     case FINNCONTROL_BRIGHTNESS:
     case FINNCONTROL_VOLUME:
@@ -859,7 +949,7 @@ static const char *ctl_why(const char *reply) {
 /*
  * An app was pressed. The menu does not know how to start anything — it only
  * knows what was pressed — so the request goes to the control plane and the
- * answer comes back as a notification.
+ * answer comes back as a notification, while its window opens on screen.
  */
 static void menu_launch(int index) {
     const finn_app *a = finn_apps_at(index);
@@ -870,9 +960,11 @@ static void menu_launch(int index) {
         return;
     }
 
+    finnwindow_open(a->id);
+
     char req[160], reply[256];
     snprintf(req, sizeof req, "app.launch %s", a->id);
-    if (ctl_ask(req, reply, sizeof reply) == 0 && !strncmp(reply, "OK", 2) == 0)
+    if (ctl_ask(req, reply, sizeof reply) == 0 && strncmp(reply, "OK", 2) == 0)
         finn_notify_post(a->name, "Started");
     else
         finn_notify_post(a->name, ctl_why(reply));
@@ -883,9 +975,9 @@ static void menu_launch(int index) {
 static void menu_power(const char *action) {
     char req[64], reply[256];
     snprintf(req, sizeof req, "power %s", action);
-    if (ctl_ask(req, reply, sizeof reply) == 0 && !strncmp(reply, "OK", 2) == 0)
+    if (ctl_ask(req, reply, sizeof reply) == 0 && strncmp(reply, "OK", 2) == 0)
         finn_notify_post("FinnOS",
-                         strcmp(action, "restart") ? "Restarting" : "Shutting down");
+                         strcmp(action, "restart") == 0 ? "Restarting" : "Shutting down");
     else
         finn_notify_post("FinnOS", ctl_why(reply));
 }
@@ -898,6 +990,25 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
 
     if (now && !was) {
         float v01 = -1.0f;
+
+        /* Setup screen (Figma 2:14 & 7:10) sits over the whole desktop when active */
+        if (finnsetup_is_open()) {
+            int sact = finnsetup_hit(p->x, p->y);
+            finnsetup_press(sact);
+            if (sact == FINNSETUP_LANGUAGE) {
+                finnsetup_cycle_language();
+                return 1;
+            }
+            if (sact == FINNSETUP_ACCESSIBILITY) {
+                finn_state_set_dark(!st->dark);
+                return 1;
+            }
+            if (sact == FINNSETUP_START) {
+                finnsetup_complete();
+                return 1;
+            }
+            return 0;
+        }
 
         /*
          * The Start Menu floats above everything else, so it sees the click
@@ -944,11 +1055,11 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
 
         g_drag = (act == FINNCONTROL_BRIGHTNESS || act == FINNCONTROL_VOLUME) ? act : FINNCONTROL_NONE;
 
-        /* Only the controls that can act, and can act as a button, give press
-         * feedback: a squeeze on a tile with no hardware behind it would be a
-         * promise it cannot keep, and a slider must not move under the drag. */
         switch (act) {
-        case FINNCONTROL_WIFI: case FINNCONTROL_BLUETOOTH: case FINNCONTROL_APPEARANCE:
+        case FINNCONTROL_WIFI:
+        case FINNCONTROL_BLUETOOTH:
+        case FINNCONTROL_APPEARANCE:
+        case FINNCONTROL_SETTINGS:
             finncontrol_press(act);
             break;
         default:
@@ -964,9 +1075,6 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         /* The clock is a control but not a status tile: it takes no wash. */
         finndock_press(hit == FINNDOCK_HIT_CLOCK ? FINNDOCK_HIT_NONE : hit);
 
-        /* Three controls, three pages: the launcher opens the Start Menu, the
-         * status block opens the Control Center, the clock opens the clock
-         * page, and never more than one at a time. */
         if (hit == FINNDOCK_HIT_CLOCK) {
             int open = !finnclock_is_open();
             finnmenu_set_open(0);
@@ -988,8 +1096,26 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             finnmenu_set_open(open);
             return 1;
         }
-        if (finnclock_is_open()) { finnclock_set_open(0); return 1; }
-        if (finncontrol_is_open())    { finncontrol_set_open(0);    return 1; }
+        if (hit == FINNDOCK_HIT_APPS) {
+            finncontrol_set_open(0);
+            finnclock_set_open(0);
+            finnmenu_set_open(0);
+            finnwindow_taskbar_toggle();
+            return 1;
+        }
+        if (finnclock_is_open())   { finnclock_set_open(0);   return 1; }
+        if (finncontrol_is_open()) { finncontrol_set_open(0); return 1; }
+
+        /* Windows (Figma 12:2) */
+        int wid = 0;
+        int whit = finnwindow_hit(p->x, p->y, &wid);
+        if (whit != FINNWINDOW_HIT_NONE) {
+            finnwindow_press(whit, wid, p->x, p->y);
+            if (whit == FINNWINDOW_HIT_EXPAND)   finnwindow_maximize(wid);
+            if (whit == FINNWINDOW_HIT_MINIMIZE) finnwindow_minimize(wid);
+            if (whit == FINNWINDOW_HIT_CLOSE)    finnwindow_close(wid);
+            return 1;
+        }
         return 0;
     }
 
@@ -998,8 +1124,13 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         finndock_press(FINNDOCK_HIT_NONE);
         finncontrol_press(FINNCONTROL_NONE);
         finnmenu_press(FINNMENU_NONE);
+        finnsetup_press(FINNSETUP_NONE);
+        finnwindow_release();
         return 0;
     }
+
+    if (now && finnwindow_drag(p->x, p->y))
+        return 1;
 
     /* press-and-drag keeps setting the slider the press landed on */
     if (now && g_drag != FINNCONTROL_NONE)
@@ -1008,22 +1139,54 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
     return 0;
 }
 
+/* ---------------- the boot screen's frames ----------------
+ *
+ * The boot screen is black with a mark and a line on it, so its frame is
+ * not a layer over anything: the frame is filled black and the layer — the
+ * mark and the line, a couple of hundred pixels — is put on top of it. A
+ * full-screen layer would cost sixteen megabytes to carry a few hundred
+ * pixels of ink.
+ */
+static uint32_t boot_frame(finngpu *gpu, gpu_ctx *gx, struct fb *fbs, int *cur,
+                            int w, int h) {
+    if (gpu) {
+        int bx = 0, by = 0, bw = 0, bh = 0;
+        unsigned brev = 0;
+        const uint32_t *bl = finnboot_layer(&bx, &by, &bw, &bh, &brev);
+        unsigned btex = gpu_upload(gx, bl, bw, bh, brev, &gx->tex_boot, &gx->boot_rev);
+
+        finngpu_begin(gpu);
+        finngpu_paste(gpu, gx->tex_scrim, 0, 0, (float)w, (float)h, 1.0f);
+        if (bl) finngpu_paste(gpu, btex, (float)bx, (float)by,
+                              (float)bw, (float)bh, 1.0f);
+        uint32_t fbid = 0;
+        if (!finngpu_end(gpu, &fbid)) return 0;
+        return fbid;
+    }
+
+    int next = *cur ^ 1;
+    uint32_t *dst = fbs[next].map;
+    for (int i = 0; i < w * h; i++) dst[i] = 0xFF000000u;
+    finnboot_blit(dst, w, h, 0, 0);
+    *cur = next;
+    return fbs[next].id;
+}
+
+/* Put a frame on the screen, and wait for it to land. The flip is the
+ * clock: the next frame is due when the last one has arrived. */
+static void boot_flip(int fd, uint32_t crtc_id, uint32_t fbid, finngpu *gpu) {
+    g_flip_done = 0;
+    if (drmModePageFlip(fd, crtc_id, fbid, DRM_MODE_PAGE_FLIP_EVENT, NULL) != 0)
+        g_flip_done = 1;
+    wait_flip(fd);
+    if (gpu) finngpu_release(gpu);
+}
+
 int main(int argc, char **argv) {
     const char *wall_path = (argc > 1) ? argv[1] : "/usr/share/finn/wallpaper/default.webp";
 
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
-
-    if (finndock_init(ICON_DIR, FONT_DIR) != 0)
-        fprintf(stderr, "finn-comp: running without shell chrome\n");
-    if (finncontrol_init(ICON_DIR, FONT_DIR) != 0)
-        fprintf(stderr, "finn-comp: control center unavailable\n");
-    if (finnclock_init(FONT_DIR) != 0)
-        fprintf(stderr, "finn-comp: clock page unavailable\n");
-    {
-        const char *reg = getenv("FINN_APPS");
-        finnmenu_init(ICON_DIR, FONT_DIR, reg && reg[0] ? reg : FINN_APPS_CATALOGUE);
-    }
 
     int fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (fd < 0) { fprintf(stderr, "finn-comp: open card0: %s\n", strerror(errno)); return 1; }
@@ -1080,6 +1243,76 @@ int main(int argc, char **argv) {
                 return 1;
             }
 
+    /* ---------------- the boot screen ----------------
+     *
+     * The machine is not up yet. The wallpaper is not decoded, the face is
+     * not loaded, the icons are not parsed, and the display has nothing to
+     * show but that. So the first thing the screen ever shows is the mark
+     * and a line that fills as the work completes — the design from the
+     * Figma file, and an honest report rather than a theatre of booting.
+     */
+    if (finnboot_init(ICON_DIR) != 0)
+        fprintf(stderr, "finn-comp: no boot mark\n");
+
+    gpu_ctx gx;
+    memset(&gx, 0, sizeof gx);
+    gx.gpu = gpu;
+    if (gpu) {
+        static const uint32_t black[4] = { 0xFF000000u, 0xFF000000u,
+                                           0xFF000000u, 0xFF000000u };
+        gx.tex_scrim = finngpu_tex(gpu, black, 2, 2);
+    }
+
+    int cur = 0;
+    double boot_t = finn_now();
+
+    /* The first frame the display ever shows is the boot screen. */
+    finnboot_render(w, h, scale);
+    uint32_t boot_fb = boot_frame(gpu, &gx, fbs, &cur, w, h);
+    if (!boot_fb) { fprintf(stderr, "finn-comp: no first frame\n"); return 1; }
+    if (drmModeSetCrtc(fd, crtc_id, boot_fb, 0, 0, &conn->connector_id, 1, &mode) < 0) {
+        fprintf(stderr, "finn-comp: setcrtc failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    /*
+     * Move the line to `pct`, drawing as it goes. The line eases toward
+     * the truth rather than jumping to it, so a step that takes a moment
+     * reads as movement instead of as a leap.
+     */
+    #define BOOT_TO(pct) do {                                              \
+        finnboot_set_progress((float)(pct) / 100.0f);                      \
+        while (finnboot_running()) {                                      \
+            double now_t = finn_now();                                     \
+            float dt = (float)(now_t - boot_t);                            \
+            boot_t = now_t;                                                \
+            if (dt <= 0.0f) dt = 1.0f / 60.0f;                             \
+            if (dt > 0.05f) dt = 0.05f;                                    \
+            finnboot_tick(dt);                                             \
+            finnboot_render(w, h, scale);                                  \
+            uint32_t fbid = boot_frame(gpu, &gx, fbs, &cur, w, h);          \
+            if (fbid) boot_flip(fd, crtc_id, fbid, gpu);                    \
+        }                                                                  \
+    } while (0)
+
+    /* the shell's own assets: the face, the icons */
+    if (finndock_init(ICON_DIR, FONT_DIR) != 0)
+        fprintf(stderr, "finn-comp: running without shell chrome\n");
+    if (finncontrol_init(ICON_DIR, FONT_DIR) != 0)
+        fprintf(stderr, "finn-comp: control center unavailable\n");
+    if (finnclock_init(ICON_DIR, FONT_DIR) != 0)
+        fprintf(stderr, "finn-comp: clock page unavailable\n");
+    {
+        const char *reg = getenv("FINN_APPS");
+        const char *cat = reg && reg[0] ? reg : FINN_APPS_CATALOGUE;
+        finnmenu_init(ICON_DIR, FONT_DIR, cat);
+        if (finnwindow_init(ICON_DIR, FONT_DIR, cat) != 0)
+            fprintf(stderr, "finn-comp: window manager unavailable\n");
+    }
+    if (finnsetup_init(ICON_DIR, FONT_DIR) != 0)
+        fprintf(stderr, "finn-comp: setup surface unavailable\n");
+    BOOT_TO(40);
+
     /* wall = clean wallpaper; base = wallpaper + dock, ready to blit */
     uint32_t *wall = malloc((size_t)w * h * 4);
     uint32_t *base = malloc((size_t)w * h * 4);
@@ -1088,6 +1321,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "finn-comp: wallpaper unavailable, flat fill\n");
         for (int i = 0; i < w * h; i++) wall[i] = 0xFFEFE4F2u;
     }
+    BOOT_TO(72);
 
     /*
      * The wallpaper is static, so it is blurred once, here, at 1/8 scale.
@@ -1095,6 +1329,7 @@ int main(int argc, char **argv) {
      * picture itself — see finnblur.h for why that is free per frame.
      */
     finnblur_build(wall, w, h);
+    BOOT_TO(82);
 
     /*
      * The wallpaper is the one surface an appearance change does not touch.
@@ -1107,6 +1342,7 @@ int main(int argc, char **argv) {
     if (finn_pointer_open(&ptr, w, h, ICON_DIR "/cursor.svg") != 0)
         fprintf(stderr, "finn-comp: no pointer device\n");
     if (ptr.ndev == 0) fprintf(stderr, "finn-comp: no pointer device found\n");
+    BOOT_TO(90);
 
     finn_state st, prev;
     finn_state_read(&st);
@@ -1132,6 +1368,7 @@ int main(int argc, char **argv) {
         finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
         finnclock_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
         finnmenu_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
+        finnwindow_render(w, h, scale * DOCK_SCALE, dx, dy, dw, dh, &st);
     }
 
     /* the control plane needs somewhere to park explicit state overrides */
@@ -1149,17 +1386,37 @@ int main(int argc, char **argv) {
 
     /* The static surfaces go up once. Only the chrome is ever re-uploaded,
      * and only when its own revision says the pixels moved. */
-    gpu_ctx gx;
-    memset(&gx, 0, sizeof gx);
-    gx.gpu = gpu;
     if (gpu) {
         gx.tex_wall = finngpu_tex(gpu, wall, w, h);
         if (ptr.sprite && ptr.sprite_px > 0)
             gx.tex_cursor = finngpu_tex(gpu, ptr.sprite, ptr.sprite_px, ptr.sprite_px);
-        {
-            static const uint32_t black[4] = { 0xFF000000u, 0xFF000000u,
-                                               0xFF000000u, 0xFF000000u };
-            gx.tex_scrim = finngpu_tex(gpu, black, 2, 2);
+    }
+    BOOT_TO(100);
+    #undef BOOT_TO
+
+    /*
+     * A hold on the boot screen, for looking at it.
+     *
+     * The wake-up takes about a second, which is not long enough to
+     * photograph, to test, or to read. FINN_BOOT_HOLD=<seconds> keeps the
+     * mark and the line on the screen for that long before the desktop
+     * takes its place. It is off unless it is asked for.
+     */
+    {
+        const char *hold = getenv("FINN_BOOT_HOLD");
+        if (hold && hold[0]) {
+            double secs = atof(hold);
+            if (secs > 0.0 && secs < 60.0) {
+                fprintf(stderr, "finn-comp: holding the boot screen for %.1fs\n", secs);
+                double until = finn_now() + secs;
+                while (finn_now() < until) {
+                    usleep(50000);
+                    finnboot_tick(0.05f);
+                    finnboot_render(w, h, scale);
+                    uint32_t fbid = boot_frame(gpu, &gx, fbs, &cur, w, h);
+                    if (fbid) boot_flip(fd, crtc_id, fbid, gpu);
+                }
+            }
         }
     }
 
@@ -1167,26 +1424,24 @@ int main(int argc, char **argv) {
     int clients[MAX_CLIENTS];
     for (int i = 0; i < MAX_CLIENTS; i++) clients[i] = -1;
 
-    int cur = 0;
+    /* The desktop's first frame is a flip, not a setcrtc: the display is
+     * already showing the boot screen, and the desktop takes its place. */
     uint32_t first_fb;
     if (gpu) {
-        /* the first frame is produced exactly as every later one is, and then
-         * handed to the CRTC: there is nothing yet to flip from */
         first_fb = gpu_frame(&gx, w, h, scale, &st, &ptr, 1.0f, NULL);
         if (!first_fb) {
             fprintf(stderr, "finn-comp: the GPU produced no first frame\n");
             return 1;
         }
     } else {
-        memcpy(fbs[cur].map, base, (size_t)w * h * 4);
-        finn_pointer_draw(&ptr, fbs[cur].map, w, h);
+        int next = cur ^ 1;
+        memcpy(fbs[next].map, base, (size_t)w * h * 4);
+        finn_pointer_draw(&ptr, fbs[next].map, w, h);
+        cur = next;
         first_fb = fbs[cur].id;
     }
+    boot_flip(fd, crtc_id, first_fb, gpu);
 
-    if (drmModeSetCrtc(fd, crtc_id, first_fb, 0, 0, &conn->connector_id, 1, &mode) < 0) {
-        fprintf(stderr, "finn-comp: setcrtc failed: %s\n", strerror(errno));
-        return 1;
-    }
     fprintf(stderr, "finn-comp: desktop live %dx%d\n", w, h);
     fflush(stderr);
 
@@ -1224,7 +1479,8 @@ int main(int argc, char **argv) {
          * capture is waiting on one to read back. Between animations the
          * compositor blocks on input exactly as before. */
         int busy = finndock_running() || finncontrol_running() || finnclock_running()
-                   || finnmenu_running() || finn_anim_running(&theme_fade)
+                   || finnmenu_running() || finnwindow_running() || finnsetup_running()
+                   || finn_anim_running(&theme_fade)
                    || cx.capture_fd >= 0;
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
 
@@ -1271,8 +1527,10 @@ int main(int argc, char **argv) {
         float adt = dt > 0.034f ? 0.034f : dt;
 
         int shell_changed = shell_input(&ptr, &st);
-        if (cx.click_release > 0 && --cx.click_release == 0)
+        if (cx.click_release > 0 && --cx.click_release == 0) {
             ptr.buttons &= ~cx.click_pending;
+            shell_input(&ptr, &st);
+        }
 
         if (ptr.dirty) { ptr.dirty = 0; moved = 1; }
 
@@ -1332,6 +1590,20 @@ int main(int argc, char **argv) {
                     gx.menu_rev = 0;
                     gx.has_prev = 1;
                 }
+                if (gx.tex_win) {
+                    finngpu_tex_free(gpu, gx.tex_win_prev);
+                    gx.tex_win_prev = gx.tex_win;
+                    gx.tex_win = 0;
+                    gx.win_rev = 0;
+                    gx.has_prev = 1;
+                }
+                if (gx.tex_setup) {
+                    finngpu_tex_free(gpu, gx.tex_setup_prev);
+                    gx.tex_setup_prev = gx.tex_setup;
+                    gx.tex_setup = 0;
+                    gx.setup_rev = 0;
+                    gx.has_prev = 1;
+                }
             }
             if (base_prev) memcpy(base_prev, base, (size_t)w * h * 4);
             finn_anim_jump(&theme_fade, 0.0f);
@@ -1344,11 +1616,15 @@ int main(int argc, char **argv) {
         finnmenu_hover_at(ptr.x, ptr.y);
         finncontrol_hover_at(ptr.x, ptr.y);
         finnclock_hover_at(ptr.x, ptr.y);
+        finnwindow_hover_at(ptr.x, ptr.y);
+        finnsetup_hover_at(ptr.x, ptr.y);
 
         int anim = finndock_tick(adt);
         anim |= finncontrol_tick(adt);
         anim |= finnclock_tick(adt);
         anim |= finnmenu_tick(adt);
+        anim |= finnwindow_tick(adt);
+        anim |= finnsetup_tick(adt);
         anim |= finn_anim_tick(&theme_fade, adt);
 
         if (cx.dirty) { cx.dirty = 0; shell_changed = 1; }
@@ -1414,6 +1690,9 @@ int main(int argc, char **argv) {
     finndock_free();
     finnclock_free();
     finnmenu_free();
+    finnwindow_free();
+    finnsetup_free();
+    finnboot_free();
     finnblur_free();
     fprintf(stderr, "finn-comp: shutting down\n");
 

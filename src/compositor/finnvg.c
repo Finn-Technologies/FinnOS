@@ -682,7 +682,7 @@ int fsvg_load(const char *path, fsvg *s) {
                 char v[128];
                 sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
                 if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
-                sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : 0;
+                sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : (sh->stroke ? 1.0f : 0.0f);
                 fmat m = MAT_ID;
                 if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
                 fmat full = mmul(&stack[depth], &m);

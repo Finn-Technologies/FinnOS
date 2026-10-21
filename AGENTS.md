@@ -67,8 +67,9 @@ product decision, not a technical one, and it is not a problem to solve.
 - A platform name is one word, CamelCase: `FinnOS`, `FinnUI`, `FinnSDK`.
 - An app is the brand and a plain English noun, written with a space and
   Title Case: **Finn Code**, **Finn Files**. Never an invented word.
-- A system surface inside the OS is named for what it renders: `finndock`,
-  `finncontrol`, `finnclock`, `finnmenu`.
+- A system surface inside the OS is named for what it renders: `finnboot`,
+  `finnsetup`, `finndock`, `finncontrol`, `finnclock`, `finnmenu`,
+  `finnwindow`.
 - A file type is the language, not the brand: `.fui` in, `.fbin` out.
 
 ### The protocol

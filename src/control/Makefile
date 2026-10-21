@@ -18,7 +18,7 @@ CORE     = ../core/libfinncore.a
 HDRS     = ../core/finnapps.h ../core/finnproto.h ../core/finnsock.h \
            ../core/finnstate.h
 
-all: finnd finnctl
+all: finnd finnctl finn-window
 
 finnd: finnd.c $(CORE) $(HDRS)
 	$(CC) $(CFLAGS) -o $@ finnd.c $(CORE) $(LDLIBS)
@@ -26,14 +26,18 @@ finnd: finnd.c $(CORE) $(HDRS)
 finnctl: finnctl.c $(CORE) $(HDRS)
 	$(CC) $(CFLAGS) -o $@ finnctl.c $(CORE) $(LDLIBS)
 
+finn-window: finn-window.c $(CORE) $(HDRS)
+	$(CC) $(CFLAGS) -o $@ finn-window.c $(CORE)
+
 PREFIX  ?= /usr/local
 BINDIR  ?= $(PREFIX)/bin
 
 install: all
-	install -Dm755 finnd   $(DESTDIR)$(BINDIR)/finnd
-	install -Dm755 finnctl $(DESTDIR)$(BINDIR)/finnctl
+	install -Dm755 finnd       $(DESTDIR)$(BINDIR)/finnd
+	install -Dm755 finnctl     $(DESTDIR)$(BINDIR)/finnctl
+	install -Dm755 finn-window $(DESTDIR)$(BINDIR)/finn-window
 
 clean:
-	rm -f finnd finnctl
+	rm -f finnd finnctl finn-window
 
 .PHONY: all install clean

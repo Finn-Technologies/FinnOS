@@ -19,8 +19,8 @@ import support  # noqa: E402,F401  (puts the SDK on the path)
 
 import fakeserver  # noqa: E402
 
-from findsdk.cli import main as sdk_main
-from findsdk.fuic.cli import main as fuic_main
+from finnsdk.cli import main as sdk_main
+from finnsdk.fuic.cli import main as fuic_main
 
 
 class SdkCliTest(unittest.TestCase):

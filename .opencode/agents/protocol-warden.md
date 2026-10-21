@@ -16,7 +16,7 @@ you report.
 `finnd` is the OS API: the single permissioned entry point for state,
 input, display, power and apps. It lives in `src/control` and shares the
 protocol with `src/core/finnproto.h`. The protocol is documented in
-`docs/control-protocol.md`, and the SDK's client is in `sdk/findsdk`.
+`docs/control-protocol.md`, and the SDK's client is in `sdk/finnsdk`.
 
 ## What to look for
 

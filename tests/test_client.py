@@ -18,8 +18,8 @@ import support  # noqa: E402,F401  (puts the SDK on the path)
 
 import fakeserver
 
-from findsdk import FinnClient, FinnError, FinnState
-from findsdk.protocol import ControlSocket, ProtocolError
+from finnsdk import FinnClient, FinnError, FinnState
+from finnsdk.protocol import ControlSocket, ProtocolError
 
 
 class ClientTest(unittest.TestCase):
@@ -95,6 +95,66 @@ class ClientTest(unittest.TestCase):
         with self.assertRaises(FinnError):
             self.client.launch("nonesuch")
 
+    # ---- the windows ----
+
+    def test_the_windows_are_read_with_their_state(self):
+        windows = self.client.window_list()
+        self.assertEqual([w["id"] for w in windows], [1, 2])
+        self.assertEqual(windows[0]["app"], "notes")
+        self.assertEqual(windows[0]["title"], "Finn Notes")
+        self.assertEqual(windows[0]["state"], "normal")
+        self.assertEqual(windows[1]["state"], "maximized")
+        self.assertEqual(self.server.requests, ["window.list"])
+
+    def test_a_window_may_be_opened(self):
+        self.assertEqual(self.client.window_open("notes", "Finn Notes"), 3)
+        self.assertEqual(self.server.requests,
+                         ["window.open app=notes title=Finn Notes"])
+
+    def test_a_window_may_be_opened_from_nothing(self):
+        self.assertEqual(self.client.window_open(), 3)
+        self.assertEqual(self.server.requests, ["window.open"])
+
+    def test_a_window_may_be_closed(self):
+        self.client.window_close(1)
+        self.assertEqual(self.server.requests, ["window.close id=1"])
+
+    def test_a_window_may_be_focused(self):
+        self.client.window_focus(2)
+        self.assertEqual(self.server.requests, ["window.focus id=2"])
+
+    def test_a_window_may_be_minimized(self):
+        self.client.window_minimize(1)
+        self.assertEqual(self.server.requests, ["window.minimize id=1"])
+
+    def test_a_window_may_be_maximized(self):
+        self.client.window_maximize(1)
+        self.assertEqual(self.server.requests, ["window.maximize id=1"])
+
+    def test_a_window_may_be_moved(self):
+        self.client.window_move(1, 40, 60)
+        self.assertEqual(self.server.requests, ["window.move id=1 x=40 y=60"])
+
+    # ---- the setup ----
+
+    def test_the_setup_is_read_as_values(self):
+        setup = self.client.setup_get()
+        self.assertEqual(setup, {"active": 1, "done": 0, "lang": "en"})
+        self.assertEqual(self.server.requests, ["setup.get"])
+
+    def test_setup_values_the_device_does_not_say_are_absent(self):
+        self.server.handler = lambda request, server: "OK lang=fr"
+        self.assertEqual(self.client.setup_get(),
+                         {"active": -1, "done": -1, "lang": "fr"})
+
+    def test_the_setup_may_be_shown(self):
+        self.client.setup_show()
+        self.assertEqual(self.server.requests, ["setup.show"])
+
+    def test_the_setup_may_be_completed(self):
+        self.client.setup_complete()
+        self.assertEqual(self.server.requests, ["setup.complete"])
+
     # ---- the pointer ----
 
     def test_the_pointer_may_be_moved(self):
@@ -148,7 +208,7 @@ class FallbackTest(unittest.TestCase):
         comp = fakeserver.FakeServer()
         self.addCleanup(comp.close)
 
-        import findsdk.client as client_module
+        import finnsdk.client as client_module
         original = client_module.COMP_SOCKET
         client_module.COMP_SOCKET = comp.path
         self.addCleanup(lambda: setattr(client_module, "COMP_SOCKET", original))
@@ -158,7 +218,7 @@ class FallbackTest(unittest.TestCase):
         self.assertEqual(comp.requests, ["ping"])
 
     def test_the_client_does_not_fall_back_when_it_is_told_not_to(self):
-        import findsdk.client as client_module
+        import finnsdk.client as client_module
         original = client_module.COMP_SOCKET
         client_module.COMP_SOCKET = "/nonexistent/comp.sock"
         self.addCleanup(lambda: setattr(client_module, "COMP_SOCKET", original))

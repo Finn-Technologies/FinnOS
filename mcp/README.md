@@ -45,7 +45,7 @@ instead of an inline PNG.
 finn-mcp -> finn@10.211.55.6
   ping: FINNCTL/1
   framebuffer: 2560x1600
-  tools: 13
+  tools: 23
 ```
 
 ## Configuration
@@ -72,6 +72,16 @@ finn-mcp -> finn@10.211.55.6
 | `finn_log` | recent `finn-comp` log lines |
 | `finn_app_list` | the application registry: id, name, and whether it is installed |
 | `finn_app_launch` | start an app by its id, as the user |
+| `finn_window_list` | the open windows: id, app, state and title |
+| `finn_window_open` | open a window, optionally for an app and with a title |
+| `finn_window_close` | close a window by id |
+| `finn_window_focus` | raise and focus a window by id |
+| `finn_window_minimize` | minimize a window by id |
+| `finn_window_maximize` | maximize a window by id |
+| `finn_window_move` | move a window to an absolute coordinate |
+| `finn_setup_get` | whether first-run setup is active or done, and its language |
+| `finn_setup_show` | show the first-run setup pages |
+| `finn_setup_complete` | mark first-run setup as finished |
 | `finn_power` | reboot / power off / restart the compositor |
 
 The registry is two files on the device: the catalogue the OS ships and

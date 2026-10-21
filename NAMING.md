@@ -31,22 +31,27 @@
 
 ### The shell
 
-The desktop shell — the dock, the Control Center, the clock page and the
-Start Menu — is **not a separate binary**. It is a set of surfaces inside
-`finn-comp`, because a surface that lives in the compositor's own frame
-costs a blit rather than a round trip over a socket. `finn-shell` is
-reserved for the name if that ever changes; today there is no such
-process, and there should not be one.
+The desktop shell — the boot splash (`finnboot`), the first-boot setup
+screen (`finnsetup`), the dock (`finndock`), the Control Center
+(`finncontrol`), the Notification Center (`finnclock`), the Start Menu
+(`finnmenu`) and the window manager (`finnwindow`) — is **not a separate
+binary**. It is a set of surfaces inside `finn-comp`, because a surface
+that lives in the compositor's own frame costs a blit rather than a round
+trip over a socket. `finn-shell` is reserved for the name if that ever
+changes; today there is no such process, and there should not be one.
 
 ### Compositor modules
 Named for what they render, not for how: `finnvg` (vector rasteriser), `finntext`
 (Fixel Display text), `finnstate` (the system state the chrome reflects),
-`finndock` (the dock), `finncontrol` (the Control Center), `finnclock` (the clock
-page), `finnmenu` (the Start Menu), `finnpointer` (evdev pointer + cursor),
-`finnsock` (unix-socket helpers), `finnproto` (the control wire protocol),
-`finnapps` (the application registry), `finndraw` (the shared drawing
-primitives), `finnblur` (the blurred wallpaper), `finnanim` (the animation
-tracks), `finnnotify` (the notification queue), `finngpu` (GBM/EGL compositing).
+`finnboot` (the boot splash), `finnsetup` (the first-boot setup screen),
+`finndock` (the dock), `finncontrol` (the Control Center), `finnclock` (the
+Notification Center and clock page), `finnmenu` (the Start Menu),
+`finnwindow` (the window manager and app windows), `finnpointer` (evdev
+pointer + cursor), `finnsock` (unix-socket helpers), `finnproto` (the
+control wire protocol), `finnapps` (the application registry), `finndraw`
+(the shared drawing primitives), `finnblur` (the blurred wallpaper),
+`finnanim` (the animation tracks), `finnnotify` (the notification queue),
+`finngpu` (GBM/EGL compositing).
 
 ### Control-plane rule
 `finnd` is the OS API. MCP is one binding of it, and lives outside the OS.

@@ -1,0 +1,12 @@
+NAME="FinnOS"
+PRETTY_NAME="FinnOS"
+ID=finnos
+ID_LIKE=arch
+BUILD_ID=rolling
+VERSION_ID=rolling
+ANSI_COLOR="38;2;122;184;255"
+HOME_URL="https://finnos.org/"
+DOCUMENTATION_URL="https://finnos.org/docs/"
+SUPPORT_URL="https://finnos.org/support/"
+BUG_REPORT_URL="https://github.com/finnos/finnos/issues"
+LOGO=finnos

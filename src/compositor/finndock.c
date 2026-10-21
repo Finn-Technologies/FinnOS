@@ -216,6 +216,7 @@ static float    g_well = 0.0f;
 /* The clock's own mark, for the same reason: its page opens from that end of
  * the pill, so the clock lifts into a well while the page is up. */
 static float    g_well_clock = 0.0f;
+static float    g_well_apps  = 0.0f;
 
 void finndock_set_well(float amount) {
     if (amount < 0.0f) amount = 0.0f;
@@ -227,6 +228,12 @@ void finndock_set_clock_well(float amount) {
     if (amount < 0.0f) amount = 0.0f;
     if (amount > 1.0f) amount = 1.0f;
     g_well_clock = amount;
+}
+
+void finndock_set_apps_well(float amount) {
+    if (amount < 0.0f) amount = 0.0f;
+    if (amount > 1.0f) amount = 1.0f;
+    g_well_apps = amount;
 }
 
 void finndock_press(int which) {
@@ -262,6 +269,10 @@ static finn_anim g_a_hover_l;
 static float     g_hover_l = 0.0f;
 static int       g_hover_launcher = 0;
 
+static finn_anim g_a_hover_a;
+static float     g_hover_a = 0.0f;
+static int       g_hover_apps = 0;
+
 /* the tray's status block in scanout pixels, as of the last render — the one
  * region of the dock that answers a hover */
 static int g_segx = 0, g_segy = 0, g_segw = 0, g_segh = 0;
@@ -292,8 +303,15 @@ void finndock_hover_at(int px, int py) {
             finn_anim_to(&g_a_hover_c, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 
-    /* The reserved slot takes no answer at all: it holds nothing yet, so
-     * there is nothing for the pointer to arrive at. */
+    int ona = (hit == FINNDOCK_HIT_APPS);
+    if (ona != g_hover_apps) {
+        g_hover_apps = ona;
+        if (ona)
+            finn_anim_to(&g_a_hover_a, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
+        else
+            finn_anim_to(&g_a_hover_a, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    }
+
     int onl = (hit == FINNDOCK_HIT_LAUNCHER);
     if (onl != g_hover_launcher) {
         g_hover_launcher = onl;
@@ -309,18 +327,22 @@ int finndock_tick(float dt) {
     moved |= finn_anim_tick(&g_a_hover, dt);
     moved |= finn_anim_tick(&g_a_hover_c, dt);
     moved |= finn_anim_tick(&g_a_hover_l, dt);
+    moved |= finn_anim_tick(&g_a_hover_a, dt);
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; moved = 1; }
     float hc = finn_anim_v(&g_a_hover_c);
     if (hc != g_hover_c) { g_hover_c = hc; moved = 1; }
     float hl = finn_anim_v(&g_a_hover_l);
     if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
+    float ha = finn_anim_v(&g_a_hover_a);
+    if (ha != g_hover_a) { g_hover_a = ha; moved = 1; }
     return moved;
 }
 
 int finndock_running(void) {
     return finn_anim_running(&g_a_press) || finn_anim_running(&g_a_hover) ||
-           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_l);
+           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_l) ||
+           finn_anim_running(&g_a_hover_a);
 }
 
 /* The press, resolved per control. There is no geometry in it: a control
@@ -330,15 +352,10 @@ typedef struct { float wash; float hover; } dock_bump;
 static dock_bump bump_at(int slot, float f) {
     (void)f;
     dock_bump b;
-    b.wash = 0.0f;
-    b.hover = 0.0f;
-
-    /* The reserved slot holds nothing, so it takes no press: there is
-     * nothing behind the finger to promise. */
-    if (slot == SLOT_APPS) return b;
-
     b.wash = (g_pressed == slot + FINNDOCK_HIT_APPS)
            ? finn_anim_v(&g_a_press) : 0.0f;
+    b.hover = 0.0f;
+    if (slot == SLOT_APPS)     b.hover = g_hover_a;
     if (slot == SLOT_LAUNCHER) b.hover = g_hover_l;
     return b;
 }
@@ -513,9 +530,11 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX(minute);
     MIX((int)(g_well * 64.0f));
     MIX((int)(g_well_clock * 64.0f));
+    MIX((int)(g_well_apps * 64.0f));
     MIX((int)(g_hover * 64.0f));
     MIX((int)(g_hover_c * 64.0f));
     MIX((int)(g_hover_l * 64.0f));
+    MIX((int)(g_hover_a * 64.0f));
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
     #undef MIX
 
@@ -536,15 +555,61 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     /* layer-local coordinates */
     float bx = x0 - lx, by = y0 - ly;
 
-    /* app dock bubble — reserved for pinned / running apps */
+    /* Taskbar / running apps bubble (Figma 7:41 / 12:9 "Taskbar") */
     {
+        dock_bump ab = bump_at(SLOT_APPS, f);
+        finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly, bx, by, btn, btn, rad,
+                         FINN_GLASS, GLASS_TINT);
+
+        float inset = f * PILL_INSET;
+        float well_x = bx + inset;
+        float well_y = by + inset;
+        float well_w = btn - inset * 2.0f;
+        float well_h = btn - inset * 2.0f;
+        float well_r = rad - inset;
+        if (well_r < 0.0f) well_r = 0.0f;
+
+        if (g_well_apps > 0.004f) {
+            finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
+                             well_x, well_y, well_w, well_h, well_r,
+                             FINN_GLASS, GLASS_WELL * g_well_apps);
+        }
+
+        float wash = FINN_MOTION_HOVER_WASH * ab.hover + FINN_MOTION_PRESS_WASH * ab.wash;
+        if (wash > 0.004f) {
+            if (g_well_apps > 0.004f)
+                finn_fill_rrect(g_layer, lw, lh, well_x, well_y, well_w, well_h,
+                                well_r, ink_wash(wash));
+            else
+                finn_fill_rrect(g_layer, lw, lh, bx, by, btn, btn,
+                                rad, ink_wash(wash));
+        }
+
         int ipx, iox, ioy;
         finn_icon_frame(&g_ic_start, rs(BTN_ICON, f),
                         (int)lroundf(bx + btn * 0.5f),
                         (int)lroundf(by + btn * 0.5f), &ipx, &iox, &ioy);
-        bubble(g_layer, lw, lh, g_lx, g_ly, bx, by, btn, btn, rad,
-               bump_at(SLOT_APPS, f), icon_start(ipx, FINN_MUTE), ipx,
-               iox, ioy, 1.0f);
+        const uint32_t *ic = icon_start(ipx, FINN_INK);
+        if (ic) {
+            float alpha = (g_well_apps > 0.004f) ? 1.0f : 0.35f;
+            if (alpha >= 1.0f)
+                finn_blit(g_layer, lw, lh, ic, ipx, ipx, iox, ioy);
+            else
+                finn_blit_scaled(g_layer, lw, lh, ic, ipx, ipx,
+                                 (float)iox, (float)ioy, (float)ipx, (float)ipx, alpha);
+        }
+
+        /* Running app indicator pill at the bottom of the Taskbar slot */
+        if (g_well_apps > 0.004f) {
+            int active_vis = (g_well_apps >= 0.8f);
+            float ind_w = active_vis ? (f * 16.0f) : (f * 7.0f);
+            float ind_h = f * 3.2f;
+            float ind_x = bx + (btn - ind_w) * 0.5f;
+            float ind_y = by + btn - inset * 0.5f - ind_h * 0.5f;
+            uint32_t ind_col = active_vis ? FINN_ON : FINN_MUTE;
+            finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h,
+                            ind_h * 0.5f, ind_col);
+        }
     }
 
     /* launcher */

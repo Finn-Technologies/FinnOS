@@ -1,0 +1,51 @@
+# finnos-compose — the shell and the control plane.
+#
+# One package, two binaries, because they are one product: finn-comp owns
+# the scanout buffer and the shell, finnd is the only door to the machine's
+# authority, and finn-comp's display and input verbs are proxied to it by
+# finnd. Their units are ordered against each other, and splitting them
+# would mean two packages that have to be upgraded together.
+#
+# It also carries the shell's data — the icons, the wallpapers, the app
+# registry and the Fixel Display face — for the same reason: they are what
+# finn-comp draws, and a shell without its icons draws empty squares.
+#
+#   FINNOS_SRC=/path/to/finnos makepkg -f
+#
+# Everything installs under /usr/local. That is the tree's convention, not
+# an oversight: src/compositor/Makefile's default PREFIX, the ExecStart in
+# finn-comp.service and this package all name /usr/local/bin/finn-comp, and
+# the one thing that must not happen is two of them disagreeing. Moving it
+# to /usr/bin means changing the unit and the Makefiles in the same commit.
+
+pkgname=finnos-compose
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='The FinnOS compositor (finn-comp) and the control plane (finnd, finnctl)'
+arch=('x86_64' 'aarch64')
+url='https://finnos.org'
+license=('MIT')
+depends=('libdrm' 'libwebp' 'freetype2' 'alsa-lib' 'mesa' 'seatd')
+makedepends=('base-devel' 'pkgconf' 'libglvnd')
+options=('!strip')
+
+_src="${FINNOS_SRC:-$(realpath "$startdir/../../..")}"
+
+build() {
+  make -C "$_src" core compositor control
+}
+
+package() {
+  # The tree's own install targets, so the files a machine gets are the
+  # files a developer gets from `make install`.
+  make -C "$_src" install DESTDIR="$pkgdir" PREFIX=/usr/local
+
+  install -Dm644 "$_src/base/finn-comp.service" "$pkgdir/usr/lib/systemd/system/finn-comp.service"
+  install -Dm644 "$_src/base/finnd.service"     "$pkgdir/usr/lib/systemd/system/finnd.service"
+
+  install -Dm644 "$_src/assets/wallpaper/default.webp" "$pkgdir/usr/share/finn/wallpaper/default.webp"
+  install -Dm644 "$_src/assets/wallpaper/setup.webp"   "$pkgdir/usr/share/finn/wallpaper/setup.webp"
+
+  install -d "$pkgdir/usr/share/fonts/OTF"
+  install -m644 "$_src"/assets/fonts/FixelDisplay/*.otf "$pkgdir/usr/share/fonts/OTF/"
+}

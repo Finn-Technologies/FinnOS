@@ -129,6 +129,46 @@ def parse_apps(text):
     return apps
 
 
+def parse_windows(text):
+    """Turn `count=2 [id|app|state|title] ...` into a list of windows.
+
+    The title is last because it is the one field that may contain
+    spaces; everything before it is a single protocol word.
+    """
+    windows = []
+    for chunk in text.split("[")[1:]:
+        chunk = chunk.strip().rstrip("]")
+        parts = chunk.split("|")
+        if len(parts) >= 4:
+            windows.append({
+                "id": parts[0],
+                "app": parts[1],
+                "state": parts[2],
+                "title": parts[3],
+            })
+    return windows
+
+
+def parse_flag(value):
+    """A 0/1 field as words, keeping an absent value absent."""
+    if value is None:
+        return "unknown"
+    try:
+        return "yes" if int(value) else "no"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def window_id(a):
+    """The `id` argument, or None when it is missing or not a number."""
+    if a.get("id") is None:
+        return None
+    try:
+        return int(a["id"])
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------- tools
 
 def tool_state_get(_a):
@@ -286,6 +326,98 @@ def tool_app_launch(a):
     return out or ("launched %s" % app_id), False
 
 
+def tool_window_list(_a):
+    ok, out, err = ctl("window.list")
+    if not ok:
+        return err or "device unreachable", True
+    windows = parse_windows(out)
+    if not windows:
+        return "no windows are open", False
+    lines = []
+    for win in windows:
+        lines.append("%s  %-10s %-12s %s" % (win["id"], win["state"],
+                                             win["app"], win["title"]))
+    return "\n".join(lines), False
+
+
+def tool_window_open(a):
+    args = []
+    if a.get("app"):
+        args.append("app=%s" % a["app"])
+    if a.get("title"):
+        args.append("title=%s" % a["title"])
+    ok, out, err = ctl("window.open", *args)
+    if not ok:
+        return err or "window.open failed", True
+    return out or "window opened", False
+
+
+def _window_action(a, verb):
+    win = window_id(a)
+    if win is None:
+        return "no window id given (the id from finn_window_list)", True
+    ok, out, err = ctl(verb, "id=%d" % win)
+    if not ok:
+        return err or ("%s failed" % verb), True
+    return out or ("%s window %d" % (verb.split(".", 1)[1], win)), False
+
+
+def tool_window_close(a):
+    return _window_action(a, "window.close")
+
+
+def tool_window_focus(a):
+    return _window_action(a, "window.focus")
+
+
+def tool_window_minimize(a):
+    return _window_action(a, "window.minimize")
+
+
+def tool_window_maximize(a):
+    return _window_action(a, "window.maximize")
+
+
+def tool_window_move(a):
+    win = window_id(a)
+    if win is None:
+        return "no window id given (the id from finn_window_list)", True
+    if a.get("x") is None or a.get("y") is None:
+        return "window.move needs x and y", True
+    x, y = int(a["x"]), int(a["y"])
+    ok, _out, err = ctl("window.move", "id=%d" % win, "x=%d" % x, "y=%d" % y)
+    if not ok:
+        return err or "window.move failed", True
+    return "window %d at %d,%d" % (win, x, y), False
+
+
+def tool_setup_get(_a):
+    ok, out, err = ctl("setup.get")
+    if not ok:
+        return err or "device unreachable", True
+    st = parse_kv(out)
+    lines = [
+        "active: %s" % parse_flag(st.get("active")),
+        "done: %s" % parse_flag(st.get("done")),
+        "language: %s" % st.get("lang", "unknown"),
+    ]
+    return "\n".join(lines), False
+
+
+def tool_setup_show(_a):
+    ok, out, err = ctl("setup.show")
+    if not ok:
+        return err or "setup.show failed", True
+    return out or "setup shown", False
+
+
+def tool_setup_complete(_a):
+    ok, out, err = ctl("setup.complete")
+    if not ok:
+        return err or "setup.complete failed", True
+    return out or "setup completed", False
+
+
 TOOLS = [
     {
         "name": "finn_state_get",
@@ -415,6 +547,105 @@ TOOLS = [
             "additionalProperties": False,
         },
         "handler": tool_app_launch,
+    },
+    {
+        "name": "finn_window_list",
+        "description": "List the FinnOS windows the compositor is showing: id, app, "
+                       "state and title. The id is what the other window tools take.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_window_list,
+    },
+    {
+        "name": "finn_window_open",
+        "description": "Open a FinnOS window, optionally for an app and with a title. "
+                       "Returns the id the shell gave it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "the app id, e.g. notes"},
+                "title": {"type": "string", "description": "the window title"},
+            },
+            "additionalProperties": False,
+        },
+        "handler": tool_window_open,
+    },
+    {
+        "name": "finn_window_close",
+        "description": "Close a FinnOS window by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_window_close,
+    },
+    {
+        "name": "finn_window_focus",
+        "description": "Raise and focus a FinnOS window by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_window_focus,
+    },
+    {
+        "name": "finn_window_minimize",
+        "description": "Minimize a FinnOS window by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_window_minimize,
+    },
+    {
+        "name": "finn_window_maximize",
+        "description": "Maximize a FinnOS window by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+        "handler": tool_window_maximize,
+    },
+    {
+        "name": "finn_window_move",
+        "description": "Move a FinnOS window to an absolute framebuffer coordinate.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "x": {"type": "integer"},
+                "y": {"type": "integer"},
+            },
+            "required": ["id", "x", "y"],
+            "additionalProperties": False,
+        },
+        "handler": tool_window_move,
+    },
+    {
+        "name": "finn_setup_get",
+        "description": "Read the state of the first-run setup: whether it is active, "
+                       "whether it has been completed, and its language.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_setup_get,
+    },
+    {
+        "name": "finn_setup_show",
+        "description": "Ask the FinnOS shell to show the first-run setup pages.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_setup_show,
+    },
+    {
+        "name": "finn_setup_complete",
+        "description": "Tell the FinnOS shell the first-run setup has been finished.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "handler": tool_setup_complete,
     },
     {
         "name": "finn_power",

@@ -26,17 +26,16 @@ screen DesktopHome {
     mode: fill, cache: gpu_static_1080p
   }
 
-  // ---- 2. the window area ----
-  // There is no window manager, so there are no windows and the Control
-  // Center cannot move one.
+  // ---- 2. the window area (Figma 12:2) ----
+  // Managed by src/compositor/finnwindow.c.
 
   WindowArea {
-    present: false
+    present: true
     layout: freeform, snap: 8pt_grid
-    empty_hint: none
+    empty_hint: "Empty window"
   }
 
-  // ---- 3. the dock ----
+  // ---- 3. the dock (Figma 7:41) ----
   // Frosted glass, the same material as the panels: the blurred wallpaper
   // brought toward bone at 0.70. No shadow — the reference's edges are a
   // hard one-pixel step, and a soft drop shadow would fight the glass.
@@ -50,15 +49,12 @@ screen DesktopHome {
 
     Row(gap: 19.5px, align: center) {
 
-      // The reserved slot, for pinned and running apps. Nothing can be
-      // pinned or run yet, so it is drawn empty: a mute glyph, and no
-      // press. A slot that lights up under the finger and then does
-      // nothing is a promise the shell cannot keep.
+      // The Taskbar / Windows slot (Figma 7:41 "Taskbar").
 
-      Bubble(id: apps, icon: grid_2x2, ink: token.mute, size: 65px,
-             radius: token.r_bubble, enabled: false,
-             note: "reserved for pinned and running apps") {
-        state: empty
+      Bubble(id: apps, icon: grid_2x2, ink: token.ink, size: 65px,
+             radius: token.r_bubble, enabled: true,
+             on_tap: shell.toggle_windows) {
+        state: idle
       }
 
       // The launcher. It opens the Start Menu.

@@ -3,7 +3,7 @@
 The toolkit for building on FinnOS. It has two halves:
 
 - **`fuic`**, the compiler: `.fui` in, `.fbin` out.
-- **`findsdk`**, the client library: talk to a running FinnOS over the
+- **`finnsdk`**, the client library: talk to a running FinnOS over the
   control protocol.
 
 Neither needs a third-party package. The SDK has to run on whatever host
@@ -54,13 +54,13 @@ and `--strict` turns the warnings into an error.
 
 The language itself is described in
 [../docs/ui-language.md](../docs/ui-language.md). The binary it produces
-is described in [findsdk/fuic/FORMAT.md](findsdk/fuic/FORMAT.md), which
+is described in [finnsdk/fuic/FORMAT.md](finnsdk/fuic/FORMAT.md), which
 is precise enough to write a reader for.
 
 ### From Python
 
 ```python
-from findsdk.fuic import compile_file, compile_source, read_fbin
+from finnsdk.fuic import compile_file, compile_source, read_fbin
 
 warnings, data = compile_file("ui/Desktop.fui", "Desktop.fbin")
 sections = read_fbin(data)
@@ -100,7 +100,7 @@ design that has not been settled.
 with the same names.
 
 ```python
-from findsdk import FinnClient
+from finnsdk import FinnClient
 
 with FinnClient() as finn:
     state = finn.state()
@@ -129,7 +129,7 @@ When the device refuses, the client raises `FinnError` with the
 message the device gave:
 
 ```python
-from findsdk import FinnError
+from finnsdk import FinnError
 
 try:
     finn.launch("nonesuch")
@@ -162,7 +162,7 @@ sdk/
   bin/fuic              run the compiler from a checkout
   bin/finn-sdk          run the client from a checkout
   templates/            the app skeleton and the package manifest
-  findsdk/
+  finnsdk/
     __init__.py         FinnClient, FinnError, FinnState
     protocol.py         the wire: the sockets, the line protocol
     client.py           the verbs, as Python

@@ -38,7 +38,7 @@ else
 fi
 
 step "the build on the VM"
-if vm/deploy.sh >/tmp/finn-verify-deploy.log 2>&1; then
+if FINN_HOST="$HOST" vm/deploy.sh >/tmp/finn-verify-deploy.log 2>&1; then
     grep -E "desktop live|compositing on|control on" /tmp/finn-verify-deploy.log | sed 's/^/    /'
     ok
 else
@@ -57,7 +57,7 @@ fi
 step "the captures"
 capture() {
     local name="$1"
-    if vm/shot.sh "$OUT/$name.png" 2 >/dev/null 2>&1; then
+    if FINN_HOST="$HOST" vm/shot.sh "$OUT/$name.png" 2 >/dev/null 2>&1; then
         printf '    %s\n' "$OUT/$name.png"
     else
         bad

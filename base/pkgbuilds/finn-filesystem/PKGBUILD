@@ -1,0 +1,40 @@
+# finn-filesystem — the directories FinnOS owns.
+#
+# A package for three directories is not ceremony: /usr/share/finn is where
+# the shell's data lives and /var/lib/finnpkg is where the package manager
+# writes what is installed, and something has to own them so that a
+# removal takes them with it and an upgrade does not depend on a script
+# having run first.
+#
+# The tree it builds from is the checkout this PKGBUILD sits in, because
+# the OS has no tarball to point at yet:
+#
+#   makepkg -f                    from this directory, with the tree above it
+#   FINNOS_SRC=/path/to/finnos makepkg -f
+#
+# It installs to /usr/local like the rest of the OS's own binaries: see
+# finnos-compose/PKGBUILD for why.
+
+pkgname=finn-filesystem
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='The directory skeleton FinnOS owns'
+arch=('x86_64' 'aarch64')
+url='https://finnos.org'
+license=('MIT')
+depends=('systemd')
+
+_src="${FINNOS_SRC:-$(realpath "$startdir/../../..")}"
+
+package() {
+  install -d "$pkgdir/usr/share/finn/wallpaper"
+  install -d "$pkgdir/usr/share/finn/icons"
+  install -d "$pkgdir/var/lib/finnpkg"
+  echo window > "$pkgdir/var/lib/finnpkg/installed"
+
+  # /run/finn: the IPC namespace, created by tmpfiles rather than by a
+  # unit's RuntimeDirectory, so that restarting one service does not
+  # unlink the other's socket.
+  install -Dm644 "$_src/base/finn-tmpfiles.conf" \
+    "$pkgdir/usr/lib/tmpfiles.d/finn.conf"
+}

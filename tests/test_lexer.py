@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import support  # noqa: E402,F401  (puts the SDK on the path)
 
-from findsdk.fuic.lexer import (
+from finnsdk.fuic.lexer import (
     ARROW, COLOUR, EOF, IDENT, NEWLINE, NUMBER, PUNCT, STRING, LexError,
     tokenize,
 )

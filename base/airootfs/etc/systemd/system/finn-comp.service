@@ -1,0 +1,40 @@
+[Unit]
+Description=FinnOS Compositor (finn-comp)
+Documentation=man:finn-comp(1)
+# finn-comp owns the display seat directly; it must come up before getty.
+After=systemd-user-sessions.service systemd-udev-settle.service
+Before=getty@tty1.service display-manager.service
+Conflicts=getty@tty1.service
+ConditionPathExists=/dev/dri/card0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/finn-comp /usr/share/finn/wallpaper/default.webp
+
+# DRM master requires the display seat. finn-comp owns the scanout buffer and
+# the pointer, and publishes them over /run/finn/comp.sock as the provider for
+# the finnd control plane; it is not a general IPC surface and runs no clients.
+# It stays root for the DRM master lock. TODO: move to a logind seat session.
+User=root
+Group=finn
+SupplementaryGroups=video render audio
+
+# Keep the compositor's diagnostics in the journal: with StandardInput=tty the
+# default is to inherit the TTY, which puts every log line on a screen that
+# the compositor is in the middle of painting.
+StandardOutput=journal
+StandardError=journal
+
+StandardInput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+Restart=always
+RestartSec=1
+# never let it fight systemd for control of the TTY
+IgnoreSIGPIPE=yes
+
+[Install]
+WantedBy=graphical.target

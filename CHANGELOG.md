@@ -5,6 +5,33 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The Figma Shell & Window Manager
+
+- **Boot splash (`finnboot`)**: the 4-shape FinnOS mark and progress track
+  over `#000000`, stepped through compositor initialization (`ui/Boot.fui`).
+- **First-boot setup (`finnsetup`)**: full-screen onboarding with the
+  rounded left hero card (`setup.webp`), ambient `LAYER_BLUR` glow,
+  language selector pill, accessibility appearance toggle, and `Start`
+  action in both Light and Dark appearances (`ui/Setup.fui`), plus
+  `setup.get`, `setup.show`, and `setup.complete`.
+- **Frosted windows (`finnwindow`)**: `500x300` (`r=15`) frosted glass
+  windows with the top-right `72x24` (`r=8`) window controls pill
+  (expand, minimize, close), titlebar drag, empty-window state, and
+  built-in views for Settings, Terminal, Notes, Files, Code, Store,
+  Studio, Sync, and Vault (`ui/Window.fui`), plus `window.list`,
+  `window.open`, `window.close`, `window.focus`, `window.minimize`,
+  `window.maximize`, and `window.move`.
+- **Control Center (`finncontrol`) & Notification Center (`finnclock`)**:
+  aligned 1:1 with the Figma `260x260` (`r=15`) frosted panels, with the
+  2-tile connectivity row, brightness and volume sliders, battery/edit/
+  settings footer row (`ui/ControlCenter.fui`), and inline time + date
+  header, notification cards, and `Clear all` pill
+  (`ui/NotificationCenter.fui`).
+- **Base OS (`base/`) & FinnSDK (`sdk/finnsdk`)**: self-contained FinnOS
+  rootfs, bootloader configs (systemd-boot, GRUB, syslinux), `finn-install`
+  installer, and `mkfinniso` builder in `base/`; renamed `sdk/findsdk` to
+  `sdk/finnsdk` per `NAMING.md`.
+
 ### The Start Menu
 
 The shell had a dock, a Control Center and a clock page, and no way in to
@@ -35,14 +62,14 @@ the system's apps at all. There is now a fourth surface.
 ### The SDK
 
 - **`fuic`**, the `.fui` compiler: `.fui` in, `.fbin` out. The binary
-  format is specified byte for byte in `sdk/findsdk/fuic/FORMAT.md`, and
+  format is specified byte for byte in `sdk/finnsdk/fuic/FORMAT.md`, and
   the writer and the reader are the same code, so the two cannot drift.
 - **The dialect the tree actually uses.** Calls with named or positional
   arguments, `+` for composition, `->` for a per-target mapping, `@` for
   an attenuation, `;` as a statement separator, comma-continued values,
   and the theme and target declaration forms. Every `.fui` file in the
   tree compiles with no warnings.
-- **A client library.** `findsdk.FinnClient` turns the protocol's verbs
+- **A client library.** `finnsdk.FinnClient` turns the protocol's verbs
   into calls, and `finn-sdk` puts the same verbs on the command line.
 - **App templates**, and `fuic new` to make an app from one.
 - **The MCP adapter** gained `finn_app_list` and `finn_app_launch`, so an

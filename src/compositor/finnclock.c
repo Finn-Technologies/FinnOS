@@ -1,4 +1,4 @@
-/* finnclock — the FinnOS clock page: the time, the date, and what happened. */
+/* finnclock — the FinnOS Notification Center & clock page (Figma 13:31, 13:129). */
 #include "finnclock.h"
 #include "finndock.h"
 #include "finndraw.h"
@@ -6,6 +6,7 @@
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnnotify.h"
+#include "finnvg.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,47 +14,53 @@
 #include <math.h>
 #include <time.h>
 
-/*
- * The same glass and the same tiles as the Control Center, on purpose: these
- * two pages are the same surface language, and a clock page that invented its
- * own weights or its own corner radius would read as a different OS.
- */
 #define PAGE_GLASS       0.70f
 #define PAGE_TILE_GLASS  0.50f
 
 /*
- * Metrics authored for the 1080p canvas, in the Control Center's units.
- *
- * Its width is the Control Center's exactly, so opening one page after the
- * other does not resize the surface the eye is already used to. There is no
- * calendar here on purpose: a month grid is a thing to consult, and this page
- * is a thing to glance at. The date is in the header, where it belongs.
+ * Metrics authored for the 1080p canvas, scaled from Figma 13:31 & 13:129
+ * (1280x832 reference units * 1.298077):
+ *   panel 260x260 r=15 (338x338 r=19.5)
+ *   header at x=14, y=14: time 18px (23.4) in FINN_INK, date 12px (15.6) at
+ *     x=68 on the same baseline ("Weekday, " in FINN_INK, "18 October" in FINN_DIM)
+ *   empty state: centered "No notifications" 10px (13.0) in FINN_DIM
+ *   items state: up to 4 cards at x=14, y=45, 232x36 r=12 (301.2x46.7 r=15.6),
+ *     gap 8 (10.4), each with a 24x24 r=6 (31.2x31.2 r=7.8) #006FFF badge at
+ *     inset 6 (7.8) carrying the white FinnOS mark (14px -> 18.0), title 10px
+ *     (13.0) in FINN_INK, body 8px (10.4) in FINN_DIM
+ *   bottom-center "Clear all" pill at y=223, 55x23 r=100 (71.4x29.9) frosted 0.50
  */
-#define PAGE_W       351.0f
-#define PAGE_PAD      10.4f
-#define PAGE_GAP      10.4f
-#define PAGE_R        20.8f
-#define TILE_R         9.7f
+#define PAGE_W        338.0f   /* reference 260 */
+#define PAGE_H        338.0f   /* reference 260 */
+#define PAGE_PAD       18.2f   /* reference 14 */
+#define PAGE_R         19.5f   /* reference 15 */
+#define TILE_R         15.6f   /* reference 12 */
 
-#define CLOCK_H       74.0f
-#define HEAD_H        18.0f
-#define NOTE_H        46.7f
-#define NOTE_GAP      10.4f
-#define NOTE_SLOTS     3
+#define HEAD_BASELINE  41.5f   /* reference 32 (14 + 18) */
+#define DATE_X         88.3f   /* reference 68 */
 
-#define PAGE_H (PAGE_PAD * 2.0f + CLOCK_H + PAGE_GAP + HEAD_H + PAGE_GAP + \
-                (float)NOTE_SLOTS * NOTE_H + \
-                (float)(NOTE_SLOTS - 1) * NOTE_GAP)
+#define NOTE_Y0        58.4f   /* reference 45 */
+#define NOTE_H         46.7f   /* reference 36 */
+#define NOTE_GAP       10.4f   /* reference 8 */
+#define NOTE_SLOTS      4
 
-#define ANCHOR_GAP    19.5f   /* panel to dock, the Control Center's own gap */
-#define INNER         12.0f   /* text inset inside a tile                   */
+#define BADGE_INSET     7.8f   /* reference 6 */
+#define BADGE_SIZE     31.2f   /* reference 24 */
+#define BADGE_R         7.8f   /* reference 6 */
+#define BADGE_GLYPH    18.0f   /* reference 14 */
+#define NOTE_TEXT_X    46.7f   /* reference 36 */
 
-/* motion: the Control Center's, so the two pages move as one family.
- * The numbers live in finnmotion.h, which is where every surface's motion
- * lives. */
+#define CLEAR_W        71.4f   /* reference 55 */
+#define CLEAR_H        29.9f   /* reference 23 */
+#define CLEAR_Y       289.5f   /* reference 223 */
 
-/* ---------------- fonts + layer ---------------- */
-static finn_font g_f_big, g_f_label, g_f_sub, g_f_micro;
+#define ANCHOR_GAP     19.5f   /* reference 15 */
+
+/* ---------------- assets + fonts + layer ---------------- */
+static fsvg g_ic_start;
+static int  g_has_icon = 0;
+
+static finn_font g_f_time, g_f_date, g_f_label, g_f_sub;
 static float g_font_scale = -1.0f;
 static char  g_font_dir[512];
 
@@ -66,34 +73,14 @@ static int      g_built = 0;
 static unsigned g_rev = 0;
 
 static finn_anim g_a_open;
-
-/* the pointer's answer on the Clear control */
 static finn_anim g_a_hover;
 static float     g_hover = 0.0f;
 static int       g_hover_on = 0;
 
-/*
- * The minute turning.
- *
- * The page shows a minute, and a minute is the only thing in the shell that
- * changes without anybody asking. It gets the only motion that is not an
- * answer: the time dips a little and comes back, so the change is noticed
- * without being announced. It is not a flip and it is not a slide — a clock
- * that animates every minute is a clock you cannot stop looking at.
- */
 static finn_anim g_a_tick;
 static float     g_tick = 1.0f;
 static int       g_tick_min = -1;
 
-/*
- * A notification arriving.
- *
- * The newest tile is an inset that deepens into place: its glass starts at
- * the panel's own weight, which is the panel's own colour — so it is
- * invisible — and comes down to the tile's weight as the words arrive. A
- * box that simply appears reads as a glitch; an inset that deepens reads
- * as something settling into the page.
- */
 static finn_anim g_a_note;
 static float     g_note = 1.0f;
 static unsigned  g_note_rev = 0;
@@ -101,7 +88,6 @@ static unsigned  g_note_rev = 0;
 typedef struct { int x, y, w, h; } clk_rect;
 static clk_rect g_r_panel, g_r_clear;
 
-/* the clock's corner, where the page grows from */
 static int g_ax = 0, g_ay = 0;
 
 static int rs(float v, float s) { return (int)lroundf(v * s); }
@@ -112,33 +98,42 @@ static int font_px(float s, float base) {
 }
 
 static int load_fonts(float s) {
-    finn_font_free(&g_f_big);
+    finn_font_free(&g_f_time);
+    finn_font_free(&g_f_date);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_sub);
-    finn_font_free(&g_f_micro);
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_big, p, font_px(s, 34.0f)) != 0) {
+    if (finn_font_load(&g_f_time, p, font_px(s, 23.0f)) != 0) {
         fprintf(stderr, "finnclock: cannot load %s\n", p);
         return -1;
     }
-    if (finn_font_load(&g_f_label, p, font_px(s, 12.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_sub, p, font_px(s, 10.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_micro, p, font_px(s, 8.5f)) != 0) return -1;
+    if (finn_font_load(&g_f_date, p, font_px(s, 15.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_label, p, font_px(s, 13.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_sub, p, font_px(s, 10.5f)) != 0) return -1;
     return 0;
 }
 
-int finnclock_init(const char *font_dir) {
+int finnclock_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir);
+    if (icon_dir && *icon_dir) {
+        char p[600];
+        snprintf(p, sizeof p, "%s/start_button.svg", icon_dir);
+        g_has_icon = (fsvg_load(p, &g_ic_start) == 0);
+    }
     return 0;
 }
 
 void finnclock_free(void) {
-    finn_font_free(&g_f_big);
+    if (g_has_icon) {
+        fsvg_free(&g_ic_start);
+        g_has_icon = 0;
+    }
+    finn_font_free(&g_f_time);
+    finn_font_free(&g_f_date);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_sub);
-    finn_font_free(&g_f_micro);
     free(g_layer);
     g_layer = NULL;
     g_lw = g_lh = 0;
@@ -186,10 +181,6 @@ int finnclock_running(void) {
            finn_anim_running(&g_a_tick) || finn_anim_running(&g_a_note);
 }
 
-/*
- * The pointer arrived. The Clear control is the only one on the page that
- * does anything, so it is the only one that answers.
- */
 void finnclock_hover_at(int px, int py) {
     int on = 0;
     if (g_open && g_layer && finn_anim_v(&g_a_open) >= 0.90f &&
@@ -207,12 +198,7 @@ void finnclock_hover_at(int px, int py) {
         finn_anim_to(&g_a_hover, 0.0f, FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
 }
 
-/* ---------------- content ----------------
- *
- * Everything on the page is read, never remembered: the time from the wall
- * clock, the list from finnnotify. That is why the page has no state of its
- * own to get out of step with the machine.
- */
+/* ---------------- content ---------------- */
 
 static void now_tm(struct tm *tm) {
     time_t t = time(NULL);
@@ -224,26 +210,16 @@ static void fmt_time(char *out, size_t cap) {
     strftime(out, cap, "%H:%M", &tm);
 }
 
-static void fmt_date(char *out, size_t cap) {
+static void fmt_weekday(char *out, size_t cap) {
     struct tm tm; now_tm(&tm);
-    strftime(out, cap, "%A, %-d %B %Y", &tm);
+    strftime(out, cap, "%A, ", &tm);
 }
 
-static void fmt_metaline(char *out, size_t cap) {
+static void fmt_daymonth(char *out, size_t cap) {
     struct tm tm; now_tm(&tm);
-    char wk[8] = "", z[16] = "";
-    strftime(wk, sizeof wk, "%V", &tm);
-    strftime(z, sizeof z, "%z", &tm);
-
-    if (strlen(z) == 5 && (z[0] == '+' || z[0] == '-'))
-        snprintf(out, cap, "Week %s  ·  UTC%c%.2s:%.2s", wk, z[0], z + 1, z + 3);
-    else
-        snprintf(out, cap, "Week %s", wk);
+    strftime(out, cap, "%-d %B", &tm);
 }
 
-/* Copy at most `max_w` pixels of `s`, ending in an ellipsis when it had to
- * cut. A notification is written by whoever posted it and can be any length,
- * so the page has to assume it is longer than the tile it lands in. */
 static void fit_str(const finn_font *f, const char *s, float max_w,
                     char *out, size_t cap) {
     snprintf(out, cap, "%s", s ? s : "");
@@ -256,12 +232,6 @@ static void fit_str(const finn_font *f, const char *s, float max_w,
         if (finn_text_width(f, out) <= max_w) return;
     }
     out[0] = 0;
-}
-
-/* right-aligned text at `rx` */
-static void text_r(uint32_t *L, int lw, int lh, const finn_font *f,
-                   float rx, float base, const char *s, uint32_t c) {
-    finn_text_draw(f, L, lw, lh, rx - finn_text_width(f, s), base, s, c);
 }
 
 static void tile(uint32_t *L, int lw, int lh, float s, clk_rect r) {
@@ -285,8 +255,6 @@ static uint32_t build_key(float s, int pw, int ph,
     MIX((int)(g_hover * 64.0f));
     MIX((int)(g_tick * 64.0f));
     MIX((int)(g_note * 64.0f));
-    /* the page shows a minute, so it redraws exactly when the minute moves
-     * and at midnight, when the date and the day name move with it */
     time_t t = time(NULL);
     struct tm tm; localtime_r(&t, &tm);
     MIX(tm.tm_min); MIX(tm.tm_hour); MIX(tm.tm_mday); MIX(tm.tm_mon); MIX(tm.tm_year);
@@ -305,16 +273,24 @@ void finnclock_render(int screen_w, int screen_h, float scale,
 
     int pw = rs(PAGE_W, s), ph = rs(PAGE_H, s);
 
-    /* Anchored to the clock's own corner: the right edge of the panel meets
-     * the right edge of the pill, and the page grows out of the clock. */
-    int kx = 0, ky = 0, kw = 0, kh = 0;
-    finndock_clock(&kx, &ky, &kw, &kh);
-    if (kw <= 0 || kh <= 0) {          /* dock has not been laid out yet */
-        kx = dock_x + dock_w; ky = dock_y; kw = 0; kh = dock_h;
+    /*
+     * Figma 13:31 & 13:129 position the Notification Center at the same tray
+     * left edge (x=680) as Control Center, growing out of the clock corner.
+     */
+    int tx = 0, ty = 0, tw = 0, th = 0;
+    finndock_tray(&tx, &ty, &tw, &th);
+    if (tw <= 0 || th <= 0) {
+        tx = dock_x; ty = dock_y; tw = dock_w; th = dock_h;
     }
 
-    int px0 = kx + kw - pw;
-    int py0 = ky - rs(ANCHOR_GAP, s) - ph;
+    int kx = 0, ky = 0, kw = 0, kh = 0;
+    finndock_clock(&kx, &ky, &kw, &kh);
+    if (kw <= 0 || kh <= 0) {
+        kx = tx + tw; ky = ty; kw = 0; kh = th;
+    }
+
+    int px0 = tx;
+    int py0 = ty - rs(ANCHOR_GAP, s) - ph;
 
     int margin = rs(12, s);
     if (px0 < margin) px0 = margin;
@@ -348,34 +324,21 @@ void finnclock_render(int screen_w, int screen_h, float scale,
                      (float)pw, (float)ph, s * PAGE_R, FINN_GLASS, PAGE_GLASS);
 
     int x0 = rs(PAGE_PAD, s);
-    int inner = rs(INNER, s);
-    int y = rs(PAGE_PAD, s);
     int full = pw - 2 * x0;
 
     g_r_panel.x = 0; g_r_panel.y = 0; g_r_panel.w = pw; g_r_panel.h = ph;
     g_r_clear.w = 0;
 
-    /* ---- the time ---- */
-    clk_rect rc = { x0, y, full, rs(CLOCK_H, s) };
-    tile(L, lw, lh, s, rc);
-
-    char tbuf[16], dbuf[64], mbuf[64];
+    /* ---- Header: "15:34" (18px FINN_INK) + "Sunday, " (12px FINN_INK) + "18 October" (12px FINN_DIM) ---- */
+    char tbuf[16], wday[32], dmon[32];
     fmt_time(tbuf, sizeof tbuf);
-    fmt_date(dbuf, sizeof dbuf);
-    fmt_metaline(mbuf, sizeof mbuf);
+    fmt_weekday(wday, sizeof wday);
+    fmt_daymonth(dmon, sizeof dmon);
 
-    /*
-     * The minute turning, on the page and only on the page: the ink of the
-     * time dips and comes back. The dip is the whole acknowledgement — the
-     * digits themselves do not move, because a clock that slides its numbers
-     * every minute is a clock you cannot stop looking at.
-     */
     int minute = (int)(time(NULL) / 60);
     if (minute != g_tick_min) {
         g_tick_min = minute;
         if (g_open) {
-            /* the track has to start at zero: it is already parked at one, and
-             * a track asked to go where it already is does not move */
             finn_anim_jump(&g_a_tick, 0.0f);
             finn_anim_to(&g_a_tick, 1.0f, FINN_MOTION_CLOCK_TICK, 0.0f,
                          FINN_EASE_LINEAR);
@@ -385,70 +348,30 @@ void finnclock_render(int screen_w, int screen_h, float scale,
     uint32_t time_ink = (FINN_INK & 0x00FFFFFFu) |
                         ((unsigned)(dip * 255.0f + 0.5f) << 24);
 
-    finn_text_draw(&g_f_big, L, lw, lh,
-                   (float)(rc.x + inner), (float)(rc.y + rs(44, s)), tbuf, time_ink);
-    finn_text_draw(&g_f_sub, L, lw, lh,
-                   (float)(rc.x + inner), (float)(rc.y + rs(62, s)), dbuf, FINN_DIM);
-    text_r(L, lw, lh, &g_f_micro, (float)(rc.x + rc.w - inner),
-           (float)(rc.y + rs(62, s)), mbuf, FINN_MUTE);
+    float hbase = s * HEAD_BASELINE;
+    finn_text_draw(&g_f_time, L, lw, lh, (float)x0, hbase, tbuf, time_ink);
 
-    y += rc.h + rs(PAGE_GAP, s);
+    float dx = s * DATE_X;
+    float tw_time = finn_text_width(&g_f_time, tbuf) + s * 13.0f;
+    if ( (float)x0 + tw_time > dx ) dx = (float)x0 + tw_time;
 
-    /* ---- what happened ---- */
-    clk_rect rh2 = { x0, y, full, rs(HEAD_H, s) };
+    finn_text_draw(&g_f_date, L, lw, lh, dx, hbase, wday, FINN_INK);
+    float wday_w = finn_text_width(&g_f_date, wday);
+    finn_text_draw(&g_f_date, L, lw, lh, dx + wday_w, hbase, dmon, FINN_DIM);
+
     int notes = finn_notify_count();
 
-    finn_text_draw(&g_f_label, L, lw, lh,
-                   (float)rh2.x, (float)(rh2.y + rs(14, s)), "Notifications", FINN_INK);
-
-    if (notes > 0) {
-        const char *clr = "Clear";
-        float cwid = finn_text_width(&g_f_sub, clr);
-        float cbx = (float)(rh2.x + rh2.w) - cwid;
-        float cby = (float)(rh2.y + rs(14, s));
-
-        int pad = rs(6, s);
-        g_r_clear.x = (int)cbx - pad;
-        g_r_clear.y = rh2.y - pad;
-        g_r_clear.w = (int)cwid + pad * 2;
-        g_r_clear.h = rh2.h + pad * 2;
-
-        /* the pointer's answer, the same patch the dock puts under the
-         * finger: a wash of ink behind the word, not a change of the word */
-        if (g_hover > 0.004f)
-            finn_fill_rrect(L, lw, lh, (float)g_r_clear.x, (float)g_r_clear.y,
-                            (float)g_r_clear.w, (float)g_r_clear.h,
-                            s * TILE_R,
-                            (FINN_INK & 0x00FFFFFFu) |
-                            ((unsigned)(FINN_MOTION_HOVER_WASH * g_hover * 255.0f + 0.5f) << 24));
-
-        text_r(L, lw, lh, &g_f_sub, (float)(rh2.x + rh2.w), cby, clr, FINN_INK);
-    }
-
-    y += rh2.h + rs(PAGE_GAP, s);
-
     if (notes == 0) {
-        /* Nothing has happened since the shell started, and the page says so
-         * rather than showing an empty list it cannot fill. */
-        int block = rs(NOTE_H * NOTE_SLOTS + NOTE_GAP * (NOTE_SLOTS - 1), s);
-        float cap1 = finn_text_cap_height(&g_f_sub);
-        float cap2 = finn_text_cap_height(&g_f_micro);
-        float cx = (float)(x0 + full) * 0.5f;
-        float cy = (float)y + (float)block * 0.5f;
-
-        const char *a = "No new notifications";
-        const char *b = "Nothing has happened since this session started.";
-        finn_text_draw(&g_f_sub, L, lw, lh, cx - finn_text_width(&g_f_sub, a) * 0.5f,
-                       cy - rs(2, s) + cap1 * 0.5f, a, FINN_DIM);
-        finn_text_draw(&g_f_micro, L, lw, lh, cx - finn_text_width(&g_f_micro, b) * 0.5f,
-                       cy + rs(16, s) + cap2 * 0.5f, b, FINN_MUTE);
+        /* Figma 13:31: centered "No notifications" (10px FINN_DIM) */
+        const char *empty_s = "No notifications";
+        float cap = finn_text_cap_height(&g_f_label);
+        float ew = finn_text_width(&g_f_label, empty_s);
+        finn_text_draw(&g_f_label, L, lw, lh,
+                       ((float)pw - ew) * 0.5f,
+                       (float)ph * 0.5f + cap * 0.5f,
+                       empty_s, FINN_DIM);
     } else {
-        /*
-         * A notification arriving. The newest tile is the one that settles:
-         * its glass starts at the panel's own weight — which is the panel's
-         * own colour, so it is invisible — and comes down to the tile's
-         * weight as its words arrive.
-         */
+        /* Figma 13:129: notification cards + bottom-center "Clear all" pill */
         unsigned rev = finn_notify_rev();
         if (rev != g_note_rev) {
             g_note_rev = rev;
@@ -459,15 +382,17 @@ void finnclock_render(int screen_w, int screen_h, float scale,
             }
         }
 
+        int y0 = rs(NOTE_Y0, s);
+        int nh = rs(NOTE_H, s);
+        int ng = rs(NOTE_GAP, s);
         int shown = notes < NOTE_SLOTS ? notes : NOTE_SLOTS;
+
         for (int i = 0; i < shown; i++) {
             const finn_note *n = finn_notify_at(i);
             if (!n) break;
 
-            clk_rect rn = { x0, y + i * (rs(NOTE_H, s) + rs(NOTE_GAP, s)),
-                            full, rs(NOTE_H, s) };
+            clk_rect rn = { x0, y0 + i * (nh + ng), full, nh };
 
-            /* the newest tile is the one arriving; the rest are already there */
             float p = (i == 0) ? g_note : 1.0f;
             if (p < 0.999f) {
                 float mix = PAGE_GLASS + (PAGE_TILE_GLASS - PAGE_GLASS) * p;
@@ -479,31 +404,66 @@ void finnclock_render(int screen_w, int screen_h, float scale,
             }
 
             unsigned al = (unsigned)(p * 255.0f + 0.5f);
-            uint32_t ink  = (FINN_INK  & 0x00FFFFFFu) | (al << 24);
-            uint32_t mute = (FINN_MUTE & 0x00FFFFFFu) | (al << 24);
-            uint32_t dim  = (FINN_DIM  & 0x00FFFFFFu) | (al << 24);
+            uint32_t ink = (FINN_INK & 0x00FFFFFFu) | (al << 24);
+            uint32_t dim = (FINN_DIM & 0x00FFFFFFu) | (((al * ((FINN_DIM >> 24) & 0xFFu)) / 255u) << 24);
+            uint32_t badge_col = (FINN_ON & 0x00FFFFFFu) | (al << 24);
+            uint32_t knob_col  = (FINN_KNOB & 0x00FFFFFFu) | (al << 24);
 
+            /* Left #006FFF app badge (24x24 r=6) with white FinnOS mark */
+            float bx = (float)rn.x + s * BADGE_INSET;
+            float by = (float)rn.y + s * BADGE_INSET;
+            float bs = s * BADGE_SIZE;
+            finn_fill_rrect(L, lw, lh, bx, by, bs, bs, s * BADGE_R, badge_col);
+            if (g_has_icon) {
+                finn_icon_blit_ink(&g_ic_start, L, lw, lh,
+                                   (int)lroundf(bx + bs * 0.5f),
+                                   (int)lroundf(by + bs * 0.5f),
+                                   rs(BADGE_GLYPH, s), knob_col, knob_col, 0);
+            }
+
+            float tx_off = s * NOTE_TEXT_X;
+            float avail = (float)rn.w - tx_off - s * 10.0f;
             char title[80], body[200];
-            fit_str(&g_f_label, n->title, (float)(rn.w - inner * 2 - rs(40, s)),
-                    title, sizeof title);
-            fit_str(&g_f_sub, n->body, (float)(rn.w - inner * 2),
-                    body, sizeof body);
+            fit_str(&g_f_label, n->title, avail, title, sizeof title);
+            fit_str(&g_f_sub, n->body, avail, body, sizeof body);
 
             finn_text_draw(&g_f_label, L, lw, lh,
-                           (float)(rn.x + inner), (float)(rn.y + rs(19, s)),
+                           (float)rn.x + tx_off, (float)(rn.y + rs(21, s)),
                            title, ink);
-
-            struct tm nt;
-            localtime_r(&n->at, &nt);
-            char when[16];
-            strftime(when, sizeof when, "%H:%M", &nt);
-            text_r(L, lw, lh, &g_f_micro, (float)(rn.x + rn.w - inner),
-                   (float)(rn.y + rs(19, s)), when, mute);
-
             finn_text_draw(&g_f_sub, L, lw, lh,
-                           (float)(rn.x + inner), (float)(rn.y + rs(37, s)),
+                           (float)rn.x + tx_off, (float)(rn.y + rs(35, s)),
                            body, dim);
         }
+
+        /* Bottom-center "Clear all" pill (Figma 13:129: 55x23 r=100 at y=223) */
+        int cw = rs(CLEAR_W, s);
+        int ch = rs(CLEAR_H, s);
+        int cx = (pw - cw) / 2;
+        int cy = rs(CLEAR_Y, s);
+        g_r_clear.x = cx;
+        g_r_clear.y = cy;
+        g_r_clear.w = cw;
+        g_r_clear.h = ch;
+
+        float crad = (float)ch * 0.5f;
+        finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
+                         (float)cx, (float)cy, (float)cw, (float)ch,
+                         crad, FINN_GLASS, PAGE_TILE_GLASS);
+
+        if (g_hover > 0.004f) {
+            finn_fill_rrect(L, lw, lh, (float)cx, (float)cy,
+                            (float)cw, (float)ch, crad,
+                            (FINN_INK & 0x00FFFFFFu) |
+                            ((unsigned)(FINN_MOTION_HOVER_WASH * g_hover * 255.0f + 0.5f) << 24));
+        }
+
+        const char *clr = "Clear all";
+        float cwid = finn_text_width(&g_f_label, clr);
+        float cap = finn_text_cap_height(&g_f_label);
+        finn_text_draw(&g_f_label, L, lw, lh,
+                       (float)cx + ((float)cw - cwid) * 0.5f,
+                       (float)cy + (float)ch * 0.5f + cap * 0.5f,
+                       clr, FINN_INK);
     }
 }
 

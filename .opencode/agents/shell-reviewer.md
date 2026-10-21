@@ -1,5 +1,5 @@
 ---
-description: Reviews changes to the compositor's shell surfaces — the dock, the Control Center, the clock page and the Start Menu — against the design system and the house rules
+description: Reviews changes to the compositor's shell surfaces — the boot screen, setup screen, dock, Control Center, Notification Center, Start Menu and windows — against the design system and the house rules
 mode: subagent
 color: "#7AB8FF"
 permissions:

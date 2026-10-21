@@ -2,7 +2,7 @@
 
 The adapter is one file with no dependencies, and it runs on the host,
 not on the device. These tests load it, check the tool list, and drive
-the two application tools against a stub instead of a device.
+the application, window and setup tools against a stub instead of a device.
 """
 
 import importlib.machinery
@@ -50,6 +50,15 @@ class ToolListTest(unittest.TestCase):
         names = [tool["name"] for tool in self.adapter.TOOLS]
         self.assertIn("finn_app_list", names)
         self.assertIn("finn_app_launch", names)
+
+    def test_the_tools_include_the_window_and_setup_ones(self):
+        names = [tool["name"] for tool in self.adapter.TOOLS]
+        for name in ("finn_window_list", "finn_window_open",
+                     "finn_window_close", "finn_window_focus",
+                     "finn_window_minimize", "finn_window_maximize",
+                     "finn_window_move", "finn_setup_get",
+                     "finn_setup_show", "finn_setup_complete"):
+            self.assertIn(name, names)
 
     def test_the_count_in_the_readme_is_the_count_of_the_tools(self):
         with open(os.path.join(support.REPO, "mcp", "README.md"), "r",
@@ -162,6 +171,137 @@ class AppToolsTest(unittest.TestCase):
         text, is_error = self.adapter.tool_app_launch({"id": "notes"})
         self.assertTrue(is_error)
         self.assertIn("not installed", text)
+
+
+class WindowToolsTest(unittest.TestCase):
+    """The window tools, against a stub instead of a device."""
+
+    def setUp(self):
+        self.adapter = load_adapter()
+        self.calls = []
+        self.original = self.adapter.ctl
+
+        def stub(*args):
+            self.calls.append(list(args))
+            return (True, self.reply_for(args), "")
+
+        self.adapter.ctl = stub
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        self.adapter.ctl = self.original
+
+    def reply_for(self, args):
+        if args[0] == "window.list":
+            return ("count=2 [1|notes|normal|Finn Notes]"
+                    " [2|code|maximized|Finn Code]")
+        if args[0] == "window.open":
+            return "id=3"
+        return ""
+
+    def test_the_window_list_says_what_is_open(self):
+        text, is_error = self.adapter.tool_window_list({})
+        self.assertFalse(is_error)
+        self.assertIn("notes", text)
+        self.assertIn("Finn Notes", text)
+        self.assertIn("normal", text)
+        self.assertIn("maximized", text)
+        self.assertEqual(self.calls, [["window.list"]])
+
+    def test_a_window_is_opened_with_an_app_and_a_title(self):
+        text, is_error = self.adapter.tool_window_open(
+            {"app": "notes", "title": "Finn Notes"})
+        self.assertFalse(is_error)
+        self.assertIn("id=3", text)
+        self.assertEqual(self.calls,
+                         [["window.open", "app=notes", "title=Finn Notes"]])
+
+    def test_a_window_may_be_opened_from_nothing(self):
+        _text, is_error = self.adapter.tool_window_open({})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.open"]])
+
+    def test_a_window_is_closed_by_its_id(self):
+        _text, is_error = self.adapter.tool_window_close({"id": 1})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.close", "id=1"]])
+
+    def test_a_window_is_focused_by_its_id(self):
+        _text, is_error = self.adapter.tool_window_focus({"id": 2})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.focus", "id=2"]])
+
+    def test_a_window_is_minimized_by_its_id(self):
+        _text, is_error = self.adapter.tool_window_minimize({"id": 1})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.minimize", "id=1"]])
+
+    def test_a_window_is_maximized_by_its_id(self):
+        _text, is_error = self.adapter.tool_window_maximize({"id": 1})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.maximize", "id=1"]])
+
+    def test_a_window_is_moved_by_its_id_and_coordinate(self):
+        _text, is_error = self.adapter.tool_window_move({"id": 1, "x": 40, "y": 60})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["window.move", "id=1", "x=40", "y=60"]])
+
+    def test_a_window_action_without_an_id_is_an_error(self):
+        text, is_error = self.adapter.tool_window_close({})
+        self.assertTrue(is_error)
+        self.assertEqual(self.calls, [])
+
+    def test_moving_without_a_coordinate_is_an_error(self):
+        _text, is_error = self.adapter.tool_window_move({"id": 1, "x": 40})
+        self.assertTrue(is_error)
+        self.assertEqual(self.calls, [])
+
+
+class SetupToolsTest(unittest.TestCase):
+    """The first-run setup tools, against a stub instead of a device."""
+
+    def setUp(self):
+        self.adapter = load_adapter()
+        self.calls = []
+        self.original = self.adapter.ctl
+
+        def stub(*args):
+            self.calls.append(list(args))
+            if args[0] == "setup.get":
+                return (True, "active=1 done=0 lang=en", "")
+            return (True, "", "")
+
+        self.adapter.ctl = stub
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        self.adapter.ctl = self.original
+
+    def test_the_setup_state_is_reported(self):
+        text, is_error = self.adapter.tool_setup_get({})
+        self.assertFalse(is_error)
+        self.assertIn("active: yes", text)
+        self.assertIn("done: no", text)
+        self.assertIn("language: en", text)
+        self.assertEqual(self.calls, [["setup.get"]])
+
+    def test_a_missing_setup_field_stays_unknown(self):
+        self.adapter.ctl = lambda *args: (True, "lang=fr", "")
+        text, is_error = self.adapter.tool_setup_get({})
+        self.assertFalse(is_error)
+        self.assertIn("active: unknown", text)
+        self.assertIn("done: unknown", text)
+        self.assertIn("language: fr", text)
+
+    def test_the_setup_may_be_shown(self):
+        _text, is_error = self.adapter.tool_setup_show({})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["setup.show"]])
+
+    def test_the_setup_may_be_completed(self):
+        _text, is_error = self.adapter.tool_setup_complete({})
+        self.assertFalse(is_error)
+        self.assertEqual(self.calls, [["setup.complete"]])
 
 
 if __name__ == "__main__":

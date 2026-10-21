@@ -1,0 +1,25 @@
+# finnpkg — the package manager.
+#
+# One script, because that is what it is: a shell program that reads the
+# catalogue the OS ships (/usr/share/finn/apps.registry), keeps its own
+# list of what is installed (/var/lib/finnpkg/installed) and installs app
+# packages into /opt/finn-apps. None of those three paths is a package
+# manager's business to move, so the script is installed as it is.
+#
+#   FINNOS_SRC=/path/to/finnos makepkg -f
+
+pkgname=finnpkg
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='The FinnOS package manager and OTA frontend'
+arch=('any')
+url='https://finnos.org'
+license=('MIT')
+depends=('bash' 'coreutils')
+
+_src="${FINNOS_SRC:-$(realpath "$startdir/../../..")}"
+
+package() {
+  install -Dm755 "$_src/src/pkg/finnpkg" "$pkgdir/usr/local/bin/finnpkg"
+  install -Dm644 "$_src/src/pkg/README.md" "$pkgdir/usr/share/doc/finnpkg/README.md"
+}
