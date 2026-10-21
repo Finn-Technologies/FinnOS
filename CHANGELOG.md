@@ -21,6 +21,11 @@ and the changes to it are worth reading.
   Studio, Sync, and Vault (`ui/Window.fui`), plus `window.list`,
   `window.open`, `window.close`, `window.focus`, `window.minimize`,
   `window.maximize`, and `window.move`.
+- **A dock that makes room.** A maximized window now fills the screen above
+  the dock, edge to edge. When a window is maximized or reaches the dock's
+  resting band, the dock sinks flush to the bottom edge and its three
+  bubbles close into one surface with the controls drawn closer together.
+  When the window leaves, the dock rises back to its floating position.
 - **Control Center (`finncontrol`) & Notification Center (`finnclock`)**:
   aligned 1:1 with the Figma `260x260` (`r=15`) frosted panels, with the
   2-tile connectivity row, brightness and volume sliders, battery/edit/

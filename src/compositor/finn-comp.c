@@ -623,6 +623,21 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
     finn_theme_set(st->dark);
 
     /*
+     * The dock and the windows share one piece of geometry: the band the
+     * dock occupies at the bottom. A maximized window ends where that band
+     * begins, and a window that reaches the dock's resting edge asks the
+     * dock to sink into the bottom corner and give the room back.
+     *
+     * The edge the question is asked against is the dock's *resting* top,
+     * not its current one. The dock moving down must not move the line that
+     * decided it should move, or the answer would flip back on the next
+     * frame.
+     */
+    float dock_scale = scale * DOCK_SCALE;
+    finnwindow_set_dock_clearance(finndock_height(dock_scale));
+    finndock_set_sunk(finnwindow_overlaps_band(finndock_rest_top(h, dock_scale)));
+
+    /*
      * The tray's well belongs to the Control Center, not to the dock: it is
      * the mark that ties the pill to the panel above it, so it is driven by
      * the panel's own openness and fades out with it.
@@ -631,13 +646,13 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
     finndock_set_clock_well(finnclock_openness());
     finndock_set_apps_well(finnwindow_visible_count() > 0 ? 1.0f
                            : (finnwindow_count() > 0 ? 0.45f : 0.0f));
-    finndock_render(w, h, scale * DOCK_SCALE, st);
+    finndock_render(w, h, dock_scale, st);
 
     int dx, dy, dw, dh;
     finndock_geometry(&dx, &dy, &dw, &dh);
 
     if (finnwindow_visible_count() > 0 || finnwindow_visible())
-        finnwindow_render(w, h, scale * DOCK_SCALE, dx, dy, dw, dh, st);
+        finnwindow_render(w, h, dock_scale, dx, dy, dw, dh, st);
 
     if (finncontrol_visible())
         finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
@@ -659,6 +674,8 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
 
     if (finnwindow_visible())
         finnwindow_blit_scaled(base, w, h);
+    if (finnwindow_visible())
+        finnwindow_overlay_blit_scaled(base, w, h);
 
     finndock_blit(base, w, h, 0, 0);
 
@@ -707,6 +724,7 @@ typedef struct {
     unsigned tex_clock, tex_clock_prev, clock_rev;
     unsigned tex_menu,  tex_menu_prev,  menu_rev;
     unsigned tex_win,   tex_win_prev,   win_rev;
+    unsigned tex_win_ovl, tex_win_ovl_prev, win_ovl_rev;
     unsigned tex_setup, tex_setup_prev, setup_rev;
 
     /* One black pixel, stretched over the screen: the scrim behind the Start
@@ -753,6 +771,15 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     unsigned wtex = gpu_upload(g, wl, ww, wh, wrev, &g->tex_win, &g->win_rev);
     float wtx = 0, wty = 0, wtw = 0, wth = 0, wta = 0;
     if (wl) finnwindow_transform(&wtx, &wty, &wtw, &wth, &wta);
+    float wdust = wl ? finnwindow_dust() : 0.0f;
+
+    int vox = 0, voy = 0, vow = 0, voh = 0;
+    unsigned vrev = 0;
+    const uint32_t *vol = finnwindow_overlay_layer(&vox, &voy, &vow, &voh, &vrev);
+    unsigned vtex = gpu_upload(g, vol, vow, voh, vrev,
+                               &g->tex_win_ovl, &g->win_ovl_rev);
+    float vtx = 0, vty = 0, vtw = 0, vth = 0, vta = 0;
+    if (vol) finnwindow_overlay_transform(&vtx, &vty, &vtw, &vth, &vta);
 
     int dx = 0, dy = 0, dw = 0, dh = 0;
     unsigned drev = 0;
@@ -811,7 +838,8 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     if (fading && g->fbo) {
         finngpu_target(g->gpu, g->fbo);
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
-        if (wl) finngpu_paste(g->gpu, wtex, wtx, wty, wtw, wth, wta);
+        if (wl) finngpu_paste_dissolve(g->gpu, wtex, wtx, wty, wtw, wth, wta, wdust);
+        if (vol) finngpu_paste_dissolve(g->gpu, vtex, vtx, vty, vtw, vth, vta, wdust);
         if (dl) finngpu_paste(g->gpu, dtex, (float)dx, (float)dy, (float)dw, (float)dh, 1.0f);
         if (cl) finngpu_paste(g->gpu, ctex, tx, ty, tw, th, ta);
         if (kl) finngpu_paste(g->gpu, ktex, qx, qy, qw, qh, qa);
@@ -821,6 +849,8 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
         if (wl && g->tex_win_prev)
             finngpu_paste(g->gpu, g->tex_win_prev, wtx, wty, wtw, wth, wta);
+        if (vol && g->tex_win_ovl_prev)
+            finngpu_paste(g->gpu, g->tex_win_ovl_prev, vtx, vty, vtw, vth, vta);
         if (dl && g->tex_dock_prev)
             finngpu_paste(g->gpu, g->tex_dock_prev, (float)dx, (float)dy,
                           (float)dw, (float)dh, 1.0f);
@@ -834,7 +864,9 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     } else {
         finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
         if (wl)
-            finngpu_paste(g->gpu, wtex, wtx, wty, wtw, wth, wta);
+            finngpu_paste_dissolve(g->gpu, wtex, wtx, wty, wtw, wth, wta, wdust);
+        if (vol)
+            finngpu_paste_dissolve(g->gpu, vtex, vtx, vty, vtw, vth, vta, wdust);
         if (dl)
             finngpu_paste(g->gpu, dtex, (float)dx, (float)dy,
                           (float)dw, (float)dh, 1.0f);
@@ -1595,6 +1627,13 @@ int main(int argc, char **argv) {
                     gx.tex_win_prev = gx.tex_win;
                     gx.tex_win = 0;
                     gx.win_rev = 0;
+                    gx.has_prev = 1;
+                }
+                if (gx.tex_win_ovl) {
+                    finngpu_tex_free(gpu, gx.tex_win_ovl_prev);
+                    gx.tex_win_ovl_prev = gx.tex_win_ovl;
+                    gx.tex_win_ovl = 0;
+                    gx.win_ovl_rev = 0;
                     gx.has_prev = 1;
                 }
                 if (gx.tex_setup) {

@@ -39,6 +39,21 @@ int  finnwindow_maximize(int id);          /* toggles maximize on id (<=0 focuse
 int  finnwindow_move(int id, int x, int y);
 int  finnwindow_list(char *buf, size_t cap);
 
+/*
+ * The band the dock reserves at the bottom edge, in scanout pixels. A
+ * maximized window stops at its top, so the room it gets is the room the
+ * dock is not using — one dock height and no floating margin.
+ */
+void finnwindow_set_dock_clearance(int clearance);
+
+/*
+ * 1 when a visible window is maximized, or when any visible window reaches
+ * `y_top` — the dock's resting top edge. The dock asks this to decide
+ * whether to sink; the answer is computed from the resting edge, not from
+ * the dock's animated position, so it cannot chase itself.
+ */
+int  finnwindow_overlaps_band(int y_top);
+
 /* Taskbar button in the dock: restores minimized windows or opens an empty
  * window when none exist. */
 void finnwindow_taskbar_toggle(void);
@@ -65,5 +80,21 @@ void finnwindow_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
 void finnwindow_blit_scaled(uint32_t *dst, int dw, int dh);
 void finnwindow_transform(float *x, float *y, float *w, float *h, float *alpha);
 const uint32_t *finnwindow_layer(int *x, int *y, int *w, int *h, unsigned *rev);
+
+/*
+ * The hovered or pressed Window Options button lives on its own layer. The
+ * window body is expensive — a maximized one is the size of the screen — and
+ * the wash changes on every frame of a hover, so keeping it out of the body
+ * is what makes hovering a control cost a thousand pixels instead of four
+ * million. The overlay is composited immediately after the body, under the
+ * dock and every panel, and carries the same open/close transform.
+ */
+void finnwindow_overlay_blit_scaled(uint32_t *dst, int dw, int dh);
+void finnwindow_overlay_transform(float *x, float *y, float *w, float *h, float *alpha);
+const uint32_t *finnwindow_overlay_layer(int *x, int *y, int *w, int *h, unsigned *rev);
+
+/* 0 while the shell is whole, rising to 1 as the window layer disintegrates.
+ * The compositor uses it for the closing/minimizing dissolve. */
+float finnwindow_dust(void);
 
 #endif

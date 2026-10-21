@@ -139,6 +139,24 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
     int y0 = (int)floorf(y - 1), y1 = (int)ceilf(y + rh + 1);
     float cx = x + rw * 0.5f, cy = y + rh * 0.5f, hw = rw * 0.5f, hh = rh * 0.5f;
 
+    /*
+     * The pixels whose centres are at least half a pixel inside every edge
+     * have coverage exactly 1, so their result is the tint mixed with the
+     * backdrop and stamped opaque — no distance field, no source-over. On a
+     * maximized window that is nearly four million pixels and the difference
+     * between a smooth snap and a dropped frame.
+     *
+     * The inner rect is conservative: it starts a full radius inside the
+     * straight edges and therefore stays clear of the corner arcs.
+     */
+    float m = r > 0.5f ? r : 0.5f;
+    int ix0 = (int)ceilf(x + m);
+    int ix1 = (int)floorf(x + rw - m);
+    int iy0 = (int)ceilf(y + m);
+    int iy1 = (int)floorf(y + rh - m);
+    if (ix1 > x1) ix1 = x1;
+    if (iy1 > y1) iy1 = y1;
+
     float t0 = (float)(tint & 0xFFu);
     float t1 = (float)((tint >> 8) & 0xFFu);
     float t2 = (float)((tint >> 16) & 0xFFu);
@@ -146,10 +164,9 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
 
     for (int yy = y0; yy <= y1; yy++) {
         if (yy < 0 || yy >= h) continue;
+        int inner_row = yy >= iy0 && yy < iy1;
         for (int xx = x0; xx <= x1; xx++) {
             if (xx < 0 || xx >= w) continue;
-            float cov = rrect_cov(xx + 0.5f, yy + 0.5f, cx, cy, hw, hh, r);
-            if (cov <= 0.0f) continue;
 
             /*
              * The tint is laid over whatever the surface already carries.
@@ -163,7 +180,8 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
              * pixel lands on, so the glass is sampled from the wallpaper
              * actually underneath the rect.
              */
-            uint32_t d = b[(size_t)yy * w + xx];
+            size_t idx = (size_t)yy * w + xx;
+            uint32_t d = b[idx];
             uint32_t base = (d >> 24) ? d : finnblur_at(ox + xx, oy + yy);
 
             /* Per-channel mix toward the tint. The mixed colour is opaque:
@@ -175,7 +193,15 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
             uint32_t c = 0xFF000000u | ((uint32_t)(clampf255(m2) + 0.5f) << 16) |
                          ((uint32_t)(clampf255(m1) + 0.5f) << 8) |
                          (uint32_t)(clampf255(m0) + 0.5f);
-            b[(size_t)yy * w + xx] = finn_over(d, c, cov);
+
+            if (inner_row && xx >= ix0 && xx < ix1) {
+                b[idx] = c;
+                continue;
+            }
+
+            float cov = rrect_cov(xx + 0.5f, yy + 0.5f, cx, cy, hw, hh, r);
+            if (cov <= 0.0f) continue;
+            b[idx] = finn_over(d, c, cov);
         }
     }
 }
@@ -203,6 +229,8 @@ uint32_t finn_tint_pal(uint32_t c, void *ud) {
 }
 
 /* ---------------- scaled blit ---------------- */
+
+static float g_blit_dust = 0.0f;
 
 void finn_blit_scaled(uint32_t *dst, int dw, int dh,
                       const uint32_t *src, int sw, int sh,
@@ -252,6 +280,16 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
             float A = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
             if (A <= 0.5f) continue;
 
+            float dust_edge = 1.0f;
+            if (g_blit_dust > 0.001f) {
+                unsigned hh = (unsigned)px * 374761393u + (unsigned)py * 668265263u;
+                hh = (hh ^ (hh >> 13)) * 1274126177u;
+                float n = (float)((hh >> 8) & 0xFFFFu) / 65535.0f;
+                if (n < g_blit_dust) continue;
+                dust_edge = (n - g_blit_dust) * 8.0f;
+                if (dust_edge > 1.0f) dust_edge = 1.0f;
+            }
+
             float R = (float)(t00 & 0xFFu) * a00 * w00 + (float)(t10 & 0xFFu) * a10 * w10
                     + (float)(t01 & 0xFFu) * a01 * w01 + (float)(t11 & 0xFFu) * a11 * w11;
             float G = (float)((t00 >> 8) & 0xFFu) * a00 * w00 + (float)((t10 >> 8) & 0xFFu) * a10 * w10
@@ -261,6 +299,12 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
 
             float inv = 1.0f / A;
             R *= inv; G *= inv; B *= inv;
+            if (dust_edge < 1.0f) {
+                float warm = (1.0f - dust_edge) * 0.85f;
+                R += (222.0f - R) * warm;
+                G += (160.0f - G) * warm;
+                B += ( 70.0f - B) * warm;
+            }
             float sa = A * (1.0f / 255.0f) * alpha;
 
             /* the scanout is always opaque, so over-compositing collapses to
@@ -273,6 +317,15 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
             drow[px] = 0xFF000000u | (b8 << 16) | (g8 << 8) | r8;
         }
     }
+}
+
+void finn_blit_dissolve(uint32_t *dst, int dw, int dh,
+                        const uint32_t *src, int sw, int sh,
+                        float x, float y, float rw, float rh,
+                        float alpha, float dust) {
+    g_blit_dust = dust;
+    finn_blit_scaled(dst, dw, dh, src, sw, sh, x, y, rw, rh, alpha);
+    g_blit_dust = 0.0f;
 }
 
 void finn_frame_blend(uint32_t *dst, const uint32_t *a, const uint32_t *b,

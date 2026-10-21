@@ -39,6 +39,11 @@ screen DesktopHome {
   // Frosted glass, the same material as the panels: the blurred wallpaper
   // brought toward bone at 0.70. No shadow — the reference's edges are a
   // hard one-pixel step, and a soft drop shadow would fight the glass.
+  //
+  // At rest it floats clear of the bottom edge as three bubbles. A window
+  // that is maximized, or that reaches this band, asks it to sink: no
+  // bottom margin, one surface instead of three, and the controls closer
+  // together, so the window keeps the room the gaps were using.
 
   Dock {
     placement: bottom_center, margin_bottom: 34px
@@ -46,6 +51,10 @@ screen DesktopHome {
     radius: token.r_bubble
     elevation: 0
     gap: 19.5px
+    when: window_reaches_dock
+    margin_bottom_compact: 0px
+    gap_compact: 7.5px
+    padding_compact: 18px
 
     Row(gap: 19.5px, align: center) {
 

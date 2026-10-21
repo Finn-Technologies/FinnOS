@@ -29,6 +29,23 @@ void finndock_free(void);
 /* Rebuild the dock layer for the given screen and density. */
 void finndock_render(int screen_w, int screen_h, float scale, const finn_state *st);
 
+/*
+ * The dock has two states. At rest it floats clear of the bottom edge as
+ * three bubbles. When a window is maximized, or reaches the band the dock
+ * rests in, the dock sinks flush to the bottom edge and the bubbles become
+ * one surface with the controls drawn closer together — the window gets the
+ * room the gaps were using.
+ *
+ * The state is asked for, not animated here: a caller says which state it
+ * wants every frame, and the dock takes the one changed answer as a track.
+ */
+void finndock_set_sunk(int sunk);
+
+/* The top edge of the dock at rest, in scanout pixels. This is the line a
+ * window has to reach to be in the dock's space; it does not move with the
+ * dock's own animation, so the answer cannot oscillate. */
+int  finndock_rest_top(int screen_h, float scale);
+
 /* Blit the cached layer into a scanout buffer at the given origin. */
 void finndock_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
 

@@ -46,6 +46,10 @@ void     finngpu_tex_free(finngpu *g, unsigned tex);
 int  finngpu_begin(finngpu *g);
 void finngpu_paste(finngpu *g, unsigned tex,
                    float dx, float dy, float dw, float dh, float alpha);
+/* The same paste with the closing dissolve: a warm, noisy disintegration. */
+void finngpu_paste_dissolve(finngpu *g, unsigned tex,
+                            float dx, float dy, float dw, float dh,
+                            float alpha, float dust);
 /* For a texture that already holds display-order channels — an offscreen
  * target rendered by this same code — rather than an XRGB8888 layer. Such a
  * texture is also the other way up: a plain texture's first row is its bottom

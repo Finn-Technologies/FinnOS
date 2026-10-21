@@ -70,6 +70,18 @@ static int g_lw = 0, g_lh = 0, g_lx0 = 0, g_ly0 = 0;
 static int g_screen_w = 1920, g_screen_h = 1080;
 static float g_scale = 1.0f;
 
+/* The active Window Options button, kept apart from the body so a hover wash
+ * never repaints the glass around it. */
+static uint32_t *g_ovl = NULL;
+static int g_ovw = 0, g_ovh = 0, g_ovx0 = 0, g_ovy0 = 0;
+static uint32_t g_ov_key = 0;
+static int g_ov_built = 0, g_ov_show = 0;
+static unsigned g_ov_rev = 0;
+
+/* The dock's height at the bottom edge, as last reported by the compositor.
+ * It is what a maximized window leaves for the dock. */
+static int g_dock_clearance = 0;
+
 static uint32_t g_build_key = 0;
 static int      g_built = 0;
 static unsigned g_rev = 0;
@@ -133,6 +145,10 @@ void finnwindow_free(void) {
     free(g_layer);
     g_layer = NULL;
     g_lw = g_lh = 0;
+    free(g_ovl);
+    g_ovl = NULL;
+    g_ovw = g_ovh = 0;
+    g_ov_built = g_ov_show = 0;
     g_built = 0;
     g_font_scale = -1.0f;
     g_ready = 0;
@@ -160,6 +176,21 @@ static void bring_to_front(int idx) {
 }
 
 int finnwindow_count(void) { return g_n_wins; }
+
+void finnwindow_set_dock_clearance(int clearance) {
+    if (clearance < 0) clearance = 0;
+    g_dock_clearance = clearance;
+}
+
+int finnwindow_overlaps_band(int y_top) {
+    for (int i = 0; i < g_n_wins; i++) {
+        const finn_win *w = &g_wins[i];
+        if (!w->used || w->minimized) continue;
+        if (w->maximized) return 1;
+        if (w->y + w->h >= y_top) return 1;
+    }
+    return 0;
+}
 
 int finnwindow_visible_count(void) {
     int c = 0;
@@ -316,12 +347,20 @@ int finnwindow_maximize(int id) {
     if (!w->maximized) {
         w->saved_x = w->x; w->saved_y = w->y;
         w->saved_w = w->w; w->saved_h = w->h;
-        int m = rs(24.0f, g_scale);
-        int bottom = rs(115.0f, g_scale);
-        w->x = m;
-        w->y = m;
-        w->w = g_screen_w - m * 2;
-        w->h = g_screen_h - m - bottom;
+
+        /*
+         * A maximized window is the whole screen less the dock. There is no
+         * floating margin left: the dock has already sunk flush to the
+         * bottom edge by the time the window is resting, so the one band it
+         * occupies is the one the window leaves it.
+         */
+        int bottom = g_dock_clearance > 0 ? g_dock_clearance
+                                          : rs(115.0f, g_scale);
+        w->x = 0;
+        w->y = 0;
+        w->w = g_screen_w;
+        w->h = g_screen_h - bottom;
+        if (w->h < 1) w->h = 1;
         w->maximized = 1;
     } else {
         w->x = w->saved_x; w->y = w->saved_y;
@@ -464,7 +503,7 @@ void finnwindow_hover_at(int px, int py) {
     if (part == g_hover_part && wid == g_hover_win) return;
     g_hover_part = part;
     g_hover_win = wid;
-    g_built = 0;
+    g_ov_built = 0;
     if (part != FINNWINDOW_HIT_NONE)
         finn_anim_to(&g_a_hover, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
     else
@@ -473,13 +512,17 @@ void finnwindow_hover_at(int px, int py) {
 
 void finnwindow_press(int hit_part, int win_id, int px, int py) {
     int idx = find_idx(win_id);
+    int raised = 0;
     if (idx >= 0) {
+        raised = idx != g_n_wins - 1;
         bring_to_front(idx);
         idx = g_n_wins - 1;
     }
     g_press_part = hit_part;
     g_press_win = win_id;
-    g_built = 0;
+    /* Only a real z-order change touches the body; the wash is an overlay. */
+    if (raised) g_built = 0;
+    g_ov_built = 0;
 
     if (hit_part == FINNWINDOW_HIT_TITLEBAR && idx >= 0 && !g_wins[idx].maximized) {
         g_dragging = 1;
@@ -520,18 +563,22 @@ void finnwindow_release(void) {
     g_dragging = 0;
     g_press_part = FINNWINDOW_HIT_NONE;
     g_press_win = 0;
-    g_built = 0;
+    g_ov_built = 0;
     finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
 }
 
 /* ---------------- render ---------------- */
 
+/* The body key deliberately leaves out the pointer: the hover and press
+ * washes live on the overlay below, and the body's own pixels do not move
+ * when the pointer does. It also leaves out the status fields — the window
+ * glass does not draw Wi-Fi, battery or volume, and a volume-slider drag
+ * must not repaint a full-screen window sixty times a second. */
 static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
     uint32_t h = 2166136261u;
     #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
     MIX((int)(s * 1000.0f)); MIX(lw); MIX(lh); MIX(g_lx0); MIX(g_ly0);
-    MIX(st->dark + 2); MIX(st->wifi + 2); MIX(st->wired + 2);
-    MIX(st->battery_pct + 2); MIX(st->volume + 2);
+    MIX(st->dark + 2);
     MIX(g_n_wins);
     for (int i = 0; i < g_n_wins; i++) {
         MIX(g_wins[i].id);
@@ -541,12 +588,87 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
         for (const char *p = g_wins[i].title; *p; p++) MIX(*p);
         for (const char *p = g_wins[i].app_id; *p; p++) MIX(*p);
     }
-    MIX(g_hover_part); MIX(g_hover_win);
-    MIX((int)(g_hover * 64.0f));
-    MIX(g_press_part); MIX(g_press_win);
+    #undef MIX
+    return h ? h : 1u;
+}
+
+/* The button the pointer is on, if any. A press wins over a hover because it
+ * is the newer intent and the pressed window has just been raised. */
+static int active_option(int *out_idx, int *out_part) {
+    int id = 0, part = FINNWINDOW_HIT_NONE;
+    if (g_press_win > 0 && g_press_part >= FINNWINDOW_HIT_EXPAND &&
+        g_press_part <= FINNWINDOW_HIT_CLOSE) {
+        id = g_press_win; part = g_press_part;
+    } else if (g_hover_win > 0 && g_hover_part >= FINNWINDOW_HIT_EXPAND &&
+               g_hover_part <= FINNWINDOW_HIT_CLOSE) {
+        id = g_hover_win; part = g_hover_part;
+    } else {
+        return 0;
+    }
+
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].used || g_wins[idx].minimized) return 0;
+    *out_idx = idx;
+    *out_part = part;
+    return 1;
+}
+
+static uint32_t overlay_key(float s, const finn_state *st, int idx, int part,
+                            int slot_w, int slot_h) {
+    uint32_t h = 2166136261u;
+    #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX((int)(s * 1000.0f)); MIX(st->dark + 2);
+    MIX(g_wins[idx].id); MIX(part); MIX(slot_w); MIX(slot_h);
+    MIX((int)(g_hover * 256.0f));
     MIX((int)(finn_anim_v(&g_a_press) * 256.0f));
     #undef MIX
     return h ? h : 1u;
+}
+
+/* Draw the active button's wash and its icon into the overlay layer. The body
+ * still carries the same icon (so the other two buttons are untouched), and
+ * this copy sits over its identical twin: the wash stays under the ink, just
+ * as it did when both lived in the body. */
+static void render_overlay(int idx, int part, float s) {
+    const finn_win *w = &g_wins[idx];
+    int ox, oy, ow, oh;
+    opt_pill_rect(w, s, &ox, &oy, &ow, &oh);
+    int slot_w = ow / 3;
+    int b = part - FINNWINDOW_HIT_EXPAND;
+    int lx = ox + b * slot_w - g_ovx0;
+    int ly = oy - g_ovy0;
+
+    float wash = 0.0f;
+    if (g_hover_win == w->id && g_hover_part == part)
+        wash += FINN_MOTION_HOVER_WASH * g_hover;
+    if (g_press_win == w->id && g_press_part == part)
+        wash += FINN_MOTION_PRESS_WASH * finn_anim_v(&g_a_press);
+    if (wash > 0.004f) {
+        unsigned al = (unsigned)(wash * 255.0f + 0.5f);
+        if (al > 255) al = 255;
+        finn_fill_rrect(g_ovl, g_ovw, g_ovh, (float)lx, (float)ly,
+                        (float)slot_w, (float)oh, s * OPT_R,
+                        (FINN_INK & 0x00FFFFFFu) | (al << 24));
+    }
+
+    int cy = oy + oh / 2 - g_ovy0;
+    int cx, icon;
+    if (part == FINNWINDOW_HIT_EXPAND) {
+        cx = ox + rs(OPT_SLOT_CX, s) - g_ovx0;
+        icon = rs(OPT_ICON_EXP, s);
+        finn_icon_blit_ink(&g_ic_expand, g_ovl, g_ovw, g_ovh, cx, cy,
+                           icon, FINN_INK, FINN_INK, 0);
+    } else if (part == FINNWINDOW_HIT_MINIMIZE) {
+        cx = ox + ow / 2 - g_ovx0;
+        icon = rs(OPT_ICON_MIN, s);
+        finn_icon_blit_ink(&g_ic_min, g_ovl, g_ovw, g_ovh, cx, cy,
+                           icon, FINN_INK, FINN_INK, 0);
+    } else {
+        cx = ox + ow - rs(OPT_SLOT_CX, s) - g_ovx0;
+        icon = rs(OPT_ICON_CLS, s);
+        finn_icon_blit_ink(&g_ic_close, g_ovl, g_ovw, g_ovh, cx, cy,
+                           icon, FINN_INK, FINN_INK, 0);
+    }
 }
 
 void finnwindow_render(int screen_w, int screen_h, float scale,
@@ -592,91 +714,121 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
     int lh = max_y - min_y;
 
     uint32_t key = build_key(scale, lw, lh, st);
-    if (g_built && key == g_build_key && lw == g_lw && lh == g_lh) return;
-    g_build_key = key;
-    g_built = 1;
-    g_rev++;
+    int body_dirty = !g_built || key != g_build_key || lw != g_lw || lh != g_lh;
 
-    if (lw != g_lw || lh != g_lh) {
-        free(g_layer);
-        g_layer = malloc((size_t)lw * lh * 4);
-        g_lw = lw; g_lh = lh;
-    }
-    if (!g_layer) return;
-    memset(g_layer, 0, (size_t)lw * lh * 4);
-
-    float s = scale;
-    float press_v = finn_anim_v(&g_a_press);
-
-    for (int i = 0; i < g_n_wins; i++) {
-        const finn_win *w = &g_wins[i];
-        if (!w->used || w->minimized) continue;
-
-        int wx = w->x - g_lx0;
-        int wy = w->y - g_ly0;
-
-        /* Window frosted glass body (Figma 12:2: r=15, frost 0.70) */
-        finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
-                         (float)wx, (float)wy, (float)w->w, (float)w->h,
-                         s * WIN_R, FINN_GLASS, WIN_GLASS);
-
-        /* Top-right Window Options pill (Figma 12:2: 72x24 r=8, inset 8, frost 0.50) */
-        int ox_abs, oy_abs, ow, oh;
-        opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
-        int ox = ox_abs - g_lx0;
-        int oy = oy_abs - g_ly0;
-
-        finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
-                         (float)ox, (float)oy, (float)ow, (float)oh,
-                         s * OPT_R, FINN_GLASS, WIN_PILL_GLASS);
-
-        /* 3 buttons inside Window Options: expand (slot 0), minimize (slot 1), close (slot 2) */
+    /* The active control and the slot it occupies. Its layer is tiny, so a
+     * hover can be rebuilt every frame without touching the glass. */
+    int oi = -1, op = FINNWINDOW_HIT_NONE;
+    int has_ov = active_option(&oi, &op);
+    int nb_x0 = 0, nb_y0 = 0, nb_w = 0, nb_h = 0;
+    uint32_t okey = 0;
+    int ov_dirty = 0;
+    if (has_ov) {
+        int ox, oy, ow, oh;
+        opt_pill_rect(&g_wins[oi], scale, &ox, &oy, &ow, &oh);
         int slot_w = ow / 3;
-        for (int b = 0; b < 3; b++) {
-            int part = (b == 0) ? FINNWINDOW_HIT_EXPAND
-                     : (b == 1) ? FINNWINDOW_HIT_MINIMIZE
-                                : FINNWINDOW_HIT_CLOSE;
-            float wash = 0.0f;
-            if (g_hover_win == w->id && g_hover_part == part)
-                wash += FINN_MOTION_HOVER_WASH * g_hover;
-            if (g_press_win == w->id && g_press_part == part)
-                wash += FINN_MOTION_PRESS_WASH * press_v;
-            if (wash > 0.004f) {
-                unsigned al = (unsigned)(wash * 255.0f + 0.5f);
-                if (al > 255) al = 255;
-                finn_fill_rrect(g_layer, lw, lh,
-                                (float)(ox + b * slot_w), (float)oy,
-                                (float)slot_w, (float)oh, s * OPT_R,
-                                (FINN_INK & 0x00FFFFFFu) | (al << 24));
-            }
+        int b = op - FINNWINDOW_HIT_EXPAND;
+        nb_x0 = ox + b * slot_w - 2;
+        nb_y0 = oy - 2;
+        nb_w = slot_w + 4;
+        nb_h = oh + 4;
+        okey = overlay_key(scale, st, oi, op, slot_w, oh);
+        ov_dirty = !g_ov_built || okey != g_ov_key ||
+                   nb_x0 != g_ovx0 || nb_y0 != g_ovy0 ||
+                   nb_w != g_ovw || nb_h != g_ovh;
+    } else {
+        ov_dirty = g_ov_show;
+    }
+
+    if (!body_dirty && !ov_dirty) return;
+
+    if (body_dirty) {
+        g_build_key = key;
+        g_built = 1;
+        g_rev++;
+
+        if (lw != g_lw || lh != g_lh) {
+            free(g_layer);
+            g_layer = malloc((size_t)lw * lh * 4);
+            g_lw = lw; g_lh = lh;
         }
+        if (!g_layer) return;
+        memset(g_layer, 0, (size_t)lw * lh * 4);
 
-        /* Icon centers inside the 72x24 pill (Figma 12:2: 15.43x15.43 slots at pad 6,4 gap 6) */
-        int cy_opt = oy + oh / 2;
-        int cx_exp = ox + rs(OPT_SLOT_CX, s);
-        int cx_min = ox + ow / 2;
-        int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
+        float s = scale;
 
-        finn_icon_blit_ink(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt,
-                           rs(OPT_ICON_EXP, s), FINN_INK, FINN_INK, 0);
-        finn_icon_blit_ink(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt,
-                           rs(OPT_ICON_MIN, s), FINN_INK, FINN_INK, 0);
-        finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
-                           rs(OPT_ICON_CLS, s), FINN_INK, FINN_INK, 0);
+        for (int i = 0; i < g_n_wins; i++) {
+            const finn_win *w = &g_wins[i];
+            if (!w->used || w->minimized) continue;
 
-        /* Centered window label (Figma 12:2: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
-        const char *label = (!w->title[0] ||
-                             strcasecmp(w->title, "Empty window") == 0 ||
-                             strcasecmp(w->title, "Finn Window") == 0)
-                          ? "Empty window"
-                          : w->title;
-        float tw = finn_text_width(&g_f_title, label);
-        float cap = finn_text_cap_height(&g_f_title);
-        uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
-        finn_text_draw(&g_f_title, g_layer, lw, lh,
-                       (float)wx + ((float)w->w - tw) * 0.5f,
-                       (float)wy + (float)w->h * 0.5f + cap * 0.5f,
-                       label, col);
+            int wx = w->x - g_lx0;
+            int wy = w->y - g_ly0;
+
+            /* Window frosted glass body (Figma 12:2: r=15, frost 0.70). A
+             * maximized window is the screen above the dock, so it has no
+             * corners to round: a rounded corner there would leave a sliver of
+             * wallpaper between the window and the dock's bar. */
+            float body_r = w->maximized ? 0.0f : s * WIN_R;
+            finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
+                             (float)wx, (float)wy, (float)w->w, (float)w->h,
+                             body_r, FINN_GLASS, WIN_GLASS);
+
+            /* Top-right Window Options pill (Figma 12:2: 72x24 r=8, inset 8, frost 0.50) */
+            int ox_abs, oy_abs, ow, oh;
+            opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
+            int ox = ox_abs - g_lx0;
+            int oy = oy_abs - g_ly0;
+
+            finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
+                             (float)ox, (float)oy, (float)ow, (float)oh,
+                             s * OPT_R, FINN_GLASS, WIN_PILL_GLASS);
+
+            /* Icon centers inside the 72x24 pill (Figma 12:2: 15.43x15.43 slots at pad 6,4 gap 6) */
+            int cy_opt = oy + oh / 2;
+            int cx_exp = ox + rs(OPT_SLOT_CX, s);
+            int cx_min = ox + ow / 2;
+            int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
+
+            finn_icon_blit_ink(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt,
+                               rs(OPT_ICON_EXP, s), FINN_INK, FINN_INK, 0);
+            finn_icon_blit_ink(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt,
+                               rs(OPT_ICON_MIN, s), FINN_INK, FINN_INK, 0);
+            finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
+                               rs(OPT_ICON_CLS, s), FINN_INK, FINN_INK, 0);
+
+            /* Centered window label (Figma 12:2: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
+            const char *label = (!w->title[0] ||
+                                 strcasecmp(w->title, "Empty window") == 0 ||
+                                 strcasecmp(w->title, "Finn Window") == 0)
+                              ? "Empty window"
+                              : w->title;
+            float tw = finn_text_width(&g_f_title, label);
+            float cap = finn_text_cap_height(&g_f_title);
+            uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
+            finn_text_draw(&g_f_title, g_layer, lw, lh,
+                           (float)wx + ((float)w->w - tw) * 0.5f,
+                           (float)wy + (float)w->h * 0.5f + cap * 0.5f,
+                           label, col);
+        }
+    }
+
+    if (has_ov) {
+        if (nb_w != g_ovw || nb_h != g_ovh) {
+            free(g_ovl);
+            g_ovl = malloc((size_t)nb_w * nb_h * 4);
+            g_ovw = nb_w; g_ovh = nb_h;
+        }
+        if (!g_ovl) { g_ov_show = 0; g_ov_built = 0; return; }
+        g_ovx0 = nb_x0; g_ovy0 = nb_y0;
+        g_ov_key = okey;
+        g_ov_built = 1;
+        g_ov_show = 1;
+        g_ov_rev++;
+        memset(g_ovl, 0, (size_t)g_ovw * g_ovh * 4);
+        render_overlay(oi, op, scale);
+    } else {
+        g_ov_show = 0;
+        g_ov_built = 0;
     }
 }
 
@@ -704,7 +856,14 @@ void finnwindow_blit_scaled(uint32_t *dst, int dw, int dh) {
     float x, y, w, h, alpha;
     finnwindow_transform(&x, &y, &w, &h, &alpha);
     if (alpha <= 0.004f) return;
-    finn_blit_scaled(dst, dw, dh, g_layer, g_lw, g_lh, x, y, w, h, alpha);
+    finn_blit_dissolve(dst, dw, dh, g_layer, g_lw, g_lh,
+                       x, y, w, h, alpha, finnwindow_dust());
+}
+
+float finnwindow_dust(void) {
+    if (g_a_open.to > 0.5f) return 0.0f;
+    float d = 1.0f - finn_anim_v(&g_a_open);
+    return d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
 }
 
 const uint32_t *finnwindow_layer(int *x, int *y, int *w, int *h, unsigned *rev) {
@@ -714,4 +873,36 @@ const uint32_t *finnwindow_layer(int *x, int *y, int *w, int *h, unsigned *rev) 
     if (h) *h = g_lh;
     if (rev) *rev = g_rev;
     return finnwindow_visible() ? g_layer : NULL;
+}
+
+void finnwindow_overlay_transform(float *x, float *y, float *w, float *h, float *alpha) {
+    float v = finn_anim_v(&g_a_open);
+    float a = v * FINN_MOTION_FADE;
+    if (a > 1.0f) a = 1.0f;
+    float k = FINN_MOTION_OPEN_SCALE + (1.0f - FINN_MOTION_OPEN_SCALE) * v;
+
+    float ax = (float)g_ax, ay = (float)g_ay;
+    if (x) *x = ax + ((float)g_ovx0 - ax) * k;
+    if (y) *y = ay + ((float)g_ovy0 - ay) * k;
+    if (w) *w = (float)g_ovw * k;
+    if (h) *h = (float)g_ovh * k;
+    if (alpha) *alpha = a;
+}
+
+void finnwindow_overlay_blit_scaled(uint32_t *dst, int dw, int dh) {
+    if (!g_ov_show || !g_ovl) return;
+    float x, y, w, h, alpha;
+    finnwindow_overlay_transform(&x, &y, &w, &h, &alpha);
+    if (alpha <= 0.004f) return;
+    finn_blit_dissolve(dst, dw, dh, g_ovl, g_ovw, g_ovh,
+                       x, y, w, h, alpha, finnwindow_dust());
+}
+
+const uint32_t *finnwindow_overlay_layer(int *x, int *y, int *w, int *h, unsigned *rev) {
+    if (x) *x = g_ovx0;
+    if (y) *y = g_ovy0;
+    if (w) *w = g_ovw;
+    if (h) *h = g_ovh;
+    if (rev) *rev = g_ov_rev;
+    return (g_ov_show && finnwindow_visible()) ? g_ovl : NULL;
 }

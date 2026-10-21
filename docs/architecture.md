@@ -143,7 +143,7 @@ rasterised into transparent layers, and the compositor blits them.
 |---|---|---|
 | the boot screen (`finnboot`) | centered on `#000000` | compositor wake-up |
 | the setup screen (`finnsetup`) | full screen | first boot or `setup.show` |
-| the dock (`finndock`) | the bottom of the screen | always there |
+| the dock (`finndock`) | the bottom of the screen | always there; sinks flush when a window reaches it |
 | the Control Center (`finncontrol`) | the tray pill | the tray's status block |
 | the Notification Center (`finnclock`) | the clock | the clock itself |
 | the Start Menu (`finnmenu`) | the middle of the screen | the dock's middle launcher button |
@@ -152,6 +152,14 @@ rasterised into transparent layers, and the compositor blits them.
 The Start Menu is the one surface that is not anchored to a control: it is
 the system's front door, so it stands in the middle of the room and the
 desktop dims behind it.
+
+The dock has two resting positions, and they are one piece of geometry with
+the windows. At rest it floats clear of the bottom edge as three bubbles.
+When a window is maximized, or when any window reaches the band the dock
+rests in, the dock sinks flush to the bottom edge and its bubbles become one
+surface with the controls closer together. A maximized window ends exactly
+where that band begins, so the whole screen above the dock belongs to it and
+nothing is hidden behind the dock.
 
 ![The Start Menu](images/start-menu-light.png)
 

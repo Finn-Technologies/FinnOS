@@ -63,10 +63,17 @@ static const char *FS_SRC =
     "uniform sampler2D u_tex;\n"
     "uniform float u_alpha;\n"
     "uniform float u_swap;\n"
+    "uniform float u_dissolve;\n"
     "varying vec2 v_uv;\n"
     "void main() {\n"
     "    vec4 c = texture2D(u_tex, v_uv);\n"
     "    vec3 rgb = mix(c.rgb, c.bgr, u_swap);\n"
+    "    if (u_dissolve > 0.001) {\n"
+    "        float n = fract(sin(dot(floor(v_uv * 512.0), vec2(12.9898, 78.233))) * 43758.5453);\n"
+    "        if (n < u_dissolve) discard;\n"
+    "        float edge = clamp((n - u_dissolve) * 8.0, 0.0, 1.0);\n"
+    "        rgb = mix(vec3(0.87, 0.63, 0.27), rgb, edge);\n"
+    "    }\n"
     "    gl_FragColor = vec4(rgb, c.a * u_alpha);\n"
     "}\n";
 
@@ -80,7 +87,7 @@ struct finngpu {
     EGLSurface          esurf;
 
     unsigned prog, vbo;
-    int      u_rect, u_vp, u_alpha, u_tex, u_swap, u_flip;
+    int      u_rect, u_vp, u_alpha, u_tex, u_swap, u_flip, u_dissolve;
 
     /* the sizes of the textures we handed out, since GLES2 will not say */
     gpu_texinfo tex_info[FINNGPU_TEX_MAX];
@@ -224,6 +231,7 @@ finngpu *finngpu_open(int drm_fd, int w, int h) {
     g->u_tex   = glGetUniformLocation(g->prog, "u_tex");
     g->u_swap  = glGetUniformLocation(g->prog, "u_swap");
     g->u_flip  = glGetUniformLocation(g->prog, "u_flip");
+    g->u_dissolve = glGetUniformLocation(g->prog, "u_dissolve");
 
     /* one unit quad, reused for every paste */
     static const float quad[8] = { 0,0, 1,0, 0,1, 1,1 };
@@ -409,12 +417,13 @@ void finngpu_fbo_free(finngpu *g, unsigned fbo, unsigned tex) {
 }
 
 static void paste(finngpu *g, unsigned tex, float dx, float dy,
-                  float dw, float dh, float alpha, int raw) {
+                  float dw, float dh, float alpha, int raw, float dissolve) {
     if (!tex || alpha <= 0.002f || dw <= 0.0f || dh <= 0.0f) return;
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1f(g->u_alpha, alpha > 1.0f ? 1.0f : alpha);
     glUniform1f(g->u_swap, raw ? 0.0f : 1.0f);
+    glUniform1f(g->u_dissolve, dissolve);
     /* A plain texture's first row is its bottom one, so an offscreen target
      * read back through the sampler is upside down unless it is flipped. The
      * scanout surface has a top-left origin and needs no such thing. */
@@ -425,12 +434,18 @@ static void paste(finngpu *g, unsigned tex, float dx, float dy,
 
 void finngpu_paste(finngpu *g, unsigned tex,
                    float dx, float dy, float dw, float dh, float alpha) {
-    paste(g, tex, dx, dy, dw, dh, alpha, 0);
+    paste(g, tex, dx, dy, dw, dh, alpha, 0, 0.0f);
+}
+
+void finngpu_paste_dissolve(finngpu *g, unsigned tex,
+                            float dx, float dy, float dw, float dh,
+                            float alpha, float dust) {
+    paste(g, tex, dx, dy, dw, dh, alpha, 0, dust);
 }
 
 void finngpu_paste_raw(finngpu *g, unsigned tex,
                        float dx, float dy, float dw, float dh, float alpha) {
-    paste(g, tex, dx, dy, dw, dh, alpha, 1);
+    paste(g, tex, dx, dy, dw, dh, alpha, 1, 0.0f);
 }
 
 /* A dma-buf backed BO has no GEM handle of its own, so the framebuffer is

@@ -46,6 +46,17 @@
 #define DOCK_GAP      19.5f     /* 15 */
 #define DOCK_BOTTOM   34.0f     /* 26 */
 /*
+ * The compact dock. When a window needs the room, the dock sinks to the
+ * bottom edge and the three bubbles become one surface. The gaps and the
+ * pill's padding come in with it, so the controls sit a little closer
+ * together instead of carrying the rest state's air for no reason. The
+ * glyphs keep their size: this is a change of spacing, not of scale.
+ */
+#define DOCK_GAP_SUNK   7.5f
+#define PILL_PAD_SUNK  18.0f
+#define TRAY_GAP_SUNK  17.0f
+#define CLOCK_GAP_SUNK 21.0f
+/*
  * The reference draws both bubbles at full weight: the launcher and the app
  * grid are the same glyph there, and one of them being greyed out reads as a
  * disabled control rather than as an empty one.
@@ -71,6 +82,15 @@
  */
 #define GLASS_TINT    0.70f
 #define GLASS_WELL    0.53f
+/*
+ * The compact dock is a bar across the bottom of the screen, and a bar that
+ * sat at the floating dock's weight would disappear against a maximized
+ * window — both are the same glass over the same wallpaper. It is laid down
+ * heavier: still the palette's glass, so it is light in the light appearance
+ * and deep in the dark one, but it reads as the plane the content stops at
+ * rather than as another window.
+ */
+#define GLASS_BAR     0.94f
 
 /*
  * Motion. Nothing in the dock moves and nothing shrinks: a control answers by
@@ -236,6 +256,27 @@ void finndock_set_apps_well(float amount) {
     g_well_apps = amount;
 }
 
+/*
+ * Sinking, which is the dock answering a window rather than the pointer.
+ *
+ * The dock leaves its floating position for the bottom edge, and its three
+ * bubbles close up into one surface. The pace is the shell's: leaving is
+ * FINN_MOTION_CLOSE, returning is FINN_MOTION_OPEN, so the dock retreats
+ * the way every other surface does and comes back the way one arrives.
+ */
+static finn_anim g_a_sink;
+static float     g_sink = 0.0f;     /* drawn position, 0 = floating, 1 = flush */
+static int       g_sunk = 0;        /* what the caller last asked for         */
+
+void finndock_set_sunk(int sunk) {
+    sunk = sunk ? 1 : 0;
+    if (sunk == g_sunk) return;
+    g_sunk = sunk;
+    finn_anim_to(&g_a_sink, (float)sunk,
+                 sunk ? FINN_MOTION_CLOSE : FINN_MOTION_OPEN,
+                 0.0f, FINN_EASE_IN_OUT);
+}
+
 void finndock_press(int which) {
     g_pressed = which;
     if (which == FINNDOCK_HIT_NONE)
@@ -328,6 +369,7 @@ int finndock_tick(float dt) {
     moved |= finn_anim_tick(&g_a_hover_c, dt);
     moved |= finn_anim_tick(&g_a_hover_l, dt);
     moved |= finn_anim_tick(&g_a_hover_a, dt);
+    moved |= finn_anim_tick(&g_a_sink, dt);
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; moved = 1; }
     float hc = finn_anim_v(&g_a_hover_c);
@@ -336,13 +378,15 @@ int finndock_tick(float dt) {
     if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
     float ha = finn_anim_v(&g_a_hover_a);
     if (ha != g_hover_a) { g_hover_a = ha; moved = 1; }
+    float sv = finn_anim_v(&g_a_sink);
+    if (sv != g_sink) { g_sink = sv; moved = 1; }
     return moved;
 }
 
 int finndock_running(void) {
     return finn_anim_running(&g_a_press) || finn_anim_running(&g_a_hover) ||
            finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_l) ||
-           finn_anim_running(&g_a_hover_a);
+           finn_anim_running(&g_a_hover_a) || finn_anim_running(&g_a_sink);
 }
 
 /* The press, resolved per control. There is no geometry in it: a control
@@ -447,12 +491,16 @@ static int rs(float v, float s) { return (int)lroundf(v * s); }
  */
 static void bubble(uint32_t *L, int lw, int lh, int ox, int oy,
                    float x, float y, float w, float h,
-                   float rad, dock_bump b, const uint32_t *icon, int ipx,
+                   float rad, dock_bump b, float frost_alpha,
+                   const uint32_t *icon, int ipx,
                    int ix, int iy, float icon_alpha) {
     /* frost, not fill: the glass samples the wallpaper under the control as
-     * it is drawn, so the bubble carries the same light as the panel */
-    finn_frost_rrect(L, lw, lh, ox, oy, x, y, w, h, rad,
-                     FINN_GLASS, GLASS_TINT);
+     * it is drawn, so the bubble carries the same light as the panel. In the
+     * compact dock the surface is one rect drawn behind the row, so this
+     * bubble's own frost fades out as the merged one fades in. */
+    if (frost_alpha > 0.004f)
+        finn_frost_rrect(L, lw, lh, ox, oy, x, y, w, h, rad,
+                         FINN_GLASS, GLASS_TINT * frost_alpha);
 
     /* The pointer's answer, and the press that follows it: the same patch,
      * the same strengths, as every other surface in the shell. */
@@ -474,8 +522,18 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     float f = scale;
     if (g_font_scale != f) { load_clock_font(f); g_font_scale = f; }
 
-    float btn = f * BTN, gap = f * DOCK_GAP, pad = f * PILL_PAD;
-    float ico = f * TRAY_ICON, tgap = f * TRAY_GAP;
+    /*
+     * The compact state is drawn from its animated value, so the controls
+     * close up as the dock sinks rather than after it has arrived. The layer
+     * is rebuilt on every step of that track: its width is part of the key.
+     */
+    float sink = g_sink;
+    float btn = f * BTN;
+    float gap = f * (DOCK_GAP + (DOCK_GAP_SUNK - DOCK_GAP) * sink);
+    float pad = f * (PILL_PAD + (PILL_PAD_SUNK - PILL_PAD) * sink);
+    float ico = f * TRAY_ICON;
+    float tgap = f * (TRAY_GAP + (TRAY_GAP_SUNK - TRAY_GAP) * sink);
+    float cgap = f * (CLOCK_GAP + (CLOCK_GAP_SUNK - CLOCK_GAP) * sink);
     float rad = f * BTN_R;
 
     /*
@@ -497,23 +555,33 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     int n_tray = 1 + (st->wifi >= 0 ? 1 : 0) + (st->battery_pct >= 0 ? 1 : 0);
     float icons_w = ico * n_tray + tgap * (n_tray - 1);
     float pill_w = pad * 2 + icons_w +
-                   (clock_w > 0.0f ? f * CLOCK_GAP + clock_w : 0.0f);
+                   (clock_w > 0.0f ? cgap + clock_w : 0.0f);
     float total = btn * 2 + gap * 2 + pill_w;
     float x0 = (screen_w - total) * 0.5f;
-    float y0 = screen_h - f * DOCK_BOTTOM - btn;
+    float y0 = screen_h - f * DOCK_BOTTOM * (1.0f - sink) - btn;
+
+    /*
+     * The compact dock is one bar across the bottom of the screen. It grows
+     * from the row's own width to the full screen as it sinks, so the last
+     * thing the eye sees is the three bubbles becoming the one surface the
+     * window is leaving its room to.
+     */
+    float bar_w = total + ((float)screen_w - total) * sink;
+    float bar_x = ((float)screen_w - bar_w) * 0.5f;
+    float bar_r = rad * (1.0f - sink);
 
     /* a hair of slack at the layer's edge, so the glass never clips its own
      * antialiasing against the wallpaper */
     int slack = 2;
-    int lx = (int)floorf(x0) - slack;
+    int lx = (int)floorf(bar_x) - slack;
     int ly = (int)floorf(y0) - slack;
-    int lw = (int)ceilf(total) + slack * 2;
+    int lw = (int)ceilf(bar_w) + slack * 2;
     int lh = (int)ceilf(btn) + slack * 2;
 
     g_x0 = (int)lroundf(x0);
     g_y0 = (int)lroundf(y0);
     g_btn = rs(BTN, f);
-    g_gap = rs(DOCK_GAP, f);
+    g_gap = (int)lroundf(gap);
     g_pillx = (int)lroundf(x0 + btn * 2 + gap * 2);
     g_pillw = (int)lroundf(pill_w);
 
@@ -528,6 +596,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX(st->volume + 2); MIX(st->dark + 2);
     MIX(g_pressed);
     MIX(minute);
+    MIX((int)(sink * 512.0f));
     MIX((int)(g_well * 64.0f));
     MIX((int)(g_well_clock * 64.0f));
     MIX((int)(g_well_apps * 64.0f));
@@ -555,11 +624,25 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     /* layer-local coordinates */
     float bx = x0 - lx, by = y0 - ly;
 
+    /*
+     * The compact dock is one surface. It is drawn behind the row and grows
+     * to the full screen as it fades in, while the three bubbles' own frost
+     * fades out. The bar is laid down heavier than a bubble (GLASS_BAR), so
+     * the handover reads as the gaps closing and the base plane settling
+     * under the same glass language rather than as a second material.
+     */
+    float frost = 1.0f - sink;
+    if (sink > 0.004f)
+        finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
+                         bar_x - lx, by, bar_w, btn, bar_r,
+                         FINN_GLASS, GLASS_BAR * sink);
+
     /* Taskbar / running apps bubble (Figma 7:41 / 12:9 "Taskbar") */
     {
         dock_bump ab = bump_at(SLOT_APPS, f);
-        finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly, bx, by, btn, btn, rad,
-                         FINN_GLASS, GLASS_TINT);
+        if (frost > 0.004f)
+            finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly, bx, by, btn, btn, rad,
+                             FINN_GLASS, GLASS_TINT * frost);
 
         float inset = f * PILL_INSET;
         float well_x = bx + inset;
@@ -620,8 +703,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                         (int)lroundf(lxx + btn * 0.5f),
                         (int)lroundf(by + btn * 0.5f), &ipx, &iox, &ioy);
         bubble(g_layer, lw, lh, g_lx, g_ly, lxx, by, btn, btn, rad,
-               bump_at(SLOT_LAUNCHER, f), icon_start(ipx, FINN_INK), ipx,
-               iox, ioy, 1.0f);
+               bump_at(SLOT_LAUNCHER, f), frost,
+               icon_start(ipx, FINN_INK), ipx, iox, ioy, 1.0f);
     }
 
     /*
@@ -636,8 +719,9 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
         dock_bump tb = bump_at(SLOT_TRAY, f);
         float tcy = by + btn * 0.5f;
 
-        finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly, px0, by, pill_w, btn,
-                         rad, FINN_GLASS, GLASS_TINT);
+        if (frost > 0.004f)
+            finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly, px0, by, pill_w, btn,
+                             rad, FINN_GLASS, GLASS_TINT * frost);
 
         /*
          * The inset patch the status icons sit in — the one surface in the
@@ -764,7 +848,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             /* The clock's target reaches halfway into the gap before it and
              * runs to the pill's edge: a clock is a control here, and a
              * control should be easier to hit than the ink it is drawn from. */
-            float half_gap = f * CLOCK_GAP * 0.5f;
+            float half_gap = cgap * 0.5f;
             g_clockx = (int)lroundf(px0 + pill_w - pad - clock_w - half_gap) + lx;
             g_clocky = (int)lroundf(by) + ly;
             g_clockw = (int)lroundf(clock_w + pad + half_gap);
@@ -782,6 +866,10 @@ void finndock_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
 
 int finndock_height(float scale) { return rs(BTN, scale); }
 int finndock_visible(void) { return g_visible; }
+
+int finndock_rest_top(int screen_h, float scale) {
+    return screen_h - rs(DOCK_BOTTOM, scale) - rs(BTN, scale);
+}
 
 void finndock_geometry(int *x, int *y, int *w, int *h) {
     if (x) *x = g_x0;

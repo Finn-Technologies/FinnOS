@@ -101,6 +101,13 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
                       const uint32_t *src, int sw, int sh,
                       float x, float y, float rw, float rh, float alpha);
 
+/* The Thanos dissolve: pixels above a noise threshold vanish, and the ones
+ * nearest it glow warm as they go. Same geometry as finn_blit_scaled. */
+void finn_blit_dissolve(uint32_t *dst, int dw, int dh,
+                        const uint32_t *src, int sw, int sh,
+                        float x, float y, float rw, float rh,
+                        float alpha, float dust);
+
 /* Crossfade two opaque frames: dst = lerp(a, b, w/256). Done with the packed
  * integer trick so a full-screen appearance switch costs about one memcpy. */
 void finn_frame_blend(uint32_t *dst, const uint32_t *a, const uint32_t *b,
