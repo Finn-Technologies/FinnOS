@@ -30,11 +30,25 @@
 #define WIN_R           (8.0f * REF)     /* reference 8   */
 
 #define OPT_W           (72.0f * REF)    /* reference 72  */
-#define OPT_H           (20.0f * REF)    /* reference 20 (thinner pill) */
+#define OPT_H           (24.0f * REF)    /* reference 24  */
 #define OPT_R           (4.14f * REF)    /* reference 4.14 */
 #define OPT_INSET       (10.0f * REF)    /* reference 10  */
-#define OPT_SLOT_CX     (10.0f * REF)    /* center of 20px slot */
-#define OPT_ICON_SZ     (13.0f * REF)    /* slightly smaller glyphs */
+#define OPT_SLOT_CX     (12.0f * REF)    /* reference 12: the icon centres */
+#define OPT_ICON_PX     (15.43f * REF)   /* reference 15.43: the icon's box */
+
+/*
+ * Figma gives a window 0.70 of the frost and its options pill 0.50.
+ *
+ * Neither is the shell's shared weight, and the difference is not an accident
+ * of the file: a window floats over whatever happens to be behind it rather
+ * than over a room the shell has already dimmed, so its body carries a little
+ * more tint than a panel does. The pill is then a *lift* off that body, not an
+ * inset in it — at the tile weight the pill composited to a near-white chip
+ * with the glass gone out of it, which is what a sticker looks like next to a
+ * window.
+ */
+#define WIN_FROST       0.70f
+#define OPT_FROST       0.50f
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -65,6 +79,10 @@ typedef struct {
 static finn_win g_wins[FINNWINDOW_MAX];
 static int      g_n_wins = 0;
 static int      g_next_id = 1;
+
+/* The window whose close is still dissolving, or 0. It keeps its place in the
+ * array until the track lands — see finnwindow_close. */
+static int      g_closing = 0;
 
 static fsvg g_ic_expand, g_ic_min, g_ic_close;
 static fsvg g_ic_search, g_ic_wifi, g_ic_bluetooth;
@@ -348,12 +366,29 @@ int finnwindow_open(const char *arg) {
             if (g_wins[i].used && strcmp(g_wins[i].app_id, app_id) == 0) {
                 g_wins[i].minimized = 0;
                 int id = g_wins[i].id;
+                if (g_closing == id) g_closing = 0;
                 bring_to_front(i);
                 g_built = 0;
                 finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
                 return id;
             }
         }
+    }
+
+    /* A window that is still dissolving is gone as far as a new arrival is
+     * concerned. Adding one beside it would drag the close back — the layer
+     * would carry both, and the track meant to end the old window would end up
+     * fading in the new one. */
+    if (g_closing) {
+        int ci = find_idx(g_closing);
+        if (ci >= 0) {
+            for (int i = ci; i < g_n_wins - 1; i++)
+                g_wins[i] = g_wins[i + 1];
+            g_n_wins--;
+        }
+        g_closing = 0;
+        finn_anim_jump(&g_a_open, 0.0f);
+        g_built = 0;
     }
 
     /* The limit is a refusal, not an eviction: the window that is already
@@ -388,9 +423,31 @@ int finnwindow_open(const char *arg) {
     return w->id;
 }
 
+/*
+ * A window that leaves keeps its place in the array until the close track
+ * lands.
+ *
+ * The dissolve animates the body layer, and it is the window's own pixels that
+ * are in it. Removing the window first left the track running over glass that
+ * no longer held it: the window vanished on the first frame, and the 180ms
+ * that were meant to scatter it were spent dissolving an empty layer.
+ *
+ * Only the last visible window has those pixels to itself. With a stack behind
+ * it the layer is the stack, and scaling or scattering it would take the
+ * windows that are staying along with it, so there the window leaves at once.
+ */
 int finnwindow_close(int id) {
     int idx = find_idx(id);
     if (idx < 0) return -1;
+
+    if (!g_closing && finnwindow_visible_count() == 1 &&
+        finn_anim_v(&g_a_open) > 0.85f) {
+        g_closing = id;
+        g_built = 0;
+        finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
+        return 0;
+    }
+
     for (int i = idx; i < g_n_wins - 1; i++)
         g_wins[i] = g_wins[i + 1];
     g_n_wins--;
@@ -403,6 +460,9 @@ int finnwindow_close(int id) {
 int finnwindow_focus(int id) {
     int idx = find_idx(id);
     if (idx < 0) return -1;
+    /* Focus is the pointer's way back into a window, so a window that was
+     * leaving is simply staying. */
+    if (g_closing == id) g_closing = 0;
     g_wins[idx].minimized = 0;
     bring_to_front(idx);
     g_built = 0;
@@ -435,6 +495,7 @@ int finnwindow_cycle_focus(int dir) {
 
 int finnwindow_minimize(int id) {
     if (g_min_active) return 0;
+    if (g_closing == id) return 0;
     int idx = find_idx(id);
     if (idx < 0) return -1;
     finn_win *w = &g_wins[idx];
@@ -606,6 +667,25 @@ int finnwindow_tick(float dt) {
         if (finnwindow_visible_count() == 0)
             finn_anim_jump(&g_a_open, 0.0f);
         g_built = 0;
+        ch = 1;
+    }
+
+    /* The close track has landed, so the window it was dissolving can leave
+     * the array. A window that came back while it was leaving is on its way
+     * in again, and stays. */
+    if (g_closing && !finn_anim_running(&g_a_open)) {
+        if (finn_anim_v(&g_a_open) > 0.5f) {
+            g_closing = 0;
+        } else {
+            int idx = find_idx(g_closing);
+            if (idx >= 0) {
+                for (int i = idx; i < g_n_wins - 1; i++)
+                    g_wins[i] = g_wins[i + 1];
+                g_n_wins--;
+            }
+            g_closing = 0;
+            g_built = 0;
+        }
         ch = 1;
     }
     return ch;
@@ -831,6 +911,29 @@ static uint32_t overlay_key(float s, const finn_state *st, int idx, int part,
     return h ? h : 1u;
 }
 
+/*
+ * The three controls are drawn in their own ink.
+ *
+ * The assets already carry Figma's stroke — a navy (#141B34), not the neutral
+ * the labels use — so on the light glass they are left untinted and read as
+ * ink on the window rather than as grey furniture beside it. The dark
+ * appearance has no navy to fall back on, because there the glass is the deep
+ * bone; there the controls take the same ink as the text.
+ *
+ * They are placed by their 15.43px box and not by their ink: minus-sign and x
+ * cover different fractions of that box, and centring each by its own ink
+ * would space the three unevenly across the pill.
+ */
+static void opt_icon_blit(fsvg *svg, uint32_t *dst, int dw, int dh,
+                          int cx, int cy, float s) {
+    if (!svg || svg->vw <= 0.0f) return;
+    int px = rs(OPT_ICON_PX, s);
+    if (px < 1) px = 1;
+    uint32_t ink = finn_theme_dark() ? FINN_INK : 0u;
+    finn_icon_blit(svg, dst, dw, dh, cx - px / 2, cy - px / 2, px,
+                   ink, ink, 0);
+}
+
 /* Draw the active button's wash and its icon into the overlay layer. The body
  * still carries the same icon (so the other two buttons are untouched), and
  * this copy sits over its identical twin: the wash stays under the ink, just
@@ -858,19 +961,16 @@ static void render_overlay(int idx, int part, float s) {
     }
 
     int cy = oy + oh / 2 - g_ovy0;
-    int cx, icon = rs(OPT_ICON_SZ, s);
+    int cx;
     if (part == FINNWINDOW_HIT_EXPAND) {
         cx = ox + rs(OPT_SLOT_CX, s) - g_ovx0;
-        finn_icon_blit_ink(&g_ic_expand, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_DIM, FINN_DIM, 0);
+        opt_icon_blit(&g_ic_expand, g_ovl, g_ovw, g_ovh, cx, cy, s);
     } else if (part == FINNWINDOW_HIT_MINIMIZE) {
         cx = ox + ow / 2 - g_ovx0;
-        finn_icon_blit_ink(&g_ic_min, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_DIM, FINN_DIM, 0);
+        opt_icon_blit(&g_ic_min, g_ovl, g_ovw, g_ovh, cx, cy, s);
     } else {
         cx = ox + ow - rs(OPT_SLOT_CX, s) - g_ovx0;
-        finn_icon_blit_ink(&g_ic_close, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_DIM, FINN_DIM, 0);
+        opt_icon_blit(&g_ic_close, g_ovl, g_ovw, g_ovh, cx, cy, s);
     }
 }
 
@@ -1031,16 +1131,17 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             int wx = w->x - g_lx0;
             int wy = w->y - g_ly0;
 
-            /* Window frosted glass body (Figma 12:2: r=15, frost 0.70). A
+            /* Window frosted glass body (Figma 14:236: r=8, frost 0.70). A
              * maximized window is the screen above the dock, so it has no
              * corners to round: a rounded corner there would leave a sliver of
              * wallpaper between the window and the dock's bar. */
             float body_r = w->maximized ? 0.0f : s * WIN_R;
             finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                              (float)wx, (float)wy, (float)w->w, (float)w->h,
-                             body_r, FINN_GLASS, FINN_GLASS_PANEL);
+                             body_r, FINN_GLASS, WIN_FROST);
 
-            /* Top-right Window Options pill (Figma 12:2: 72x24 r=8, inset 8, frost 0.50) */
+            /* Top-right Window Options pill (Figma 14:237: 72x24 r=4.14,
+             * inset 10, frost 0.50) */
             int ox_abs, oy_abs, ow, oh;
             opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
             int ox = ox_abs - g_lx0;
@@ -1048,21 +1149,18 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
 
             finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                              (float)ox, (float)oy, (float)ow, (float)oh,
-                             s * OPT_R, FINN_GLASS, FINN_GLASS_TILE);
+                             s * OPT_R, FINN_GLASS, OPT_FROST);
 
-            /* Icon centers inside the 72x24 pill (Figma 14:237: 15.43px icons) */
+            /* Icon centres inside the 72x24 pill (Figma 14:238/240/242:
+             * 15.43px boxes at 12, 36 and 60 from the pill's left edge) */
             int cy_opt = oy + oh / 2;
             int cx_exp = ox + rs(OPT_SLOT_CX, s);
             int cx_min = ox + ow / 2;
             int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
-            int ico_sz = rs(OPT_ICON_SZ, s);
 
-            finn_icon_blit_ink(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt,
-                               ico_sz, FINN_DIM, FINN_DIM, 0);
-            finn_icon_blit_ink(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt,
-                               ico_sz, FINN_DIM, FINN_DIM, 0);
-            finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
-                               ico_sz, FINN_DIM, FINN_DIM, 0);
+            opt_icon_blit(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt, s);
+            opt_icon_blit(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt, s);
+            opt_icon_blit(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt, s);
 
             if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
                 int focused = (i == g_n_wins - 1);

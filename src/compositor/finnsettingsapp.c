@@ -390,10 +390,14 @@ void finnsettingsapp_render(uint32_t *layer, int lw, int lh,
         draw_rrect_stroke(layer, lw, lh, sf_x, sf_y, sf_w, sf_h, sf_r, 1.5f * s, FINN_ON);
     }
 
-    /* Search icon: 18x18 at (21, 76) */
+    /* Search icon: Figma 14:363 is an 18px frame at (6,6), but the drawing
+     * inside it is 13.5px. Blitting 18 would draw the frame, not the glyph:
+     * the magnifier came out a third larger than the design's, and heavy with
+     * it, because a stroke scales with the ink it sits on. */
     if (g_ic_search.vw > 0) {
-        int ico_sz = rs(18.0f * REF, s);
-        int ic_cx = (int)lroundf(sf_x + s * (6.0f * REF) + ico_sz * 0.5f);
+        int ico_sz = rs(13.5f * REF, s);
+        /* the frame is centred on the field: (6 + 18/2) from its left edge */
+        int ic_cx = (int)lroundf(sf_x + s * (15.0f * REF));
         int ic_cy = (int)lroundf(sf_y + sf_h * 0.5f);
         finn_icon_blit_ink(&g_ic_search, layer, lw, lh, ic_cx, ic_cy, ico_sz,
                            0xFF555555u, 0xFF555555u, 0);

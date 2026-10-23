@@ -5,6 +5,24 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### A window that closes is a window that dissolves
+
+- **Close no longer animates an empty layer.** The 180ms close track dissolved
+  the body layer, but the window was taken out of the array before the first
+  frame of it: the window vanished at once and the track spent itself on glass
+  that no longer held it. The last visible window now keeps its place until the
+  track lands, so the scatter, its warm embers and the 92% settle are seen.
+  A window brought back mid-close (focus, or its own app opened again) stays.
+- **The Window Options pill is the design's pill.** 72x24 at a 10px inset with
+  15.43px boxes at 12, 36 and 60, at 50% white over the body's 70% — it had been
+  thinned to 20px and carried the shared 85% tile weight, which composited to a
+  near-white chip. The three controls keep Figma's own navy (#141B34) instead of
+  the neutral label ink, and are placed by their 15.43px box rather than by their
+  ink, so the row is spaced evenly.
+- **Settings' magnifier is the glyph, not its frame.** Figma's 18px frame holds a
+  13.5px drawing; blitting 18 drew the frame, a third larger and heavier than the
+  field's design.
+
 ### Pixel-accurate Start Menu and Control Center
 
 - **Start Menu (Figma 4:172 / 8:20).** 800x500 logical, r=8 frosted glass at 65%
