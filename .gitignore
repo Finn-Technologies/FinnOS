@@ -32,3 +32,4 @@ build/
 *~
 .idea/
 .vscode/
+/tests/c/test_finnvg
