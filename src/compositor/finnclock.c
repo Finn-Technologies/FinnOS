@@ -30,8 +30,8 @@
 #define PAGE_W        338.0f   /* reference 260 */
 #define PAGE_H        338.0f   /* reference 260 */
 #define PAGE_PAD       18.2f   /* reference 14 */
-#define PAGE_R        (8.0f * 1.298077f)   /* reference 8 */
-#define TILE_R        (4.14f * 1.298077f)  /* reference 4.14 */
+#define PAGE_R        (8.0f * 1.298077f)   /* radius 8 in shell family */
+#define TILE_R        (8.0f * 1.298077f)   /* radius 8 for cards */
 
 #define HEAD_BASELINE  41.5f   /* reference 32 (14 + 18) */
 #define DATE_X         88.3f   /* reference 68 */
@@ -43,7 +43,7 @@
 
 #define BADGE_INSET     7.8f   /* reference 6 */
 #define BADGE_SIZE     31.2f   /* reference 24 */
-#define BADGE_R       (4.14f * 1.298077f)  /* reference 4.14 */
+#define BADGE_R       (4.0f * 1.298077f)  /* active well radius 4 */
 #define BADGE_GLYPH    18.0f   /* reference 14 */
 #define NOTE_TEXT_X    46.7f   /* reference 36 */
 
@@ -271,23 +271,19 @@ void finnclock_render(int screen_w, int screen_h, float scale,
     int pw = rs(PAGE_W, s), ph = rs(PAGE_H, s);
 
     /*
-     * Figma 13:31 & 13:129 position the Notification Center at the same tray
-     * left edge (x=680) as Control Center, growing out of the clock corner.
+     * Notification Center anchors to the clock pill: its right edge meets
+     * the clock's right edge, growing out of the clock corner.
      */
-    int tx = 0, ty = 0, tw = 0, th = 0;
-    finndock_tray(&tx, &ty, &tw, &th);
-    if (tw <= 0 || th <= 0) {
-        tx = dock_x; ty = dock_y; tw = dock_w; th = dock_h;
-    }
-
     int kx = 0, ky = 0, kw = 0, kh = 0;
     finndock_clock(&kx, &ky, &kw, &kh);
     if (kw <= 0 || kh <= 0) {
-        kx = tx + tw; ky = ty; kw = 0; kh = th;
+        int tx = 0, ty = 0, tw = 0, th = 0;
+        finndock_tray(&tx, &ty, &tw, &th);
+        kx = tx; ky = ty; kw = tw; kh = th;
     }
 
-    int px0 = tx;
-    int py0 = ty - rs(ANCHOR_GAP, s) - ph;
+    int px0 = (kx + kw) - pw;
+    int py0 = ky - rs(ANCHOR_GAP, s) - ph;
 
     int margin = rs(12, s);
     if (px0 < margin) px0 = margin;
@@ -297,8 +293,8 @@ void finnclock_render(int screen_w, int screen_h, float scale,
 
     g_lx0 = px0;
     g_ly0 = py0;
-    g_ax = kx + kw;
-    g_ay = ky + kh;
+    g_ax = kx + kw / 2;
+    g_ay = ky;
 
     uint32_t key = build_key(s, pw, ph, dock_x, dock_y, dock_w, dock_h, st);
     if (g_built && key == g_build_key) return;

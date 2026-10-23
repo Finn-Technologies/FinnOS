@@ -490,7 +490,8 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
         !strncmp(verb, "key.", 4) || !strncmp(verb, "sound.", 6) ||
         !strncmp(verb, "display.", 8) || !strncmp(verb, "radio.", 6) ||
         !strncmp(verb, "appearance.", 11) || !strncmp(verb, "notify.", 7) ||
-        !strncmp(verb, "window.", 7) || !strncmp(verb, "setup.", 6)) {
+        !strncmp(verb, "window.", 7) || !strncmp(verb, "setup.", 6) ||
+        !strncmp(verb, "settings.", 9)) {
         (void)proxy_to_comp(line, fd);  /* the provider's own status is the log entry */
         return g_reply_status;
     }

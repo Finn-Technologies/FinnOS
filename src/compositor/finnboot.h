@@ -12,15 +12,19 @@
  * not decoded, the face is not loaded, the icons are not parsed. The line
  * reports that work; it does not perform a theatre of booting.
  *
- * The design is the mark from the boot screen in the Figma file: four
- * shapes in a 2x2 grid — a rounded square, a circle, a four-point
- * sparkle and a turned square — in white on black, with a 150-unit line
- * below it. The mark is the same drawing as the dock's launcher icon
- * (icons/boot-mark.svg), so there is one mark in the system and not
- * two.
+ * The design matches Figma frame 'Boot' 1:2 exactly:
+ *   - Background: solid black #000000
+ *   - Mark: 50x50 boot mark (boot-mark.svg: rounded square, circle,
+ *     4-point star, rotated rounded square in solid white), centered on screen
+ *     at (615, 391) on the 1280x832 reference.
+ *   - Progress track: 150px wide, centered at (565, 541), 5px stroke weight,
+ *     round caps, stroke color #6C6C6C at 40% (RGB 43, 43, 43 over black).
+ *   - Lit segment: 15px lit segment in Figma reference (10% progress),
+ *     5px stroke weight, round caps, solid white #FFFFFF.
  *
- * Everything here is authored for the 1080p canvas and scaled, like the
- * rest of the shell.
+ * Real wake-up progression advances the lit segment from initial progress
+ * to 100%. The mark fades and scales in and out per docs/design/motion.md.
+ * The handoff to the desktop is a smooth crossfade.
  */
 
 int  finnboot_init(const char *icon_dir);
@@ -35,7 +39,7 @@ void finnboot_free(void);
 void finnboot_set_progress(float p);
 float finnboot_progress(void);
 
-/* 1 while the line is still moving. */
+/* 1 while the line or mark animations are still moving. */
 int  finnboot_tick(float dt);
 int  finnboot_running(void);
 
@@ -48,5 +52,17 @@ void finnboot_render(int screen_w, int screen_h, float scale);
 
 void finnboot_blit(uint32_t *dst, int dw, int dh, int dx, int dy);
 const uint32_t *finnboot_layer(int *x, int *y, int *w, int *h, unsigned *rev);
+
+/*
+ * Motion in/out & handoff to desktop.
+ * finnboot_start_exit triggers the mark scaling and fading out as well as
+ * the desktop handoff dissolve. finnboot_handoff_alpha returns the remaining
+ * boot screen alpha (1.0 -> 0.0) during the handoff crossfade.
+ */
+void  finnboot_start_exit(void);
+int   finnboot_exiting(void);
+float finnboot_handoff_alpha(void);
+float finnboot_mark_alpha(void);
+float finnboot_mark_scale(void);
 
 #endif

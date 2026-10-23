@@ -34,6 +34,7 @@ class FakeServer:
         self.handler = handler if handler is not None else default_handler
         self.overrides = {}
         self.notifications = []
+        self.settings_page = "wifi"
 
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
@@ -160,6 +161,22 @@ def default_handler(request, server):
 
     if verb == "setup.show" or verb == "setup.complete":
         return "OK"
+
+    if verb == "settings.page":
+        name = "wifi"
+        for part in rest.split():
+            if part.startswith("name="):
+                name = part.split("=", 1)[1]
+            elif "=" not in part:
+                name = part
+        if name in ("wifi", "bluetooth", "display", "sound", "power", "about"):
+            server.settings_page = name
+            return "OK"
+        return "ERR no such page"
+
+    if verb == "settings.get":
+        page = getattr(server, "settings_page", "wifi")
+        return "OK page=%s" % page
 
     if verb == "notify.list":
         return "OK count=1 [Hello|World|09:41]"

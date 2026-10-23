@@ -32,8 +32,14 @@ enum {
     FINNWINDOW_HIT_TITLEBAR,
     FINNWINDOW_HIT_EXPAND,
     FINNWINDOW_HIT_MINIMIZE,
-    FINNWINDOW_HIT_CLOSE
+    FINNWINDOW_HIT_CLOSE,
+    FINNWINDOW_HIT_SETTINGS_CTRL
 };
+
+#include "finnkbd.h"
+
+/* Deliver keyboard event to focused window (e.g. search field) */
+int  finnwindow_key(const finn_key_event *e);
 
 int  finnwindow_init(const char *icon_dir, const char *font_dir, const char *registry);
 void finnwindow_free(void);

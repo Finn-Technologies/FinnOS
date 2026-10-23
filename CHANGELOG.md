@@ -5,6 +5,55 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Pixel-accurate Start Menu and Control Center
+
+- **Start Menu (Figma 4:172 / 8:20).** 800x500 logical, r=8 frosted glass at 65%
+  white, anchored 15px above the dock and horizontally centered on screen:
+  - Scrim removed: the desktop behind the open menu remains bright and clean.
+  - 385x480 r=4.14 Right Panel at (405, 10) in 85% white frosted glass.
+  - 385x40 r=4.14 Account Options bar at (10, 450) displaying 30x30 avatar,
+    real session user name capitalized dynamically from session state / passwd,
+    and interactive Restart and Shutdown action buttons.
+  - "View all" pill (88x26) with vector `chevron-right.svg` glyph.
+  - Single application row for Settings with 26x26 app icon, 14px label gap,
+    and active hover/press washes that launches the Settings desktop app.
+- **Control Center (Figma 9:63 / 9:82).** 405x500 logical, r=8 frosted glass at 65%
+  white, anchored 15px above dock and centered over Pill 4 (Status tray):
+  - Inset 188x40 Wi-Fi and Bluetooth status tiles with honest state reporting
+    ("Not available" with muted status disc when hardware is absent; inert when absent).
+  - Knob-less filled pill sliders (385x35) for Brightness and Volume.
+  - Volume slider is interactive and draggable, updating real system volume via ALSA.
+  - Brightness slider honestly reports "Not available" with crisp inert styling when
+    backlight hardware is absent.
+  - Footer bar (385x40 at y=450) with battery percentage / Mains indicator,
+    disabled `edit-01.svg` glyph, and interactive `settings-02.svg` button that opens
+    the Settings desktop app.
+
+### Pixel-perfect window chrome and Settings desktop application
+
+- **Pixel-perfect window chrome (Figma 14:247/14:236).** 500x300 r=8 frosted
+  glass window with top-right 72x24 r=4.14 Window Options pill (10px inset)
+  carrying 15.43px expand, minus-sign, and close vector glyphs, and centered
+  12px Fixel Display Regular "Empty window" label at 70% opacity.
+- **Settings desktop application (Figma 14:330/14:289).** A 900x500 window
+  centered on the desktop, draggable by its titlebar and maximizable /
+  minimizable / closable. Features a 250px solid white sidebar with r=8 outer
+  corners, "Settings" title at (15, 44), interactive search field at (15, 70)
+  with active focus ring, blinking caret, and backspace for filtering sidebar
+  rows, and section headers (NETWORK, DEVICE, SYSTEM).
+- **Honest system state across six Settings pages:**
+  - *Wi-Fi:* hardware presence, connection state, and functional toggle.
+  - *Bluetooth:* controller status, honest absent state, and toggle.
+  - *Display:* DRM/KMS scanout resolution, canvas scale factor, and working
+    Light/Dark appearance toggle persisted to `/var/lib/finn/settings`.
+  - *Sound:* master volume slider bound directly to ALSA mixer, and mute toggle.
+  - *Power:* real battery charge percentage or AC mains status.
+  - *About:* system specifications with kernel release, device name, system
+    uptime, total RAM, and compositor engine.
+- **Control protocol navigation.** Added `settings.page name=<page>` and
+  `settings.get` to `finn-comp`, proxied by `finnd`, with CLI support in
+  `finnctl` and SDK client methods.
+
 ### A session you can configure
 
 - **First boot is gated on the marker.** `/var/lib/finn/setup-done` is now

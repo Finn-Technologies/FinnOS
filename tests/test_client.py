@@ -155,6 +155,17 @@ class ClientTest(unittest.TestCase):
         self.client.setup_complete()
         self.assertEqual(self.server.requests, ["setup.complete"])
 
+    # ---- the settings app ----
+
+    def test_settings_page_may_be_navigated(self):
+        self.client.settings_page("sound")
+        self.assertEqual(self.server.requests, ["settings.page name=sound"])
+        self.assertEqual(self.client.settings_get(), "sound")
+
+    def test_settings_page_refuses_invalid_page(self):
+        with self.assertRaises(FinnError):
+            self.client.settings_page("nonexistent")
+
     # ---- the pointer ----
 
     def test_the_pointer_may_be_moved(self):

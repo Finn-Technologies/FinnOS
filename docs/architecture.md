@@ -107,6 +107,7 @@ finncontrol      the Control Center
 finnclock        the Notification Center and clock page
 finnmenu         the Start Menu
 finnwindow       frosted windows and the window manager
+finnsettingsapp  the Settings desktop application (Figma 14:330 / 14:289)
 finnkbd          evdev keyboard, modifier state and VT chords
 ```
 
@@ -263,13 +264,16 @@ them:
 - **No external client surface protocol.** `finnwindow` manages frosted
   desktop windows (`window.open`, `window.list`, `window.close`,
   `window.minimize`, `window.maximize`, `window.move`, `window.focus`),
-  but an external process started by `app.launch` cannot yet stream its own
-  pixel buffer over a socket, and there are no built-in app views.
-- **No text delivery into an app.** The compositor reads a real keyboard
-  (`finnkbd`) and uses it for setup, `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc`
-  and the Super key, and `key.press/release/tap` inject into the same
-  path. There is no focused client surface, so a key cannot yet become a
-  character in an application, and the shell has no text field.
+  and hosts the built-in Settings application (`finnsettingsapp`) with
+  interactive search filtering, working ALSA mixer volume controls, appearance
+  theme switching, and real hardware state. However, external processes
+  started by `app.launch` cannot yet stream their own pixel buffers over a
+  socket.
+- **No text delivery into external apps.** The compositor reads a real keyboard
+  (`finnkbd`) and delivers keyboard events to the Settings application search
+  field (with text input, caret blinking, and backspace), setup,
+  `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc` and the Super key. There is no external
+  focused client surface protocol yet.
 - **No window resize.** Windows move, maximize, minimize, close and
   cycle focus; they do not resize, and there is no stacking protocol for
   a client.

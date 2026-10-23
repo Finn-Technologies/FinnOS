@@ -44,6 +44,7 @@ static void usage(void) {
             "       window.list window.open window.close window.focus\n"
             "       window.minimize window.maximize window.move\n"
             "       setup.get setup.show setup.complete\n"
+            "       settings.page settings.get\n"
             "       key.press key.release key.tap\n"
             "\n"
             "  notify.post takes one argument: '<title>|<body>'\n"

@@ -193,6 +193,15 @@ Provided by the compositor (`finnwindow`), proxied by the control plane.
 | `window.maximize [id=<id>]` | `OK` | toggle the window's maximized state |
 | `window.move id=<id> x=<x> y=<y>` | `OK` | move the window's top-left corner |
 
+### Settings
+
+Provided by the compositor (`finnsettingsapp`), proxied by the control plane.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `settings.page [name=<page>]` | `OK` / `ERR no such page` | navigate to a settings page (`wifi`, `bluetooth`, `display`, `sound`, `power`, `about`); opens the settings window if not already open |
+| `settings.get` | `OK page=<page>` | read the name of the currently active settings page |
+
 ### First-boot setup
 
 Provided by the compositor (`finnsetup`), proxied by the control plane.

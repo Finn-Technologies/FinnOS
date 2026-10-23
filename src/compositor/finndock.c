@@ -5,6 +5,7 @@
 #include "finntext.h"
 #include "finnanim.h"
 #include "finnmotion.h"
+#include "finnproto.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,35 +17,34 @@
 
 /*
  * Metrics authored for the Figma design system (1280x832 canvas, scaled by
- * REF = 1080 / 832 = 1.298077):
+ * u = screen_w / 1280, exactly 2.0x on the 2560x1600 VM):
  *
  * 4 floating pills at rest:
- *   1. Taskbar (Apps):    w=42, h=42, r=8 (Settings chip 26x26 r5.91 at x=8)
+ *   1. Taskbar (Apps):    w=42, h=42, r=8 (Settings chip 26x26 at x=8, running bg 34x34 r=4, indicator 4x0)
  *   2. Navigation:        w=116, h=42, r=8 (search x=10, home x=47, windows x=84)
- *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px, sun 24px, 23°C/Sunny)
- *   4. Status:            w=116, h=42, r=8 (volume x=10, wifi x=47, battery x=84)
+ *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px at x=10, real weather if present)
+ *   4. Status / Tray:     w=116, h=42, r=8 (volume x=10, wifi x=47, battery x=84)
  *
- * Gaps between pills: 15 design px (19.5 canvas px).
- * Bottom margin:      15 design px (19.5 canvas px).
+ * Gaps between pills: 15 design px (30px at 2x).
+ * Bottom margin:      15 design px (30px at 2x).
  */
 #define REF           1.298077f
 
-#define DOCK_H        (42.0f * REF)
-#define DOCK_R        (8.0f * REF)
-#define DOCK_GAP      (15.0f * REF)
-#define DOCK_BOTTOM   (15.0f * REF)
+#define DOCK_H        42.0f
+#define DOCK_R        8.0f
+#define DOCK_GAP      15.0f
+#define DOCK_BOTTOM   15.0f
 
-#define PILL1_W       (42.0f * REF)
-#define PILL2_W       (116.0f * REF)
-#define PILL3_W       (139.0f * REF)
-#define PILL4_W       (116.0f * REF)
+#define PILL1_W       42.0f
+#define PILL2_W       116.0f
+#define PILL3_W       139.0f
+#define PILL4_W       116.0f
 
-#define TOTAL_W       (PILL1_W + DOCK_GAP + PILL2_W + DOCK_GAP + PILL3_W + DOCK_GAP + PILL4_W)
+#define DOCK_GAP_SUNK 7.5f
 
-#define DOCK_GAP_SUNK (7.5f * REF)
-
-#define GLASS_TINT    FINN_GLASS_PANEL
 #define GLASS_BAR     0.94f
+
+static float g_dock_u = 2.0f;
 
 /* ---------------- assets ---------------- */
 static fsvg g_ic_settings_app;
@@ -131,6 +131,26 @@ static int clock_minute_now(char *out, size_t n) {
     return lt.tm_hour * 60 + lt.tm_min;
 }
 
+/* Optional real weather source from finnstate directory */
+static int read_weather(char *temp, size_t temp_sz, char *cond, size_t cond_sz) {
+    FILE *f = fopen(FINN_STATE_DIR "/weather_temp", "r");
+    if (!f) return 0;
+    if (!fgets(temp, (int)temp_sz, f)) { fclose(f); return 0; }
+    fclose(f);
+    char *nl = strchr(temp, '\n'); if (nl) *nl = 0;
+    if (!temp[0]) return 0;
+
+    cond[0] = 0;
+    f = fopen(FINN_STATE_DIR "/weather_cond", "r");
+    if (f) {
+        if (fgets(cond, (int)cond_sz, f)) {
+            nl = strchr(cond, '\n'); if (nl) *nl = 0;
+        }
+        fclose(f);
+    }
+    return 1;
+}
+
 /* ---------------- motion & state ---------------- */
 
 static finn_anim g_a_press;
@@ -186,21 +206,29 @@ void finndock_press(int which) {
         finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
 }
 
-static finn_anim g_a_hover;
-static float     g_hover = 0.0f;
-static int       g_hover_on = 0;
+static finn_anim g_a_hover_a;
+static float     g_hover_a = 0.0f;
+static int       g_hover_apps = 0;
 
-static finn_anim g_a_hover_c;
-static float     g_hover_c = 0.0f;
-static int       g_hover_clock = 0;
+static finn_anim g_a_hover_s;
+static float     g_hover_s = 0.0f;
+static int       g_hover_search = 0;
 
 static finn_anim g_a_hover_l;
 static float     g_hover_l = 0.0f;
 static int       g_hover_launcher = 0;
 
-static finn_anim g_a_hover_a;
-static float     g_hover_a = 0.0f;
-static int       g_hover_apps = 0;
+static finn_anim g_a_hover_w;
+static float     g_hover_w = 0.0f;
+static int       g_hover_windows = 0;
+
+static finn_anim g_a_hover_c;
+static float     g_hover_c = 0.0f;
+static int       g_hover_clock = 0;
+
+static finn_anim g_a_hover_t;
+static float     g_hover_t = 0.0f;
+static int       g_hover_tray = 0;
 
 static int g_p1_x = 0, g_p1_w = 0;
 static int g_p2_x = 0, g_p2_w = 0;
@@ -211,11 +239,32 @@ static int g_p_y = 0, g_p_h = 0;
 void finndock_hover_at(int px, int py) {
     int hit = finndock_hit(px, py);
 
-    int on = (hit == FINNDOCK_HIT_TRAY);
-    if (on != g_hover_on) {
-        g_hover_on = on;
-        finn_anim_to(&g_a_hover, on ? 1.0f : 0.0f,
-                     on ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    int ona = (hit == FINNDOCK_HIT_APPS);
+    if (ona != g_hover_apps) {
+        g_hover_apps = ona;
+        finn_anim_to(&g_a_hover_a, ona ? 1.0f : 0.0f,
+                     ona ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    }
+
+    int ons = (hit == FINNDOCK_HIT_SEARCH);
+    if (ons != g_hover_search) {
+        g_hover_search = ons;
+        finn_anim_to(&g_a_hover_s, ons ? 1.0f : 0.0f,
+                     ons ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    }
+
+    int onl = (hit == FINNDOCK_HIT_LAUNCHER);
+    if (onl != g_hover_launcher) {
+        g_hover_launcher = onl;
+        finn_anim_to(&g_a_hover_l, onl ? 1.0f : 0.0f,
+                     onl ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    }
+
+    int onw = (hit == FINNDOCK_HIT_WINDOWS);
+    if (onw != g_hover_windows) {
+        g_hover_windows = onw;
+        finn_anim_to(&g_a_hover_w, onw ? 1.0f : 0.0f,
+                     onw ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 
     int onc = (hit == FINNDOCK_HIT_CLOCK);
@@ -225,45 +274,40 @@ void finndock_hover_at(int px, int py) {
                      onc ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 
-    int ona = (hit == FINNDOCK_HIT_APPS);
-    if (ona != g_hover_apps) {
-        g_hover_apps = ona;
-        finn_anim_to(&g_a_hover_a, ona ? 1.0f : 0.0f,
-                     ona ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
-    }
-
-    int onl = (hit == FINNDOCK_HIT_LAUNCHER || hit == FINNDOCK_HIT_SEARCH || hit == FINNDOCK_HIT_WINDOWS);
-    if (onl != g_hover_launcher) {
-        g_hover_launcher = onl;
-        finn_anim_to(&g_a_hover_l, onl ? 1.0f : 0.0f,
-                     onl ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    int ont = (hit == FINNDOCK_HIT_TRAY);
+    if (ont != g_hover_tray) {
+        g_hover_tray = ont;
+        finn_anim_to(&g_a_hover_t, ont ? 1.0f : 0.0f,
+                     ont ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
     }
 }
 
 int finndock_tick(float dt) {
     int moved = finn_anim_tick(&g_a_press, dt);
-    moved |= finn_anim_tick(&g_a_hover, dt);
-    moved |= finn_anim_tick(&g_a_hover_c, dt);
-    moved |= finn_anim_tick(&g_a_hover_l, dt);
     moved |= finn_anim_tick(&g_a_hover_a, dt);
+    moved |= finn_anim_tick(&g_a_hover_s, dt);
+    moved |= finn_anim_tick(&g_a_hover_l, dt);
+    moved |= finn_anim_tick(&g_a_hover_w, dt);
+    moved |= finn_anim_tick(&g_a_hover_c, dt);
+    moved |= finn_anim_tick(&g_a_hover_t, dt);
     moved |= finn_anim_tick(&g_a_sink, dt);
-    float hv = finn_anim_v(&g_a_hover);
-    if (hv != g_hover) { g_hover = hv; moved = 1; }
-    float hc = finn_anim_v(&g_a_hover_c);
-    if (hc != g_hover_c) { g_hover_c = hc; moved = 1; }
-    float hl = finn_anim_v(&g_a_hover_l);
-    if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
-    float ha = finn_anim_v(&g_a_hover_a);
-    if (ha != g_hover_a) { g_hover_a = ha; moved = 1; }
-    float sv = finn_anim_v(&g_a_sink);
-    if (sv != g_sink) { g_sink = sv; moved = 1; }
+
+    float ha = finn_anim_v(&g_a_hover_a); if (ha != g_hover_a) { g_hover_a = ha; moved = 1; }
+    float hs = finn_anim_v(&g_a_hover_s); if (hs != g_hover_s) { g_hover_s = hs; moved = 1; }
+    float hl = finn_anim_v(&g_a_hover_l); if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
+    float hw = finn_anim_v(&g_a_hover_w); if (hw != g_hover_w) { g_hover_w = hw; moved = 1; }
+    float hc = finn_anim_v(&g_a_hover_c); if (hc != g_hover_c) { g_hover_c = hc; moved = 1; }
+    float ht = finn_anim_v(&g_a_hover_t); if (ht != g_hover_t) { g_hover_t = ht; moved = 1; }
+    float sv = finn_anim_v(&g_a_sink);    if (sv != g_sink)    { g_sink = sv;    moved = 1; }
     return moved;
 }
 
 int finndock_running(void) {
-    return finn_anim_running(&g_a_press) || finn_anim_running(&g_a_hover) ||
-           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_l) ||
-           finn_anim_running(&g_a_hover_a) || finn_anim_running(&g_a_sink);
+    return finn_anim_running(&g_a_press) ||
+           finn_anim_running(&g_a_hover_a) || finn_anim_running(&g_a_hover_s) ||
+           finn_anim_running(&g_a_hover_l) || finn_anim_running(&g_a_hover_w) ||
+           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_t) ||
+           finn_anim_running(&g_a_sink);
 }
 
 /* ---------------- layer & rendering ---------------- */
@@ -278,16 +322,16 @@ static int      g_clock_min = -1;
 
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
-static void load_fonts(float s) {
+static void load_fonts(float u) {
     finn_font_free(&g_font);
     finn_font_free(&g_f_temp);
     finn_font_free(&g_f_cond);
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    int px_clock = rs(16.0f * REF, s);
-    int px_temp  = rs(12.0f * REF, s);
-    int px_cond  = rs(10.0f * REF, s);
+    int px_clock = rs(16.0f, u);
+    int px_temp  = rs(12.0f, u);
+    int px_cond  = rs(10.0f, u);
     finn_font_load(&g_font, p, px_clock < 8 ? 8 : px_clock);
     finn_font_load(&g_f_temp, p, px_temp < 6 ? 6 : px_temp);
     finn_font_load(&g_f_cond, p, px_cond < 5 ? 5 : px_cond);
@@ -338,30 +382,44 @@ void finndock_free(void) {
     g_clock_min = -1;
 }
 
+static void draw_wash(uint32_t *layer, int lw, int lh,
+                      float x, float y, float w, float h, float r,
+                      float hover_v, int is_pressed, float well_v) {
+    float press_v = is_pressed ? finn_anim_v(&g_a_press) : 0.0f;
+    float wash = fmaxf(hover_v * FINN_MOTION_HOVER_WASH, press_v * FINN_MOTION_PRESS_WASH);
+    wash *= (1.0f - well_v);
+    if (wash < 0.003f) return;
+    uint32_t a8 = (uint32_t)(wash * 255.0f + 0.5f);
+    uint32_t col = (a8 << 24) | (FINN_INK & 0x00FFFFFFu);
+    finn_fill_rrect(layer, lw, lh, x, y, w, h, r, col);
+}
+
 void finndock_render(int screen_w, int screen_h, float scale, const finn_state *st) {
     if (!g_ready) { g_visible = 0; return; }
 
-    float f = scale;
-    if (g_font_scale != f) { load_fonts(f); g_font_scale = f; }
+    /* The Figma design canvas is 1280x832. Scale u is 2.0x for 2560 scanout. */
+    float u = (screen_w >= 1280) ? ((float)screen_w / 1280.0f) : (scale * REF);
+    g_dock_u = u;
+
+    if (g_font_scale != u) { load_fonts(u); g_font_scale = u; }
 
     float sink = g_sink;
-    float u = f * REF;
 
-    float dh = 42.0f * u;
-    float dr = 8.0f * u;
-    float gap = (15.0f * (1.0f - sink) + 7.5f * sink) * u;
-    float bottom_m = (15.0f * (1.0f - sink)) * u;
+    float dh = DOCK_H * u;
+    float dr = DOCK_R * u;
+    float gap = (DOCK_GAP * (1.0f - sink) + DOCK_GAP_SUNK * sink) * u;
+    float bottom_m = (DOCK_BOTTOM * (1.0f - sink)) * u;
 
-    float p1_w = 42.0f * u;
-    float p2_w = 116.0f * u;
-    float p3_w = 139.0f * u;
-    float p4_w = 116.0f * u;
+    float p1_w = PILL1_W * u;
+    float p2_w = PILL2_W * u;
+    float p3_w = PILL3_W * u;
+    float p4_w = PILL4_W * u;
 
     float p2_x = ((float)screen_w - p2_w) * 0.5f;
     float p1_x = p2_x - gap - p1_w;
     float p3_x = p2_x + p2_w + gap;
     float p4_x = p3_x + p3_w + gap;
-    float y0 = screen_h - bottom_m - dh;
+    float y0 = (float)screen_h - bottom_m - dh;
 
     float min_x = p1_x;
     float max_x = p4_x + p4_w;
@@ -401,7 +459,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
 
     uint32_t key = 2166136261u;
     #define MIX(v) do { key ^= (uint32_t)(v); key *= 16777619u; } while (0)
-    MIX(screen_w); MIX(screen_h); MIX((int)(f * 1000.0f)); MIX(lw); MIX(lh);
+    MIX(screen_w); MIX(screen_h); MIX((int)(u * 1000.0f)); MIX(lw); MIX(lh);
     MIX(st->wifi + 2); MIX(st->battery_pct + 2); MIX(st->charging + 2);
     MIX(st->volume + 2); MIX(st->dark + 2);
     MIX(g_pressed);
@@ -411,10 +469,12 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX((int)(g_well_clock * 64.0f));
     MIX((int)(g_well_apps * 64.0f));
     MIX((int)(g_well_launcher * 64.0f));
-    MIX((int)(g_hover * 64.0f));
-    MIX((int)(g_hover_c * 64.0f));
-    MIX((int)(g_hover_l * 64.0f));
     MIX((int)(g_hover_a * 64.0f));
+    MIX((int)(g_hover_s * 64.0f));
+    MIX((int)(g_hover_l * 64.0f));
+    MIX((int)(g_hover_w * 64.0f));
+    MIX((int)(g_hover_c * 64.0f));
+    MIX((int)(g_hover_t * 64.0f));
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
     #undef MIX
 
@@ -450,22 +510,28 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
         }
 
-        /* Running app highlight on Settings if window is active */
+        /* Running app highlight on Settings when window exists (Figma 14:317) */
         if (g_well_apps > 0.004f) {
             float bg_w = 34.0f * u, bg_h = 34.0f * u;
             float bg_x = p1_bx + 4.0f * u;
             float bg_y = by + 4.0f * u;
-            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u, 0xFFFFFFFFu);
+            uint32_t bg_a = (uint32_t)(g_well_apps * 255.0f + 0.5f);
+            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
+                            (bg_a << 24) | 0x00FFFFFFu);
 
-            /* Blue underline indicator */
-            float ind_w = 4.0f * u, ind_h = 2.0f * u;
-            float ind_x = p1_bx + (42.0f * u - ind_w) * 0.5f;
-            float ind_y = by + dh - ind_h - 1.0f * u;
-            finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h, 1.0f * u, FINN_ON);
+            /* Blue underline indicator (Figma 14:350: 4x0 stroke 1.5 round cap) */
+            float ind_w = 4.0f * u, ind_h = 1.5f * u;
+            float ind_x = p1_bx + (p1_w - ind_w) * 0.5f;
+            float ind_y = by + dh - 2.0f * u - ind_h * 0.5f;
+            finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h, ind_h * 0.5f, FINN_ON);
         }
 
-        /* 1 App chip: Settings (x=8) */
-        int chip_sz = rs(26.0f * REF, f);
+        /* Hover / press wash */
+        draw_wash(g_layer, lw, lh, p1_bx + 4.0f * u, by + 4.0f * u, 34.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_a, g_pressed == FINNDOCK_HIT_APPS, g_well_apps);
+
+        /* 1 App chip: Settings (26x26 at x=8) */
+        int chip_sz = rs(26.0f, u);
         float cy = by + 8.0f * u;
 
         if (g_ic_settings_app.vw > 0) {
@@ -484,16 +550,26 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
         }
 
-        /* Active Home well when Start Menu is open (Figma 4:217) */
+        /* Active Home well when Start Menu is open (Figma 4:191) */
         if (g_well_launcher > 0.004f) {
             float bg_w = 42.0f * u, bg_h = dh;
             float bg_x = p2_bx + 37.0f * u;
             float bg_y = by;
-            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, dr, 0xFFFFFFFFu);
+            uint32_t la = (uint32_t)(g_well_launcher * 255.0f + 0.5f);
+            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
+                            (la << 24) | 0x00FFFFFFu);
         }
 
-        int ico_sz = rs(22.0f * REF, f);
-        float icy = by + (dh - 22.0f * u) * 0.5f;
+        /* Hover / press washes for search, launcher, windows */
+        draw_wash(g_layer, lw, lh, p2_bx + 4.0f * u, by + 4.0f * u, 34.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_s, g_pressed == FINNDOCK_HIT_SEARCH, 0.0f);
+        draw_wash(g_layer, lw, lh, p2_bx + 41.0f * u, by + 4.0f * u, 34.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_l, g_pressed == FINNDOCK_HIT_LAUNCHER, g_well_launcher);
+        draw_wash(g_layer, lw, lh, p2_bx + 78.0f * u, by + 4.0f * u, 34.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_w, g_pressed == FINNDOCK_HIT_WINDOWS, 0.0f);
+
+        int ico_sz = rs(22.0f, u);
+        float icy = by + 10.0f * u;
 
         if (g_ic_search.vw > 0) {
             finn_icon_blit(&g_ic_search, g_layer, lw, lh,
@@ -521,37 +597,49 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
         }
 
+        /* Active well when Notification Center / Clock page is open */
         if (g_well_clock > 0.004f) {
-            finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
-                             p3_bx + 4.0f * u, by + 4.0f * u, p3_w - 8.0f * u, dh - 8.0f * u,
-                             4.0f * u, FINN_GLASS, 0.53f * g_well_clock);
+            float bg_w = p3_w - 8.0f * u, bg_h = 34.0f * u;
+            float bg_x = p3_bx + 4.0f * u;
+            float bg_y = by + 4.0f * u;
+            uint32_t ca = (uint32_t)(g_well_clock * 255.0f + 0.5f);
+            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
+                            (ca << 24) | 0x00FFFFFFu);
         }
 
-        /* Clock text (16px) */
+        /* Hover / press wash */
+        draw_wash(g_layer, lw, lh, p3_bx + 4.0f * u, by + 4.0f * u, p3_w - 8.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_c, g_pressed == FINNDOCK_HIT_CLOCK, g_well_clock);
+
+        /* Clock text (16px, baseline y=27 in Figma 3:150) */
         if (g_font.face) {
-            float base_y = by + dh * 0.5f + rs(6.0f * REF, f);
+            float base_y = by + 27.0f * u;
             finn_text_draw(&g_font, g_layer, lw, lh,
                            p3_bx + 10.0f * u, base_y, clock_s, FINN_INK);
         }
 
-        /* Sun icon (24px) */
-        if (g_ic_sun_weather.vw > 0) {
-            int sun_sz = rs(24.0f * REF, f);
-            float sun_y = by + (dh - 24.0f * u) * 0.5f;
-            finn_icon_blit(&g_ic_sun_weather, g_layer, lw, lh,
-                           (int)lroundf(p3_bx + 60.0f * u), (int)lroundf(sun_y),
-                           sun_sz, 0, 0, 0);
-        }
-
-        /* Weather text (23°C / Sunny) */
-        if (g_f_temp.face && g_f_cond.face) {
-            float tx = p3_bx + 93.0f * u;
-            finn_text_draw(&g_f_temp, g_layer, lw, lh, tx, by + dh * 0.42f, "23°C", 0xFF2B2B2Bu);
-            finn_text_draw(&g_f_cond, g_layer, lw, lh, tx, by + dh * 0.82f, "Sunny", 0xFF606060u);
+        /* Weather text & icon (only when a real weather source exists — never fake) */
+        char temp_s[16] = {0}, cond_s[32] = {0};
+        if (read_weather(temp_s, sizeof temp_s, cond_s, sizeof cond_s)) {
+            if (g_ic_sun_weather.vw > 0) {
+                int sun_sz = rs(24.0f, u);
+                float sun_y = by + 9.0f * u;
+                finn_icon_blit(&g_ic_sun_weather, g_layer, lw, lh,
+                               (int)lroundf(p3_bx + 60.0f * u), (int)lroundf(sun_y),
+                               sun_sz, 0, 0, 0);
+            }
+            if (g_f_temp.face) {
+                float tx = p3_bx + 93.0f * u;
+                finn_text_draw(&g_f_temp, g_layer, lw, lh, tx, by + 19.0f * u, temp_s, 0xFF2B2B2Bu);
+            }
+            if (g_f_cond.face && cond_s[0]) {
+                float tx = p3_bx + 93.0f * u;
+                finn_text_draw(&g_f_cond, g_layer, lw, lh, tx, by + 34.0f * u, cond_s, 0xFF606060u);
+            }
         }
     }
 
-    /* ---------------- PILL 4: Status ---------------- */
+    /* ---------------- PILL 4: Status / Tray ---------------- */
     {
         float p4_bx = g_p4_x - lx;
         if (frost > 0.004f) {
@@ -560,16 +648,22 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
         }
 
-        /* White active well chip behind icons when Control Center is open */
+        /* White active well chip behind icons when Control Center is open (Figma 9:64) */
         if (g_well > 0.004f) {
             float bg_w = 108.0f * u, bg_h = 34.0f * u;
             float bg_x = p4_bx + 4.0f * u;
             float bg_y = by + 4.0f * u;
-            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u, 0xFFFFFFFFu);
+            uint32_t wa = (uint32_t)(g_well * 255.0f + 0.5f);
+            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
+                            (wa << 24) | 0x00FFFFFFu);
         }
 
-        int ico_sz = rs(22.0f * REF, f);
-        float icy = by + (dh - 22.0f * u) * 0.5f;
+        /* Hover / press wash */
+        draw_wash(g_layer, lw, lh, p4_bx + 4.0f * u, by + 4.0f * u, 108.0f * u, 34.0f * u, 4.0f * u,
+                  g_hover_t, g_pressed == FINNDOCK_HIT_TRAY, g_well);
+
+        int ico_sz = rs(22.0f, u);
+        float icy = by + 10.0f * u;
 
         const uint32_t *ic_v = icon_volume(ico_sz, st);
         if (ic_v) finn_blit(g_layer, lw, lh, ic_v, ico_sz, ico_sz,
@@ -593,7 +687,8 @@ void finndock_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {
 }
 
 int finndock_height(float scale) {
-    return rs(DOCK_H, scale);
+    (void)scale;
+    return rs(DOCK_H, g_dock_u > 0.0f ? g_dock_u : 2.0f);
 }
 
 void finndock_app_icon(int *x, int *y) {
@@ -604,7 +699,9 @@ void finndock_app_icon(int *x, int *y) {
 int finndock_visible(void) { return g_visible; }
 
 int finndock_rest_top(int screen_h, float scale) {
-    return screen_h - rs(DOCK_BOTTOM + DOCK_H, scale);
+    (void)scale;
+    float u = g_dock_u > 0.0f ? g_dock_u : 2.0f;
+    return screen_h - rs(DOCK_BOTTOM + DOCK_H, u);
 }
 
 void finndock_geometry(int *x, int *y, int *w, int *h) {
@@ -658,8 +755,8 @@ int finndock_hit(int px, int py) {
     if (px >= g_p1_x && px < g_p1_x + g_p1_w) return FINNDOCK_HIT_APPS;
     if (px >= g_p2_x && px < g_p2_x + g_p2_w) {
         float rel = (float)(px - g_p2_x) / (float)g_p2_w;
-        if (rel < 0.33f) return FINNDOCK_HIT_SEARCH;
-        if (rel < 0.67f) return FINNDOCK_HIT_LAUNCHER;
+        if (rel < 0.333f) return FINNDOCK_HIT_SEARCH;
+        if (rel < 0.667f) return FINNDOCK_HIT_LAUNCHER;
         return FINNDOCK_HIT_WINDOWS;
     }
     if (px >= g_p3_x && px < g_p3_x + g_p3_w) return FINNDOCK_HIT_CLOCK;

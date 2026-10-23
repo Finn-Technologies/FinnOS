@@ -1,6 +1,7 @@
 /* finnwindow — the FinnOS window manager surface (Figma 12:2). */
 #define _GNU_SOURCE
 #include "finnwindow.h"
+#include "finnsettingsapp.h"
 #include "finndock.h"
 #include "finndraw.h"
 #include "finntext.h"
@@ -16,12 +17,12 @@
 #include <math.h>
 
 /*
- * Metrics authored for the 1080p canvas, scaled from Figma 12:2 (1280x832 * 1.298077):
- *   Window: 500x300 r=15 -> 649.0 x 389.4 r=19.5
- *   Window Options pill: 72x24 r=8 at 8px inset from top/right ->
- *     93.5 x 31.2 r=10.4 at 10.4px inset
- *   3 icons inside Window Options pill: 16x16 (20.8), gap 6 (7.8), pad 6,4 (7.8, 5.2)
- *   Empty window label: "Empty window", 12px (15.6), FINN_INK at 70% opacity (0xB2)
+ * Metrics authored for the Figma design system (1280x832 * 1.298077):
+ *   Window: 500x300 r=8 (Figma 14:247/14:236)
+ *   Window Options pill: 72x24 r=4.14 at 10px inset from top/right (Figma 14:237)
+ *   3 icons inside Window Options: expand, minus-sign, x, 15.43px (Figma 14:238/240/242)
+ *   Empty window label: "Empty window", 12px (Figma 14:245), FINN_INK at 70% opacity
+ *   Settings window: 900x500 centered at (190, 166) in 1280x832 (Figma 14:330)
  */
 #define REF             1.298077f
 #define WIN_DEF_W       (500.0f * REF)   /* reference 500 */
@@ -32,10 +33,8 @@
 #define OPT_H           (24.0f * REF)    /* reference 24  */
 #define OPT_R           (4.14f * REF)    /* reference 4.14 */
 #define OPT_INSET       (10.0f * REF)    /* reference 10  */
-#define OPT_SLOT_CX     (13.714f * REF)  /* reference 13.714 (6 + 15.429/2) */
-#define OPT_ICON_EXP    (12.0f * REF)
-#define OPT_ICON_MIN    (12.0f * REF)
-#define OPT_ICON_CLS    (12.0f * REF)
+#define OPT_SLOT_CX     (12.0f * REF)    /* center of left 24px slot */
+#define OPT_ICON_SZ     (15.43f * REF)   /* Figma 14:238/240/242: 15.43px */
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -125,6 +124,10 @@ static int g_dragging = 0;
 static int g_drag_win = 0;
 static int g_drag_dx = 0, g_drag_dy = 0;
 
+static int g_settings_hit = 0;
+static int g_settings_sub = 0;
+static finn_state g_last_st;
+
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
 static int font_px(float s, float base) {
@@ -137,7 +140,7 @@ static int load_fonts(float s) {
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_title, p, font_px(s, 15.6f)) != 0) {
+    if (finn_font_load(&g_f_title, p, font_px(s, 12.0f * REF)) != 0) {
         fprintf(stderr, "finnwindow: cannot load %s\n", p);
         return -1;
     }
@@ -161,10 +164,12 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
 
     if (!ok) fprintf(stderr, "finnwindow: icon set incomplete in %s\n", g_icon_dir);
     g_ready = ok;
+    finnsettingsapp_init(g_icon_dir, g_font_dir);
     return ok ? 0 : -1;
 }
 
 void finnwindow_free(void) {
+    finnsettingsapp_free();
     fsvg_free(&g_ic_expand);
     fsvg_free(&g_ic_min);
     fsvg_free(&g_ic_close);
@@ -584,6 +589,7 @@ int finnwindow_tick(float dt) {
     ch |= finn_anim_tick(&g_a_press, dt);
     ch |= finn_anim_tick(&g_a_zoom, dt);
     ch |= finn_anim_tick(&g_a_min, dt);
+    ch |= finnsettingsapp_tick(dt);
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; ch = 1; }
 
@@ -652,6 +658,20 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
             return FINNWINDOW_HIT_CLOSE;
         }
 
+        int is_settings = (strcasecmp(w->title, "Settings") == 0 ||
+                           strcasecmp(w->app_id, "settings") == 0);
+        if (is_settings) {
+            int sub = 0;
+            int sht = finnsettingsapp_hit(w->x, w->y, w->w, w->h, px, py, g_scale, &sub);
+            if (sht == FINNSETTINGS_HIT_TITLEBAR)
+                return FINNWINDOW_HIT_TITLEBAR;
+            if (sht != FINNSETTINGS_HIT_NONE) {
+                g_settings_hit = sht;
+                g_settings_sub = sub;
+                return FINNWINDOW_HIT_SETTINGS_CTRL;
+            }
+        }
+
         if (py < w->y + rs(TITLEBAR_H, g_scale))
             return FINNWINDOW_HIT_TITLEBAR;
 
@@ -702,14 +722,22 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
         g_dragging = 0;
     }
 
+    if (hit_part == FINNWINDOW_HIT_SETTINGS_CTRL && idx >= 0) {
+        finnsettingsapp_press(g_settings_hit, g_settings_sub, px, py, g_scale, &g_last_st);
+        g_built = 0;
+    }
+
     if (hit_part >= FINNWINDOW_HIT_EXPAND && hit_part <= FINNWINDOW_HIT_CLOSE)
         finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
 }
 
 int finnwindow_drag(int px, int py) {
-    if (!g_dragging) return 0;
+    int s_drag = finnsettingsapp_drag(px, py, g_scale, &g_last_st);
+    if (s_drag) g_built = 0;
+
+    if (!g_dragging) return s_drag;
     int idx = find_idx(g_drag_win);
-    if (idx < 0) { g_dragging = 0; return 0; }
+    if (idx < 0) { g_dragging = 0; return s_drag; }
     int nx = px - g_drag_dx;
     int ny = py - g_drag_dy;
 
@@ -723,7 +751,7 @@ int finnwindow_drag(int px, int py) {
         g_built = 0;
         return 1;
     }
-    return 0;
+    return s_drag;
 }
 
 void finnwindow_release(void) {
@@ -731,7 +759,14 @@ void finnwindow_release(void) {
     g_press_part = FINNWINDOW_HIT_NONE;
     g_press_win = 0;
     g_ov_built = 0;
+    finnsettingsapp_release();
     finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
+}
+
+int finnwindow_key(const finn_key_event *e) {
+    int res = finnsettingsapp_key(e);
+    if (res) g_built = 0;
+    return res;
 }
 
 /* ---------------- render ---------------- */
@@ -754,6 +789,10 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
         MIX(g_wins[i].minimized); MIX(g_wins[i].maximized);
         for (const char *p = g_wins[i].title; *p; p++) MIX(*p);
         for (const char *p = g_wins[i].app_id; *p; p++) MIX(*p);
+        if (strcasecmp(g_wins[i].title, "Settings") == 0 ||
+            strcasecmp(g_wins[i].app_id, "settings") == 0) {
+            MIX(finnsettingsapp_build_key(s, st));
+        }
     }
     #undef MIX
     return h ? h : 1u;
@@ -819,20 +858,17 @@ static void render_overlay(int idx, int part, float s) {
     }
 
     int cy = oy + oh / 2 - g_ovy0;
-    int cx, icon;
+    int cx, icon = rs(OPT_ICON_SZ, s);
     if (part == FINNWINDOW_HIT_EXPAND) {
         cx = ox + rs(OPT_SLOT_CX, s) - g_ovx0;
-        icon = rs(OPT_ICON_EXP, s);
         finn_icon_blit_ink(&g_ic_expand, g_ovl, g_ovw, g_ovh, cx, cy,
                            icon, FINN_INK, FINN_INK, 0);
     } else if (part == FINNWINDOW_HIT_MINIMIZE) {
         cx = ox + ow / 2 - g_ovx0;
-        icon = rs(OPT_ICON_MIN, s);
         finn_icon_blit_ink(&g_ic_min, g_ovl, g_ovw, g_ovh, cx, cy,
                            icon, FINN_INK, FINN_INK, 0);
     } else {
         cx = ox + ow - rs(OPT_SLOT_CX, s) - g_ovx0;
-        icon = rs(OPT_ICON_CLS, s);
         finn_icon_blit_ink(&g_ic_close, g_ovl, g_ovw, g_ovh, cx, cy,
                            icon, FINN_INK, FINN_INK, 0);
     }
@@ -895,6 +931,7 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
     g_screen_w = screen_w;
     g_screen_h = screen_h;
     g_scale = scale;
+    if (st) g_last_st = *st;
 
     if (g_font_scale != scale) {
         if (load_fonts(scale) != 0) return;
@@ -1013,82 +1050,28 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                              (float)ox, (float)oy, (float)ow, (float)oh,
                              s * OPT_R, FINN_GLASS, FINN_GLASS_TILE);
 
-            /* Icon centers inside the 72x24 pill (Figma 12:2: 15.43x15.43 slots at pad 6,4 gap 6) */
+            /* Icon centers inside the 72x24 pill (Figma 14:237: 15.43px icons) */
             int cy_opt = oy + oh / 2;
             int cx_exp = ox + rs(OPT_SLOT_CX, s);
             int cx_min = ox + ow / 2;
             int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
+            int ico_sz = rs(OPT_ICON_SZ, s);
 
             finn_icon_blit_ink(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt,
-                               rs(OPT_ICON_EXP, s), FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_INK, FINN_INK, 0);
             finn_icon_blit_ink(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt,
-                               rs(OPT_ICON_MIN, s), FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_INK, FINN_INK, 0);
             finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
-                               rs(OPT_ICON_CLS, s), FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_INK, FINN_INK, 0);
 
             if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
-                float sb_w = s * (250.0f * REF);
-                if (sb_w > (float)w->w) sb_w = (float)w->w;
-                finn_fill_rrect(g_layer, lw, lh, (float)wx, (float)wy, sb_w, (float)w->h, body_r, 0xFFFFFFFFu);
-                /* Title: Settings */
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + s * (15.0f * REF),
-                               (float)wy + s * (44.0f * REF),
-                               "Settings", FINN_INK);
-                /* Search Box */
-                float sx = (float)wx + s * (15.0f * REF);
-                float sy = (float)wy + s * (70.0f * REF);
-                float sw = s * (220.0f * REF);
-                float sh = s * (30.0f * REF);
-                finn_fill_rrect(g_layer, lw, lh, sx, sy, sw, sh, s * (4.0f * REF), 0x40C7C7C7u);
-                if (g_ic_search.vw > 0) {
-                    int s_sz = rs(14.0f * REF, s);
-                    finn_icon_blit(&g_ic_search, g_layer, lw, lh,
-                                   (int)lroundf(sx + s * (8.0f * REF)),
-                                   (int)lroundf(sy + (sh - (float)s_sz) * 0.5f),
-                                   s_sz, FINN_DIM, FINN_DIM, 0);
-                }
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               sx + s * (28.0f * REF), sy + sh * 0.65f,
-                               "Type here to search", FINN_DIM);
-                /* Network section */
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + s * (15.0f * REF),
-                               (float)wy + s * (120.0f * REF),
-                               "NETWORK", 0xFF555555u);
-                /* Wi-Fi row */
-                float wr_y = (float)wy + s * (138.0f * REF);
-                float c_sz = s * (18.0f * REF);
-                float w_bx = (float)wx + s * (15.0f * REF);
-                float w_by = wr_y + s * (6.0f * REF);
-                finn_fill_rrect(g_layer, lw, lh, w_bx, w_by, c_sz, c_sz, c_sz * 0.5f, FINN_ON);
-                if (g_ic_wifi.vw > 0) {
-                    int ico_sz = rs(12.0f * REF, s);
-                    finn_icon_blit(&g_ic_wifi, g_layer, lw, lh,
-                                   (int)lroundf(w_bx + (c_sz - (float)ico_sz) * 0.5f),
-                                   (int)lroundf(w_by + (c_sz - (float)ico_sz) * 0.5f),
-                                   ico_sz, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
-                }
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + s * (42.0f * REF), wr_y + s * (20.0f * REF),
-                               "Wi-Fi", FINN_INK);
-                /* Bluetooth row */
-                float br_y = (float)wy + s * (173.0f * REF);
-                float b_bx = (float)wx + s * (15.0f * REF);
-                float b_by = br_y + s * (6.0f * REF);
-                finn_fill_rrect(g_layer, lw, lh, b_bx, b_by, c_sz, c_sz, c_sz * 0.5f, FINN_ON);
-                if (g_ic_bluetooth.vw > 0) {
-                    int ico_sz = rs(12.0f * REF, s);
-                    finn_icon_blit(&g_ic_bluetooth, g_layer, lw, lh,
-                                   (int)lroundf(b_bx + (c_sz - (float)ico_sz) * 0.5f),
-                                   (int)lroundf(b_by + (c_sz - (float)ico_sz) * 0.5f),
-                                   ico_sz, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
-                }
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + s * (42.0f * REF), br_y + s * (20.0f * REF),
-                               "Bluetooth", FINN_INK);
+                int focused = (i == g_n_wins - 1);
+                finnsettingsapp_render(g_layer, lw, lh, g_lx0, g_ly0,
+                                       w->x, w->y, w->w, w->h,
+                                       screen_w, screen_h,
+                                       s, st, focused);
             } else {
-                /* Centered window label (Figma 12:2: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
+                /* Centered window label (Figma 14:245: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
                 const char *label = (!w->title[0] ||
                                      strcasecmp(w->title, "Empty window") == 0 ||
                                      strcasecmp(w->title, "Finn Window") == 0)

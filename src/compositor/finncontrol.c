@@ -1,4 +1,4 @@
-/* finncontrol — the FinnOS Control Center (Figma 10:3). */
+/* finncontrol — the FinnOS Control Center (Figma 9:63 / 9:82). */
 #include "finncontrol.h"
 #include "finndock.h"
 #include "finndraw.h"
@@ -20,24 +20,19 @@
  * lighter inset the reference shows, and the pair re-grades together when Appearance flips.
  */
 
-/*
- * The glyph on a knob-white circle is a fixed dark ink. The circle is the
- * reference's white control in both appearances, so it cannot use FINN_INK:
- * that flips to near-white in dark mode and would disappear into the circle.
- * The status circles are the other way round — they use the light FINN_KNOB
- * glyph over an accent or grey disc — so one token cannot serve both.
- */
 #define CC_KNOB_INK  0xFF1A1D24u
 
 /* ---------------- metrics, authored for a 1080p canvas ----------------
  *
- * Every number here is the Figma 10:3 measurement in 1280x832 units multiplied
+ * Every number here is the Figma measurement in 1280x832 units multiplied
  * by 1.298077 (1080 / 832):
- *   panel 260x260 r=15, pad 8, tiles 118x36 r=8, tile gap 8,
- *   status disc 24 inset 6, two slider rows 244x30 r=15 eight apart,
- *   slider thumb 37 wide (the row's own left cap),
- *   open middle area, bottom footer at y=226 h=18 (inset 16 from edges) with
- *   battery + percentage/Mains on the left and edit + settings icons on the right.
+ *   panel 405x500 r=8 (Figma 9:82)
+ *   Wi-Fi tile 188x40 at 10,10; Bluetooth tile 188x40 at 207,10
+ *   Brightness slider 385x35 r=100 at 10,60
+ *   Volume slider 385x35 r=100 at 10,105
+ *   Footer Account Options 385x40 at 10,450
+ *   Battery icon at 9,9, text at 41,16
+ *   Edit icon at 328,11, Settings icon at 356,11
  */
 #define REF          1.298077f
 
@@ -113,16 +108,10 @@ static finn_anim g_a_vol, g_a_bright;      /* the level the bars draw */
 static float     g_hover = 0.0f;
 static int       g_hover_act = FINNCONTROL_NONE;
 static int       g_press = FINNCONTROL_NONE;
-static int       g_conn_wired = 0;
 static int       g_fill_primed = 0;
 
 static int in_rect(const cc_rect *r, int x, int y);
 static int rs(float v, float s) { return (int)lroundf(v * s); }
-
-static void text_r(uint32_t *L, int lw, int lh, const finn_font *f,
-                   float right, float base, const char *s, uint32_t col) {
-    finn_text_draw(f, L, lw, lh, right - finn_text_width(f, s), base, s, col);
-}
 
 static void fill_circle(uint32_t *L, int lw, int lh, float cx, float cy, float r, uint32_t c) {
     finn_fill_rrect(L, lw, lh, cx - r, cy - r, r * 2.0f, r * 2.0f, r, c);
@@ -193,7 +182,7 @@ static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
     float avail = (float)r.w - s * STATUS_TEXT_X - s * 6.0f;
     const finn_font *lf = lf_set ? lf_set
                          : fit(name,   avail, &g_f_label, &g_f_label_sm,
-                               &g_f_sub, &g_f_micro);
+                                &g_f_sub, &g_f_micro);
     const finn_font *df = fit(detail, avail, &g_f_sub, &g_f_micro,
                               &g_f_micro, &g_f_micro);
 
@@ -211,7 +200,7 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     /* Background track: black 25% */
     finn_fill_rrect(L, lw, lh, x, y, w, h, rad, FINN_TRACK);
 
-    /* Filled bar: solid white */
+    /* Filled bar: solid white (when hardware available) */
     if (available && fill > 0) {
         float fw = w * ((float)fill / 100.0f);
         if (fw > w) fw = w;
@@ -222,14 +211,23 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     /* Icon on the left */
     float ic_cx = x + s * SLIDER_ICON_X + s * (SLIDER_GLYPH * 0.5f);
     float ic_cy = y + h * 0.5f;
-    finn_icon_blit_ink(icon, L, lw, lh,
-                       (int)lroundf(ic_cx), (int)lroundf(ic_cy),
-                       rs(SLIDER_GLYPH, s), FINN_INK, FINN_INK, 0);
 
-    if (!available) {
-        float cap = finn_text_cap_height(&g_f_sub);
-        text_r(L, lw, lh, &g_f_sub, x + w - s * 14.0f,
-               y + h * 0.5f + cap * 0.5f, "n/a", FINN_MUTE);
+    if (available) {
+        finn_icon_blit_ink(icon, L, lw, lh,
+                           (int)lroundf(ic_cx), (int)lroundf(ic_cy),
+                           rs(SLIDER_GLYPH, s), FINN_INK, FINN_INK, 0);
+    } else {
+        /* When hardware absent (e.g. brightness on VM/desktop with no backlight):
+         * Look inert honestly: clean muted text on the track, no white fill, no fake 'n/a' overlap */
+        uint32_t inert_col = finn_theme_dark() ? 0x80FFFFFFu : 0xB3FFFFFFu;
+        finn_icon_blit_ink(icon, L, lw, lh,
+                           (int)lroundf(ic_cx), (int)lroundf(ic_cy),
+                           rs(SLIDER_GLYPH, s), inert_col, inert_col, 0);
+
+        float cap = finn_text_cap_height(&g_f_label);
+        float tx = x + s * STATUS_TEXT_X;
+        finn_text_draw(&g_f_label, L, lw, lh, tx, y + h * 0.5f + cap * 0.45f,
+                       "Not available", inert_col);
     }
 }
 
@@ -246,7 +244,7 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
                      s * FOOTER_R, FINN_GLASS, FINN_GLASS_TILE);
 
     int have_bat = st->battery_pct >= 0;
-    int pct = have_bat ? st->battery_pct : 96;
+    int pct = have_bat ? st->battery_pct : 100;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
@@ -262,25 +260,21 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
                        4000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u));
 
     char bat_s[32];
-    snprintf(bat_s, sizeof bat_s, "%d%%", pct);
+    if (have_bat) snprintf(bat_s, sizeof bat_s, "%d%%", pct);
+    else          snprintf(bat_s, sizeof bat_s, "Mains");
 
     float cap = finn_text_cap_height(&g_f_footer);
     float tx = fx + s * FOOTER_BAT_TXT_X;
-    finn_text_draw(&g_f_footer, L, lw, lh, tx, cy + cap * 0.5f, bat_s, FINN_INK);
+    finn_text_draw(&g_f_footer, L, lw, lh, tx, cy + cap * 0.45f, bat_s, FINN_INK);
 
-    /* Edit button */
-    float hit_r = (float)g_r_app.h * 0.5f;
-    if (g_hover_act == FINNCONTROL_APPEARANCE)
-        control_wash_r(L, lw, lh, g_r_app, hit_r, FINN_MOTION_HOVER_WASH * hover);
-    if (g_press == FINNCONTROL_APPEARANCE)
-        control_wash_r(L, lw, lh, g_r_app, hit_r, FINN_MOTION_PRESS_WASH * press);
-
+    /* Edit button: inert / disabled look (does not pretend to work) */
     finn_icon_blit_ink(&g_ic_edit, L, lw, lh,
                        g_r_app.x + g_r_app.w / 2,
                        g_r_app.y + g_r_app.h / 2,
-                       rs(FOOTER_ICO, s), FINN_INK, FINN_INK, 0);
+                       rs(FOOTER_ICO, s), FINN_MUTE, FINN_MUTE, 0);
 
-    /* Settings button */
+    /* Settings button: opens Settings app */
+    float hit_r = (float)g_r_settings.h * 0.5f;
     if (g_hover_act == FINNCONTROL_SETTINGS)
         control_wash_r(L, lw, lh, g_r_settings, hit_r, FINN_MOTION_HOVER_WASH * hover);
     if (g_press == FINNCONTROL_SETTINGS)
@@ -308,14 +302,14 @@ static int load_fonts(float s) {
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_footer, p, font_px(s, 14.0f)) != 0) {
+    if (finn_font_load(&g_f_footer, p, font_px(s, 12.0f * REF)) != 0) {
         fprintf(stderr, "finncontrol: cannot load %s\n", p);
         return -1;
     }
-    if (finn_font_load(&g_f_label, p, font_px(s, 12.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_label_sm, p, font_px(s, 11.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_sub, p, font_px(s, 10.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_micro, p, font_px(s, 8.5f)) != 0) return -1;
+    if (finn_font_load(&g_f_label, p, font_px(s, 12.0f * REF)) != 0) return -1;
+    if (finn_font_load(&g_f_label_sm, p, font_px(s, 11.0f * REF)) != 0) return -1;
+    if (finn_font_load(&g_f_sub, p, font_px(s, 10.0f * REF)) != 0) return -1;
+    if (finn_font_load(&g_f_micro, p, font_px(s, 8.5f * REF)) != 0) return -1;
     return 0;
 }
 
@@ -393,10 +387,14 @@ void finncontrol_hover_at(int px, int py) {
     if (g_open && g_layer && finn_anim_v(&g_a_open) >= 0.90f) {
         int x = px - g_lx0, y = py - g_ly0;
         if (x >= 0 && y >= 0 && x < g_lw && y < g_lh) {
-            if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) act = FINNCONTROL_WIFI;
-            else if (in_rect(&g_r_bt, x, y))               act = FINNCONTROL_BLUETOOTH;
-            else if (in_rect(&g_r_app, x, y))              act = FINNCONTROL_APPEARANCE;
-            else if (in_rect(&g_r_settings, x, y))         act = FINNCONTROL_SETTINGS;
+            /* Wi-Fi and Bluetooth only take hover when hardware adapter exists */
+            if (in_rect(&g_r_wifi, x, y) && g_r_wifi.w > 0) {
+                act = FINNCONTROL_WIFI;
+            } else if (in_rect(&g_r_bt, x, y) && g_r_bt.w > 0) {
+                act = FINNCONTROL_BLUETOOTH;
+            } else if (in_rect(&g_r_settings, x, y)) {
+                act = FINNCONTROL_SETTINGS;
+            }
         }
     }
 
@@ -477,7 +475,8 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
         tx = dock_x; ty = dock_y; tw = dock_w; th = dock_h;
     }
 
-    int px0 = tx + tw - pw;
+    /* Anchor horizontally centered directly over Pill 4 (Status pill) */
+    int px0 = tx + (tw - pw) / 2;
     int py0 = ty - rs(ANCHOR_GAP, s) - ph;
 
     int margin = rs(12, s);
@@ -519,13 +518,13 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     g_r_footer.w = rs(FOOTER_W, s);
     g_r_footer.h = rs(FOOTER_H, s);
 
-    int hit = rs(30.0f * REF, s);
-    g_r_app.x      = rs(FOOTER_X + FOOTER_EDIT_X, s);
+    int hit = rs(26.0f * REF, s);
+    g_r_app.x      = rs(FOOTER_X + FOOTER_EDIT_X + FOOTER_ICO * 0.5f, s) - hit / 2;
     g_r_app.y      = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
     g_r_app.w      = hit;
     g_r_app.h      = hit;
 
-    g_r_settings.x = rs(FOOTER_X + FOOTER_SET_X, s);
+    g_r_settings.x = rs(FOOTER_X + FOOTER_SET_X + FOOTER_ICO * 0.5f, s) - hit / 2;
     g_r_settings.y = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
     g_r_settings.w = hit;
     g_r_settings.h = hit;
@@ -563,12 +562,10 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     float press = finn_anim_v(&g_a_press);
     float hover = g_hover;
 
-    int wifi_ok  = st->wifi >= 0;
-    int wired_ok = st->wired >= 0;
-    g_conn_wired = (!wifi_ok && wired_ok);
+    int wifi_ok = st->wifi >= 0;
+    int bt_ok   = st->bluetooth >= 0;
 
-    const char *conn_name = g_conn_wired ? "Wired" : "Wi-Fi";
-    const char *labels[2] = { conn_name, "Bluetooth" };
+    const char *labels[2] = { "Wi-Fi", "Bluetooth" };
     const finn_font *lf = fit_all(labels, 2, tile_text_avail(&g_r_wifi, s));
 
     if (g_ic_wifi.n > 0) {
@@ -579,17 +576,15 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
         }
     }
 
-    if (g_conn_wired)
-        status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_wifi, 0,
-                    conn_name,
-                    st->wired ? "Connected" : "No link",
-                    st->wired > 0, lf);
-    else
-        status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_wifi, 0, conn_name,
-                    wifi_ok ? (st->wifi > 0 ? "Connected" : "Off") : "No adapter",
-                    wifi_ok && st->wifi > 0, lf);
+    /* Honest Wi-Fi state: never label it "Wired" with a wifi icon */
+    const char *wifi_detail = "Not available";
+    if (wifi_ok) {
+        wifi_detail = (st->wifi > 0) ? "Connected" : "Off";
+    }
+    status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_wifi, 0, "Wi-Fi",
+                wifi_detail, wifi_ok && st->wifi > 0, lf);
 
-    if (!g_conn_wired && wifi_ok) {
+    if (wifi_ok) {
         if (g_hover_act == FINNCONTROL_WIFI)
             control_wash(g_layer, lw, lh, s, g_r_wifi,
                          FINN_MOTION_HOVER_WASH * hover);
@@ -597,10 +592,14 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
             press_wash(g_layer, lw, lh, s, g_r_wifi, press);
     }
 
-    int bt_ok = st->bluetooth >= 0;
+    /* Honest Bluetooth state */
+    const char *bt_detail = "Not available";
+    if (bt_ok) {
+        bt_detail = (st->bluetooth > 0) ? "On" : "Off";
+    }
     status_tile(g_layer, lw, lh, s, g_r_bt, &g_ic_bt, 0, "Bluetooth",
-                bt_ok ? (st->bluetooth ? "On" : "Off") : "No adapter",
-                bt_ok && st->bluetooth > 0, lf);
+                bt_detail, bt_ok && st->bluetooth > 0, lf);
+
     if (bt_ok) {
         if (g_hover_act == FINNCONTROL_BLUETOOTH)
             control_wash(g_layer, lw, lh, s, g_r_bt,
@@ -629,8 +628,11 @@ void finncontrol_transform(float *x, float *y, float *w, float *h, float *alpha)
     float k = FINN_MOTION_OPEN_SCALE + (1.0f - FINN_MOTION_OPEN_SCALE) * v;
 
     float ax = (float)g_ax, ay = (float)g_ay;
-    if (x) *x = ax + ((float)g_lx0 - ax) * k;
-    if (y) *y = ay + ((float)g_ly0 - ay) * k;
+    float cx = ax + ((float)g_lx0 + (float)g_lw * 0.5f - ax) * k;
+    float cy = ay + ((float)g_ly0 + (float)g_lh * 0.5f - ay) * k;
+
+    if (x) *x = cx - (float)g_lw * k * 0.5f;
+    if (y) *y = cy - (float)g_lh * k * 0.5f;
     if (w) *w = (float)g_lw * k;
     if (h) *h = (float)g_lh * k;
     if (alpha) *alpha = a;
@@ -676,9 +678,9 @@ int finncontrol_hit(int px, int py, float *out01) {
     if (x < 0 || y < 0 || x >= g_lw || y >= g_lh) return FINNCONTROL_NONE;
     if (out01) *out01 = -1.0f;
 
-    if (!g_conn_wired && in_rect(&g_r_wifi, x, y)) return FINNCONTROL_WIFI;
+    if (in_rect(&g_r_wifi, x, y))     return FINNCONTROL_WIFI;
     if (in_rect(&g_r_bt, x, y))       return FINNCONTROL_BLUETOOTH;
-    if (in_rect(&g_r_app, x, y))      return FINNCONTROL_APPEARANCE;
+    /* edit-01 icon does not pretend to work: no hit returned */
     if (in_rect(&g_r_settings, x, y)) return FINNCONTROL_SETTINGS;
     if (in_rect(&g_r_bright, x, y)) {
         if (out01) *out01 = slider_frac(&g_r_bright, x, g_scale);

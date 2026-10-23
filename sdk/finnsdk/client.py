@@ -432,6 +432,20 @@ class FinnClient:
         """Tell the shell the setup has been finished."""
         return self.call("setup.complete")
 
+    # ---- settings app ----
+
+    def settings_page(self, name):
+        """Navigate the Settings app to the named page."""
+        return self.call("settings.page", name=name)
+
+    def settings_get(self):
+        """Read the currently active page in the Settings app."""
+        payload = self.call("settings.get") or ""
+        for token in payload.split():
+            if token.startswith("page="):
+                return token.split("=", 1)[1]
+        return ""
+
 
 def _to_int(raw, absent=-1):
     """A protocol field as an int, or the absent value."""
