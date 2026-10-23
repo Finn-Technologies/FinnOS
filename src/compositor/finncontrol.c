@@ -243,8 +243,14 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, fx, fy, fw, fh,
                      s * FOOTER_R, FINN_GLASS, FINN_GLASS_TILE);
 
+    /*
+     * A machine with no battery has no level to report, so its glyph is an
+     * empty outline rather than a full one: the footer already says "Mains",
+     * and a battery drawn at 100% beside that would be a reading of a thing
+     * the machine does not have.
+     */
     int have_bat = st->battery_pct >= 0;
-    int pct = have_bat ? st->battery_pct : 100;
+    int pct = have_bat ? st->battery_pct : 0;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
@@ -256,7 +262,9 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
     float bat_cx = fx + s * FOOTER_BAT_X + s * (FOOTER_BAT_SZ * 0.5f);
     finn_icon_blit_ink(&g_ic_bat, L, lw, lh,
                        (int)lroundf(bat_cx), (int)lroundf(cy),
-                       rs(FOOTER_BAT_SZ, s), FINN_INK, FINN_INK,
+                       rs(FOOTER_BAT_SZ, s),
+                       have_bat ? FINN_INK : FINN_MUTE,
+                       have_bat ? FINN_INK : FINN_MUTE,
                        4000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u));
 
     char bat_s[32];
