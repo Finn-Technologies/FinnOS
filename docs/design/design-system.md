@@ -25,11 +25,10 @@ FinnOS's shell is four surfaces over a wallpaper:
 | the clock page | the panel that opens from the clock | `finnclock.c` |
 | the Start Menu | the system's front door | `finnmenu.c` |
 
-They are not windows. There is no window manager, so there is nothing to
-be a window, and a surface that pretended otherwise would be a lie with a
-rectangle in it. They are *surfaces*: rasterised into transparent layers
-and composited into the same frame as the wallpaper, so a surface costs a
-blit rather than a round trip over a socket.
+They are not windows. Windows are a separate surface (`finnwindow`), and
+these are *surfaces*: rasterised into transparent layers and composited
+into the same frame as the wallpaper, so a surface costs a blit rather than
+a round trip over a socket.
 
 They share one material (frosted glass), one set of corner radii, one type
 scale and one set of timings. A surface that invented its own would read
@@ -272,33 +271,44 @@ Everything inside it is the Control Center's language.
 
 | | |
 |---|---|
-| a bubble | 65 square |
-| the gap between the dock's parts | 19.5 |
-| the gap from the bottom of the screen | 34 |
-| the pill's padding | 21 |
-| the tray's glyphs | 22 of ink, 23.4 apart |
-| the battery's glyph | 19 of ink — a filled gauge reads heavier than an outline |
-| the clock | 18 of ink, 27 after the tray's glyphs |
-| the inset's margin inside the pill | 9 |
+| island height | 52 (at 1080p canvas) |
+| island corner radius | 16 |
+| gap between islands | 10 |
+| gap from the bottom of the screen | 24 |
+| pill 1: Taskbar padding | 8 |
+| pill 2: Navigation padding | 6 |
+| pill 3: Clock/Weather padding | 12 |
+| pill 4: Status padding | 12 |
+| app chip size | 36 square (r=9) |
+| navigation icon size | 24 |
+| active launcher well | 42 square (r=8) in bone/white |
+| status glyphs | 16–18 |
 
 ### Icons
 
-24-unit SVG, **placed by their ink and not by their viewBox**.
+SVG vector graphics, **placed by their ink and not by their viewBox**.
 
-The assets fill their 24-unit boxes by anything from a third to all of it,
+The assets fill their viewBoxes by anything from a third to all of it,
 so a dock laid out by viewBox puts icons of visibly different weight in
 one row. `finn_icon_frame()` takes the ink size — how many pixels the
 drawing's longer dimension should occupy — and centres the drawing *as
 drawn*, which is not the same as centring its box.
 
 Stroke 1.5, round caps, no fills except where a shape is a shape (the
-volume speaker, the battery's charge bar).
+volume speaker, the battery's charge bar, or full-color chips).
 
-The icons carry two colours in the file: `#969696` for "inactive" and
-black for "active". A single palette maps every icon onto the current
-state's colours, which is why an icon that means two things (the wifi
-arcs, the battery bar) is mutated before it is rasterised and carries its
-own revision in the cache key.
+- **System Glyph Tinting**: Monochromatic system glyphs (`search`, `home`,
+  `windows`, `wifi`, `bluetooth`, `battery`, `volume`, `power`, `refresh`)
+  carry two tones: active ink and inactive muted ink (`#969696`, `#8D8D8D`,
+  `#555555`). They adapt to light and dark appearances dynamically.
+- **Full-Color App Chips**: Multi-color brand chips (`app_files`, `app_arc`,
+  `app_settings`, `avatar`, `sun_weather`) are drawn with `active = 0,
+  inactive = 0` to preserve native SVG fills, paths, and multi-stop
+  gradients without monochrome tint overrides.
+- **Vector Path Constraints**: `finnvg` parses clean cubic Béziers (`M`, `L`,
+  `C`, `Z`) with inline hex fills. Elliptical arc commands (`A`/`a`),
+  `<pattern>`, and `url(#...)` gradient paint servers are normalized to
+  native Bézier curves or direct hex definitions before rasterisation.
 
 ---
 
@@ -306,33 +316,35 @@ own revision in the cache key.
 
 ### The dock
 
-Two bubbles and a pill, centred at the bottom of the screen.
+Four floating frosted islands at the bottom of the screen, with the middle
+navigation island strictly centered horizontally:
 
 ```
-        ┌────┐  ┌────┐  ┌──────────────────────────────┐
-        │ ▦  │  │ ▦  │  │  ◀))  ▮    21:47               │
-        └────┘  └────┘  └──────────────────────────────┘
-         empty   the     the tray: the status block and the clock
-         slot    launcher
+┌──────────────────┐  ┌─────────────┐  ┌────────────────┐  ┌──────────────┐
+│ [⚙] [📁] [🌈] [Win] │  │ [🔍][🏠][⊞]  │  │ 21:47 Thu 23 ☀ │  │  🛜 ᛒ ▮ 100% │
+└──────────────────┘  └─────────────┘  └────────────────┘  └──────────────┘
+    1. Taskbar          2. Centered       3. Clock &          4. Status /
+                          Navigation         Weather             Quick Controls
 ```
 
-- **The first bubble is the reserved slot** for pinned and running apps.
-  This shell can pin and run nothing yet, so the slot is drawn *empty*:
-  its glyph is in `mute` rather than `ink`, and it takes no press wash.
-  A slot that lights up under the finger and then does nothing is a
-  promise the shell cannot keep.
-- **The second bubble is the launcher**, and it opens the Start Menu.
-- **The pill** holds two controls and nothing else: the status block
-  (which opens the Control Center) and the clock (which opens the clock
-  page). The pads either side of them and the gap between them are
-  *surface*, not controls, and take no wash — a hover that appeared under
-  them would be the dock claiming a target it does not have.
-- **The tray carries only what the machine has.** A desktop with no
-  battery gets no battery glyph; a machine with no wireless hardware gets
-  no wifi glyph. This is the adaptive-UI rule at the smallest scale.
-- **The clock is a control, not a label.** It takes a hover wash, and its
-  target reaches halfway into the gap before it, because a control should
-  be easier to hit than the ink it is drawn from.
+- **Pill 1 is the Taskbar**: quick-launch app chips (`settings`, `files`,
+  `arc`) with active running indicator dots underneath, followed by any
+  running application pills showing their icon, truncated title, and close
+  button.
+- **Pill 2 is the Navigation island**: anchored directly to
+  `(screen_w - p2_w) / 2` so it remains precisely centered regardless of the
+  number of running windows. It holds Search, Home (which opens the Start
+  Menu, lighting up with a distinct white/bone well when open), and Window
+  Manager overview.
+- **Pill 3 is the Clock & Weather**: displays current time (`HH:MM`),
+  formatted date, and live weather conditions (sun icon + temperature).
+  Clicking opens the Notification Center / Clock panel.
+- **Pill 4 is the Status island**: displays network connectivity (Wi-Fi/Ethernet),
+  Bluetooth status, and battery percentage (`▮ 100%`). Clicking toggles the
+  Control Center.
+- **The dock adapts when windows maximize**: When a window is maximized or
+  reaches the dock's resting band, the dock sinks flush to the bottom edge
+  and its islands condense smoothly to maximize window canvas.
 
 ### The Control Center
 

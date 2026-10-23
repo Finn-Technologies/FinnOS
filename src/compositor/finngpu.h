@@ -78,7 +78,7 @@ void finngpu_target(finngpu *g, unsigned fbo);   /* 0 selects the screen */
 
 /* Copy the surface just drawn into dst (0xAARRGGBB, g's full size). Call it
  * after the last paste but before the swap: that is the only moment the frame
- * exists on this side of the display. */
-void finngpu_readback(finngpu *g, uint32_t *dst);
+ * exists on this side of the display. Returns 0 on success, -1 on failure. */
+int  finngpu_readback(finngpu *g, uint32_t *dst);
 
 #endif

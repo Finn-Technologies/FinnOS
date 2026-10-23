@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -99,7 +100,16 @@ int finn_write_all(int fd, const void *buf, size_t n) {
         ssize_t w = write(fd, p, n);
         if (w < 0) {
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(200); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Accepted sockets are non-blocking; sleep in poll rather than
+                 * spinning on EAGAIN, and give up if a stalled peer never drains. */
+                struct pollfd pf = { fd, POLLOUT, 0 };
+                int pr = poll(&pf, 1, 2000);
+                if (pr > 0 && !(pf.revents & (POLLERR | POLLHUP | POLLNVAL)))
+                    continue;
+                errno = pr == 0 ? ETIMEDOUT : EPIPE;
+                return -1;
+            }
             return -1;
         }
         p += w;
@@ -112,24 +122,43 @@ int finn_write_str(int fd, const char *s) {
     return finn_write_all(fd, s, strlen(s));
 }
 
-/* Line-oriented read with a short internal retry budget so a slow or partial
- * write from the peer does not spin the caller. */
+/*
+ * One-shot line read: a request and its reply, with a bounded wait. The
+ * caller is not keeping a session, so there is nowhere to put a half-read
+ * line until the rest arrives — and returning one as complete is how a
+ * split request gets run twice (docs/review.md P1.3).
+ *
+ * Returns the length without the newline, 0 on a clean EOF, -1 on error or
+ * on a line that ended without its newline, and -2 when the line did not
+ * fit `cap`: the rest of it has been read through its newline so the
+ * caller may try again, and errno is EMSGSIZE.
+ */
 int finn_read_line(int fd, char *buf, int cap) {
-    int n = 0;
+    if (!buf || cap < 1) { errno = EINVAL; return -1; }
+
+    int n = 0, discarding = 0;
     for (;;) {
         char c;
         ssize_t r = read(fd, &c, 1);
         if (r == 1) {
-            if (c == '\n') { buf[n] = 0; return n; }
+            if (c == '\n') {
+                if (discarding) { buf[0] = 0; errno = EMSGSIZE; return -2; }
+                if (n > 0 && buf[n - 1] == '\r') n--;
+                buf[n] = 0;
+                return n;
+            }
+            if (discarding) continue;
             if (n < cap - 1) buf[n++] = c;
+            else discarding = 1;
             continue;
         }
-        if (r == 0) { buf[n] = 0; return n ? n : 0; }   /* EOF */
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (n) { buf[n] = 0; return n; }            /* partial line, deliver it */
-            return -1;
+        if (r == 0) {                                   /* EOF */
+            buf[0] = 0;
+            if (discarding) { errno = EMSGSIZE; return -2; }
+            if (n > 0) { errno = EPROTO; return -1; }   /* truncated request */
+            return 0;
         }
-        return -1;
+        if (errno == EINTR) continue;
+        return -1;      /* EAGAIN included: nothing pending is not a reply */
     }
 }

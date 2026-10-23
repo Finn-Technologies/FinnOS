@@ -9,8 +9,12 @@ operating system.
 It also means any shell can drive the system:
 
 ```sh
-printf 'state.set battery=42\n' | finnctl
+finnctl state.set battery=42
+finnctl screen.info
 ```
+
+There is no stdin form: `finnctl` takes the verb and its arguments on the
+command line, so a request is one argv and not a parser for two shapes.
 
 ## The wire
 
@@ -42,15 +46,18 @@ notify.post <title>|<body>
 | Path | Owner | Mode |
 |---|---|---|
 | `/run/finn/control.sock` | `finnd` | 0660, root and the `finn` group |
-| `/run/finn/comp.sock` | `finn-comp` | 0660, root and the `finn` group |
+| `/run/finn/comp.sock` | `finn-comp` | 0600, root only |
 
 Both are unix sockets. There is no TCP listener in the system, and there
 will not be one: remote control is an explicit decision by the user, not a
 default.
 
-`finnctl` talks to the control plane and falls back to the compositor
-socket when the control plane is not running. `--direct` forces the
-compositor socket.
+The compositor's socket is a provider, not a second door. `finn-comp`
+checks `SO_PEERCRED` on every connection as well as the file mode.
+`finnctl --direct` talks to it and says on stderr that it is bypassing
+`finnd` and its audit log; it needs root. There is no automatic fallback:
+a device whose control plane is down is unreachable rather than quietly
+unaudited.
 
 ## The verbs
 
@@ -92,24 +99,42 @@ Provided by the compositor, proxied by the control plane.
 | `pointer.by` | `OK` | nudge it: `pointer.by dx=10 dy=-4` |
 | `pointer.click` | `OK` | press and release |
 | `pointer.down` / `pointer.up` | `OK` | hold it down, or let it go |
-| `pointer.scroll` | `OK` | reserved; there is nothing to scroll yet |
+| `pointer.scroll` | `ERR` | not implemented; scrollable content does not exist yet |
 
 A click is an edge the shell can see, so an injected click is pressed now
 and released after the shell has handled it.
+
+### Keyboard
+
+The compositor reads evdev directly. These verbs inject into the same
+event path, so a test can drive setup and the shell exactly as a keyboard
+would. They do not deliver text to an application: there is no focused
+client surface yet.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `key.press` | `OK` | hold a key: `key.press code=enter` |
+| `key.release` | `OK` | let it go: `key.release code=enter` |
+| `key.tap` | `OK` | press and release |
+
+The names are the US layout's (`a`, `f1`, `leftshift`, `enter`, `esc`,
+`super`, …). An unknown name is `ERR unknown key '<name>'`, not a silent
+no-op.
 
 ### The machine
 
 | Verb | Reply | What it does |
 |---|---|---|
 | `sound.get` | `OK volume=… element=…` | the output level and the mixer it is on |
-| `sound.set` | `OK` | set the output level for real |
+| `sound.set` | `OK` / `ERR hardware unavailable` | set the output level for real; a machine with no mixer refuses |
 | `display.get` | `OK brightness=…` | the backlight |
-| `display.set` | `OK` | set the backlight for real |
-| `radio.set` | `OK` | `radio.set wifi=1 bluetooth=0` |
-| `appearance.set` | `OK` | `appearance.set dark=1` |
+| `display.set` | `OK` / `ERR hardware unavailable` | set the backlight for real |
+| `radio.set` | `OK` / `ERR hardware unavailable` | `radio.set wifi=1 bluetooth=0`; a missing adapter refuses |
+| `appearance.set` | `OK` / `ERR could not save the appearance` | `appearance.set dark=1`; the value is durable |
 
 These do not write an override — they change the machine. That is the
-difference between "show me 40%" and "be 40%".
+difference between "show me 40%" and "be 40%". Each reports the actuator's
+own result, so a control cannot light up on a machine that cannot act.
 
 ### Notifications
 
@@ -128,9 +153,15 @@ start, so the page can say "nothing has happened" and mean it.
 
 | Verb | Reply | What it does |
 |---|---|---|
-| `power shutdown` | `OK` | power the machine off |
-| `power restart` | `OK` | reboot it |
-| `power restart-comp` | `OK` | restart the compositor only |
+| `power reboot` | `OK` | restart the machine |
+| `power restart` | `OK` | restart the machine (the same operation as reboot) |
+| `power shutdown` / `poweroff` | `OK` | power the machine off |
+
+The word is a closed set: anything else, or no word at all, is an `ERR`
+and changes nothing. The reply is sent after `systemctl` has run, so it
+says what happened rather than what was intended. There is no verb that
+restarts only the compositor: a session that needs restarting is a failed
+session, and systemd's `Restart=on-failure` is the recovery path.
 
 ### Applications
 
@@ -155,7 +186,7 @@ Provided by the compositor (`finnwindow`), proxied by the control plane.
 | Verb | Reply | What it does |
 |---|---|---|
 | `window.list` | `OK count=… [id\|app\|state\|title]…` | list open windows and their state (`normal`, `minimized`, `maximized`) |
-| `window.open [app=<id>\|title=<title>]` | `OK id=…` | open an empty window or an app window |
+| `window.open [app=<id>\|title=<title>]` | `OK id=…` / `ERR window limit reached (8)` | open an empty window or an app window; the ninth is refused, never evicted |
 | `window.close [id=<id>]` | `OK` | close the window (or the top visible window when `id` is omitted) |
 | `window.focus [id=<id>]` | `OK` | unminimize and raise the window to the front |
 | `window.minimize [id=<id>]` | `OK` | toggle the window's minimized state |
@@ -170,7 +201,12 @@ Provided by the compositor (`finnsetup`), proxied by the control plane.
 |---|---|---|
 | `setup.get` | `OK active=… done=… lang=…` | read whether the setup screen is active, completed, and its selected language |
 | `setup.show` | `OK` | show the first-boot setup screen |
-| `setup.complete` | `OK` | mark setup complete (`/var/lib/finn/setup-done`) and dismiss the setup screen |
+| `setup.complete` | `OK` / `ERR could not save the setup` | write the marker atomically and dismiss the screen; a failed write keeps it open |
+
+The marker's absence means the screen opens: a fresh install cannot skip
+setup by accident. `setup.show` reopens it, and `FINN_SETUP_SKIP=1` is the
+positive development escape. The language control is a display-name choice
+only — there is no locale or keymap consumer yet.
 
 ## The shape of a session
 
@@ -197,6 +233,9 @@ to a unix socket only, authenticated per connection with `SO_PEERCRED`, and
 audited. It is run under systemd hardening, and the audit log is at
 `/var/log/finn/control.log`.
 
-There is one development escape hatch, `FINN_CONTROL_ALLOW_ANY`, which
-lets any uid connect. It is off unless it is asked for, and it exists for
-the test harness and nothing else.
+There is one development escape hatch, `FINN_CONTROL_ALLOW_ANY=1`, which
+lets any uid connect. It is off unless the value is exactly `1` — a
+variable that is merely present must not open the plane — and it exists for
+the test harness and nothing else. The compositor's own socket is `0600`
+root-only and checks `SO_PEERCRED`, so it is not a way around the audit
+log.

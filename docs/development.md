@@ -83,9 +83,11 @@ make test
 
 The suite covers the parts that can be tested without a display: the
 application registry, the control protocol, the `.fui` compiler and the
-SDK's client library. The compositor itself is tested by looking at it —
-there is no window manager yet, so there is nothing to assert a frame
-against.
+SDK's client library. `make test-c` adds the C tests that need a compiler
+but no device: the line framing and the settings store, under ASan and
+UBSan. The compositor itself is still tested by looking at it — there is
+no client surface to assert a frame against, so a visual change needs a
+capture.
 
 ## Style
 

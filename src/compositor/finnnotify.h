@@ -17,7 +17,8 @@
  * service (notify.post). The queue does not care who wrote it.
  */
 
-#define FINN_NOTIFY_MAX 8
+/* Queue depth matches the 4 slots drawn by finnclock.c (NOTE_SLOTS) */
+#define FINN_NOTIFY_MAX 4
 
 typedef struct {
     char   title[64];

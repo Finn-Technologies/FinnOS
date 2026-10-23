@@ -6,12 +6,15 @@
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnvg.h"
+#include "finnsettings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <webp/decode.h>
 
@@ -42,8 +45,20 @@ static const char *const g_langs[] = {
     "Español",
     "Français"
 };
+/* The stable identifier for a language, for the store and the marker. The
+ * display names above may be translated later; these may not change. */
+static const char *const g_lang_codes[] = {
+    "en-GB", "en-US", "fi", "de", "es", "fr"
+};
 #define N_LANGS ((int)(sizeof g_langs / sizeof g_langs[0]))
 static int g_lang_idx = 0;
+
+/* Keyboard focus: language, accessibility, start. */
+static const int g_focus_acts[] = {
+    FINNSETUP_LANGUAGE, FINNSETUP_ACCESSIBILITY, FINNSETUP_START
+};
+#define N_FOCUS ((int)(sizeof g_focus_acts / sizeof g_focus_acts[0]))
+static int g_focus = 0;
 
 static fsvg g_ic_start, g_ic_lang, g_ic_acc, g_ic_chev_down, g_ic_chev_right;
 static int  g_ready = 0;
@@ -62,7 +77,9 @@ static int       g_hero_cw = 0, g_hero_ch = 0, g_hero_cr = 0;
 static uint32_t *g_layer = NULL;
 static int g_lw = 0, g_lh = 0;
 static int g_open = 0;
-static int g_completed = 1;
+/* Not completed until a marker says so: before finnsetup_init has looked,
+ * "done" would be a claim nobody has made. */
+static int g_completed = 0;
 static float g_scale = 1.0f;
 
 static uint32_t g_build_key = 0;
@@ -77,6 +94,7 @@ static finn_anim g_a_hover, g_a_press;
 static float     g_hover = 0.0f;
 static int       g_hover_act = FINNSETUP_NONE;
 static int       g_press_act = FINNSETUP_NONE;
+static int       g_last_px = -1, g_last_py = -1;
 
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
@@ -198,6 +216,98 @@ static void ensure_hero_card(int cw, int ch, int cr) {
     }
 }
 
+/* A marker from an older build holds the display name; one from this build
+ * holds the stable code. Both name the same choice, so accept either. */
+static int lang_index(const char *name) {
+    for (int i = 0; i < N_LANGS; i++)
+        if (!strcmp(name, g_langs[i]) || !strcmp(name, g_lang_codes[i])) return i;
+    return -1;
+}
+
+static void read_marker_lang(void) {
+    char code[32];
+    if (finn_settings_get("lang", code, sizeof code) == 0) {
+        int i = lang_index(code);
+        if (i >= 0) { g_lang_idx = i; return; }
+    }
+    FILE *f = fopen(FINN_SETUP_DONE_PATH, "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        if (strncmp(line, "lang=", 5)) continue;
+        int i = lang_index(line + 5);
+        if (i >= 0) g_lang_idx = i;
+        break;
+    }
+    fclose(f);
+}
+
+/*
+ * Writes the completion marker the way the settings store writes: a temporary
+ * file beside it, flushed and renamed. The marker is the thing a later boot
+ * trusts, so it either exists complete or not at all.
+ */
+static int write_marker(void) {
+    const char *dir = "/var/lib/finn";
+    mkdir(dir, 0755);
+
+    char tmp[256];
+    int len = snprintf(tmp, sizeof tmp, "%s/.setup-done.XXXXXX", dir);
+    if (len < 0 || (size_t)len >= sizeof tmp) return -1;
+
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    fchmod(fd, 0644);
+
+    char line[128];
+    len = snprintf(line, sizeof line, "lang=%s\n", g_lang_codes[g_lang_idx]);
+    int ok = 1;
+    for (int off = 0; ok && off < len; ) {
+        ssize_t w = write(fd, line + off, (size_t)(len - off));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            ok = 0;
+        } else if (w == 0) {
+            ok = 0;
+        } else {
+            off += (int)w;
+        }
+    }
+    if (ok && fsync(fd) != 0) ok = 0;
+    if (close(fd) != 0) ok = 0;
+
+    if (!ok || rename(tmp, FINN_SETUP_DONE_PATH) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+
+    /* The rename is already done; this only makes it survive a power cut. */
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) {
+        fsync(dfd);
+        close(dfd);
+    }
+    return 0;
+}
+
+/* Keyboard focus and pointer hover are one state: whichever is most recent
+ * decides, and both drive the same wash. */
+static void focus_apply(void) {
+    int act = g_focus_acts[g_focus];
+    if (act != g_hover_act) {
+        g_hover_act = act;
+        finn_anim_to(&g_a_hover, 1.0f, FINN_MOTION_HOVER_IN, 0.0f, FINN_EASE_OUT);
+    }
+    g_built = 0;
+}
+
+static void focus_from_act(int act) {
+    for (int i = 0; i < N_FOCUS; i++)
+        if (g_focus_acts[i] == act) { g_focus = i; return; }
+}
+
 int finnsetup_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir ? font_dir : "");
 
@@ -212,22 +322,45 @@ int finnsetup_init(const char *icon_dir, const char *font_dir) {
     if (!ok) fprintf(stderr, "finnsetup: icon set incomplete in %s\n", icon_dir);
     load_hero_webp();
 
-    /* Check whether setup has been completed on this machine */
+    /* Init starts from the default choice and the first control; only the
+     * marker or the user moves either. */
+    g_lang_idx = 0;
+    g_focus = 0;
+
+    /*
+     * The marker is the only proof that setup ran. Missing means open, which
+     * is what a fresh install is. Both escapes are opt-in and exact, because
+     * a mistyped or inherited variable must not decide whether a machine is
+     * ever configured.
+     */
     const char *force = getenv("FINN_SETUP_FORCE");
-    if (force && strcmp(force, "1") == 0) {
+    const char *skip  = getenv("FINN_SETUP_SKIP");
+    int marked = access(FINN_SETUP_DONE_PATH, F_OK) == 0;
+
+    if (force && !strcmp(force, "1")) {
         g_completed = 0;
         g_open = 1;
         finn_anim_jump(&g_a_open, 1.0f);
-    } else if (access(FINN_SETUP_DONE_PATH, F_OK) == 0) {
+        if (marked) read_marker_lang();
+    } else if (skip && !strcmp(skip, "1") && !marked) {
+        /* Development escape: the screen stays shut and the marker stays
+         * absent, so setup.get still says this machine was never completed. */
+        g_completed = 0;
+        g_open = 0;
+        finn_anim_jump(&g_a_open, 0.0f);
+    } else if (marked) {
         g_completed = 1;
         g_open = 0;
         finn_anim_jump(&g_a_open, 0.0f);
+        read_marker_lang();
     } else {
-        /* Mark setup-done on existing dev installs by default unless requested */
-        g_completed = 1;
-        g_open = 0;
-        finn_anim_jump(&g_a_open, 0.0f);
+        g_completed = 0;
+        g_open = 1;
+        finn_anim_jump(&g_a_open, 1.0f);
     }
+
+    /* Keyboard users see the initial control focused immediately on launch. */
+    if (g_open) focus_apply();
 
     g_ready = ok;
     return ok ? 0 : -1;
@@ -248,6 +381,7 @@ void finnsetup_free(void) {
     g_lw = g_lh = 0;
     g_built = 0;
     g_font_scale = -1.0f;
+    g_last_px = g_last_py = -1;
     g_ready = 0;
 }
 
@@ -258,6 +392,7 @@ void finnsetup_set_open(int open) {
     g_built = 0;
     if (open) {
         g_completed = 0;
+        focus_apply();
         finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT);
     } else {
         finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
@@ -267,15 +402,19 @@ void finnsetup_set_open(int open) {
 int finnsetup_is_open(void) { return g_open; }
 int finnsetup_is_completed(void) { return g_completed; }
 
-void finnsetup_complete(void) {
+/*
+ * Setup counts as complete only once the machine can prove it after a reboot:
+ * the language in the store, then the marker. The marker is written last
+ * because it is the completion gate — a settings write that failed must not
+ * leave a marker that says setup finished.
+ */
+int finnsetup_complete(void) {
+    if (finn_settings_set("lang", g_lang_codes[g_lang_idx]) != 0) return -1;
+    if (write_marker() != 0) return -1;
+
     g_completed = 1;
-    mkdir("/var/lib/finn", 0755);
-    FILE *f = fopen(FINN_SETUP_DONE_PATH, "w");
-    if (f) {
-        fprintf(f, "lang=%s\n", g_langs[g_lang_idx]);
-        fclose(f);
-    }
     finnsetup_set_open(0);
+    return 0;
 }
 
 void finnsetup_cycle_language(void) {
@@ -285,6 +424,41 @@ void finnsetup_cycle_language(void) {
 
 const char *finnsetup_language(void) {
     return g_langs[g_lang_idx];
+}
+
+const char *finnsetup_language_code(void) {
+    return g_lang_codes[g_lang_idx];
+}
+
+void finnsetup_focus_next(int dir) {
+    g_focus = (g_focus + (dir < 0 ? N_FOCUS - 1 : 1)) % N_FOCUS;
+    focus_apply();
+}
+
+int finnsetup_focus_index(void) {
+    return g_focus;
+}
+
+int finnsetup_activate(void) {
+    if (!g_open) return FINNSETUP_NONE;
+
+    int act = g_focus_acts[g_focus];
+    if (act == FINNSETUP_LANGUAGE) {
+        finnsetup_cycle_language();
+        return FINNSETUP_LANGUAGE;
+    }
+    if (act == FINNSETUP_ACCESSIBILITY) {
+        finn_state st;
+        finn_state_read(&st);
+        finn_state_set_dark(!st.dark);
+        g_built = 0;
+        return FINNSETUP_ACCESSIBILITY;
+    }
+
+    /* START reports even when the write failed: the compositor replies ERR
+     * with what setup.get says rather than being told a smaller story here. */
+    finnsetup_complete();
+    return FINNSETUP_START;
 }
 
 int finnsetup_visible(void) {
@@ -319,8 +493,15 @@ int finnsetup_hit(int px, int py) {
 }
 
 void finnsetup_hover_at(int px, int py) {
+    /* If the pointer has not moved, a stationary cursor must not clobber
+     * keyboard focus wash when the frame loop polls hover every tick. */
+    if (px == g_last_px && py == g_last_py) return;
+    g_last_px = px;
+    g_last_py = py;
+
     int act = finnsetup_hit(px, py);
     if (act == FINNSETUP_PANEL) act = FINNSETUP_NONE;
+    if (act != FINNSETUP_NONE) focus_from_act(act);
     if (act == g_hover_act) return;
     g_hover_act = act;
     g_built = 0;

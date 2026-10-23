@@ -191,7 +191,7 @@ def main(argv=None):
     p.add_argument("--clear", action="store_true")
     p.set_defaults(func=cmd_notify)
 
-    p = sub.add_parser("power", help="shutdown, restart, restart-comp")
+    p = sub.add_parser("power", help="shut down or restart the machine")
     p.add_argument("what", nargs="?", default="restart")
     p.set_defaults(func=cmd_power)
 

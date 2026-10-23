@@ -15,7 +15,7 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 VM      ?= finn@10.211.55.6
 
-.PHONY: all core compositor control tools test check lint install clean deploy \
+.PHONY: all core compositor control tools test test-c check lint install clean deploy \
         docs help
 
 all: core compositor control tools
@@ -37,7 +37,12 @@ tools:
 test:
 	$(MAKE) -C tests
 
-check: test
+# The C tests need the compiler but no device: framing and the settings
+# store are exercised against a socket pair and a temporary directory.
+test-c:
+	$(MAKE) -C tests/c run
+
+check: test test-c
 
 lint:
 	@scripts/lint.sh
@@ -45,6 +50,20 @@ lint:
 install: all
 	$(MAKE) -C src/compositor install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/control install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m755 src/pkg/finnpkg $(DESTDIR)$(PREFIX)/bin/finnpkg
+	install -d $(DESTDIR)/usr/share/finn
+	install -m644 assets/apps.registry $(DESTDIR)/usr/share/finn/apps.registry
+	install -d $(DESTDIR)/usr/share/finn/icons
+	@if [ -d assets/icons/shell ]; then \
+		install -m644 assets/icons/shell/*.svg $(DESTDIR)/usr/share/finn/icons/; \
+	else \
+		install -m644 src/compositor/icons/*.svg $(DESTDIR)/usr/share/finn/icons/; \
+	fi
+	install -d $(DESTDIR)/usr/share/finn/wallpaper
+	install -m644 assets/wallpaper/default.webp assets/wallpaper/setup.webp $(DESTDIR)/usr/share/finn/wallpaper/
+	install -d $(DESTDIR)/usr/share/fonts/OTF
+	install -m644 assets/fonts/FixelDisplay/*.otf $(DESTDIR)/usr/share/fonts/OTF/
 
 # Build on the dev VM, install there and restart the compositor. The VM is
 # the only machine with the DRM headers and a real display, so it is where
@@ -54,8 +73,9 @@ deploy:
 
 clean:
 	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done
+	@$(MAKE) -C tests/c clean
 	@rm -rf tests/__pycache__ sdk/finnsdk/__pycache__ sdk/finnsdk/fuic/__pycache__
 
 help:
-	@echo "targets: all test lint install deploy clean"
+	@echo "targets: all test test-c lint install deploy clean"
 	@echo "         core compositor control tools"

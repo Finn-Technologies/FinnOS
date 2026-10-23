@@ -15,8 +15,8 @@ LDLIBS  += $(shell pkg-config --libs $(PKGS))
 
 CORE     = ../core/libfinncore.a
 
-HDRS     = ../core/finnapps.h ../core/finnproto.h ../core/finnsock.h \
-           ../core/finnstate.h
+HDRS     = ../core/finnapps.h ../core/finnconn.h ../core/finnproto.h \
+           ../core/finnsock.h ../core/finnstate.h
 
 all: finnd finnctl finn-window
 
@@ -36,6 +36,9 @@ install: all
 	install -Dm755 finnd       $(DESTDIR)$(BINDIR)/finnd
 	install -Dm755 finnctl     $(DESTDIR)$(BINDIR)/finnctl
 	install -Dm755 finn-window $(DESTDIR)$(BINDIR)/finn-window
+	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-settings
+	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-files
+	ln -sf finn-window $(DESTDIR)$(BINDIR)/arc
 
 clean:
 	rm -f finnd finnctl finn-window

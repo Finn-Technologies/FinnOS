@@ -14,9 +14,6 @@
 #include <math.h>
 #include <time.h>
 
-#define PAGE_GLASS       0.70f
-#define PAGE_TILE_GLASS  0.50f
-
 /*
  * Metrics authored for the 1080p canvas, scaled from Figma 13:31 & 13:129
  * (1280x832 reference units * 1.298077):
@@ -33,8 +30,8 @@
 #define PAGE_W        338.0f   /* reference 260 */
 #define PAGE_H        338.0f   /* reference 260 */
 #define PAGE_PAD       18.2f   /* reference 14 */
-#define PAGE_R         19.5f   /* reference 15 */
-#define TILE_R         15.6f   /* reference 12 */
+#define PAGE_R        (8.0f * 1.298077f)   /* reference 8 */
+#define TILE_R        (4.14f * 1.298077f)  /* reference 4.14 */
 
 #define HEAD_BASELINE  41.5f   /* reference 32 (14 + 18) */
 #define DATE_X         88.3f   /* reference 68 */
@@ -46,7 +43,7 @@
 
 #define BADGE_INSET     7.8f   /* reference 6 */
 #define BADGE_SIZE     31.2f   /* reference 24 */
-#define BADGE_R         7.8f   /* reference 6 */
+#define BADGE_R       (4.14f * 1.298077f)  /* reference 4.14 */
 #define BADGE_GLYPH    18.0f   /* reference 14 */
 #define NOTE_TEXT_X    46.7f   /* reference 36 */
 
@@ -237,7 +234,7 @@ static void fit_str(const finn_font *f, const char *s, float max_w,
 static void tile(uint32_t *L, int lw, int lh, float s, clk_rect r) {
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
                      (float)r.x, (float)r.y, (float)r.w, (float)r.h,
-                     s * TILE_R, FINN_GLASS, PAGE_TILE_GLASS);
+                     s * TILE_R, FINN_GLASS, FINN_GLASS_TILE);
 }
 
 /* ---------------- layout + render ---------------- */
@@ -321,7 +318,7 @@ void finnclock_render(int screen_w, int screen_h, float scale,
     int lw = pw, lh = ph;
 
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, 0.0f, 0.0f,
-                     (float)pw, (float)ph, s * PAGE_R, FINN_GLASS, PAGE_GLASS);
+                     (float)pw, (float)ph, s * PAGE_R, FINN_GLASS, FINN_GLASS_PANEL);
 
     int x0 = rs(PAGE_PAD, s);
     int full = pw - 2 * x0;
@@ -395,7 +392,7 @@ void finnclock_render(int screen_w, int screen_h, float scale,
 
             float p = (i == 0) ? g_note : 1.0f;
             if (p < 0.999f) {
-                float mix = PAGE_GLASS + (PAGE_TILE_GLASS - PAGE_GLASS) * p;
+                float mix = FINN_GLASS_PANEL + (FINN_GLASS_TILE - FINN_GLASS_PANEL) * p;
                 finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
                                  (float)rn.x, (float)rn.y, (float)rn.w, (float)rn.h,
                                  s * TILE_R, FINN_GLASS, mix);
@@ -448,7 +445,7 @@ void finnclock_render(int screen_w, int screen_h, float scale,
         float crad = (float)ch * 0.5f;
         finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
                          (float)cx, (float)cy, (float)cw, (float)ch,
-                         crad, FINN_GLASS, PAGE_TILE_GLASS);
+                         crad, FINN_GLASS, FINN_GLASS_TILE);
 
         if (g_hover > 0.004f) {
             finn_fill_rrect(L, lw, lh, (float)cx, (float)cy,

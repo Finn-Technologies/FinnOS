@@ -54,6 +54,8 @@ finn-mcp -> finn@10.211.55.6
 |---|---|---|
 | `FINN_HOST` | `finn@10.211.55.6` | ssh target for the device |
 | `FINN_SSH_PORT` | `22` | ssh port |
+| `FINN_SSH_STRICT` | `accept-new` | host-key checking: `accept-new`, `yes`, or `no` |
+| `FINN_SSH_KNOWN_HOSTS` | the user's file | the known_hosts file to pin against |
 | `FINN_TIMEOUT` | `120` | per-call timeout, seconds |
 
 ## Tools

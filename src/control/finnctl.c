@@ -8,8 +8,11 @@
  *   finnctl log 20
  *
  * Speaks the line protocol from finnproto.h to /run/finn/control.sock
- * (finnd), falling back to /run/finn/comp.sock when the control plane is
- * not running. `--direct` forces the compositor socket.
+ * (finnd), and to nothing else. There is no automatic fallback: the
+ * compositor's socket is the provider underneath the control plane, not a
+ * second door, and a device whose control plane is down is unreachable
+ * rather than quietly unaudited. `--direct` is an explicit development
+ * flag.
  *
  * This is also the transport finn-mcp uses, so every verb is scriptable
  * with nothing but ssh and this binary.
@@ -19,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <fcntl.h>
 
 #include "finnproto.h"
@@ -40,11 +44,16 @@ static void usage(void) {
             "       window.list window.open window.close window.focus\n"
             "       window.minimize window.maximize window.move\n"
             "       setup.get setup.show setup.complete\n"
+            "       key.press key.release key.tap\n"
             "\n"
             "  notify.post takes one argument: '<title>|<body>'\n"
             "  app.launch takes the app's id: 'finnctl app.launch notes'\n"
+            "  power takes one word: reboot, restart, shutdown or poweroff\n"
             "\n"
-            "  --direct   talk to the compositor socket, bypassing finnd\n"
+            "  --direct   development and diagnosis only: talk to the\n"
+            "             compositor socket directly. This bypasses finnd\n"
+            "             and its audit log, and needs root, because the\n"
+            "             compositor's socket is 0600.\n"
             "  -o FILE    write a binary reply (screen.capture) to FILE\n"
             "             use -o - for stdout\n");
 }
@@ -64,13 +73,14 @@ static int cmd_log(int lines) {
 
 int main(int argc, char **argv) {
     const char *sock = FINN_CONTROL_SOCK;
+    int direct = 0;
     const char *outfile = NULL;
     const char *pos[64];
     int npos = 0;
 
     /* options may appear before or after the verb */
     for (int k = 1; k < argc; k++) {
-        if (!strcmp(argv[k], "--direct")) { sock = FINN_COMP_SOCK; continue; }
+        if (!strcmp(argv[k], "--direct")) { direct = 1; continue; }
         if (!strcmp(argv[k], "-o")) {
             if (k + 1 >= argc) { usage(); return 2; }
             outfile = argv[++k];
@@ -98,18 +108,23 @@ int main(int argc, char **argv) {
     line[n++] = '\n';
     line[n] = 0;
 
-    int fd = finn_connect(sock);
-    if (fd < 0 && !strcmp(sock, FINN_CONTROL_SOCK)) {
-        fprintf(stderr, "finnctl: %s unavailable, trying %s\n", sock, FINN_COMP_SOCK);
-        fd = finn_connect(FINN_COMP_SOCK);
+    if (direct) {
+        sock = FINN_COMP_SOCK;
+        fprintf(stderr, "finnctl: talking to the compositor directly: this bypasses finnd and its audit log\n");
     }
-    if (fd < 0) { fprintf(stderr, "finnctl: no control socket\n"); return 1; }
+
+    int fd = finn_connect(sock);
+    if (fd < 0) {
+        fprintf(stderr, "finnctl: %s unavailable: %s\n", sock, strerror(errno));
+        return 1;
+    }
 
     if (finn_write_all(fd, line, (size_t)n) != 0) { fprintf(stderr, "finnctl: write failed\n"); close(fd); return 1; }
 
     char reply[FINN_MAX_LINE];
     int r = finn_read_line(fd, reply, sizeof reply);
-    if (r < 0) { fprintf(stderr, "finnctl: no reply\n"); close(fd); return 1; }
+    if (r == -2) { fprintf(stderr, "finnctl: reply too long\n"); close(fd); return 1; }
+    if (r <= 0) { fprintf(stderr, "finnctl: no reply\n"); close(fd); return 1; }
 
     if (strncmp(reply, "ERR", 3) == 0) { fprintf(stderr, "%s\n", reply); close(fd); return 1; }
 

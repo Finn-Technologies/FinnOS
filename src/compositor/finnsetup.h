@@ -13,6 +13,19 @@
  *
  * Works identically on the software path (finnsetup_blit_scaled) and the
  * GPU quad path (finnsetup_layer + finnsetup_transform).
+ *
+ * The marker is the completion gate: /var/lib/finn/setup-done exists only
+ * once setup has been completed and written atomically. Its absence means
+ * setup is open, never "completed". Two environment variables are the
+ * development escapes, and both must be exactly "1":
+ *   FINN_SETUP_SKIP=1   do not open setup at boot (it stays incomplete)
+ *   FINN_SETUP_FORCE=1  show setup even where the marker exists
+ *
+ * The language control picks a display name only. There is no locale or
+ * keymap consumer yet, so choosing Suomi changes this screen's label and
+ * records the choice; it does not localise the shell. The circle button
+ * bearing the accessibility icon toggles the dark appearance (st.dark);
+ * there is no separate accessibility or reduced-motion subsystem yet.
  */
 
 #define FINN_SETUP_DONE_PATH "/var/lib/finn/setup-done"
@@ -32,9 +45,24 @@ void finnsetup_free(void);
 void finnsetup_set_open(int open);
 int  finnsetup_is_open(void);
 int  finnsetup_is_completed(void);
-void finnsetup_complete(void);
+
+/*
+ * Writes the marker atomically and records the language. Returns 0 when the
+ * machine now remembers that setup is done, and -1 when it does not — the
+ * caller reports that rather than pretending the setup finished.
+ */
+int  finnsetup_complete(void);
+
 void finnsetup_cycle_language(void);
 const char *finnsetup_language(void);
+
+/* en-GB, en-US, fi, de, es, fr — the stored choice, not a locale. */
+const char *finnsetup_language_code(void);
+
+/* Keyboard focus over language, accessibility, start. */
+void finnsetup_focus_next(int dir);   /* +1 forward, -1 back, wrapping */
+int  finnsetup_activate(void);         /* act on focus; 0 when there is none */
+int  finnsetup_focus_index(void);      /* 0..2, for tests and debug */
 
 /* Visual & animation state */
 int  finnsetup_visible(void);

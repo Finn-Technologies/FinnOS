@@ -3,6 +3,8 @@
 The adapter is one file with no dependencies, and it runs on the host,
 not on the device. These tests load it, check the tool list, and drive
 the application, window and setup tools against a stub instead of a device.
+The transport tests go one layer down: they look at the ssh argv that
+would be run, because that is where an argument can become a command.
 """
 
 import importlib.machinery
@@ -10,7 +12,12 @@ import importlib.util
 import json
 import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
+import types
 import unittest
 
 # The tests share a helper module, and the SDK is not installed when
@@ -302,6 +309,141 @@ class SetupToolsTest(unittest.TestCase):
         _text, is_error = self.adapter.tool_setup_complete({})
         self.assertFalse(is_error)
         self.assertEqual(self.calls, [["setup.complete"]])
+
+
+class TransportTest(unittest.TestCase):
+    """The ssh call itself: what argv is run, and how it is quoted.
+
+    The transport is stubbed rather than replaced: `_run` still builds the
+    argv, still retries and still decodes, but `subprocess.run` is a stub
+    that records the call instead of dialling the device.
+    """
+
+    class Result(object):
+        def __init__(self, stdout=b"", stderr=b"", returncode=0):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+
+    def setUp(self):
+        self.adapter = load_adapter()
+        self.argv = []
+        recorded = self.argv
+        result = self.Result
+
+        class Transport(object):
+            @staticmethod
+            def run(cmd, **_kwargs):
+                recorded.append(list(cmd))
+                return result()
+
+        self.original_subprocess = self.adapter.subprocess
+        self.adapter.subprocess = Transport
+        self.addCleanup(setattr, self.adapter, "subprocess", self.original_subprocess)
+
+    def set_env(self, **values):
+        """Set environment for one test, and put it back afterwards."""
+        saved = {key: os.environ.get(key) for key in values}
+
+        def restore():
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+        os.environ.update(values)
+
+    def remote(self):
+        """The one command string handed to ssh after the host."""
+        return self.argv[-1][-1]
+
+    # ------------------------------------------------------------ quoting
+
+    def test_the_remote_command_is_one_argv_element(self):
+        self.adapter.ctl("state.set", "battery=42")
+        argv = self.argv[-1]
+        self.assertEqual(argv[-2], self.adapter.HOST)
+        self.assertEqual(argv[-1], "finnctl state.set battery=42")
+
+    def test_an_argument_with_metacharacters_is_one_quoted_word(self):
+        payload = "x; reboot $(id) 'single' \"double\" `id` & | > note"
+        _text, is_error = self.adapter.tool_window_open(
+            {"app": "notes", "title": payload})
+        self.assertFalse(is_error)
+
+        # shlex.split is the same grammar the remote login shell uses, so
+        # this is the whole command the far side will parse: four words,
+        # with the payload inside the last one.
+        self.assertEqual(
+            shlex.split(self.remote()),
+            ["finnctl", "window.open", "app=notes", "title=" + payload])
+
+    def test_the_remote_shell_runs_finnctl_and_nothing_else(self):
+        payload = "x; touch pwned $(touch pwned) 'q'"
+        _text, is_error = self.adapter.tool_window_open({"title": payload})
+        self.assertFalse(is_error)
+
+        binder = tempfile.mkdtemp(prefix="finn-mcp-bin-")
+        self.addCleanup(shutil.rmtree, binder, True)
+        stub = os.path.join(binder, "finnctl")
+        with open(stub, "w", encoding="utf-8") as handle:
+            handle.write('#!/bin/sh\n'
+                         'for arg in "$@"; do printf "%s\\n" "$arg"; done\n')
+        os.chmod(stub, 0o755)
+
+        env = dict(os.environ)
+        env["PATH"] = binder + os.pathsep + env.get("PATH", "")
+        result = subprocess.run(["/bin/sh", "-c", self.remote()],
+                                cwd=binder, env=env,
+                                capture_output=True, universal_newlines=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["window.open", "title=" + payload])
+        self.assertFalse(os.path.exists(os.path.join(binder, "pwned")))
+
+    def test_the_shell_join_fallback_is_the_same_quoting(self):
+        words = ["finnctl", "window.open", "title=x; reboot $(id) 'q'"]
+        expected = " ".join(shlex.quote(word) for word in words)
+
+        # 3.8+ hosts use shlex.join; 3.6/3.7 hosts take the fallback. The
+        # shim hides `join` without touching the real shlex module.
+        original = self.adapter.shlex
+        self.adapter.shlex = types.SimpleNamespace(quote=original.quote)
+        self.addCleanup(setattr, self.adapter, "shlex", original)
+
+        self.assertEqual(self.adapter._shell_join(words), expected)
+        self.assertEqual(shlex.split(expected), words)
+
+    # ----------------------------------------------------------- host key
+
+    def test_the_ssh_argv_checks_the_host_key(self):
+        self.adapter.ctl("ping")
+        argv = self.argv[-1]
+        joined = " ".join(argv)
+        self.assertNotIn("StrictHostKeyChecking=no", joined)
+        self.assertNotIn("/dev/null", joined)
+        self.assertIn("StrictHostKeyChecking=accept-new", argv)
+        self.assertIn("BatchMode=yes", argv)
+        # No UserKnownHostsFile option means ssh uses the user's own file.
+        self.assertNotIn("UserKnownHostsFile", joined)
+
+    def test_a_known_hosts_file_may_be_named(self):
+        self.set_env(FINN_SSH_KNOWN_HOSTS="/tmp/finn-known-hosts")
+        self.adapter.ctl("ping")
+        self.assertIn("UserKnownHostsFile=/tmp/finn-known-hosts", self.argv[-1])
+
+    def test_strict_checking_may_be_asked_for(self):
+        self.set_env(FINN_SSH_STRICT="yes")
+        self.adapter.ctl("ping")
+        self.assertIn("StrictHostKeyChecking=yes", self.argv[-1])
+
+    def test_checking_may_be_turned_off_only_on_purpose(self):
+        self.set_env(FINN_SSH_STRICT="no")
+        self.adapter.ctl("ping")
+        self.assertIn("StrictHostKeyChecking=no", self.argv[-1])
 
 
 if __name__ == "__main__":

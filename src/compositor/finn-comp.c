@@ -41,8 +41,14 @@
 #include <poll.h>
 #include <signal.h>
 #include <time.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <dirent.h>
+#include <linux/input.h>
+#include <linux/vt.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <webp/decode.h>
@@ -62,6 +68,8 @@
 #include "finnstate.h"
 #include "finnaudio.h"
 #include "finnpointer.h"
+#include "finnkbd.h"
+#include "finnconn.h"
 #include "finngpu.h"
 #include "finnapps.h"
 #include "finnproto.h"
@@ -77,8 +85,8 @@
  * screen; these are composition, and live here because they are a relationship
  * between two surfaces rather than a property of either.
  */
-#define DOCK_SCALE   0.950f
-#define PANEL_SCALE  1.055f
+#define DOCK_SCALE   1.0f
+#define PANEL_SCALE  1.0f
 
 /*
  * The scrim behind the Start Menu. The desktop does not go away when the
@@ -200,15 +208,208 @@ static void flip_handler(int fd, unsigned seq, unsigned sec, unsigned usec, void
     g_flip_done = 1;
 }
 
-static void wait_flip(int fd) {
+/*
+ * The display we own, kept where the recovery path can reach it. A page flip
+ * is the only proof the screen followed us; when it stops landing, a full
+ * modeset needs the CRTC, the connector and the mode that were chosen at
+ * start-up.
+ */
+static int      g_drm_fd = -1;
+static uint32_t g_crtc_id = 0;
+static uint32_t g_conn_id = 0;
+static drmModeModeInfo g_mode;
+
+/* How long a flip may take to land, and how many in a row may fail before
+ * the screen is declared lost. The bound is deliberately small: a compositor
+ * that cannot change the screen is not running, and letting systemd restart
+ * it is better than pretending it is alive. */
+#define FLIP_TIMEOUT_MS 100
+#define FLIP_FAIL_LIMIT 5
+static int g_flip_fail = 0;
+static uint32_t g_last_fb = 0;
+
+/* Returns 0 when the queued flip landed, -1 when it timed out or DRM
+ * failed. Errno is set so the caller can say why. */
+static int wait_flip(int fd) {
     while (!g_flip_done && !g_stop) {
         drmEventContext ev = {0};
         ev.version = DRM_EVENT_CONTEXT_VERSION;
         ev.page_flip_handler = flip_handler;
         struct pollfd pfd = { fd, POLLIN, 0 };
-        if (poll(&pfd, 1, 100) <= 0) break;
-        if (drmHandleEvent(fd, &ev) != 0) break;
+        int pr = poll(&pfd, 1, FLIP_TIMEOUT_MS);
+        if (pr == 0) { errno = ETIMEDOUT; return -1; }
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (drmHandleEvent(fd, &ev) != 0) return -1;
     }
+    return g_flip_done ? 0 : -1;
+}
+
+/*
+ * Put a frame on the screen and prove it got there.
+ *
+ * A failed flip used to be logged and forgotten: the process stayed alive
+ * with the last image frozen, input went nowhere and systemd saw a healthy
+ * service. Here a failure tries the full modeset that re-programs the CRTC,
+ * and a run of failures is fatal on purpose. Only a frame that landed may
+ * release the buffer it replaced — freeing a buffer the display is still
+ * showing is how a recoverable hiccup becomes a frozen screen.
+ *
+ * Returns 0 when the frame is on the screen, -1 when it is not.
+ */
+static int display_flip(uint32_t fbid) {
+    if (g_drm_fd < 0 || !fbid) { errno = EINVAL; g_flip_fail++; return -1; }
+
+    g_flip_done = 0;
+    if (drmModePageFlip(g_drm_fd, g_crtc_id, fbid, DRM_MODE_PAGE_FLIP_EVENT, NULL) == 0) {
+        if (wait_flip(g_drm_fd) == 0) {
+            g_flip_fail = 0;
+            g_last_fb = fbid;
+            return 0;
+        }
+        fprintf(stderr, "finn-comp: page flip did not land: %s\n",
+                strerror(errno ? errno : ETIMEDOUT));
+    } else {
+        g_flip_done = 1;
+        fprintf(stderr, "finn-comp: page flip failed: %s\n", strerror(errno));
+    }
+
+    if (drmModeSetCrtc(g_drm_fd, g_crtc_id, fbid, 0, 0,
+                       &g_conn_id, 1, &g_mode) == 0) {
+        fprintf(stderr, "finn-comp: display recovered with a full modeset\n");
+        g_flip_fail = 0;
+        g_last_fb = fbid;
+        return 0;
+    }
+    fprintf(stderr, "finn-comp: modeset recovery failed: %s\n", strerror(errno));
+
+    g_flip_fail++;
+    return -1;
+}
+
+static int display_lost(void) { return g_flip_fail >= FLIP_FAIL_LIMIT; }
+
+/* ---------------- service readiness and watchdog ----------------
+ *
+ * systemd's notify protocol is one datagram to NOTIFY_SOCKET; pulling in
+ * libsystemd for it would be a dependency for twenty lines. The watchdog is
+ * the point: a compositor that is alive but no longer painting must be
+ * restarted, and a heartbeat is the only thing that proves it is still
+ * turning.
+ */
+static int g_notify_fd = -1;
+
+static void notify_open(void) {
+    const char *path = getenv("NOTIFY_SOCKET");
+    if (!path || !*path) return;
+
+    struct sockaddr_un a;
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    if (path[0] == '@') {
+        /* an abstract socket: the leading NUL is part of the address */
+        if (strlen(path) >= sizeof a.sun_path - 1) return;
+        a.sun_path[0] = 0;
+        memcpy(a.sun_path + 1, path + 1, strlen(path) - 1);
+    } else {
+        if (strlen(path) >= sizeof a.sun_path) return;
+        memcpy(a.sun_path, path, strlen(path) + 1);
+    }
+
+    int fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) != 0) {
+        fprintf(stderr, "finn-comp: cannot reach systemd at %s: %s\n",
+                path, strerror(errno));
+        close(fd);
+        return;
+    }
+    g_notify_fd = fd;
+}
+
+static void notify_say(const char *state) {
+    if (g_notify_fd < 0) return;
+    (void)send(g_notify_fd, state, strlen(state), MSG_NOSIGNAL);
+}
+
+static void notify_close(void) {
+    if (g_notify_fd >= 0) { close(g_notify_fd); g_notify_fd = -1; }
+}
+
+/* ---------------- the virtual console ----------------
+ *
+ * The compositor owns tty1, and the rescue console is tty2. Ctrl+Alt+F1..F6
+ * is therefore the way out of a session that is drawing but not listening,
+ * and it is also the way back: the reader below still sees the key events
+ * while another VT is active, so the same chord returns to the session.
+ *
+ * DRM master is dropped the moment the console stops being ours and taken
+ * back when it becomes ours again. Flips are not attempted in between — a
+ * flip without master would count as a display failure and get the compositor
+ * restarted for doing what it was told.
+ */
+static int g_vt_fd = -1;
+static int g_vt = 1;
+static int g_vt_active = 1;
+
+static void vt_open(void) {
+    g_vt_fd = open("/dev/tty0", O_RDWR | O_CLOEXEC);
+    if (g_vt_fd < 0) {
+        fprintf(stderr, "finn-comp: no /dev/tty0, VT switching disabled\n");
+        return;
+    }
+    struct vt_stat vts;
+    if (ioctl(g_vt_fd, VT_GETSTATE, &vts) == 0) g_vt = vts.v_active;
+}
+
+static void vt_switch(int n) {
+    if (g_vt_fd < 0 || n < 1 || n > 63) return;
+    if (ioctl(g_vt_fd, VT_ACTIVATE, n) != 0)
+        fprintf(stderr, "finn-comp: cannot activate VT %d: %s\n", n, strerror(errno));
+}
+
+/* 1 when this process's VT is the one on the screen. No tty0 means there is
+ * no console to switch away from, so the answer is always yes. */
+static int vt_is_active(void) {
+    if (g_vt_fd < 0) return 1;
+    struct vt_stat vts;
+    if (ioctl(g_vt_fd, VT_GETSTATE, &vts) != 0) return 1;
+    return vts.v_active == g_vt;
+}
+
+/*
+ * Follow the console. Returns 1 when the session has just come back, which
+ * the caller treats as damage: the screen was someone else's and has to be
+ * painted again, and the buffers it left behind may no longer be what the
+ * CRTC is showing.
+ */
+static int vt_sync(int drm_fd, finn_pointer *ptr, finn_kbd *kbd) {
+    int active = vt_is_active();
+    if (active == g_vt_active) return 0;
+
+    if (active) {
+        if (drm_fd >= 0 && drmSetMaster(drm_fd) != 0)
+            fprintf(stderr, "finn-comp: could not take DRM master back: %s\n",
+                    strerror(errno));
+        g_flip_fail = 0;
+        if (drm_fd >= 0 && g_last_fb)
+            (void)drmModeSetCrtc(drm_fd, g_crtc_id, g_last_fb, 0, 0,
+                                 &g_conn_id, 1, &g_mode);
+        finn_pointer_set_grab(ptr, 1);
+        finn_kbd_set_grab(kbd, 1);
+        g_vt_active = 1;
+        fprintf(stderr, "finn-comp: console returned\n");
+        return 1;
+    }
+
+    finn_pointer_set_grab(ptr, 0);
+    finn_kbd_set_grab(kbd, 0);
+    if (drm_fd >= 0) (void)drmDropMaster(drm_fd);
+    g_vt_active = 0;
+    fprintf(stderr, "finn-comp: console released\n");
+    return 0;
 }
 
 /* ---------------- control plane provider ----------------
@@ -216,10 +417,16 @@ static void wait_flip(int fd) {
  * finn-comp owns the scanout buffer and the pointer, so it is the provider
  * for display and input verbs. It speaks the line protocol from finnproto.h
  * over /run/finn/comp.sock; finnd sits in front of it as the control plane.
+ *
+ * The socket is root-only (0600) and every accepted peer is checked with
+ * SO_PEERCRED: the file mode is not a substitute for asking, and a session
+ * service that had the descriptor passed to it would otherwise inherit the
+ * authority without the audit trail that finnd keeps.
  */
 
 typedef struct {
     finn_pointer *ptr;
+    finn_kbd     *kbd;
     int           w, h;
     uint32_t     *base;      /* wallpaper + dock, no cursor */
     float         scale;
@@ -345,12 +552,13 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         snprintf(b, sizeof b,
                  "OK cc=%d openness=%.3f cc_anim=%d clock=%d clock_openness=%.3f "
                  "menu=%d menu_openness=%.3f "
-                 "dock_anim=%d dock=%d,%d,%d,%d pointer=%d,%d buttons=%d\n",
+                 "dock_anim=%d dock=%d,%d,%d,%d pointer=%d,%d buttons=%d mods=%u\n",
                  finncontrol_is_open(), finncontrol_openness(), finncontrol_running(),
                  finnclock_is_open(), finnclock_openness(),
                  finnmenu_is_open(), finnmenu_openness(),
                  finndock_running(),
-                 dx, dy, dw, dh, cx->ptr->x, cx->ptr->y, cx->ptr->buttons);
+                 dx, dy, dw, dh, cx->ptr->x, cx->ptr->y, cx->ptr->buttons,
+                 cx->kbd ? finn_kbd_mods(cx->kbd) : 0u);
         finn_write_str(fd, b);
         return;
     }
@@ -388,11 +596,12 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "state.set")) {
-        int iv;
-        if (kv_int(rest, "battery", &iv))  write_state_int("battery", iv);
-        if (kv_int(rest, "charging", &iv)) write_state_int("charging", iv);
-        if (kv_int(rest, "wifi", &iv))     write_state_int("wifi", iv);
-        if (kv_int(rest, "volume", &iv))   write_state_int("volume", iv);
+        int iv, n = 0;
+        if (kv_int(rest, "battery", &iv))  { write_state_int("battery", iv);  n++; }
+        if (kv_int(rest, "charging", &iv)) { write_state_int("charging", iv); n++; }
+        if (kv_int(rest, "wifi", &iv))     { write_state_int("wifi", iv);     n++; }
+        if (kv_int(rest, "volume", &iv))   { write_state_int("volume", iv);   n++; }
+        if (!n) { finn_write_str(fd, "ERR no recognised keys\n"); return; }
         finn_write_str(fd, "OK\n");
         return;
     }
@@ -468,10 +677,14 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "radio.set")) {
-        int v, any = 0;
-        if (kv_int(rest, "wifi", &v))      { finn_state_set_wifi(v);      any = 1; }
-        if (kv_int(rest, "bluetooth", &v)) { finn_state_set_bluetooth(v); any = 1; }
-        finn_write_str(fd, any ? "OK\n" : "ERR name wifi= or bluetooth=\n");
+        int v, any = 0, failed = 0;
+        if (kv_int(rest, "wifi", &v))      { any = 1; if (finn_state_set_wifi(v) != 0) failed = 1; }
+        if (kv_int(rest, "bluetooth", &v)) { any = 1; if (finn_state_set_bluetooth(v) != 0) failed = 1; }
+        if (!any)         { finn_write_str(fd, "ERR name wifi= or bluetooth=\n"); return; }
+        /* The radio's answer is the answer: a machine with no adapter, or a
+         * rfkill write the kernel refused, is not a success. */
+        if (failed)       { finn_write_str(fd, "ERR hardware unavailable\n"); return; }
+        finn_write_str(fd, "OK\n");
         return;
     }
     if (!strcmp(verb, "appearance.set")) {
@@ -480,7 +693,11 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
             finn_write_str(fd, "ERR appearance.set needs dark=0|1\n");
             return;
         }
-        finn_state_set_dark(v);
+        if (finn_state_set_dark(v) != 0) {
+            finn_write_str(fd, "ERR could not save the appearance\n");
+            return;
+        }
+        cx->dirty = 1;
         finn_write_str(fd, "OK\n");
         return;
     }
@@ -527,8 +744,10 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "pointer.scroll")) {
-        /* SCROLL is routed to the shell once there is scrollable content. */
-        finn_write_str(fd, "OK\n");
+        /* Nothing in the shell scrolls yet. The wheel is read by the pointer
+         * module so it cannot get stuck, but a verb that answers OK while
+         * doing nothing is a lie the next client would build on. */
+        finn_write_str(fd, "ERR scroll is not implemented\n");
         return;
     }
 
@@ -541,6 +760,12 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
     }
     if (!strcmp(verb, "window.open")) {
         int id = finnwindow_open(rest);
+        if (id == FINNWINDOW_ERR_LIMIT) {
+            char b[96];
+            snprintf(b, sizeof b, "ERR window limit reached (%d)\n", FINNWINDOW_MAX);
+            finn_write_str(fd, b);
+            return;
+        }
         if (id < 0) { finn_write_str(fd, "ERR cannot open window\n"); return; }
         cx->dirty = 1;
         char b[64];
@@ -595,7 +820,49 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "setup.complete")) {
-        finnsetup_complete();
+        /* Setup reports the marker write, not the intention. A failure keeps
+         * the screen open and says why; a machine that forgets its setup on
+         * the next boot has not completed it. */
+        if (finnsetup_complete() != 0) {
+            finn_write_str(fd, "ERR could not save the setup\n");
+            return;
+        }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+
+    /* ---- keyboard injection ----
+     *
+     * The reader is real (finnkbd); these verbs are how a test or the control
+     * plane types into the same event path a key takes. There is no client
+     * text field yet, so an injected key can drive the shell and setup but
+     * cannot deliver a character to an application — that needs the surface
+     * protocol and is not pretended here.
+     */
+    if (!strcmp(verb, "key.press") || !strcmp(verb, "key.release") ||
+        !strcmp(verb, "key.tap")) {
+        char name[32] = "";
+        if (!kv_str(rest, "code", name, sizeof name) || !name[0]) {
+            finn_write_str(fd, "ERR key needs code=<name>\n");
+            return;
+        }
+        int code = finn_kbd_code_for_name(name);
+        if (code < 0) {
+            char b[96];
+            snprintf(b, sizeof b, "ERR unknown key '%s'\n", name);
+            finn_write_str(fd, b);
+            return;
+        }
+        if (!cx->kbd) { finn_write_str(fd, "ERR no keyboard reader\n"); return; }
+
+        int pressed = !strcmp(verb, "key.press");
+        if (finn_kbd_inject(cx->kbd, code, pressed) != 0) {
+            finn_write_str(fd, "ERR cannot inject the key\n");
+            return;
+        }
+        if (!strcmp(verb, "key.tap"))
+            finn_kbd_inject(cx->kbd, code, 0);
         cx->dirty = 1;
         finn_write_str(fd, "OK\n");
         return;
@@ -644,6 +911,7 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
      */
     finndock_set_well(finncontrol_openness());
     finndock_set_clock_well(finnclock_openness());
+    finndock_set_launcher_well(finnmenu_openness());
     finndock_set_apps_well(finnwindow_visible_count() > 0 ? 1.0f
                            : (finnwindow_count() > 0 ? 0.45f : 0.0f));
     finndock_render(w, h, dock_scale, st);
@@ -762,7 +1030,7 @@ static unsigned gpu_upload(gpu_ctx *g, const uint32_t *px,
  * swap — the one moment it exists here. */
 static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
                           const finn_state *st, const finn_pointer *ptr,
-                          float theme_t, uint32_t *shot) {
+                          float theme_t, uint32_t *shot, int *shot_ok) {
     build_chrome(w, h, scale, st);
 
     int wx = 0, wy = 0, ww = 0, wh = 0;
@@ -874,8 +1142,6 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
             finngpu_paste(g->gpu, ctex, tx, ty, tw, th, ta);
         if (kl)
             finngpu_paste(g->gpu, ktex, qx, qy, qw, qh, qa);
-        if (stl)
-            finngpu_paste(g->gpu, sttex, sux, suy, suw, suh, sua);
     }
 
     float dim = finnmenu_scrim();
@@ -883,13 +1149,16 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
         finngpu_paste(g->gpu, g->tex_scrim, 0, 0, (float)w, (float)h, dim);
     if (ml)
         finngpu_paste(g->gpu, mtex, sx, sy, sw, sh, sa);
+    if (!fading && stl)
+        finngpu_paste(g->gpu, sttex, sux, suy, suw, suh, sua);
 
     if (ptr->sprite && ptr->sprite_px > 0 && g->tex_cursor)
         finngpu_paste(g->gpu, g->tex_cursor,
                       (float)(ptr->x - ptr->hot_x), (float)(ptr->y - ptr->hot_y),
                       (float)ptr->sprite_px, (float)ptr->sprite_px, 1.0f);
 
-    if (shot) finngpu_readback(g->gpu, shot);
+    if (shot_ok) *shot_ok = 0;
+    if (shot && finngpu_readback(g->gpu, shot) == 0 && shot_ok) *shot_ok = 1;
 
     uint32_t fb = 0;
     if (!finngpu_end(g->gpu, &fb)) return 0;
@@ -903,6 +1172,12 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
  */
 static int g_prev_buttons = 0;
 static int g_drag = FINNCONTROL_NONE;
+/* A press is remembered until the release: a control acts only when the
+ * release lands on the same target, so a stray down can be slid off. */
+static int g_press_part = FINNWINDOW_HIT_NONE;
+static int g_press_win = 0;
+static int g_cc_press = FINNCONTROL_NONE;
+static float g_cc_press_v = -1.0f;
 
 /*
  * A control that can act, and only those.
@@ -992,7 +1267,15 @@ static void menu_launch(int index) {
         return;
     }
 
-    finnwindow_open(a->id);
+    int wid = finnwindow_open(a->id);
+    if (wid == FINNWINDOW_ERR_LIMIT) {
+        finn_notify_post(a->name, "Window limit reached (8)");
+        return;
+    }
+    if (wid < 0) {
+        finn_notify_post(a->name, "Could not open a window");
+        return;
+    }
 
     char req[160], reply[256];
     snprintf(req, sizeof req, "app.launch %s", a->id);
@@ -1012,6 +1295,83 @@ static void menu_power(const char *action) {
                          strcmp(action, "restart") == 0 ? "Restarting" : "Shutting down");
     else
         finn_notify_post("FinnOS", ctl_why(reply));
+}
+
+/*
+ * Finish setup, and say so when it did not take.
+ *
+ * The screen stays open on failure: the marker is what the next boot reads,
+ * and a machine that forgets its setup is not set up. `finnsetup_activate`
+ * reports START either way, so the outcome is read from `is_completed`.
+ */
+static int setup_finish(void) {
+    if (finnsetup_is_completed()) return 1;
+    finn_notify_post("Setup", "Could not save the setup");
+    return 0;
+}
+
+/* Returns 1 when the chrome changed. Keys are handled here, in the
+ * compositor, because there is no client surface protocol to deliver them
+ * to; what a key does is the shell's decision (finnkbd.h). */
+static int key_action(const finn_key_event *e, const finn_state *st) {
+    (void)st;
+    if (!e->pressed || e->repeat) return 0;
+
+    /* The console chord is checked before anything else: it must work from a
+     * setup screen, a menu and a frozen-looking session alike. While another
+     * VT is active, no other key belongs to this session. */
+    if ((e->mods & FINN_MOD_CTRL) && (e->mods & FINN_MOD_ALT) &&
+        e->code >= KEY_F1 && e->code <= KEY_F6) {
+        vt_switch(e->code - KEY_F1 + 1);
+        return 0;
+    }
+    if (!g_vt_active) return 0;
+
+    if (finnsetup_is_open()) {
+        switch (e->code) {
+        case KEY_TAB:
+            finnsetup_focus_next((e->mods & FINN_MOD_SHIFT) ? -1 : 1);
+            return 1;
+        case KEY_RIGHT:
+        case KEY_DOWN:
+            finnsetup_focus_next(1);
+            return 1;
+        case KEY_LEFT:
+        case KEY_UP:
+            finnsetup_focus_next(-1);
+            return 1;
+        case KEY_ENTER:
+        case KEY_KPENTER:
+        case KEY_SPACE:
+            if (finnsetup_activate() == FINNSETUP_START) return setup_finish();
+            return 1;
+        default:
+            return 0;
+        }
+    }
+
+    if (e->code == KEY_ESC) {
+        int was_open = finnmenu_is_open() || finncontrol_is_open() || finnclock_is_open();
+        finnmenu_set_open(0);
+        finncontrol_set_open(0);
+        finnclock_set_open(0);
+        return was_open;
+    }
+
+    if (e->code == KEY_LEFTMETA || e->code == KEY_RIGHTMETA) {
+        int open = !finnmenu_is_open();
+        finncontrol_set_open(0);
+        finnclock_set_open(0);
+        finnmenu_set_open(open);
+        return 1;
+    }
+
+    if ((e->mods & FINN_MOD_ALT) && e->code == KEY_TAB) {
+        finnwindow_cycle_focus((e->mods & FINN_MOD_SHIFT) ? -1 : 1);
+        return 1;
+    }
+
+    return 0;
 }
 
 /* Returns 1 when the chrome itself changed and the layer must be rebuilt. */
@@ -1037,7 +1397,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             }
             if (sact == FINNSETUP_START) {
                 finnsetup_complete();
-                return 1;
+                return setup_finish();
             }
             return 0;
         }
@@ -1086,6 +1446,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         int act = finncontrol_hit(p->x, p->y, &v01);
 
         g_drag = (act == FINNCONTROL_BRIGHTNESS || act == FINNCONTROL_VOLUME) ? act : FINNCONTROL_NONE;
+        g_cc_press = FINNCONTROL_NONE;
 
         switch (act) {
         case FINNCONTROL_WIFI:
@@ -1098,8 +1459,15 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             break;
         }
 
-        if (act != FINNCONTROL_NONE && act != FINNCONTROL_PANEL)
-            return cc_activate(act, v01, st);
+        /* A slider follows the finger from the moment it lands; a toggle acts
+         * on release, where the finger actually is (docs/review.md P1.6). */
+        if (act == FINNCONTROL_BRIGHTNESS || act == FINNCONTROL_VOLUME)
+            return cc_set_level(act, v01, st);
+        if (act != FINNCONTROL_NONE && act != FINNCONTROL_PANEL) {
+            g_cc_press = act;
+            g_cc_press_v = v01;
+            return 1;
+        }
         if (act == FINNCONTROL_PANEL)
             return 0;                       /* swallowed by the panel */
 
@@ -1128,6 +1496,19 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             finnmenu_set_open(open);
             return 1;
         }
+        if (hit == FINNDOCK_HIT_SEARCH) {
+            finncontrol_set_open(0);
+            finnclock_set_open(0);
+            finnmenu_set_open(1);
+            return 1;
+        }
+        if (hit == FINNDOCK_HIT_WINDOWS) {
+            finncontrol_set_open(0);
+            finnclock_set_open(0);
+            finnmenu_set_open(0);
+            finnwindow_cycle_focus(1);
+            return 1;
+        }
         if (hit == FINNDOCK_HIT_APPS) {
             finncontrol_set_open(0);
             finnclock_set_open(0);
@@ -1143,22 +1524,49 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         int whit = finnwindow_hit(p->x, p->y, &wid);
         if (whit != FINNWINDOW_HIT_NONE) {
             finnwindow_press(whit, wid, p->x, p->y);
-            if (whit == FINNWINDOW_HIT_EXPAND)   finnwindow_maximize(wid);
-            if (whit == FINNWINDOW_HIT_MINIMIZE) finnwindow_minimize(wid);
-            if (whit == FINNWINDOW_HIT_CLOSE)    finnwindow_close(wid);
+            if (whit >= FINNWINDOW_HIT_EXPAND && whit <= FINNWINDOW_HIT_CLOSE) {
+                g_press_part = whit;
+                g_press_win = wid;
+            }
             return 1;
         }
         return 0;
     }
 
     if (!now && was) {
+        int changed = 0;
+
+        /* A Window Options control fires only if the release lands on the
+         * control the press started on. Nothing irreversible happens on the
+         * way down. */
+        if (g_press_part != FINNWINDOW_HIT_NONE) {
+            int rw = 0;
+            int rp = finnwindow_hit(p->x, p->y, &rw);
+            if (rp == g_press_part && rw == g_press_win) {
+                if (rp == FINNWINDOW_HIT_EXPAND)        finnwindow_maximize(rw);
+                else if (rp == FINNWINDOW_HIT_MINIMIZE) finnwindow_minimize(rw);
+                else if (rp == FINNWINDOW_HIT_CLOSE)    finnwindow_close(rw);
+                changed = 1;
+            }
+            g_press_part = FINNWINDOW_HIT_NONE;
+        }
+
+        /* Same rule for a Control Center toggle, which stays where it was
+         * pressed and only acts when the finger is still on it. */
+        if (g_cc_press != FINNCONTROL_NONE) {
+            float v = -1.0f;
+            int act = finncontrol_hit(p->x, p->y, &v);
+            if (act == g_cc_press) changed |= cc_activate(act, g_cc_press_v, st);
+            g_cc_press = FINNCONTROL_NONE;
+        }
+
         g_drag = FINNCONTROL_NONE;
         finndock_press(FINNDOCK_HIT_NONE);
         finncontrol_press(FINNCONTROL_NONE);
         finnmenu_press(FINNMENU_NONE);
         finnsetup_press(FINNSETUP_NONE);
         finnwindow_release();
-        return 0;
+        return changed;
     }
 
     if (now && finnwindow_drag(p->x, p->y))
@@ -1205,13 +1613,12 @@ static uint32_t boot_frame(finngpu *gpu, gpu_ctx *gx, struct fb *fbs, int *cur,
 }
 
 /* Put a frame on the screen, and wait for it to land. The flip is the
- * clock: the next frame is due when the last one has arrived. */
-static void boot_flip(int fd, uint32_t crtc_id, uint32_t fbid, finngpu *gpu) {
-    g_flip_done = 0;
-    if (drmModePageFlip(fd, crtc_id, fbid, DRM_MODE_PAGE_FLIP_EVENT, NULL) != 0)
-        g_flip_done = 1;
-    wait_flip(fd);
-    if (gpu) finngpu_release(gpu);
+ * clock: the next frame is due when the last one has arrived. A boot frame
+ * that never landed is not followed by releasing the buffer behind it. */
+static int boot_flip(uint32_t fbid, finngpu *gpu) {
+    int landed = display_flip(fbid);
+    if (gpu && landed == 0) finngpu_release(gpu);
+    return landed;
 }
 
 int main(int argc, char **argv) {
@@ -1220,29 +1627,78 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 
-    int fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
-    if (fd < 0) { fprintf(stderr, "finn-comp: open card0: %s\n", strerror(errno)); return 1; }
+    /* The watchdog starts with the unit, not with the desktop: decoding the
+     * wallpaper and parsing the icons is part of the service's start-up, and
+     * a slow one must not look like a hung one. */
+    notify_open();
 
-    drmModeRes *res = drmModeGetResources(fd);
-    if (!res) { fprintf(stderr, "finn-comp: no DRM resources\n"); return 1; }
-
+    /*
+     * Find the card that has a display on it, rather than assuming card0.
+     * A machine with two GPUs can have its panel on card1, and the unit's
+     * device dependency on card0 is a trigger for "DRM is up", not a claim
+     * that card0 is the one with the connector.
+     */
+    int fd = -1;
     drmModeConnector *conn = NULL;
-    for (int i = 0; i < res->count_connectors; i++) {
-        drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
-        if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) { conn = c; break; }
-        if (c) drmModeFreeConnector(c);
-    }
-    if (!conn) { fprintf(stderr, "finn-comp: no connected display\n"); return 1; }
+    drmModeModeInfo mode;
+    uint32_t crtc_id = 0;
 
-    drmModeModeInfo mode = pick_mode(conn);
+    for (int n = 0; n < 16 && fd < 0; n++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/dri/card%d", n);
+        int cand = open(path, O_RDWR | O_CLOEXEC);
+        if (cand < 0) continue;
+
+        drmModeRes *res = drmModeGetResources(cand);
+        if (!res) { close(cand); continue; }
+
+        drmModeConnector *c = NULL;
+        for (int i = 0; i < res->count_connectors; i++) {
+            drmModeConnector *try = drmModeGetConnector(cand, res->connectors[i]);
+            if (try && try->connection == DRM_MODE_CONNECTED && try->count_modes > 0) {
+                c = try;
+                break;
+            }
+            if (try) drmModeFreeConnector(try);
+        }
+
+        if (!c) { drmModeFreeResources(res); close(cand); continue; }
+
+        drmModeEncoder *enc = drmModeGetEncoder(cand, c->encoder_id);
+        uint32_t crtc = enc ? enc->crtc_id : (res->count_crtcs ? res->crtcs[0] : 0);
+        if (enc) drmModeFreeEncoder(enc);
+
+        if (!crtc) {
+            drmModeFreeConnector(c);
+            drmModeFreeResources(res);
+            close(cand);
+            continue;
+        }
+
+        fd = cand;
+        conn = c;
+        mode = pick_mode(c);
+        crtc_id = crtc;
+        drmModeFreeResources(res);
+        fprintf(stderr, "finn-comp: display on %s\n", path);
+    }
+
+    if (fd < 0) { fprintf(stderr, "finn-comp: no DRM card with a connected display\n"); return 1; }
+
+    /* Keep what a full modeset needs: a flip that stops landing is repaired
+     * with the CRTC, connector and mode that were chosen here. */
+    g_drm_fd = fd;
+    g_crtc_id = crtc_id;
+    g_conn_id = conn->connector_id;
+    g_mode = mode;
+
     int w = mode.hdisplay, h = mode.vdisplay;
     float scale = fmaxf(0.85f, fminf((float)h / 1080.0f, 2.0f));
     fprintf(stderr, "finn-comp: %dx%d @%dHz  scale %.2f  (%d modes offered)\n",
             w, h, mode.vrefresh, scale, conn->count_modes);
 
-    drmModeEncoder *enc = drmModeGetEncoder(fd, conn->encoder_id);
-    uint32_t crtc_id = enc ? enc->crtc_id : res->crtcs[0];
-    if (enc) drmModeFreeEncoder(enc);
+    vt_open();
+    g_vt_active = vt_is_active();
 
     /*
      * Try the accelerated path first. Nothing about it is assumed: GBM and EGL
@@ -1306,6 +1762,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "finn-comp: setcrtc failed: %s\n", strerror(errno));
         return 1;
     }
+    g_last_fb = boot_fb;
 
     /*
      * Move the line to `pct`, drawing as it goes. The line eases toward
@@ -1314,6 +1771,7 @@ int main(int argc, char **argv) {
      */
     #define BOOT_TO(pct) do {                                              \
         finnboot_set_progress((float)(pct) / 100.0f);                      \
+        notify_say("WATCHDOG=1");                                          \
         while (finnboot_running()) {                                      \
             double now_t = finn_now();                                     \
             float dt = (float)(now_t - boot_t);                            \
@@ -1323,7 +1781,8 @@ int main(int argc, char **argv) {
             finnboot_tick(dt);                                             \
             finnboot_render(w, h, scale);                                  \
             uint32_t fbid = boot_frame(gpu, &gx, fbs, &cur, w, h);          \
-            if (fbid) boot_flip(fd, crtc_id, fbid, gpu);                    \
+            if (fbid) boot_flip(fbid, gpu);                                \
+            notify_say("WATCHDOG=1");                                      \
         }                                                                  \
     } while (0)
 
@@ -1374,6 +1833,9 @@ int main(int argc, char **argv) {
     if (finn_pointer_open(&ptr, w, h, ICON_DIR "/cursor.svg") != 0)
         fprintf(stderr, "finn-comp: no pointer device\n");
     if (ptr.ndev == 0) fprintf(stderr, "finn-comp: no pointer device found\n");
+
+    finn_kbd kbd;
+    finn_kbd_open(&kbd);
     BOOT_TO(90);
 
     finn_state st, prev;
@@ -1407,12 +1869,12 @@ int main(int argc, char **argv) {
     mkdir("/run/finn", 0755);
     mkdir(FINN_STATE_DIR, 0755);
 
-    int ctl = finn_listen(FINN_COMP_SOCK, 0660);
+    int ctl = finn_listen(FINN_COMP_SOCK, 0600);
     if (ctl < 0) fprintf(stderr, "finn-comp: no control socket: %s\n", strerror(errno));
-    else         fprintf(stderr, "finn-comp: control on %s\n", FINN_COMP_SOCK);
+    else         fprintf(stderr, "finn-comp: control on %s (root only)\n", FINN_COMP_SOCK);
 
     ctl_ctx cx = {
-        .ptr = &ptr, .w = w, .h = h, .base = base, .scale = scale,
+        .ptr = &ptr, .kbd = &kbd, .w = w, .h = h, .base = base, .scale = scale,
         .capture_fd = -1, .gpu = gpu != NULL
     };
 
@@ -1446,7 +1908,7 @@ int main(int argc, char **argv) {
                     finnboot_tick(0.05f);
                     finnboot_render(w, h, scale);
                     uint32_t fbid = boot_frame(gpu, &gx, fbs, &cur, w, h);
-                    if (fbid) boot_flip(fd, crtc_id, fbid, gpu);
+                    if (fbid) boot_flip(fbid, gpu);
                 }
             }
         }
@@ -1454,13 +1916,17 @@ int main(int argc, char **argv) {
 
     enum { MAX_CLIENTS = 8 };
     int clients[MAX_CLIENTS];
-    for (int i = 0; i < MAX_CLIENTS; i++) clients[i] = -1;
+    finn_conn conns[MAX_CLIENTS];
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        clients[i] = -1;
+        finn_conn_init(&conns[i]);
+    }
 
     /* The desktop's first frame is a flip, not a setcrtc: the display is
      * already showing the boot screen, and the desktop takes its place. */
     uint32_t first_fb;
     if (gpu) {
-        first_fb = gpu_frame(&gx, w, h, scale, &st, &ptr, 1.0f, NULL);
+        first_fb = gpu_frame(&gx, w, h, scale, &st, &ptr, 1.0f, NULL, NULL);
         if (!first_fb) {
             fprintf(stderr, "finn-comp: the GPU produced no first frame\n");
             return 1;
@@ -1469,13 +1935,19 @@ int main(int argc, char **argv) {
         int next = cur ^ 1;
         memcpy(fbs[next].map, base, (size_t)w * h * 4);
         finn_pointer_draw(&ptr, fbs[next].map, w, h);
+        first_fb = fbs[next].id;
         cur = next;
-        first_fb = fbs[cur].id;
     }
-    boot_flip(fd, crtc_id, first_fb, gpu);
+    if (display_flip(first_fb) != 0) {
+        fprintf(stderr, "finn-comp: the desktop never reached the screen\n");
+        return 1;
+    }
+    if (gpu) finngpu_release(gpu);
 
     fprintf(stderr, "finn-comp: desktop live %dx%d\n", w, h);
     fflush(stderr);
+    notify_say("READY=1");
+    notify_say("WATCHDOG=1");
 
     /*
      * The appearance switch keeps the frame that was on screen so it can
@@ -1489,17 +1961,32 @@ int main(int argc, char **argv) {
     finn_anim_jump(&theme_fade, 1.0f);
 
     double last_t = finn_now();
+    double last_wd = last_t;
+    int exit_code = 0;
 
     while (!g_stop) {
-        struct pollfd pf[FINN_PTR_MAX + 1 + MAX_CLIENTS];
+        struct pollfd pf[FINN_PTR_MAX + FINN_KBD_MAX + 2 + MAX_CLIENTS];
         int nf = 0, ictl = -1, cslot[MAX_CLIENTS];
-        int pslot[FINN_PTR_MAX];
+        int pslot[FINN_PTR_MAX], kslot[FINN_KBD_MAX + 1];
+
+        double wd_now = finn_now();
+        if (wd_now - last_wd >= 5.0) {
+            notify_say("WATCHDOG=1");
+            last_wd = wd_now;
+        }
+        if (vt_sync(fd, &ptr, &kbd)) cx.dirty = 1;
 
         int nptr = finn_pointer_fds(&ptr, pslot, FINN_PTR_MAX);
         for (int i = 0; i < nptr; i++) {
             pf[nf].fd = pslot[i];
             pf[nf].events = POLLIN;
             pslot[i] = nf++;
+        }
+        int nkbd = finn_kbd_fds(&kbd, kslot, FINN_KBD_MAX + 1);
+        for (int i = 0; i < nkbd; i++) {
+            pf[nf].fd = kslot[i];
+            pf[nf].events = POLLIN;
+            kslot[i] = nf++;
         }
         if (ctl >= 0)    { pf[nf].fd = ctl;    pf[nf].events = POLLIN; ictl = nf++; }
         for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -1516,7 +2003,7 @@ int main(int argc, char **argv) {
                    || cx.capture_fd >= 0;
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
 
-        int moved = 0;
+        int moved = 0, key_changed = 0;
         if (pr > 0) {
             for (int i = 0; i < nptr; i++) {
                 short rev = pf[pslot[i]].revents;
@@ -1529,20 +2016,81 @@ int main(int argc, char **argv) {
             if (ictl >= 0 && (pf[ictl].revents & POLLIN)) {
                 int c = finn_accept(ctl);
                 if (c >= 0) {
-                    int slot = -1;
-                    for (int i = 0; i < MAX_CLIENTS; i++)
-                        if (clients[i] < 0) { slot = i; break; }
-                    if (slot < 0) close(c); else clients[slot] = c;
+                    /* The mode is not the check: a descriptor passed to a
+                     * less privileged process would still open. Ask the
+                     * kernel who is on the other end. */
+                    struct ucred uc;
+                    socklen_t ul = sizeof uc;
+                    memset(&uc, 0, sizeof uc);
+                    int ok = getsockopt(c, SOL_SOCKET, SO_PEERCRED, &uc, &ul) == 0 &&
+                             uc.uid == 0;
+                    if (!ok) {
+                        fprintf(stderr, "finn-comp: refused control client uid=%d\n",
+                                (int)uc.uid);
+                        finn_write_str(c, "ERR permission denied\n");
+                        close(c);
+                    } else {
+                        int slot = -1;
+                        for (int i = 0; i < MAX_CLIENTS; i++)
+                            if (clients[i] < 0) { slot = i; break; }
+                        if (slot < 0) {
+                            finn_write_str(c, "ERR busy\n");
+                            close(c);
+                        } else {
+                            finn_conn_init(&conns[slot]);
+                            clients[slot] = c;
+                        }
+                    }
                 }
             }
 
             for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (cslot[i] < 0 || !(pf[cslot[i]].revents & POLLIN)) continue;
-                char line[FINN_MAX_LINE];
-                int n = finn_read_line(clients[i], line, sizeof line);
-                if (n <= 0) { close(clients[i]); clients[i] = -1; continue; }
-                ctl_dispatch(line, clients[i], &cx);
+                if (cslot[i] < 0) continue;
+                short rev = pf[cslot[i]].revents;
+                if (!(rev & (POLLIN | POLLERR | POLLHUP))) continue;
+
+                for (;;) {
+                    char line[FINN_MAX_LINE];
+                    int eof = 0;
+                    int n = finn_conn_read(&conns[i], clients[i], line,
+                                           (int)sizeof line, &eof);
+                    if (n == 1) {
+                        ctl_dispatch(line, clients[i], &cx);
+                        continue;
+                    }
+                    if (n < 0 && errno == EMSGSIZE && !eof) {
+                        finn_write_str(clients[i], "ERR line too long\n");
+                        continue;
+                    }
+                    if (n < 0 || eof) {
+                        if (cx.capture_fd == clients[i]) {
+                            cx.capture_fd = -1;
+                            cx.capture_step = 1;
+                        }
+                        close(clients[i]);
+                        clients[i] = -1;
+                    }
+                    break;
+                }
             }
+        }
+
+        /* Polled unconditionally, so a key injected by a key.* verb this
+         * iteration is handled now rather than after the next wake-up. */
+        {
+            finn_key_event evs[64];
+            int ne = finn_kbd_poll(&kbd, evs, 64);
+            for (int k = 0; k < ne; k++)
+                key_changed |= key_action(&evs[k], &st);
+        }
+
+        if (vt_sync(fd, &ptr, &kbd)) cx.dirty = 1;
+        if (!g_vt_active) {
+            /* Another console owns the screen. Keep reading input and the
+             * watchdog, but never flip: without DRM master that is a failure
+             * the compositor would be restarted for. */
+            last_t = finn_now();
+            continue;
         }
 
         double now_t = finn_now();
@@ -1558,7 +2106,7 @@ int main(int argc, char **argv) {
          * tracks advance by frame time instead. */
         float adt = dt > 0.034f ? 0.034f : dt;
 
-        int shell_changed = shell_input(&ptr, &st);
+        int shell_changed = shell_input(&ptr, &st) | key_changed;
         if (cx.click_release > 0 && --cx.click_release == 0) {
             ptr.buttons &= ~cx.click_pending;
             shell_input(&ptr, &st);
@@ -1566,7 +2114,7 @@ int main(int argc, char **argv) {
 
         if (ptr.dirty) { ptr.dirty = 0; moved = 1; }
 
-        finn_state_read(&st);
+        finn_state_poll(&st, now_t);
         int schanged = finn_state_differs(&st, &prev);
 
         /* Hardware transitions the shell can vouch for, announced once each.
@@ -1666,10 +2214,16 @@ int main(int argc, char **argv) {
         anim |= finnsetup_tick(adt);
         anim |= finn_anim_tick(&theme_fade, adt);
 
+        /* The minute changing is a frame, even when nothing else is moving.
+         * On the software path the base has to be recomposed for it; a tick
+         * that only reaches the damage test is what froze the dock clock
+         * (docs/review.md P1.9). */
+        int clock_tick = finndock_clock_tick();
+
         if (cx.dirty) { cx.dirty = 0; shell_changed = 1; }
 
-        if (!moved && !schanged && !shell_changed && !anim && cx.capture_fd < 0 &&
-            !finndock_clock_tick()) continue;
+        if (!moved && !schanged && !shell_changed && !anim && !clock_tick &&
+            cx.capture_fd < 0) continue;
 
         prev = st;
 
@@ -1677,32 +2231,34 @@ int main(int argc, char **argv) {
             /* gpu_frame builds the chrome itself; the composite is never
              * materialised on the CPU at all */
             uint32_t *shot = cx.capture_fd >= 0 ? base : NULL;
+            int shot_ok = 0;
             uint32_t fbid = gpu_frame(&gx, w, h, scale, &st, &ptr,
-                                      finn_anim_v(&theme_fade), shot);
-            if (fbid) {
-                g_flip_done = 0;
-                if (drmModePageFlip(fd, crtc_id, fbid, DRM_MODE_PAGE_FLIP_EVENT, NULL) == 0)
-                    cur = -1;
-                else {
-                    g_flip_done = 1;
-                    fprintf(stderr, "finn-comp: page flip failed: %s\n", strerror(errno));
-                }
-            }
-            /* The flip is the clock. Landing is also what frees the buffer
-             * that has just left the screen, so nothing is reclaimed early. */
-            wait_flip(fd);
-            finngpu_release(gpu);
+                                      finn_anim_v(&theme_fade), shot, &shot_ok);
+            int landed = fbid ? display_flip(fbid) : -1;
 
-            if (shot) {
-                ppm_write(cx.capture_fd, base, w, h, cx.capture_step);
+            /* Only a frame that landed may release the buffer it replaced;
+             * releasing one the display is still showing is how a recoverable
+             * hiccup becomes a frozen screen. */
+            if (landed == 0) {
+                finngpu_release(gpu);
+                if (shot && shot_ok) {
+                    ppm_write(cx.capture_fd, base, w, h, cx.capture_step);
+                    cx.capture_fd = -1;
+                } else if (shot) {
+                    finn_write_str(cx.capture_fd, "ERR capture failed\n");
+                    cx.capture_fd = -1;
+                }
+            } else if (cx.capture_fd >= 0) {
+                /* The frame did not reach the screen, so it is not the frame
+                 * a capture promised to return. Say so rather than hanging. */
+                finn_write_str(cx.capture_fd, "ERR display unavailable\n");
                 cx.capture_fd = -1;
             }
         } else {
-            if (schanged || shell_changed || anim)
+            if (schanged || shell_changed || anim || clock_tick)
                 compose_base(base, wall, w, h, scale, &st);
 
             int next = cur ^ 1;
-            wait_flip(fd);
 
             float tf = finn_anim_v(&theme_fade);
             if (base_prev && tf < 0.999f) {
@@ -1714,17 +2270,23 @@ int main(int argc, char **argv) {
             }
             finn_pointer_draw(&ptr, fbs[next].map, w, h);
 
-            g_flip_done = 0;
-            if (drmModePageFlip(fd, crtc_id, fbs[next].id, DRM_MODE_PAGE_FLIP_EVENT, NULL) == 0)
-                cur = next;
-            else
-                g_flip_done = 1;
+            if (display_flip(fbs[next].id) == 0) cur = next;
+        }
+
+        if (display_lost()) {
+            fprintf(stderr, "finn-comp: display lost after %d failed flips\n",
+                    g_flip_fail);
+            exit_code = 1;
+            break;
         }
     }
+
+    notify_say("STOPPING=1");
 
     for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i] >= 0) close(clients[i]);
     if (ctl >= 0) { close(ctl); unlink(FINN_COMP_SOCK); }
     finn_pointer_close(&ptr);
+    finn_kbd_close(&kbd);
     finncontrol_free();
     finndock_free();
     finnclock_free();
@@ -1735,16 +2297,19 @@ int main(int argc, char **argv) {
     finnblur_free();
     fprintf(stderr, "finn-comp: shutting down\n");
 
-    if (gpu) {
+    if (gpu && !display_lost()) {
         /* let the last flip land before the frame it went to is freed */
         wait_flip(fd);
         finngpu_release(gpu);
     }
     drmModeSetCrtc(fd, crtc_id, 0, 0, 0, NULL, 0, NULL);
     if (gpu) finngpu_close(gpu);
+    drmModeFreeConnector(conn);
+    if (g_vt_fd >= 0) close(g_vt_fd);
+    notify_close();
     close(fd);
     free(base);
     free(base_prev);
     free(wall);
-    return 0;
+    return exit_code;
 }

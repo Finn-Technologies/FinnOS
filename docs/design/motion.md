@@ -280,9 +280,10 @@ costs a render target for the 0.36 seconds it runs.
 
 Some things do not move, and the absence is a decision.
 
-**The window area.** There is no window manager, so there is no window
-area to animate. `ui/Desktop.fui` describes one; the compositor does not
-draw it, and the design system does not pretend it exists.
+**The window area.** Windows exist (`finnwindow`), but they are the shell's
+own: `ui/Desktop.fui` describes a client window area, and the compositor
+does not draw one because no client can attach a surface to it. The design
+system does not pretend it exists.
 
 **The dock's bubbles.** They do not lift, grow or shrink under the
 pointer. They take a wash. A dock that springs its icons upward is a

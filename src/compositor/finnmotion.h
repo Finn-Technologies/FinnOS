@@ -108,4 +108,20 @@
  */
 #define FINN_MOTION_NOTE        0.22f
 
+/* ---------------- the Start Menu grid arrival ----------------
+ *
+ * The panel is the room; the apps are the people coming in. They arrive
+ * after the room does, one after another, each rising a little into its
+ * place — which is what a grid of things that was not there a moment ago
+ * looks like.
+ *
+ * The step is small on purpose: eight tiles at a quarter of a second each
+ * would read as a queue, and the point is that the menu fills, not that it
+ * performs.
+ */
+#define FINN_MOTION_GRID_DELAY 0.060f  /* the room is ready before anyone walks in */
+#define FINN_MOTION_GRID_STEP  0.022f  /* between two arrivals                        */
+#define FINN_MOTION_GRID_CELL  0.200f  /* one arrival                                 */
+#define FINN_MOTION_GRID_RISE  10.0f   /* how far below its place a tile starts      */
+
 #endif

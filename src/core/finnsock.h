@@ -31,8 +31,16 @@ int finn_connect(const char *path);
  */
 int finn_call(const char *path, const char *req, char *reply, int cap);
 
-/* Line I/O. finn_read_line returns the length excluding the newline, 0 on
- * EOF, -1 on error. */
+/* Line I/O.
+ *
+ * finn_read_line is the one-shot form: it returns the length excluding the
+ * newline, 0 on a clean EOF, -1 on error (including a line that ended
+ * without its newline, and including EAGAIN — a partial line is not a
+ * reply), and -2 when the line did not fit the buffer. On -2 the line has
+ * been consumed through its newline and errno is EMSGSIZE, so a caller
+ * that wants to keep the session can read the next one. It is bounded and
+ * does not keep state; a connection that carries many requests uses
+ * finnconn.h instead. */
 int finn_read_line(int fd, char *buf, int cap);
 int finn_write_all(int fd, const void *buf, size_t n);
 int finn_write_str(int fd, const char *s);

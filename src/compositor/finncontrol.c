@@ -14,14 +14,11 @@
 
 /* ---------------- tokens ----------------
  * The panel and its tiles are glass, not paint: each is the blurred wallpaper
- * brought toward bone by a fixed weight. The two weights are the ones the
- * Figma reference (10:3) specifies — 0.70 for the panel, 0.50 for a tile laid
- * over it. finn_frost_rrect mixes toward the tint over whatever the layer
- * already carries, so the tile's second pass compounds to the lighter inset
- * the reference shows, and the pair re-grades together when Appearance flips.
+ * brought toward bone by a fixed weight. The two weights are FINN_GLASS_PANEL
+ * (0.70) and FINN_GLASS_TILE (0.50). finn_frost_rrect mixes toward the tint over
+ * whatever the layer already carries, so the tile's second pass compounds to the
+ * lighter inset the reference shows, and the pair re-grades together when Appearance flips.
  */
-#define CC_GLASS       0.70f
-#define CC_TILE_GLASS  0.50f
 
 /*
  * The glyph on a knob-white circle is a fixed dark ink. The circle is the
@@ -42,36 +39,45 @@
  *   open middle area, bottom footer at y=226 h=18 (inset 16 from edges) with
  *   battery + percentage/Mains on the left and edit + settings icons on the right.
  */
-#define CC_W        338.0f  /* reference 260 */
-#define CC_PAD       10.4f  /* reference 8 */
-#define CC_GAP       10.4f  /* reference 8 */
-#define CC_R_PANEL   19.5f  /* reference 15 */
-#define CC_R_TILE    10.4f  /* reference 8 */
-#define TILE_H       46.7f  /* reference 36 */
-#define ROW_H        38.9f  /* reference 30: a pill, so its radius is ROW_H/2 */
-#define THUMB_W      48.0f  /* the slider's white left cap (reference 37) */
-#define TILE_GAP     10.4f  /* between the two tiles of a row (reference 8) */
-#define STATUS_C     31.2f  /* the status tiles' filled disc (reference 24) */
-#define ANCHOR_GAP   19.5f  /* panel to dock: reference 15 */
-#define HALF_W      ((CC_W - CC_PAD * 2.0f - TILE_GAP) * 0.5f)   /* 153.4 (ref 118) */
+#define REF          1.298077f
 
-#define STATUS_INSET     7.8f   /* reference 6 */
-#define STATUS_GLYPH    18.0f   /* ink 14 */
-#define SLIDER_GLYPH    21.0f   /* ink 16 */
-#define STATUS_TEXT_GAP  7.8f   /* reference 6 */
-#define STATUS_TEXT_PAD  4.0f
+#define CC_W        (405.0f * REF)
+#define CC_H        (500.0f * REF)
+#define CC_PAD      (10.0f * REF)
+#define CC_R_PANEL  (8.0f * REF)
+#define CC_R_TILE   (4.14f * REF)
 
-/* Footer (Figma 10:3: y=226, h=18, left inset 16, right icons at x=200 & x=226) */
-#define FOOTER_Y       293.4f   /* reference 226 */
-#define FOOTER_H        23.4f   /* reference 18 */
-#define FOOTER_INSET    20.8f   /* reference 16 */
-#define FOOTER_ICO      21.0f   /* ink ~16 (18x18 box) */
-#define FOOTER_BAT      21.0f   /* ink ~16 */
-#define FOOTER_GAP      10.4f   /* reference 8 */
-#define FOOTER_HIT      33.8f   /* reference 26 hit target around 18x18 icon */
+#define TILE_W      (188.0f * REF)
+#define TILE_H      (40.0f * REF)
+#define TILE2_X     (207.0f * REF)
 
-#define PANEL_W CC_W
-#define PANEL_H 338.0f
+#define SLIDER_W    (385.0f * REF)
+#define SLIDER_H    (35.0f * REF)
+#define SLIDER_BRIGHT_Y (60.0f * REF)
+#define SLIDER_VOL_Y    (105.0f * REF)
+#define SLIDER_ICON_X   (8.0f * REF)
+#define SLIDER_GLYPH    (24.0f * REF)
+
+#define STATUS_C        (24.0f * REF)
+#define STATUS_INSET    (8.0f * REF)
+#define STATUS_GLYPH    (16.0f * REF)
+#define STATUS_TEXT_X   (42.0f * REF)
+
+#define FOOTER_X        (10.0f * REF)
+#define FOOTER_Y        (450.0f * REF)
+#define FOOTER_W        (385.0f * REF)
+#define FOOTER_H        (40.0f * REF)
+#define FOOTER_R        (4.14f * REF)
+#define FOOTER_BAT_X    (9.0f * REF)
+#define FOOTER_BAT_SZ   (22.0f * REF)
+#define FOOTER_BAT_TXT_X (41.0f * REF)
+#define FOOTER_EDIT_X   (328.0f * REF)
+#define FOOTER_SET_X    (356.0f * REF)
+#define FOOTER_ICO      (18.0f * REF)
+
+#define ANCHOR_GAP      (15.0f * REF)
+#define PANEL_W         CC_W
+#define PANEL_H         CC_H
 
 /* ---------------- assets + fonts ---------------- */
 static fsvg g_ic_wifi, g_ic_bt, g_ic_eth, g_ic_sun, g_ic_moon, g_ic_vol, g_ic_bat;
@@ -97,7 +103,7 @@ static unsigned g_cc_rev = 0;
 
 typedef struct { int x, y, w, h; } cc_rect;
 static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app, g_r_settings,
-               g_r_bright, g_r_vol;
+               g_r_bright, g_r_vol, g_r_footer;
 
 /* ---------------- motion ---------------- */
 static finn_anim g_a_open;                 /* 0 closed .. 1 open  */
@@ -165,8 +171,7 @@ static const finn_font *fit_all(const char *const *names, int n, float avail) {
 }
 
 static float tile_text_avail(const cc_rect *r, float s) {
-    return (float)r->w -
-           s * (STATUS_INSET + STATUS_C + STATUS_TEXT_GAP + STATUS_TEXT_PAD);
+    return (float)r->w - s * STATUS_TEXT_X;
 }
 
 static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
@@ -174,18 +179,18 @@ static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
                         const char *detail, int on, const finn_font *lf_set) {
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
                      (float)r.x, (float)r.y, (float)r.w, (float)r.h,
-                     s * CC_R_TILE, FINN_GLASS, CC_TILE_GLASS);
+                     s * CC_R_TILE, FINN_GLASS, FINN_GLASS_TILE);
 
     float cr = s * (STATUS_C * 0.5f);
     float ccx = (float)r.x + s * (STATUS_INSET + STATUS_C * 0.5f);
     float ccy = (float)r.y + (float)r.h * 0.5f;
-    fill_circle(L, lw, lh, ccx, ccy, cr, on ? FINN_ON : FINN_MUTE);
+    fill_circle(L, lw, lh, ccx, ccy, cr, on ? FINN_ON : 0xFF969696u);
 
     finn_icon_blit_ink(icon, L, lw, lh, (int)lroundf(ccx), (int)lroundf(ccy),
-                       rs(STATUS_GLYPH, s), FINN_KNOB, FINN_KNOB, vkey);
+                       rs(STATUS_GLYPH, s), 0xFFFFFFFFu, 0xFFFFFFFFu, vkey);
 
-    float tx = (float)r.x + s * (STATUS_INSET + STATUS_C + STATUS_TEXT_GAP);
-    float avail = tile_text_avail(&r, s);
+    float tx = (float)r.x + s * STATUS_TEXT_X;
+    float avail = (float)r.w - s * STATUS_TEXT_X - s * 6.0f;
     const finn_font *lf = lf_set ? lf_set
                          : fit(name,   avail, &g_f_label, &g_f_label_sm,
                                &g_f_sub, &g_f_micro);
@@ -193,32 +198,33 @@ static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
                               &g_f_micro, &g_f_micro);
 
     finn_text_draw(lf, L, lw, lh, tx,
-                   (float)(r.y + rs(21, s)), name, FINN_INK);
+                   (float)(r.y + rs(18.0f * REF, s)), name, FINN_INK);
     finn_text_draw(df, L, lw, lh, tx,
-                   (float)(r.y + rs(35, s)), detail, FINN_DIM);
+                   (float)(r.y + rs(31.0f * REF, s)), detail, FINN_DIM);
 }
 
 static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
                        fsvg *icon, int fill, int available) {
     float x = (float)r.x, y = (float)r.y, w = (float)r.w, h = (float)r.h;
     float rad = h * 0.5f;
-    float tw = s * THUMB_W;
 
-    finn_fill_rrect(L, lw, lh, x, y, w, h, rad,
-                    (FINN_FILL & 0x00FFFFFFu) | 0x38000000u);
+    /* Background track: black 25% */
+    finn_fill_rrect(L, lw, lh, x, y, w, h, rad, FINN_TRACK);
 
-    if (available && fill > 0)
-        finn_fill_rrect(L, lw, lh, x, y,
-                        tw + (w - tw) * (float)fill / 100.0f, h, rad, FINN_FILL);
+    /* Filled bar: solid white */
+    if (available && fill > 0) {
+        float fw = w * ((float)fill / 100.0f);
+        if (fw > w) fw = w;
+        if (fw < h) fw = h;
+        finn_fill_rrect(L, lw, lh, x, y, fw, h, rad, FINN_FILL);
+    }
 
-    finn_fill_rrect(L, lw, lh, x, y, tw, h, rad, FINN_KNOB);
-    finn_fill_rrect(L, lw, lh, x + tw - rad, y, rad, h, 0.0f, FINN_KNOB);
-
-    uint32_t gc = available ? CC_KNOB_INK : FINN_MUTE;
+    /* Icon on the left */
+    float ic_cx = x + s * SLIDER_ICON_X + s * (SLIDER_GLYPH * 0.5f);
+    float ic_cy = y + h * 0.5f;
     finn_icon_blit_ink(icon, L, lw, lh,
-                       (int)lroundf(x + tw * 0.5f),
-                       (int)lroundf(y + h * 0.5f),
-                       rs(SLIDER_GLYPH, s), gc, gc, 0);
+                       (int)lroundf(ic_cx), (int)lroundf(ic_cy),
+                       rs(SLIDER_GLYPH, s), FINN_INK, FINN_INK, 0);
 
     if (!available) {
         float cap = finn_text_cap_height(&g_f_sub);
@@ -227,43 +233,42 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     }
 }
 
-/*
- * Bottom footer row (Figma 10:3):
- * Left: battery icon + percentage ("96%") or "Mains" when no battery hardware.
- * Right: edit icon (toggles Light/Dark appearance) and settings gear icon.
- */
 static void footer_row(uint32_t *L, int lw, int lh, float s,
                        const finn_state *st, float hover, float press) {
-    float fy = s * FOOTER_Y;
-    float fh = s * FOOTER_H;
+    float fx = (float)g_r_footer.x;
+    float fy = (float)g_r_footer.y;
+    float fw = (float)g_r_footer.w;
+    float fh = (float)g_r_footer.h;
     float cy = fy + fh * 0.5f;
 
+    /* Inset frosted tile */
+    finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, fx, fy, fw, fh,
+                     s * FOOTER_R, FINN_GLASS, FINN_GLASS_TILE);
+
     int have_bat = st->battery_pct >= 0;
-    int pct = have_bat ? st->battery_pct : 0;
+    int pct = have_bat ? st->battery_pct : 96;
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
-    g_ic_bat.shapes[1].visible = have_bat ? 1 : 0;
-    g_ic_bat.shapes[1].clip_x = 4.0f + 14.0f * (float)pct / 100.0f;
-    if (g_ic_bat.n > 2) g_ic_bat.shapes[2].visible = 0;
+    if (g_ic_bat.n > 1) {
+        g_ic_bat.shapes[1].visible = 1;
+        g_ic_bat.shapes[1].clip_x = 4.0f + 14.0f * (float)pct / 100.0f;
+    }
 
-    float bat_cx = s * FOOTER_INSET + s * (FOOTER_BAT * 0.5f);
+    float bat_cx = fx + s * FOOTER_BAT_X + s * (FOOTER_BAT_SZ * 0.5f);
     finn_icon_blit_ink(&g_ic_bat, L, lw, lh,
                        (int)lroundf(bat_cx), (int)lroundf(cy),
-                       rs(FOOTER_BAT, s), FINN_INK, FINN_INK,
+                       rs(FOOTER_BAT_SZ, s), FINN_INK, FINN_INK,
                        4000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u));
 
     char bat_s[32];
-    if (have_bat)
-        snprintf(bat_s, sizeof bat_s, "%d%%", pct);
-    else
-        snprintf(bat_s, sizeof bat_s, "Mains");
+    snprintf(bat_s, sizeof bat_s, "%d%%", pct);
 
     float cap = finn_text_cap_height(&g_f_footer);
-    float tx = s * FOOTER_INSET + s * FOOTER_BAT + s * FOOTER_GAP;
+    float tx = fx + s * FOOTER_BAT_TXT_X;
     finn_text_draw(&g_f_footer, L, lw, lh, tx, cy + cap * 0.5f, bat_s, FINN_INK);
 
-    /* Right action buttons: edit (appearance toggle) and settings */
+    /* Edit button */
     float hit_r = (float)g_r_app.h * 0.5f;
     if (g_hover_act == FINNCONTROL_APPEARANCE)
         control_wash_r(L, lw, lh, g_r_app, hit_r, FINN_MOTION_HOVER_WASH * hover);
@@ -275,6 +280,7 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
                        g_r_app.y + g_r_app.h / 2,
                        rs(FOOTER_ICO, s), FINN_INK, FINN_INK, 0);
 
+    /* Settings button */
     if (g_hover_act == FINNCONTROL_SETTINGS)
         control_wash_r(L, lw, lh, g_r_settings, hit_r, FINN_MOTION_HOVER_WASH * hover);
     if (g_press == FINNCONTROL_SETTINGS)
@@ -473,7 +479,7 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
         tx = dock_x; ty = dock_y; tw = dock_w; th = dock_h;
     }
 
-    int px0 = tx;
+    int px0 = tx + tw - pw;
     int py0 = ty - rs(ANCHOR_GAP, s) - ph;
 
     int margin = rs(12, s);
@@ -485,39 +491,44 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     g_lx0 = px0;
     g_ly0 = py0;
 
-    g_ax = tx;
-    g_ay = ty + th;
-
-    /* rows — all rects are layer-local */
-    int x0 = rs(CC_PAD, s);
-    int y  = rs(CC_PAD, s);
-    int half = rs(HALF_W, s), gap = rs(CC_GAP, s);
-    int tht = rs(TILE_H, s), rowh = rs(ROW_H, s);
-    int full = pw - 2 * x0;
+    g_ax = tx + tw / 2;
+    g_ay = ty;
 
     g_r_panel.x = 0; g_r_panel.y = 0; g_r_panel.w = pw; g_r_panel.h = ph;
 
-    g_r_wifi.x = x0;              g_r_wifi.y = y; g_r_wifi.w = half; g_r_wifi.h = tht;
-    g_r_bt.x   = x0 + half + gap; g_r_bt.y   = y; g_r_bt.w   = half; g_r_bt.h   = tht;
-    y += tht + gap;
+    g_r_wifi.x = rs(CC_PAD, s);
+    g_r_wifi.y = rs(CC_PAD, s);
+    g_r_wifi.w = rs(TILE_W, s);
+    g_r_wifi.h = rs(TILE_H, s);
 
-    g_r_bright.x = x0; g_r_bright.y = y; g_r_bright.w = full; g_r_bright.h = rowh;
-    y += rowh + gap;
+    g_r_bt.x   = rs(TILE2_X, s);
+    g_r_bt.y   = rs(CC_PAD, s);
+    g_r_bt.w   = rs(TILE_W, s);
+    g_r_bt.h   = rs(TILE_H, s);
 
-    g_r_vol.x = x0; g_r_vol.y = y; g_r_vol.w = full; g_r_vol.h = rowh;
+    g_r_bright.x = rs(CC_PAD, s);
+    g_r_bright.y = rs(SLIDER_BRIGHT_Y, s);
+    g_r_bright.w = rs(SLIDER_W, s);
+    g_r_bright.h = rs(SLIDER_H, s);
 
-    /* Footer buttons on the right (Figma 10:3: edit at x=200, settings at x=226, y=226, 18x18) */
-    int hit = rs(FOOTER_HIT, s);
-    int fcy = rs(FOOTER_Y + FOOTER_H * 0.5f, s);
-    int edit_cx = rs(209.0f * 1.298077f, s);
-    int set_cx  = rs(235.0f * 1.298077f, s);
-    g_r_app.x      = edit_cx - hit / 2;
-    g_r_app.y      = fcy - hit / 2;
+    g_r_vol.x    = rs(CC_PAD, s);
+    g_r_vol.y    = rs(SLIDER_VOL_Y, s);
+    g_r_vol.w    = rs(SLIDER_W, s);
+    g_r_vol.h    = rs(SLIDER_H, s);
+
+    g_r_footer.x = rs(FOOTER_X, s);
+    g_r_footer.y = rs(FOOTER_Y, s);
+    g_r_footer.w = rs(FOOTER_W, s);
+    g_r_footer.h = rs(FOOTER_H, s);
+
+    int hit = rs(30.0f * REF, s);
+    g_r_app.x      = rs(FOOTER_X + FOOTER_EDIT_X, s);
+    g_r_app.y      = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
     g_r_app.w      = hit;
     g_r_app.h      = hit;
 
-    g_r_settings.x = set_cx - hit / 2;
-    g_r_settings.y = fcy - hit / 2;
+    g_r_settings.x = rs(FOOTER_X + FOOTER_SET_X, s);
+    g_r_settings.y = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
     g_r_settings.w = hit;
     g_r_settings.h = hit;
 
@@ -549,7 +560,7 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
 
     finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                      0.0f, 0.0f, (float)pw, (float)ph,
-                     s * CC_R_PANEL, FINN_GLASS, CC_GLASS);
+                     s * CC_R_PANEL, FINN_GLASS, FINN_GLASS_PANEL);
 
     float press = finn_anim_v(&g_a_press);
     float hover = g_hover;
@@ -643,8 +654,9 @@ static int in_rect(const cc_rect *r, int x, int y) {
 }
 
 static float slider_frac(const cc_rect *r, int x, float s) {
-    float bx = (float)r->x + s * THUMB_W;
-    float bw = (float)r->w - s * THUMB_W;
+    (void)s;
+    float bx = (float)r->x;
+    float bw = (float)r->w;
     if (bw <= 0.0f) return 0.0f;
     float f = ((float)x - bx) / bw;
     return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);

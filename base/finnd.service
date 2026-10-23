@@ -12,8 +12,10 @@ ExecStart=/usr/local/bin/finnd
 # This daemon is root-equivalent authority over the running system: it can
 # move the pointer, read the framebuffer, start apps and power the machine
 # off. It is therefore:
-#   - socket-activated only (no TCP listener, ever)
-#   - bound to /run/finn/control.sock, mode 0660, root and group finn
+#   - the only listener: it binds /run/finn/control.sock itself at startup,
+#     so it is a normal unit and not a socket-activated one, there is no
+#     .socket unit beside it, and nothing ever listens on TCP
+#   - the socket is mode 0660, owned by root and group finn
 #   - authenticated per connection with SO_PEERCRED
 #   - audited to /var/log/finn/control.log
 # Remote control is an explicit decision by the user, not a default. This is
@@ -28,8 +30,10 @@ ExecStart=/usr/local/bin/finnd
 User=root
 Group=root
 
-Restart=always
-RestartSec=1
+# Nothing orders finnd against the compositor, so a restart of either is not
+# a reason to restart the other. A crash of the daemon itself is.
+Restart=on-failure
+RestartSec=2
 StateDirectory=finn
 LogsDirectory=finn
 

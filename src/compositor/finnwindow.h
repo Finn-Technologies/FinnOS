@@ -18,6 +18,14 @@
 
 #define FINNWINDOW_MAX 8
 
+/*
+ * finnwindow_open refuses the request that would be the ninth window. It
+ * does not evict one to make room: which window to lose is a decision for
+ * the caller, not for the window manager, and a window that disappears
+ * while it is being used is a lie about what the machine is doing.
+ */
+#define FINNWINDOW_ERR_LIMIT (-2)
+
 enum {
     FINNWINDOW_HIT_NONE = 0,
     FINNWINDOW_HIT_BODY,
@@ -31,9 +39,13 @@ int  finnwindow_init(const char *icon_dir, const char *font_dir, const char *reg
 void finnwindow_free(void);
 
 /* Window lifecycle & control plane operations */
-int  finnwindow_open(const char *arg);     /* returns window id (>0), or -1 */
+int  finnwindow_open(const char *arg);     /* id (>0), FINNWINDOW_ERR_LIMIT when
+                                            * full, -1 on an invalid request */
 int  finnwindow_close(int id);             /* id<=0 closes focused window   */
 int  finnwindow_focus(int id);
+/* Alt+Tab: move focus to the next/previous open window, wrapping. A
+ * minimized window is restored by the focus, exactly as a click would. */
+int  finnwindow_cycle_focus(int dir);
 int  finnwindow_minimize(int id);          /* toggles minimize on id (<=0 focused) */
 int  finnwindow_maximize(int id);          /* toggles maximize on id (<=0 focused) */
 int  finnwindow_move(int id, int x, int y);

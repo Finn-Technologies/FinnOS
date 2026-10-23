@@ -1,0 +1,21 @@
+[Unit]
+Description=FinnOS: the compositor stopped
+# Pulled in by finn-comp's OnFailure=. It is not a recovery: it makes the
+# failure visible on the console the compositor was painting on, so a person
+# standing at the machine sees why the screen went away and how to get a
+# shell, instead of a black display with a live process behind it.
+#
+# The compositor held tty1; when it stops, systemd resets and releases that
+# VT, so /dev/console is tty1 again and the line lands where the desktop was.
+# tty2 has a getty on it (enabled by base/setup.sh and vm/finn-chroot.sh),
+# which is what Ctrl+Alt+F2 reaches.
+
+[Service]
+Type=oneshot
+# Two readers, one line: the journal for anyone looking afterwards, and the
+# console for the person who is already looking at the screen. tee writes the
+# console and hands the same text to StandardOutput=journal.
+ExecStart=/bin/sh -c 'printf "\nFinnOS: the compositor stopped; press Ctrl+Alt+F2 for a console\n" | tee /dev/console'
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes

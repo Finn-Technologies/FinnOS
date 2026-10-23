@@ -67,6 +67,7 @@ packages.arm         -> packages.aarch64
 mkfinniso            the ISO builder
 setup.sh             the same base, applied to a running machine
 finn-comp.service    the compositor's unit
+finn-failure.service the unit that says the compositor stopped
 finnd.service        the control plane's unit
 finn-tmpfiles.conf   /run/finn, the IPC namespace
 airootfs/            the live root: branding, hooks, units, autologin
@@ -89,6 +90,7 @@ airootfs/etc/hostname            finnos
 airootfs/etc/mkinitcpio.conf     the live hooks: kms, then archiso
 airootfs/etc/mkinitcpio.d/       one image, no fallback, one disc
 airootfs/etc/systemd/system/     finn-comp.service, finnd.service,
+                                 finn-failure.service,
                                  getty@tty1 autologin as root,
                                  NetworkManager enabled
 airootfs/usr/lib/tmpfiles.d/     /run/finn, the IPC namespace
@@ -101,6 +103,13 @@ console that installs FinnOS, and the machine it installs on is where the
 shell is built. A unit enabled with no binary to run is a unit that fails
 at every boot.
 
+The unit does not test for the GPU once and give up. It wants
+`dev-dri-card0.device`, so systemd waits for the node to exist and a node
+that never appears is a failed start with a start limit and an `OnFailure=`
+unit behind it, rather than a condition that is silently false for the
+whole boot. `card0` is the trigger, not the only device the compositor can
+open: it enumerates `/dev/dri/card*` itself.
+
 `boot/` is the three menus, which say the same thing three ways because a
 machine gets one of them and not the others:
 
@@ -112,14 +121,49 @@ boot/loader/entries/02-…         FinnOS live shell
 boot/grub/grub.cfg               GRUB, for the firmware that boots neither
 ```
 
+## Installing onto a machine
+
+The medium is a console that installs FinnOS. **Install FinnOS** boots it
+and `finn-install` writes the disk that is named on the command line —
+there is no default, because the default is the one that erases the machine
+somebody meant to keep:
+
+```sh
+finn-install --disk /dev/nvme0n1      # asks for the path again, typed
+finn-install --disk /dev/sda --yes    # unattended, no second question
+```
+
+It resolves the device first (so `/dev/disk/by-id/...` works), and refuses
+a partition, a disk that backs `/`, `/boot`, `/mnt` or the running live
+medium, and a disk with a mounted partition or swap on it. The partition
+names follow the device: `nvme0n1p1`, `mmcblk0p1`, `sda1`. Every step is
+checked rather than assumed, and `FINN_INSTALL_COMPLETE` is printed only
+after looking at the disk that was written: `/usr/local/bin/finn-comp` must
+be executable there and a boot entry must name the root by its UUID.
+
+The password is not on the disc. Without `FINN_PASSWORD` the chroot
+generates one for `root` and `finn` and prints it once at the end of the
+install; with it, that value is used and is never on a command line.
+`sshd` is installed and left disabled, and the machine is on
+`graphical.target` with `getty@tty2` behind it for the console.
+
 ## The units are one file, twice
 
-`finn-comp.service`, `finnd.service` and `finn-tmpfiles.conf` exist in two
-places: here, where `setup.sh` installs them from, and in `airootfs/`,
-where the disc carries them. They are the same file. `mkfinniso --check`
-compares them and refuses to build when they have drifted, because a disc
-that ships a unit the machine does not have is a bug that only shows up
-after an install.
+`finn-comp.service`, `finnd.service`, `finn-failure.service` and
+`finn-tmpfiles.conf` exist in two places: here, where `setup.sh` installs
+them from, and in `airootfs/`, where the disc carries them. They are the
+same file. `mkfinniso --check` compares them and refuses to build when they
+have drifted, because a disc that ships a unit the machine does not have is
+a bug that only shows up after an install. The failure unit is on the disc
+even though the live medium never starts a compositor: `finn-comp.service`
+names it in `OnFailure=`, and a unit set that names a unit it does not carry
+is incomplete.
+
+The failure unit is a oneshot. Both `setup.sh` and the installer's chroot
+install it. It writes one line to `/dev/console` and to the journal —
+"FinnOS: the compositor stopped; press Ctrl+Alt+F2 for a console" — so a
+broken session is visible on the screen the compositor was painting and
+there is a stated way out.
 
 ## Building the medium
 
@@ -190,21 +234,44 @@ It reads the same `packages.<arch>` the disc does, installs
 removes any X server, Wayland compositor, GTK or Qt stack that is on the
 machine (the `wayland` client library stays, because `mesa` links it),
 creates the
-`finn` user, enables `seatd` and `NetworkManager`, and installs the units,
-the fonts, both wallpapers, every icon, the app registry, `finnpkg`, and
-the branding: `os-release`, `issue`, `motd` and the hostname.
+`finn` user, enables `seatd` and `NetworkManager`, and installs the units
+(the compositor, the control plane and the failure unit), the fonts, both
+wallpapers, every icon, the app registry, `finnpkg`, and the branding:
+`os-release`, `issue`, `motd` and the hostname.
+
+It does not set a password: whoever runs `setup.sh` is already root and has
+one. On this path `finn` keeps passwordless sudo
+(`finn ALL=(ALL) NOPASSWD: ALL`), because the dev loop drives `sudo` from
+`vm/deploy.sh` over ssh, where there is no terminal to be asked on. A
+machine installed from the disc is not this machine: the installer
+generates a password, sudo asks for it, and nothing on the shipped image
+has a known password.
+
+`sshd` is installed and not enabled. A network login is a decision somebody
+makes on the machine (`systemctl enable --now sshd`), not a default.
 
 The hostname is set only when the machine still has the default one, and
 `FINN_KEEP_HOSTNAME=1` leaves it alone whatever it is. A machine whose
 name a person chose is that person's machine.
 
-The units are installed but not enabled: enabling a unit whose binary is
-not on the machine is a machine that fails at every boot. Build first —
+The units are installed always, and enabled only when the binaries they run
+exist: enabling a unit whose binary is not on the machine is a machine that
+fails at every boot. So the script checks for `/usr/local/bin/finn-comp` and
+`/usr/local/bin/finnd`, and when both are there it enables them and sets
+`graphical.target` as the default target. When they are not, it says which
+one is missing and leaves the machine booting to its console. Build first —
 
 ```sh
 cd /opt/finnos && make && sudo make install
+sudo base/setup.sh            # again, or:
 sudo systemctl enable --now finn-comp finnd
+sudo systemctl set-default graphical.target
 ```
+
+`getty@tty2` is enabled either way, as the rescue console: the compositor
+owns tty1 (`finn-comp.service` conflicts with `getty@tty1`), so tty1 is not
+a way in, and Ctrl+Alt+F2 is. The old tty1 autologin drop-in is removed
+where an older base left one behind — the getty it configured never ran.
 
 `airootfs/etc/mkinitcpio.conf` is not part of this. It is the live
 medium's initramfs, and its archiso hooks would be wrong on a machine that
@@ -237,9 +304,14 @@ and the failure to avoid is two of them disagreeing.
 
 ## What is not here
 
-- **No window manager, no keyboard input, no client protocol.** See
-  `docs/architecture.md`; the shell's own gaps are listed there rather
-  than papered over here.
+- **No client surface protocol, no terminal, no text input into an app.**
+  The window manager is there (`finnwindow`: move, maximize, minimize,
+  close), and the compositor reads its own input devices, keyboard
+  included. What does not exist is the surface protocol that would let a
+  program draw into a window or receive typed text from it, so a tile opens
+  an empty rectangle and there is nothing to run a command in. See
+  `docs/architecture.md`; the shell's own gaps are listed there rather than
+  papered over here.
 - **No Wayland compositor and no Wayland client protocol.** The `wayland`
   library is on the disc because Mesa links it, and that is all it is: no
   compositor starts it and nothing speaks its protocol. A `wayland`

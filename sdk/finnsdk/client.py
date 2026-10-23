@@ -97,10 +97,15 @@ class FinnClient:
     """
     A connection to a running FinnOS.
 
-    The client talks to the control plane. If the control plane is not
-    running it falls back to the compositor's socket, which is the same
-    protocol with fewer verbs — enough to move the pointer and take a
-    screenshot, which is what a test harness needs.
+    The client talks to the control plane, and only to the control plane:
+    a device that is not running `finnd` is not reachable, and the failure
+    is the OSError the socket gives. The compositor's own socket is not a
+    second door — it is not audited, and it is never chosen for you.
+
+    `direct=True` is that socket, explicitly: it exists for development
+    and diagnosis, so a test harness can move the pointer or take a
+    screenshot on a device whose control plane is down. Ask for it, and
+    nothing else uses it.
     """
 
     def __init__(self, path=None, timeout=10.0, direct=False):
@@ -113,16 +118,9 @@ class FinnClient:
 
     def _socket(self):
         if self._ctl is None:
-            self._ctl = ControlSocket(self.path, self.timeout)
-            try:
-                self._ctl.connect()
-            except OSError:
-                if self.direct:
-                    raise
-                # The control plane is not running: the compositor's own
-                # socket is the provider underneath it.
-                self._ctl = ControlSocket(COMP_SOCKET, self.timeout)
-                self._ctl.connect()
+            ctl = ControlSocket(self.path, self.timeout)
+            ctl.connect()       # an OSError here is the caller's to see
+            self._ctl = ctl
         return self._ctl
 
     def close(self):
@@ -257,6 +255,18 @@ class FinnClient:
     def release(self, button="left"):
         return self.call("pointer.up", button=button)
 
+    def key_press(self, code):
+        """Hold a key down (`code="enter"`, `code="tab"`, ...)."""
+        return self.call("key.press", code=code)
+
+    def key_release(self, code):
+        """Release a held key."""
+        return self.call("key.release", code=code)
+
+    def key_tap(self, code):
+        """Press and release a key."""
+        return self.call("key.tap", code=code)
+
     def sound(self):
         """The output level and the mixer element it is on."""
         out = {}
@@ -313,7 +323,11 @@ class FinnClient:
         return self.call("notify.clear")
 
     def power(self, what="restart"):
-        """`shutdown`, `restart` or `restart-comp`."""
+        """`reboot`, `restart`, `shutdown` or `poweroff`.
+
+        The device accepts only those words, and answers after systemctl
+        has run: a refusal is an error, not a success.
+        """
         return self.call("power", what)
 
     def apps(self):

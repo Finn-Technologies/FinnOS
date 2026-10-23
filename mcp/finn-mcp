@@ -15,14 +15,27 @@ MCP is a transport, not the OS API. The device speaks a small line protocol
 runs on. That keeps a fast-moving external spec out of the operating system,
 and means the same control plane is scriptable with nothing but ssh:
 
-    ssh finn@host finnctl state.set battery=42
+    ssh finn@host 'finnctl window.open title="Finn Notes"'
+
+Note the quoting: OpenSSH joins the argv after the host with spaces and hands
+the result to the remote login shell, so every finnctl argument travels as
+one shell-quoted word (`shlex.join`, or `shlex.quote` on 3.6/3.7).
 
 Implemented without the official SDK so it runs on any Python 3.6+ host.
 
 Configuration (environment):
-    FINN_HOST       ssh target for the device   (default finn@10.211.55.6)
-    FINN_SSH_PORT   ssh port                    (default 22)
-    FINN_TIMEOUT    per-call timeout, seconds   (default 120)
+    FINN_HOST             ssh target for the device   (default finn@10.211.55.6)
+    FINN_SSH_PORT         ssh port                    (default 22)
+    FINN_TIMEOUT          per-call timeout, seconds   (default 120)
+    FINN_SSH_STRICT       yes/no: host key checking. Default `accept-new`
+                          trusts a host on first contact and refuses a
+                          changed key; `yes` refuses an unknown host too,
+                          `no` turns checking off (throwaway VM)
+    FINN_SSH_KNOWN_HOSTS  the known_hosts file to pin against; default is
+                          the user's normal one
+
+Host keys are checked. There is no /dev/null known_hosts: a transport that
+forgets every host key cannot notice that one changed.
 
 Check connectivity without an MCP client:
     ./finn-mcp --check
@@ -31,6 +44,7 @@ Check connectivity without an MCP client:
 import base64
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -44,17 +58,55 @@ HOST = os.environ.get("FINN_HOST", "finn@10.211.55.6")
 PORT = os.environ.get("FINN_SSH_PORT", "22")
 TIMEOUT = float(os.environ.get("FINN_TIMEOUT", "120"))
 
-SSH_BASE = [
-    "ssh", "-p", PORT,
-    "-o", "BatchMode=yes",
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "LogLevel=ERROR",
-    HOST,
-]
-
 
 # ---------------------------------------------------------------- transport
+
+def _shell_join(argv):
+    """One remote command line, every argument a shell-quoted word.
+
+    OpenSSH does not pass argv to the far side: it joins the words after the
+    host with spaces and gives that string to the remote login shell. An
+    unquoted `title=x; reboot` is therefore a remote command, so the only
+    safe thing to send is one properly quoted command line.
+
+    `shlex.join` is 3.8+; the fallback is the same function written out, for
+    the 3.6+ hosts this adapter still claims to run on.
+    """
+    join = getattr(shlex, "join", None)
+    if join is not None:
+        return join(argv)
+    return " ".join(shlex.quote(str(word)) for word in argv)
+
+
+def _ssh_base():
+    """The ssh argv for one call, up to and including the host.
+
+    Host-key checking is on. `accept-new` is the useful default for a device
+    that is reinstalled often: it pins the key on first contact and refuses
+    if it later changes. FINN_SSH_STRICT=yes also refuses a host it has not
+    seen; =no turns checking off for a throwaway VM. FINN_SSH_KNOWN_HOSTS
+    names the file to pin against, for when the agent has its own copy of
+    the device's key.
+    """
+    strict = os.environ.get("FINN_SSH_STRICT", "").strip().lower()
+    if strict in ("yes", "true", "1"):
+        strict = "yes"
+    elif strict in ("no", "false", "0"):
+        strict = "no"
+    else:
+        strict = "accept-new"
+
+    base = [
+        "ssh", "-p", PORT,
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=" + strict,
+    ]
+    known_hosts = os.environ.get("FINN_SSH_KNOWN_HOSTS", "").strip()
+    if known_hosts:
+        base += ["-o", "UserKnownHostsFile=" + known_hosts]
+    base += ["-o", "LogLevel=ERROR", HOST]
+    return base
+
 
 def _run(args, binary=False, attempts=3):
     """Run `finnctl <args>` on the device. Returns (ok, stdout, stderr).
@@ -63,7 +115,8 @@ def _run(args, binary=False, attempts=3):
     diagnostic, whereas a rejected command returns non-zero *with* a message
     from finnctl. Only the former is worth retrying.
     """
-    cmd = SSH_BASE + ["finnctl"] + list(args)
+    remote = _shell_join(["finnctl"] + [str(arg) for arg in args])
+    cmd = _ssh_base() + [remote]
     last = (False, b"" if binary else "", "no attempt made")
 
     for attempt in range(attempts):
@@ -294,9 +347,9 @@ def tool_log(a):
 
 
 def tool_power(a):
-    action = a.get("action", "restart-comp")
-    if action not in ("reboot", "shutdown", "restart-comp"):
-        return "action must be reboot, shutdown or restart-comp", True
+    action = a.get("action")
+    if action not in ("reboot", "restart", "shutdown", "poweroff"):
+        return "action must be reboot, restart, shutdown or poweroff", True
     ok, _out, err = ctl("power", action)
     if not ok:
         return err or "power failed", True
@@ -649,10 +702,10 @@ TOOLS = [
     },
     {
         "name": "finn_power",
-        "description": "Ask FinnOS to reboot, power off, or just restart the compositor.",
+        "description": "Ask FinnOS to reboot, restart, power off or shut down. There is no verb to restart only the compositor: a session that has to be restarted is a failed session, and systemd restarts it.",
         "inputSchema": {
             "type": "object",
-            "properties": {"action": {"type": "string", "enum": ["reboot", "shutdown", "restart-comp"]}},
+            "properties": {"action": {"type": "string", "enum": ["reboot", "restart", "shutdown", "poweroff"]}},
             "required": ["action"],
             "additionalProperties": False,
         },

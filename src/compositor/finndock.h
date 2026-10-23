@@ -19,6 +19,8 @@ enum {
     FINNDOCK_HIT_NONE = 0,
     FINNDOCK_HIT_APPS,
     FINNDOCK_HIT_LAUNCHER,
+    FINNDOCK_HIT_SEARCH,
+    FINNDOCK_HIT_WINDOWS,
     FINNDOCK_HIT_TRAY,
     FINNDOCK_HIT_CLOCK        /* the clock end of the pill: its own page */
 };
@@ -108,6 +110,9 @@ void finndock_set_clock_well(float amount);
 
 /* The taskbar button's well, driven by open windows. */
 void finndock_set_apps_well(float amount);
+
+/* The launcher button's well, driven by Start Menu openness. */
+void finndock_set_launcher_well(float amount);
 int  finndock_tick(float dt);     /* 1 while the squeeze moved this frame */
 int  finndock_running(void);      /* 1 while another frame is still due */
 

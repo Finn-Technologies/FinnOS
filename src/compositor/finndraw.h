@@ -56,6 +56,14 @@ extern uint32_t FINN_FILL;     /* filled portion of a slider bar    */
  */
 extern uint32_t FINN_GLASS;
 
+/*
+ * Every frosted panel (Control Center, Start Menu, clock page, windows) and
+ * inset tile in the shell shares these two weights so surfaces do not drift
+ * apart in visual density.
+ */
+#define FINN_GLASS_PANEL 0.65f
+#define FINN_GLASS_TILE  0.85f
+
 void finn_theme_set(int dark);
 int  finn_theme_dark(void);
 

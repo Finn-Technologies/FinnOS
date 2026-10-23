@@ -2,6 +2,7 @@
 #include "finnstate.h"
 #include "finnaudio.h"
 #include "finnproto.h"
+#include "finnsettings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,9 @@
 /* The override directory is the one the protocol names, so there is
  * exactly one place in the tree that says where it lives. */
 #define STATE_DIR   FINN_STATE_DIR
-#define PERSIST_DIR "/var/lib/finn"
+
+/* How long the compositor's copy of the state stays good. */
+#define STATE_TTL   0.5
 
 /* ---------------- small helpers ---------------- */
 
@@ -246,7 +249,14 @@ static void read_dark(finn_state *st) {
     int v;
     if (read_int_file(STATE_DIR "/dark", &v) == 0) { st->dark = v ? 1 : 0; return; }
 
-    char s[32];
+    char s[16];
+    if (finn_settings_get("appearance", s, sizeof s) == 0) {
+        st->dark = strcmp(s, "dark") == 0;
+        return;
+    }
+
+    /* Nothing has been chosen yet: the shipped file is the factory default,
+     * not a running setting, so it is still the last word. */
     read_first_line("/etc/finn/appearance", s, sizeof s);
     st->dark = (strncmp(s, "dark", 4) == 0);
 }
@@ -258,8 +268,31 @@ static void read_volume(finn_state *st) {
     v = finn_audio_get();                  /* the real mixer, when there is one */
     if (v >= 0) { st->volume = v; return; }
 
-    if (read_int_file(PERSIST_DIR "/volume", &v) == 0) { st->volume = v; return; }
-    st->volume = 50;
+    /* No mixer: a level this machine remembered from an earlier session is
+     * real state, not a guess. Without one the answer is absent (-1), and the
+     * Control Center draws that. */
+    if (finn_settings_get_int("volume", &v) == 0) st->volume = v;
+}
+
+/* ---------------- cache ---------------- */
+
+static finn_state g_cache;
+static double     g_cache_at = 0.0;
+static int        g_cache_valid = 0;
+
+void finn_state_invalidate(void) {
+    g_cache_valid = 0;
+}
+
+void finn_state_poll(finn_state *st, double now) {
+    /* A clock that went backwards means the stored timestamp is meaningless;
+     * read again rather than trusting it. */
+    if (!g_cache_valid || now < g_cache_at || now - g_cache_at >= STATE_TTL) {
+        finn_state_read(&g_cache);
+        g_cache_at = now;
+        g_cache_valid = 1;
+    }
+    *st = g_cache;
 }
 
 /* ---------------- public ---------------- */
@@ -306,7 +339,9 @@ int finn_state_set(const char *name, int value) {
 
     char path[512];
     snprintf(path, sizeof path, STATE_DIR "/%s", name);
-    return write_int_file(path, value);
+    int rc = write_int_file(path, value);
+    finn_state_invalidate();
+    return rc;
 }
 
 void finn_state_clear(void) {
@@ -315,27 +350,29 @@ void finn_state_clear(void) {
         snprintf(path, sizeof path, STATE_DIR "/%s", OVERRIDES[i]);
         unlink(path);
     }
+    finn_state_invalidate();
 }
 
 /* ---------------- actuators ---------------- */
 
 /*
- * Volume is a level the OS owns, and it is pushed to the mixer whenever a
- * mixer exists. The persisted level is what the shell shows on a machine
- * whose audio hardware has no usable control (and, until the session audio
- * daemon lands, what keeps the level across a reboot).
+ * Volume is a level the sound hardware owns. The mixer is therefore the
+ * source of truth and the persisted level is only what this machine
+ * remembers for a session on which it has no mixer at all: a level the mixer
+ * refused is not a level the shell may show, so nothing is written when the
+ * mixer is absent or the write fails.
  */
 int finn_state_set_volume(int pct) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
-    finn_audio_set(pct);
+    if (finn_audio_set(pct) != 0) return -1;
 
-    mkdir("/run/finn", 0755);
-    mkdir(STATE_DIR, 0755);
-    mkdir(PERSIST_DIR, 0755);
-    write_int_file(PERSIST_DIR "/volume", pct);
-    return write_int_file(STATE_DIR "/volume", pct);
+    /* A failed persist costs the remembered level, not the level itself, so
+     * it does not turn a mixer that took the value into an error. */
+    finn_settings_set_int("volume", pct);
+    finn_state_invalidate();
+    return 0;
 }
 
 int finn_state_set_brightness(int pct) {
@@ -353,21 +390,36 @@ int finn_state_set_brightness(int pct) {
     if (pct > 100) pct = 100;
     int v = maxv * pct / 100;
     if (v < 1 && pct > 0) v = 1;          /* never go fully black */
-    return write_int_file(cp, v);
+    int rc = write_int_file(cp, v);
+    finn_state_invalidate();
+    return rc;
 }
 
-int finn_state_set_wifi(int on) { return rfkill_soft_set("wlan", on); }
-int finn_state_set_bluetooth(int on) { return rfkill_soft_set("bluetooth", on); }
+int finn_state_set_wifi(int on) {
+    int rc = rfkill_soft_set("wlan", on);
+    finn_state_invalidate();
+    return rc;
+}
+
+int finn_state_set_bluetooth(int on) {
+    int rc = rfkill_soft_set("bluetooth", on);
+    finn_state_invalidate();
+    return rc;
+}
 
 int finn_state_set_dark(int on) {
     mkdir("/run/finn", 0755);
     mkdir(STATE_DIR, 0755);
-    mkdir("/etc/finn", 0755);
 
-    FILE *f = fopen("/etc/finn/appearance", "w");
-    if (f) { fprintf(f, "%s\n", on ? "dark" : "light"); fclose(f); }
+    /* Appearance is durable now: the store is what survives a reboot. The
+     * /etc file is the shipped default and is never rewritten, because a
+     * factory default that the running session edits is not a default. */
+    if (finn_settings_set("appearance", on ? "dark" : "light") != 0) return -1;
 
+    /* The /run override stays: it is the documented test/session interface. */
     char path[512];
     snprintf(path, sizeof path, STATE_DIR "/dark");
-    return write_int_file(path, on ? 1 : 0);
+    int rc = write_int_file(path, on ? 1 : 0);
+    finn_state_invalidate();
+    return rc;
 }

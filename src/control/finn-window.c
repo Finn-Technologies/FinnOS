@@ -11,11 +11,30 @@
 #include <string.h>
 
 int main(int argc, char **argv) {
+    const char *app = "window";
+    const char *title = NULL;
+
+    const char *prog = strrchr(argv[0], '/');
+    prog = prog ? prog + 1 : argv[0];
+    if (strstr(prog, "settings")) app = "settings";
+    else if (strstr(prog, "files")) app = "files";
+    else if (strstr(prog, "arc")) app = "arc";
+
+    if (argc > 1 && argv[1][0]) {
+        if (!strcmp(argv[1], "settings") || !strcmp(argv[1], "files") ||
+            !strcmp(argv[1], "arc") || !strcmp(argv[1], "window")) {
+            app = argv[1];
+            if (argc > 2 && argv[2][0]) title = argv[2];
+        } else {
+            title = argv[1];
+        }
+    }
+
     char req[160];
-    if (argc > 1 && argv[1][0])
-        snprintf(req, sizeof req, "window.open app=window title=%s", argv[1]);
+    if (title)
+        snprintf(req, sizeof req, "window.open app=%s title=%s", app, title);
     else
-        snprintf(req, sizeof req, "window.open app=window");
+        snprintf(req, sizeof req, "window.open app=%s", app);
 
     char reply[256];
     if (finn_call(FINN_CONTROL_SOCK, req, reply, sizeof reply) < 0) {

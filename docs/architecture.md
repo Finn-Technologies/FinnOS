@@ -33,9 +33,9 @@ There are two, and that is the whole system.
                                     │ sound, appearance, notify
                     ┌───────────────▼──────────────────────┐
                     │  finn-comp — the compositor           │
-                    │  /run/finn/comp.sock                 │
-                    │  owns the scanout buffer and the     │
-                    │  pointer, and draws the shell        │
+                    │  /run/finn/comp.sock   (0600, root)   │
+                    │  owns the scanout buffer, the pointer │
+                    │  and the keyboard, and draws the shell│
                     └──────────────────────────────────────┘
 ```
 
@@ -106,7 +106,8 @@ finndock         the dock (taskbar bubble, launcher bubble, system tray pill)
 finncontrol      the Control Center
 finnclock        the Notification Center and clock page
 finnmenu         the Start Menu
-finnwindow       frosted windows and first-party app views
+finnwindow       frosted windows and the window manager
+finnkbd          evdev keyboard, modifier state and VT chords
 ```
 
 ### Two backends, one frame
@@ -183,6 +184,13 @@ away from a service whose group it had to change, and the control plane
 needs that capability to start an app as the user rather than as root. The
 group is therefore set on the socket itself, which is where it matters.
 
+The compositor's socket is not a second door. It is `/run/finn/comp.sock`,
+mode `0600`, owned by root, and `finn-comp` checks `SO_PEERCRED` on every
+accepted connection as well. `finnctl --direct` is the explicit
+development path to it; there is no automatic fallback, because a device
+whose control plane is down should be unreachable rather than quietly
+unaudited.
+
 An app is started by systemd, as the user, in its own transient unit. The
 control plane asks systemd to do it rather than doing it itself, because
 the daemon is hardened with `NoNewPrivileges` and does not hold
@@ -205,9 +213,39 @@ Keeping them apart is what lets the shell show an app that is honestly
 ships — and it keeps a catalogue update from wiping the user's install
 list.
 
-The catalogue is the whole family of first-party apps. The shell draws
-what it finds there, and the control plane launches what the install list
-says is there.
+The catalogue currently has one entry, **Finn Window**. The icons for the
+other apps in the roadmap exist, but a catalogue entry that claimed them
+would put a tile on the desktop for a program nobody can start.
+
+## The session
+
+A session starts with `finn-comp` on tty1, under systemd, after the DRM
+device unit exists. Three pieces make it a session rather than a demo:
+
+- **Setup is a gate, not a suggestion.** `/var/lib/finn/setup-done` is
+  written atomically (settings, fsync, rename) and only after the language
+  has been saved. Its absence means setup opens, on every boot, until it
+  completes. `FINN_SETUP_SKIP=1` is the positive development escape;
+  `FINN_SETUP_FORCE=1` shows the screen again. The language control is a
+  display-name choice only: there is no locale or keymap consumer yet, and
+  the screen says so. The circle button bearing the accessibility icon
+  toggles the dark appearance; there is no separate accessibility or
+  reduced-motion subsystem yet.
+- **Settings are one versioned store.** `/var/lib/finn/settings` is
+  line-oriented `key=value`, stamped with `version=1`, written through a
+  temporary file and a rename. Volume, appearance and the setup language
+  live there. The mixer is the truth for volume whenever there is one; the
+  stored level is what a machine without a mixer remembers, and with
+  neither the answer is absent (`-1`).
+- **The keyboard and the console.** `finnkbd` reads evdev directly, tracks
+  its own modifier and lock state, handles `SYN_DROPPED`, and picks up
+  keyboards plugged in after boot. `Ctrl+Alt+F1..F6` switches VT;
+  `getty@tty2` is the rescue console, and the same chord returns to the
+  session because the evdev reader still sees it there. DRM master is
+  dropped on the way out and retaken on the way back, with a full modeset
+  so the returning session repaints.
+
+Nothing in the session reads a model, and nothing needs the network.
 
 ## The UI language
 
@@ -223,12 +261,19 @@ them:
 
 - **No external client surface protocol.** `finnwindow` manages frosted
   desktop windows (`window.open`, `window.list`, `window.close`,
-  `window.minimize`, `window.maximize`, `window.move`) and draws the
-  compositor's built-in views, but an external process started by
-  `app.launch` cannot yet stream its own pixel buffer over a socket.
-- **No keyboard input.** The compositor reads a pointer and nothing else.
-  The `key.*` verbs are reserved.
-- **No OTA.** `finnpkg update` is a stub, and the A/B slots are a design
-  in [roadmap.md](roadmap.md), not a feature.
+  `window.minimize`, `window.maximize`, `window.move`, `window.focus`),
+  but an external process started by `app.launch` cannot yet stream its own
+  pixel buffer over a socket, and there are no built-in app views.
+- **No text delivery into an app.** The compositor reads a real keyboard
+  (`finnkbd`) and uses it for setup, `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc`
+  and the Super key, and `key.press/release/tap` inject into the same
+  path. There is no focused client surface, so a key cannot yet become a
+  character in an application, and the shell has no text field.
+- **No window resize.** Windows move, maximize, minimize, close and
+  cycle focus; they do not resize, and there is no stacking protocol for
+  a client.
+- **No OTA.** `finnpkg` installs, lists and removes packages; `finnpkg
+  update` is a stub, and the A/B slots are a design in
+  [roadmap.md](roadmap.md), not a feature.
 - **No FinnAI.** It is off by default and there are no weights in the base
   image. That is the intent, not an omission.

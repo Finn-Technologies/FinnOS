@@ -14,27 +14,25 @@ theme FinnTokens {
   // ---- the palette ----------------------------------------------------
   // Bone and ink. The chrome is bone; the text on it is ink.
 
-  color: bone_light #F6F1E7, bone_dark #23262E
-  color: tile_light #E7E1D5, tile_dark #2F333C
+  color: bone_light #FFFFFF, bone_dark #23262E
+  color: tile_light #FFFFFF, tile_dark #2F333C
   color: tile_on_light #D3E6FF, tile_on_dark #2B4A78
-  color: hair_light #22FFFFFF, hair_dark #1AFFFFFF
+  color: hair_light #1A000000, hair_dark #1AFFFFFF
 
-  color: ink_light #1A1D24, ink_dark #F4F0E8
+  color: ink_light #000000, ink_dark #F4F0E8
   color: mute_light #969696, mute_dark #8B9099
-  color: dim_light #7B7776, dim_dark #A9A59E
+  color: dim_light #5D5C5C, dim_dark #A9A59E
 
   // The family accent is the same in both appearances: it is the brand's
   // colour, not the appearance's.
-  color: accent_light #7AB8FF, accent_dark #7AB8FF
+  color: accent_light #006FFF, accent_dark #006FFF
 
-  color: track_light #CFC7B8, track_dark #3B4048
+  color: track_light #40000000, track_dark #3B4048
   color: knob_light #FFFFFF, knob_dark #EDE9E1
 
-  // `on` and `fill` are the accent and the track at full strength. The
-  // pastel accent reads well as a glyph on bone and turns to mush as a
-  // 31-pixel disc, so a filled shape has a token of its own.
+  // `on` and `fill` are the accent and the track at full strength.
   color: on_light #006FFF, on_dark #0A84FF
-  color: fill_light #998481, fill_dark #EDE9E1
+  color: fill_light #FFFFFF, fill_dark #EDE9E1
 
   // The tint of the frosted chrome: near-white in the light appearance,
   // and the deep bone in the dark one, where frosted has to mean darkened
@@ -44,12 +42,12 @@ theme FinnTokens {
   // ---- the radii ------------------------------------------------------
   // A surface's radius is a fraction of its smallest dimension.
 
-  radius: r_bubble 19.5    // the dock's bubbles and the tray's pill (ref 15)
-  radius: r_panel 19.5     // the Control Center and Notification Center (ref 15)
-  radius: r_tile 10.4      // a status tile inside Control Center (ref 8)
-  radius: r_note 15.6      // a notification card or menu card (ref 12)
-  radius: r_card 19.5      // the Start Menu and Window panel (ref 15)
-  radius: r_app 15.6       // an app's tile in the Start Menu (ref 12)
+  radius: r_bubble 10.4    // the dock's pills (ref 8)
+  radius: r_panel 10.4     // the Control Center and Start Menu (ref 8)
+  radius: r_tile 5.37      // a status tile inside Control Center (ref 4.14)
+  radius: r_note 10.4      // a notification card or menu card (ref 8)
+  radius: r_card 10.4      // the Start Menu and Window panel (ref 8)
+  radius: r_app 7.67       // an app's chip in the dock / Start Menu (ref 5.91)
   radius: r_hero 39.0      // the Setup hero card (ref 30)
   radius: r_pill 999       // a slider row or action pill: half its height
 
@@ -70,16 +68,16 @@ theme FinnTokens {
 
   // ---- the material ---------------------------------------------------
   // The glass is the blurred wallpaper brought toward bone. A tile over a
-  // panel is a second pass, and it compounds: 0.70 + 0.30 x 0.50 = 0.85.
+  // panel is a second pass, and it compounds: 0.65 + 0.35 x 0.57 = 0.85.
   // There are no shadows: the reference's edges are a hard one-pixel step.
 
-  weight: glass_panel 0.70, glass_tile 0.50, glass_well 0.53
+  weight: glass_panel 0.65, glass_tile 0.85, glass_well 0.53
   weight: surface_scale 0.92
 
   // ---- the wallpaper --------------------------------------------------
 
-  color: wp_edge #DCD2F2, wp_mid #E99AA4, wp_core #FF7A5C, wp_glow #FFB347
-  gradient: wallpaper_desktop linear(180deg, wp_edge 0%, wp_mid 35%, wp_core 65%, wp_glow 100%)
+  color: wp_blue #006FFF, wp_light #EDF4FD
+  gradient: wallpaper_desktop linear(180deg, #EDF4FD 0%, #C9E0FA 50%, #76AEEB 100%)
   effect: wallpaper_flute repeating-x(lines, 1px rgba(255,255,255,0.18) every 8px)
 
   // ---- the motion -----------------------------------------------------

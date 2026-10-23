@@ -16,9 +16,10 @@ import socket
 # The protocol's own name and version. The device answers `ping` with it.
 PROTOCOL_MAGIC = "FINNCTL/1"
 
-# The sockets. The control plane is the one to talk to; the compositor's
-# socket is the provider underneath it, and is only reached when the
-# control plane is not running.
+# The sockets. The control plane is the only door; the compositor's socket
+# is the provider underneath it. COMP_SOCKET exists for `--direct`, a
+# development flag that needs root and bypasses finnd's audit log; there is
+# no automatic fallback.
 CONTROL_SOCKET = "/run/finn/control.sock"
 COMP_SOCKET = "/run/finn/comp.sock"
 

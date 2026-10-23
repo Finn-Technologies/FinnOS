@@ -9,6 +9,8 @@ human or agent — knows what "done" means for each piece.
 |---|---|
 | the compositor | DRM/KMS, page flips, a GPU path and a software path |
 | the shell | the dock, the Control Center, the clock page, the Start Menu |
+| the keyboard | evdev reader, modifiers and locks, hotplug, `Ctrl+Alt+F1..F6`, `Alt+Tab` |
+| the session | gated first boot, one atomic settings store, tty2 rescue console, watchdog |
 | the control plane | `finnd`, `finnctl`, the audit log, the protocol |
 | the registry | the catalogue the Start Menu draws, the install list the package manager owns |
 | the SDK | `fuic` (the `.fui` compiler), the Python client, the app templates |
@@ -18,7 +20,9 @@ human or agent — knows what "done" means for each piece.
 
 ### Windows
 
-The largest missing piece, and everything else is smaller without it.
+Windows exist — open, close, move, maximize, minimize, and `Alt+Tab` cycles
+focus — but they are empty. Everything else is smaller without the client
+protocol.
 
 A window manager needs three things the system does not have yet:
 
@@ -27,22 +31,27 @@ A window manager needs three things the system does not have yet:
    back. The protocol should be the same line protocol the control plane
    uses, with a second socket for surfaces, and it should be binary —
    a surface stream is pixels, not text.
-2. **A window list.** The shell needs to know what is open, so the dock's
-   first bubble — the reserved one — can show running apps, and so
-   `Alt-Tab` has something to switch between.
-3. **A focus and stacking model.** Click to raise, a keyboard focus that
-   follows the Super keys, and a rule about which surface takes the
-   pointer.
+2. **A window list a client can join.** The shell knows its own windows;
+   it does not know about a process that wants one, so the dock's
+   first bubble cannot show a running app that is not `finnwindow`, and
+   `Alt+Tab` has nothing but empty windows to switch between.
+3. **A focus and stacking model.** Click to raise is there. A keyboard
+   focus that a client can own, and therefore receive typed text, is not.
 
 The rules for the shell chrome that are already in force apply to windows
 too: nothing moves under the pointer, and a surface is a cached layer.
 
 ### Keyboard
 
-The compositor reads a pointer and nothing else. It needs an evdev
-keyboard, a key map, and a way to deliver keys to whatever has focus.
-Until then there is no Super+Space, and the Start Menu is opened by
-clicking the dock's launcher button.
+The reader is there: `finnkbd` owns evdev, derives modifiers and locks from
+held keys rather than from the event, handles `SYN_DROPPED`, picks up a
+keyboard plugged in later, and exposes `key.press/release/tap`. The shell
+uses it for setup, `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc` and the Super key.
+
+What is missing is the other end: a focused surface to deliver text to.
+Until the client protocol exists there is no text field, no Super+Space
+search and no terminal input, and the documentation says so rather than
+drawing a field that cannot take a character.
 
 ### Apps that draw
 
@@ -65,7 +74,8 @@ The first-party apps are named and waiting:
 
 ### Packaging and OTA
 
-`finnpkg` is a stub. The design it is aiming at:
+`finnpkg` installs, lists and removes a `.finn` package. It does not
+update: `finnpkg update` is a stub. The design it is aiming at:
 
 - a `.finn` package is a tarball with a manifest, a `.fbin` and assets;
 - the manifest names the app, the id it installs as, and the files it

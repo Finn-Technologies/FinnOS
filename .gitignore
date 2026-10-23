@@ -7,6 +7,9 @@
 /src/control/finnctl
 /src/tools/vgtest
 /src/tools/dockprev
+/tests/c/test_finnconn
+/tests/c/test_finnsettings
+*.dSYM/
 
 # Captures. The compositor writes PPM frames while it is being worked on;
 # they are artefacts of a session, not part of the OS.

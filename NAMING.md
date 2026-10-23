@@ -47,8 +47,10 @@ Named for what they render, not for how: `finnvg` (vector rasteriser), `finntext
 `finndock` (the dock), `finncontrol` (the Control Center), `finnclock` (the
 Notification Center and clock page), `finnmenu` (the Start Menu),
 `finnwindow` (the window manager and app windows), `finnpointer` (evdev
-pointer + cursor), `finnsock` (unix-socket helpers), `finnproto` (the
-control wire protocol), `finnapps` (the application registry), `finndraw`
+pointer + cursor), `finnkbd` (evdev keyboard), `finnsock` (unix-socket
+helpers), `finnconn` (per-connection line framing), `finnproto` (the
+control wire protocol), `finnsettings` (the versioned settings store),
+`finnapps` (the application registry), `finndraw`
 (the shared drawing primitives), `finnblur` (the blurred wallpaper),
 `finnanim` (the animation tracks), `finnnotify` (the notification queue),
 `finngpu` (GBM/EGL compositing).

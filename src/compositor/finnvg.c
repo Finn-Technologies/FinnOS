@@ -39,9 +39,13 @@ static fmat mmul(const fmat *l, const fmat *r) {
 }
 
 static void poly_push(fpoly *q, float x, float y) {
+    if (!q) return;
     if (q->n == q->cap) {
-        q->cap = q->cap ? q->cap * 2 : 64;
-        q->p = realloc(q->p, sizeof(fv2) * q->cap);
+        int ncap = q->cap ? q->cap * 2 : 64;
+        fv2 *np = realloc(q->p, sizeof(fv2) * (size_t)ncap);
+        if (!np) return;
+        q->p = np;
+        q->cap = ncap;
     }
     q->p[q->n].x = x;
     q->p[q->n].y = y;
@@ -49,9 +53,13 @@ static void poly_push(fpoly *q, float x, float y) {
 }
 
 static fpoly *shape_newsub(fshape *sh) {
+    if (!sh) return NULL;
     if (sh->npolys == sh->cpolys) {
-        sh->cpolys = sh->cpolys ? sh->cpolys * 2 : 4;
-        sh->polys = realloc(sh->polys, sizeof(fpoly) * sh->cpolys);
+        int ncap = sh->cpolys ? sh->cpolys * 2 : 4;
+        fpoly *np = realloc(sh->polys, sizeof(fpoly) * (size_t)ncap);
+        if (!np) return NULL;
+        sh->polys = np;
+        sh->cpolys = ncap;
     }
     fpoly *q = &sh->polys[sh->npolys++];
     memset(q, 0, sizeof *q);
@@ -289,6 +297,7 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
             y1 = rel ? cy + a[1] : a[1];
             cx = sx = x1; cy = sy = y1;
             q = shape_newsub(sh);
+            if (!q) break;
             {
                 fv2 t = mapply(m, x1, y1);
                 poly_push(q, t.x, t.y);
@@ -298,8 +307,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
         case 'L': case 'l': {
             x1 = rel ? cx + a[0] : a[0];
             y1 = rel ? cy + a[1] : a[1];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 t = mapply(m, x1, y1); poly_push(q, t.x, t.y); }
             cx = x1; cy = y1;
             break;
@@ -307,8 +320,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
         case 'H': case 'h': {
             x1 = rel ? cx + a[0] : a[0];
             y1 = cy;
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 t = mapply(m, x1, y1); poly_push(q, t.x, t.y); }
             cx = x1;
             break;
@@ -316,8 +333,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
         case 'V': case 'v': {
             x1 = cx;
             y1 = rel ? cy + a[0] : a[0];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 t = mapply(m, x1, y1); poly_push(q, t.x, t.y); }
             cy = y1;
             break;
@@ -329,8 +350,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
             y3 = rel ? cy + a[3] : a[3];
             x1 = rel ? cx + a[4] : a[4];
             y1 = rel ? cy + a[5] : a[5];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 p0 = mapply(m, cx, cy), p1 = mapply(m, x2, y2),
                     p2 = mapply(m, x3, y3), p3 = mapply(m, x1, y1);
               flatten_cubic(q, p0, p1, p2, p3); }
@@ -347,8 +372,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
             y2 = rel ? cy + a[1] : a[1];
             x1 = rel ? cx + a[2] : a[2];
             y1 = rel ? cy + a[3] : a[3];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 p0 = mapply(m, cx, cy), p1 = mapply(m, rx, ry),
                     p2 = mapply(m, x2, y2), p3 = mapply(m, x1, y1);
               flatten_cubic(q, p0, p1, p2, p3); }
@@ -361,8 +390,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
             y2 = rel ? cy + a[1] : a[1];
             x1 = rel ? cx + a[2] : a[2];
             y1 = rel ? cy + a[3] : a[3];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 p0 = mapply(m, cx, cy), p1 = mapply(m, x2, y2), p2 = mapply(m, x1, y1);
               flatten_quad(q, p0, p1, p2); }
             lq_x = x2; lq_y = y2;
@@ -376,8 +409,12 @@ static void parse_path(fshape *sh, const char *d, const fmat *m) {
             } else { rx = cx; ry = cy; }
             x1 = rel ? cx + a[0] : a[0];
             y1 = rel ? cy + a[1] : a[1];
-            if (!q) { q = shape_newsub(sh); sx = cx; sy = cy;
-                      { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); } }
+            if (!q) {
+                q = shape_newsub(sh);
+                if (!q) break;
+                sx = cx; sy = cy;
+                { fv2 t = mapply(m, cx, cy); poly_push(q, t.x, t.y); }
+            }
             { fv2 p0 = mapply(m, cx, cy), p1 = mapply(m, rx, ry), p2 = mapply(m, x1, y1);
               flatten_quad(q, p0, p1, p2); }
             lq_x = rx; lq_y = ry;
@@ -410,6 +447,7 @@ static void make_rect(fshape *sh, float x, float y, float w, float h,
     if (rx > h * 0.5f) rx = h * 0.5f;
     if (rx < 0) rx = 0;
     fpoly *q = shape_newsub(sh);
+    if (!q) return;
     const int SEG = 10;
     if (rx <= 0.01f) {
         fv2 pts[4] = { { x, y }, { x + w, y }, { x + w, y + h }, { x, y + h } };
@@ -434,6 +472,7 @@ static void make_rect(fshape *sh, float x, float y, float w, float h,
 
 static void make_circle(fshape *sh, float cx, float cy, float r, const fmat *m) {
     fpoly *q = shape_newsub(sh);
+    if (!q) return;
     const int SEG = 64;
     for (int i = 0; i < SEG; i++) {
         float a = (float)i / SEG * 2.0f * (float)M_PI;
@@ -499,7 +538,8 @@ static float seg_dist(float px_, float py_, fv2 a, fv2 b) {
 
 void fsvg_raster(const fsvg *s, uint32_t *dst, int w, int h,
                  fsvg_tint_fn tint, void *ud) {
-    if (w <= 0 || h <= 0) return;
+    /* 4096 is four times the 4K scanout budget and prevents W*H supersample overflow */
+    if (!s || !dst || w <= 0 || h <= 0 || w > 4096 || h > 4096) return;
     int W = w * SS, H = h * SS;
     uint32_t *hi = calloc((size_t)W * H, sizeof(uint32_t));
     if (!hi) return;
@@ -601,9 +641,13 @@ uint32_t fsvg_mono(uint32_t svg_color, void *ud) {
 /* ------------------------------------------------------------------ */
 
 static fshape *svg_newshape(fsvg *s) {
+    if (!s) return NULL;
     if (s->n == s->cap) {
-        s->cap = s->cap ? s->cap * 2 : 8;
-        s->shapes = realloc(s->shapes, sizeof(fshape) * s->cap);
+        int ncap = s->cap ? s->cap * 2 : 8;
+        fshape *ns = realloc(s->shapes, sizeof(fshape) * (size_t)ncap);
+        if (!ns) return NULL;
+        s->shapes = ns;
+        s->cap = ncap;
     }
     fshape *sh = &s->shapes[s->n++];
     memset(sh, 0, sizeof *sh);
@@ -614,12 +658,14 @@ int fsvg_load(const char *path, fsvg *s) {
     memset(s, 0, sizeof *s);
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(n + 1);
+    /* 16 MiB bound guards against corrupt/huge files overflowing n+1 or exhausting memory */
+    if (n < 0 || n > 16 * 1024 * 1024) { fclose(f); return -1; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+    char *buf = malloc((size_t)n + 1);
     if (!buf) { fclose(f); return -1; }
-    if (fread(buf, 1, n, f) != (size_t)n) { fclose(f); free(buf); return -1; }
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) { fclose(f); free(buf); return -1; }
     buf[n] = 0;
     fclose(f);
 
@@ -679,16 +725,18 @@ int fsvg_load(const char *path, fsvg *s) {
             char d[8192];
             if (find_attr(tag, "d", d, sizeof d)) {
                 fshape *sh = svg_newshape(s);
-                char v[128];
-                sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
-                if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
-                sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : (sh->stroke ? 1.0f : 0.0f);
-                fmat m = MAT_ID;
-                if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
-                fmat full = mmul(&stack[depth], &m);
-                parse_path(sh, d, &full);
-                shape_finish(sh);
-                if (sh->npolys == 0) s->n--;
+                if (sh) {
+                    char v[128];
+                    sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
+                    if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
+                    sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : (sh->stroke ? 1.0f : 0.0f);
+                    fmat m = MAT_ID;
+                    if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
+                    fmat full = mmul(&stack[depth], &m);
+                    parse_path(sh, d, &full);
+                    shape_finish(sh);
+                    if (sh->npolys == 0) s->n--;
+                }
             }
         } else if (!strncmp(tag, "rect", 4)) {
             char v[128];
@@ -698,28 +746,32 @@ int fsvg_load(const char *path, fsvg *s) {
             float rh = find_attr(tag, "height", v, sizeof v) ? strtof(v, NULL) : 0;
             float rx = find_attr(tag, "rx", v, sizeof v) ? strtof(v, NULL) : 0;
             fshape *sh = svg_newshape(s);
-            sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
-            if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
-            sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : 0;
-            fmat m = MAT_ID;
-            if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
-            fmat full = mmul(&stack[depth], &m);
-            make_rect(sh, x, y, rw, rh, rx, &full);
-            shape_finish(sh);
+            if (sh) {
+                sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
+                if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
+                sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : 0;
+                fmat m = MAT_ID;
+                if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
+                fmat full = mmul(&stack[depth], &m);
+                make_rect(sh, x, y, rw, rh, rx, &full);
+                shape_finish(sh);
+            }
         } else if (!strncmp(tag, "circle", 6)) {
             char v[128];
             float cx = find_attr(tag, "cx", v, sizeof v) ? strtof(v, NULL) : 0;
             float cy = find_attr(tag, "cy", v, sizeof v) ? strtof(v, NULL) : 0;
             float r = find_attr(tag, "r", v, sizeof v) ? strtof(v, NULL) : 0;
             fshape *sh = svg_newshape(s);
-            sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
-            if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
-            sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : 0;
-            fmat m = MAT_ID;
-            if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
-            fmat full = mmul(&stack[depth], &m);
-            make_circle(sh, cx, cy, r, &full);
-            shape_finish(sh);
+            if (sh) {
+                sh->fill = find_attr(tag, "fill", v, sizeof v) ? parse_color(v) : 0;
+                if (find_attr(tag, "stroke", v, sizeof v)) sh->stroke = parse_color(v);
+                sh->stroke_w = find_attr(tag, "stroke-width", v, sizeof v) ? strtof(v, NULL) : 0;
+                fmat m = MAT_ID;
+                if (find_attr(tag, "transform", v, sizeof v)) parse_transform(v, &m);
+                fmat full = mmul(&stack[depth], &m);
+                make_circle(sh, cx, cy, r, &full);
+                shape_finish(sh);
+            }
         }
 
         free(tag);

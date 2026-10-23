@@ -45,7 +45,7 @@ ssh "$HOST" "cd $REMOTE && sudo make install && \
              sudo install -Dm644 assets/wallpaper/default.webp /usr/share/finn/wallpaper/default.webp && \
              sudo install -Dm644 assets/wallpaper/setup.webp /usr/share/finn/wallpaper/setup.webp && \
              sudo install -d /var/lib/finnpkg && \
-             echo window | sudo tee /var/lib/finnpkg/installed >/dev/null && \
+             printf 'settings\nfiles\narc\nwindow\n' | sudo tee /var/lib/finnpkg/installed >/dev/null && \
              sudo chgrp -R finn /usr/share/finn /var/lib/finnpkg"
 
 if [ "$RESTART" = "1" ]; then

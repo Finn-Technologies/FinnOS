@@ -169,6 +169,15 @@ class ClientTest(unittest.TestCase):
         self.client.click()
         self.assertEqual(self.server.requests, ["pointer.click button=left"])
 
+    def test_a_key_may_be_pressed_released_and_tapped(self):
+        self.client.key_press("shift")
+        self.client.key_tap("tab")
+        self.client.key_release("shift")
+        self.assertEqual(
+            self.server.requests,
+            ["key.press code=shift", "key.tap code=tab", "key.release code=shift"],
+        )
+
     # ---- the frame ----
 
     def test_the_frame_is_read_as_bytes(self):
@@ -201,30 +210,40 @@ class ClientTest(unittest.TestCase):
             client.ping()
 
 
-class FallbackTest(unittest.TestCase):
-    """The compositor's socket is the provider underneath the control plane."""
+class DirectTest(unittest.TestCase):
+    """The compositor's socket is an explicit choice, never a fallback."""
 
-    def test_the_client_falls_back_to_the_compositor(self):
-        comp = fakeserver.FakeServer()
-        self.addCleanup(comp.close)
-
+    def setUp(self):
         import finnsdk.client as client_module
+        self.client_module = client_module
         original = client_module.COMP_SOCKET
-        client_module.COMP_SOCKET = comp.path
         self.addCleanup(lambda: setattr(client_module, "COMP_SOCKET", original))
 
-        with FinnClient(path="/nonexistent/control.sock", timeout=2.0) as finn:
+    def test_a_client_does_not_use_the_compositor_behind_the_control_plane(self):
+        # the control plane is down, and the compositor is right there: the
+        # client still refuses, rather than taking the unaudited door
+        comp = fakeserver.FakeServer()
+        self.addCleanup(comp.close)
+        self.client_module.COMP_SOCKET = comp.path
+
+        with FinnClient(path="/nonexistent/control.sock", timeout=1.0) as finn:
+            with self.assertRaises(OSError):
+                finn.ping()
+        self.assertEqual(comp.requests, [])
+
+    def test_direct_connects_to_the_compositor_socket(self):
+        comp = fakeserver.FakeServer()
+        self.addCleanup(comp.close)
+        self.client_module.COMP_SOCKET = comp.path
+
+        with FinnClient(timeout=2.0, direct=True) as finn:
             self.assertEqual(finn.ping(), "FINNCTL/1")
         self.assertEqual(comp.requests, ["ping"])
 
-    def test_the_client_does_not_fall_back_when_it_is_told_not_to(self):
-        import finnsdk.client as client_module
-        original = client_module.COMP_SOCKET
-        client_module.COMP_SOCKET = "/nonexistent/comp.sock"
-        self.addCleanup(lambda: setattr(client_module, "COMP_SOCKET", original))
+    def test_direct_against_a_missing_socket_is_an_error(self):
+        self.client_module.COMP_SOCKET = "/nonexistent/comp.sock"
 
-        with FinnClient(path="/nonexistent/control.sock", timeout=1.0,
-                        direct=True) as finn:
+        with FinnClient(timeout=1.0, direct=True) as finn:
             with self.assertRaises(OSError):
                 finn.ping()
 

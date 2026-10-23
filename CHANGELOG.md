@@ -5,6 +5,102 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### A session you can configure
+
+- **First boot is gated on the marker.** `/var/lib/finn/setup-done` is now
+  written atomically (settings, fsync, rename) and only after the language
+  is stored. Its absence opens setup on every boot until it completes;
+  `setup.complete` reports a failed write instead of claiming success.
+  `FINN_SETUP_SKIP=1` is the positive development escape and
+  `FINN_SETUP_FORCE=1` shows the screen again.
+- **One versioned settings store.** `/var/lib/finn/settings`, `key=value`
+  with a `version=1` first line, written through a temporary file and a
+  rename. Volume, appearance and the setup language live there. The mixer
+  is the truth for volume; a machine with no mixer and no remembered level
+  reports `-1` instead of inventing 50%.
+- **A keyboard.** `finnkbd` reads evdev directly, derives modifiers and
+  locks from held keys, handles `SYN_DROPPED`, and grows its device list as
+  keyboards are plugged in. Setup is navigable with Tab/arrows and
+  Enter/Space; `Esc` closes the open panels; Super opens the Start Menu;
+  `Alt+Tab` cycles windows; `Ctrl+Alt+F1..F6` switches VT.
+- **A way out and a way back.** `getty@tty2` is the rescue console, the
+  compositor drops DRM master when another VT takes the screen and takes it
+  back with a full modeset when it returns, and `base/setup.sh` enables
+  `graphical.target` rather than leaving the desktop off.
+
+### Failure is visible
+
+- **A flip that does not land is repaired or ends the session.** A page flip
+  is bounded, a failure tries `drmModeSetCrtc`, and five failures in a row
+  exit non-zero so systemd can restart the compositor. A buffer is released
+  only after the frame replacing it landed.
+- **A watchdog on the frame loop.** `finn-comp.service` has
+  `WatchdogSec=15`; the compositor sends `WATCHDOG=1` during start-up and
+  every five seconds after, so a process that is alive but no longer
+  painting is restarted. `finn-failure.service` puts the reason and the
+  rescue-console chord on the console the compositor was using.
+- **The card is found, not assumed.** The compositor enumerates
+  `/dev/dri/card*` and uses the one with a connected display; the unit waits
+  for the DRM device unit rather than testing `card0` once.
+
+### The one door
+
+- **`comp.sock` is root-only.** Mode `0600`, and `finn-comp` checks
+  `SO_PEERCRED` on every connection. `finnctl` and the SDK lost their
+  automatic fallback; `--direct` is an explicit development flag that says
+  on stderr what it bypasses.
+- **The control plane frames lines.** `finn_conn` buffers per connection, so
+  a request split across packets is not executed twice, an overlong line is
+  answered and skipped, and one connection can carry many requests.
+- **The actuators tell the truth.** `sound.set`, `display.set` and
+  `radio.set` report the hardware's result; `power` accepts only
+  reboot/restart/shutdown/poweroff, and answers after `systemctl`; the audit
+  log is `0600` and escapes peer text.
+
+### The installer
+
+- `finn-install` requires `--disk`, refuses the live medium, asks for typed
+  confirmation (or `--yes`), and runs under `set -euo pipefail`. The root
+  UUID comes from the mounted target, not the new root's empty directory.
+- The chroot image has no default password and no passwordless sudo. The
+  account's password is generated randomly and printed once; sshd is off by
+  default; `sudo` requires a password.
+
+### The tests
+
+- `make test-c` builds and runs the C tests under ASan and UBSan: line
+  framing against a socket pair, and the settings store against a temporary
+  directory.
+
+### The Figma Redesign: Centered Navigation & Floating Islands Dock
+
+- **Centered Navigation Pill (`finndock`)**: The middle navigation island
+  (Search, Home launcher, and Window Manager) is strictly anchored to the
+  exact screen center `(screen_w - p2_w) / 2`, keeping the primary navigation
+  balanced regardless of open taskbar items or status chip changes.
+- **4-Island Floating Dock Architecture**:
+  - Pill 1 (Taskbar): Quick-launch app chips (`settings`, `files`, `arc`)
+    with active indicator dots, plus running app pills displaying icon, title,
+    and close button.
+  - Pill 2 (Navigation): Centered Search, Home launcher (with active 42x42 well
+    indicator when Start Menu is open), and Window Manager overview icon.
+  - Pill 3 (Clock & Weather): Live time (`HH:MM`), formatted date, and weather
+    chip (sun icon + temperature).
+  - Pill 4 (Status & Quick Controls): Wi-Fi/Ethernet, Bluetooth, and battery
+    percentage (`▮ 100%`) opening the Control Center.
+- **Native Vector Icon Suite & Gradient Preservation**:
+  - Full-color brand chips (`app_arc`, `app_files`, `app_settings`, `avatar`,
+    `sun_weather`) render with native SVG fills and multi-stop gradients
+    preserved (`active = 0, inactive = 0` bypasses tinting).
+  - Clean cubic Bézier arcs (`M/L/C/Z`) replacing elliptical arc commands
+    (`A/a`) unsupported by `finnvg`.
+  - Secondary stroke/fill tinting for two-tone system glyphs (`windows`,
+    `battery`, `volume`, `power`).
+  - App registry and installed state synchronized with Figma app suite
+    (`settings`, `files`, `arc`, `window`).
+  - Start Menu user avatar header matching Figma `9:51` with gradient avatar chip
+    and user handle.
+
 ### The Figma Shell & Window Manager
 
 - **Boot splash (`finnboot`)**: the 4-shape FinnOS mark and progress track
@@ -16,11 +112,13 @@ and the changes to it are worth reading.
   `setup.get`, `setup.show`, and `setup.complete`.
 - **Frosted windows (`finnwindow`)**: `500x300` (`r=15`) frosted glass
   windows with the top-right `72x24` (`r=8`) window controls pill
-  (expand, minimize, close), titlebar drag, empty-window state, and
-  built-in views for Settings, Terminal, Notes, Files, Code, Store,
-  Studio, Sync, and Vault (`ui/Window.fui`), plus `window.list`,
-  `window.open`, `window.close`, `window.focus`, `window.minimize`,
-  `window.maximize`, and `window.move`.
+  (expand, minimize, close), titlebar drag clamped above the dock band,
+  a focus/raise model, `Alt+Tab` cycling, and an empty-window state
+  (`ui/Window.fui`), plus `window.list`, `window.open`, `window.close`,
+  `window.focus`, `window.minimize`, `window.maximize`, and `window.move`.
+  The ninth window is refused rather than silently replacing one.
+  There are no built-in app views: an app tile opens an empty window, and
+  the client surface protocol that would fill it does not exist yet.
 - **A dock that makes room.** A maximized window now fills the screen above
   the dock, edge to edge. When a window is maximized or reaches the dock's
   resting band, the dock sinks flush to the bottom edge and its three

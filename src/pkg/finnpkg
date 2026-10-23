@@ -18,13 +18,56 @@
 # they are here. That belongs here, in the package manager's own list —
 # which is also the list the Start Menu reads to decide whether a tile is
 # lit or grey.
+#
+# An id is a plain lowercase word, `[a-z][a-z0-9-]*`, and it is checked
+# before it reaches a path or the install list. A `.finn` package also has
+# to carry SHA256SUMS over its files: this build has no signing key and no
+# signature verifier, so the hashes are the only check there is.
 set -euo pipefail
 
 CATALOGUE="${FINN_APPS_CATALOGUE:-/usr/share/finn/apps.registry}"
 INSTALLED="${FINN_APPS_INSTALLED:-/var/lib/finnpkg/installed}"
 APPS_DIR="${FINN_APPS_DIR:-/opt/finn-apps}"
 
+# One definition of an app id. It is used as a directory name under
+# $APPS_DIR and as a line in the install list, so it may not contain `/`,
+# `.` or a space: `..` is not an app, it is a way to write elsewhere as root.
+ID_PATTERN='^[a-z][a-z0-9-]{0,31}$'
+
 die() { echo "finnpkg: $*" >&2; exit 1; }
+
+valid_id() {
+    [[ "$1" =~ $ID_PATTERN ]]
+}
+
+require_id() {
+    local id="${1:-}"
+    [ -n "$id" ] || die "an app id is needed"
+    valid_id "$id" || \
+        die "'$id' is not an app id: lowercase letters, digits and '-', starting with a letter, 32 characters at most"
+}
+
+# A member name that is relative and stays inside its own directory. Both
+# halves matter: "/etc/x" is absolute, and "a/../../x" is relative and still
+# climbs out.
+require_inside() {
+    local what="$1" name="$2" rest part
+    [ -n "$name" ] || die "$what has an empty path"
+    case "$name" in
+        /*) die "$what names an absolute path: $name" ;;
+    esac
+    rest="$name"
+    while :; do
+        part="${rest%%/*}"
+        if [ "$part" = ".." ]; then
+            die "$what climbs out of its directory: $name"
+        fi
+        if [ "$rest" = "$part" ]; then
+            break
+        fi
+        rest="${rest#*/}"
+    done
+}
 
 need_root() {
     [ -w "$INSTALLED" ] || [ "$(id -u)" = "0" ] || \
@@ -79,8 +122,9 @@ mark_removed() {
 }
 
 cmd_list() {
-    local found=0
+    local found=0 id
     for id in $(catalogue_ids); do
+        valid_id "$id" || continue       # a catalogue typo is not an install
         if is_installed "$id"; then
             printf '%-10s %-10s %s\n' "$id" "installed" "$(catalogue_field "$id" 2 || true)"
             found=1
@@ -96,6 +140,7 @@ cmd_search() {
     [ -n "$text" ] || die "search needs something to search for"
     local id
     for id in $(catalogue_ids); do
+        valid_id "$id" || continue
         local name note
         name="$(catalogue_field "$id" 2 || true)"
         note="$(catalogue_field "$id" 5 || true)"
@@ -112,6 +157,7 @@ state_of() {
 cmd_info() {
     local id="${1:-}"
     [ -n "$id" ] || die "info needs an app id"
+    require_id "$id"
     local name icon command note
     name="$(catalogue_field "$id" 2 || true)"
     [ -n "$name" ] || die "no app called '$id' in the catalogue"
@@ -135,6 +181,8 @@ cmd_install() {
         return
     fi
 
+    require_id "$what"
+
     local name command
     name="$(catalogue_field "$what" 2 || true)"
     [ -n "$name" ] || die "no app called '$what' in the catalogue"
@@ -151,30 +199,176 @@ cmd_install() {
     echo "installed $name"
 }
 
-# A .finn package is a tarball with a manifest and the app's files:
+# List the archive before unpacking it. tar is perfectly happy to write
+# ../../etc/x where the archive says, so the names are checked while they
+# are still only text.
+check_members() {
+    local file="$1" listing="$2" verbose="$3"
+    tar -tf "$file" > "$listing" 2>/dev/null || die "'$file' is not a package"
+    tar -tvf "$file" > "$verbose" 2>/dev/null || die "'$file' is not a package"
+
+    local member line
+    while IFS= read -r member; do
+        require_inside "'$file'" "$member"
+    done < "$listing"
+
+    # Only files and directories: a symlink or a hard link is a way to
+    # name a path that is not in the package, and a device node is worse.
+    while IFS= read -r line; do
+        case "$line" in
+            -*|d*) ;;
+            l*) die "'$file' contains a symlink: ${line##* }" ;;
+            h*) die "'$file' contains a hard link: ${line##* }" ;;
+            *)  die "'$file' contains a device or socket: ${line##* }" ;;
+        esac
+    done < "$verbose"
+}
+
+# SHA256SUMS is `sha256sum -c` input: one hash and a path per line. It has
+# to cover every file in the package, and it may not name anything outside
+# it. Signatures are not available in this build — there is no keyring and
+# no verifier — so this is the whole integrity check, and it has to be
+# complete to mean anything.
+verify_hashes() {
+    local file="$1" dir="$2" work="$3"
+    local sums="$dir/SHA256SUMS"
+
+    [ -f "$sums" ] || \
+        die "'$file' has no SHA256SUMS: signatures are not available in this build, so hashes are the only check"
+
+    local listed="$work/listed" actual="$work/actual"
+    : > "$listed"
+
+    local real_dir
+    real_dir="$(cd "$dir" && pwd -P)"
+
+    local line hash path real
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ""|\#*) continue ;;
+        esac
+        hash="${line%%[[:space:]]*}"
+        if [ "${#hash}" -ne 64 ]; then
+            die "'$file': SHA256SUMS has a line that is not a sha256 hash: $line"
+        fi
+        case "$hash" in
+            *[!0-9a-f]*) die "'$file': SHA256SUMS has a line that is not a sha256 hash: $line" ;;
+        esac
+        path="${line#"$hash"}"
+        path="${path#"${path%%[![:space:]]*}"}"     # the blank separator
+        path="${path#\*}"                           # binary-mode marker
+        require_inside "SHA256SUMS in '$file'" "$path"
+        [ -f "$dir/$path" ] || \
+            die "'$file': SHA256SUMS names '$path', which is not in the package"
+        # Resolve the name the way the filesystem does, so `./a` and a
+        # directory that is a link land on the same relative path as the
+        # one find prints below — and anything that resolves outside the
+        # package is refused here too.
+        real="$(cd "$dir/$(dirname "$path")" && pwd -P)/$(basename "$path")"
+        case "$real" in
+            "$real_dir"/*) path="${real#"$real_dir"/}" ;;
+            *) die "'$file': SHA256SUMS names a path outside the package: $path" ;;
+        esac
+        printf '%s\n' "$path" >> "$listed"
+    done < "$sums"
+
+    [ -s "$listed" ] || die "'$file': SHA256SUMS is empty, so nothing is checked"
+
+    ( cd "$dir" && find . -type f ! -path ./SHA256SUMS -print ) | \
+        sed 's|^\./||' | LC_ALL=C sort > "$actual"
+    LC_ALL=C sort -o "$listed" "$listed"
+
+    local uncovered
+    uncovered="$(LC_ALL=C comm -23 "$actual" "$listed")"
+    if [ -n "$uncovered" ]; then
+        die "'$file': SHA256SUMS does not cover: $(printf '%s' "$uncovered" | tr '\n' ' ')"
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        ( cd "$dir" && sha256sum -c SHA256SUMS >/dev/null 2>&1 ) || \
+            die "'$file' failed its hash check: the package does not match its SHA256SUMS"
+    elif command -v shasum >/dev/null 2>&1; then
+        ( cd "$dir" && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1 ) || \
+            die "'$file' failed its hash check: the package does not match its SHA256SUMS"
+    else
+        die "no sha256 checker on this machine: install coreutils (sha256sum) or perl (shasum)"
+    fi
+}
+
+# A .finn package is a tarball with a manifest, the hashes and the app's
+# files:
 #
 #   manifest.toml   the app's id, name and the files it owns
+#   SHA256SUMS      sha256sum -c input covering every other file
 #   <files>         the app itself
 #
-# It is unpacked into /opt/finn-apps/<id>/ and the id goes on the install
-# list, which is what the Start Menu reads.
+# Nothing in it is trusted with the destination. The archive is listed and
+# checked, unpacked into a scratch directory, its paths are checked again
+# on disk, and only then is the result copied into /opt/finn-apps/<id>.
+# The id has to be one the OS catalogue knows: finnapps resolves a launch
+# command from the catalogue, so an app it has never heard of could be
+# installed and still never start.
 install_package() {
     local file="$1"
     need_root
+
     local work
     work="$(mktemp -d)"
-    trap 'rm -rf "$work"' RETURN
+    # `die` exits the script, so the scratch copy has to go on EXIT; the
+    # path is expanded now because `work` is a local.
+    trap "rm -rf $(printf '%q' "$work")" EXIT
 
-    tar -xf "$file" -C "$work" 2>/dev/null || die "'$file' is not a package"
-    [ -f "$work/manifest.toml" ] || die "'$file' has no manifest.toml"
+    local src="$work/src"
+    mkdir -p "$src"
+
+    check_members "$file" "$work/listing" "$work/verbose"
+
+    # Unpacked with no ownership or permissions from the archive, into a
+    # scratch directory, and never as root into the destination.
+    tar -xf "$file" -C "$src" --no-same-owner --no-same-permissions 2>/dev/null || \
+        die "'$file' could not be unpacked"
+
+    # Check what actually landed, not only what the archive claimed: a name
+    # may still resolve through a directory that is not what it appears.
+    local real_src entry real
+    real_src="$(cd "$src" && pwd -P)"
+    while IFS= read -r entry; do
+        if [ -L "$entry" ]; then
+            die "'$file' contains a symlink: ${entry#"$src"/}"
+        fi
+        real="$(cd "$(dirname "$entry")" && pwd -P)/$(basename "$entry")"
+        case "$real" in
+            "$real_src"/*) ;;
+            *) die "'$file' would write outside its directory: $real" ;;
+        esac
+    done < <(find "$src" -mindepth 1 -print)
+
+    [ -f "$src/manifest.toml" ] || die "'$file' has no manifest.toml"
 
     local id
-    id="$(awk -F'=' '/^[[:space:]]*id[[:space:]]*=/ { gsub(/["[:space:]]/, "", $2); print $2; exit }' "$work/manifest.toml")"
+    id="$(awk -F'=' '/^[[:space:]]*id[[:space:]]*=/ { gsub(/["[:space:]]/, "", $2); print $2; exit }' "$src/manifest.toml")"
     [ -n "$id" ] || die "the manifest has no id"
+    require_id "$id"
 
-    mkdir -p "$APPS_DIR/$id"
-    cp -r "$work"/* "$APPS_DIR/$id/" 2>/dev/null || true
-    rm -f "$APPS_DIR/$id/manifest.toml.orig"
+    [ -n "$(catalogue_field "$id" 2 || true)" ] || \
+        die "'$id' is not in the OS catalogue: only an app the system knows about can be installed"
+
+    local command
+    command="$(catalogue_field "$id" 4 || true)"
+    if [ -z "$command" ] || [ ! -x "$command" ]; then
+        die "'$id' cannot be installed: its command is not on this machine (${command:-none})"
+    fi
+
+    verify_hashes "$file" "$src" "$work"
+
+    # Build beside the destination and rename, so a failed copy never
+    # leaves an app that looks installed but is not.
+    local stage="$APPS_DIR/.$id.new"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    cp -R "$src/." "$stage/" || die "could not copy '$id' into $APPS_DIR"
+    rm -rf "${APPS_DIR:?}/$id"
+    mv "$stage" "${APPS_DIR:?}/$id"
 
     mark_installed "$id"
     echo "installed $id"
@@ -183,6 +377,9 @@ install_package() {
 cmd_remove() {
     local id="${1:-}"
     [ -n "$id" ] || die "remove needs an app id"
+    require_id "$id"
+    [ -n "$(catalogue_field "$id" 2 || true)" ] || \
+        die "'$id' is not in the OS catalogue"
     is_installed "$id" || die "'$id' is not installed"
     mark_removed "$id"
     rm -rf "${APPS_DIR:?}/$id"

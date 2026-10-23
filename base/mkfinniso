@@ -192,6 +192,7 @@ EOF
   local pair
   for pair in "finn-comp.service:etc/systemd/system/finn-comp.service" \
               "finnd.service:etc/systemd/system/finnd.service" \
+              "finn-failure.service:etc/systemd/system/finn-failure.service" \
               "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
     [ -f "$src" ] || { problem "missing $src"; continue; }

@@ -37,15 +37,11 @@ build() {
 
 package() {
   # The tree's own install targets, so the files a machine gets are the
-  # files a developer gets from `make install`.
+  # files a developer gets from `make install`: binaries, finnpkg, registry,
+  # icons, wallpapers and fonts.
   make -C "$_src" install DESTDIR="$pkgdir" PREFIX=/usr/local
 
-  install -Dm644 "$_src/base/finn-comp.service" "$pkgdir/usr/lib/systemd/system/finn-comp.service"
-  install -Dm644 "$_src/base/finnd.service"     "$pkgdir/usr/lib/systemd/system/finnd.service"
-
-  install -Dm644 "$_src/assets/wallpaper/default.webp" "$pkgdir/usr/share/finn/wallpaper/default.webp"
-  install -Dm644 "$_src/assets/wallpaper/setup.webp"   "$pkgdir/usr/share/finn/wallpaper/setup.webp"
-
-  install -d "$pkgdir/usr/share/fonts/OTF"
-  install -m644 "$_src"/assets/fonts/FixelDisplay/*.otf "$pkgdir/usr/share/fonts/OTF/"
+  install -Dm644 "$_src/base/finn-comp.service"    "$pkgdir/usr/lib/systemd/system/finn-comp.service"
+  install -Dm644 "$_src/base/finnd.service"        "$pkgdir/usr/lib/systemd/system/finnd.service"
+  install -Dm644 "$_src/base/finn-failure.service" "$pkgdir/usr/lib/systemd/system/finn-failure.service"
 }

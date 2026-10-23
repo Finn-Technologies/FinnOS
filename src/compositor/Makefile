@@ -32,13 +32,14 @@ LDLIBS  += $(shell pkg-config --libs $(PKGS)) -lm
 CORE     = ../core/libfinncore.a
 
 SHELL_   = finnvg.c finntext.c finndraw.c finnblur.c finnanim.c \
-           finnnotify.c finnpointer.c finngpu.c finndock.c finncontrol.c \
-           finnclock.c finnmenu.c finnwindow.c finnsetup.c finnboot.c
+           finnnotify.c finnpointer.c finnkbd.c finngpu.c finndock.c \
+           finncontrol.c finnclock.c finnmenu.c finnwindow.c finnsetup.c finnboot.c
 
 HDRS     = finnvg.h finntext.h finndraw.h finnblur.h finnanim.h \
-           finnmotion.h finnnotify.h finnpointer.h finngpu.h finndock.h \
-           finncontrol.h finnclock.h finnmenu.h finnwindow.h finnsetup.h \
-           finnboot.h ../core/finnapps.h ../core/finnproto.h ../core/finnstate.h
+           finnmotion.h finnnotify.h finnpointer.h finnkbd.h finngpu.h \
+           finndock.h finncontrol.h finnclock.h finnmenu.h finnwindow.h \
+           finnsetup.h finnboot.h ../core/finnapps.h ../core/finnconn.h \
+           ../core/finnproto.h ../core/finnstate.h
 
 all: finn-comp
 

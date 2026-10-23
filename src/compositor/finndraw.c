@@ -24,19 +24,19 @@ void finn_theme_set(int dark) {
     g_dark = dark;
 
     if (!dark) {
-        FINN_BONE    = 0xFFF6F1E7u;   /* #F6F1E7 */
-        FINN_TILE    = 0xFFE7E1D5u;
-        FINN_TILE_ON = 0xFFD3E6FFu;
-        FINN_HAIR    = 0x22FFFFFFu;
-        FINN_INK     = 0xFF1A1D24u;   /* #1A1D24 */
+        FINN_BONE    = 0xFFFFFFFFu;   /* white glass */
+        FINN_TILE    = 0xD9FFFFFFu;   /* 85% white */
+        FINN_TILE_ON = 0xFFFFFFFFu;
+        FINN_HAIR    = 0x1A000000u;
+        FINN_INK     = 0xFF000000u;   /* #000000 pure black */
         FINN_MUTE    = 0xFF969696u;   /* #969696 */
-        FINN_DIM     = 0xFF7B7776u;   /* #7B7776, measured off the reference's detail line */
-        FINN_ACCENT  = 0xFF7AB8FFu;   /* #7AB8FF */
-        FINN_TRACK   = 0xFFCFC7B8u;
+        FINN_DIM     = 0xFF5D5C5Cu;   /* #5D5C5C */
+        FINN_ACCENT  = 0xFF006FFFu;   /* #006FFF bright blue */
+        FINN_TRACK   = 0x40000000u;   /* 25% black */
         FINN_KNOB    = 0xFFFFFFFFu;
         FINN_ON      = 0xFF006FFFu;   /* #006FFF */
-        FINN_FILL    = 0xFF998481u;   /* #998481, measured off the reference */
-        FINN_GLASS   = 0xFFFFFFFFu;   /* see FINN_GLASS in the header */
+        FINN_FILL    = 0xFFFFFFFFu;   /* solid white */
+        FINN_GLASS   = 0xFFFFFFFFu;   /* white glass tint */
     } else {
         FINN_BONE    = 0xFF23262Eu;
         FINN_TILE    = 0xFF2F333Cu;
@@ -224,7 +224,7 @@ void finn_blit(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int s
 uint32_t finn_tint_pal(uint32_t c, void *ud) {
     finn_palette *p = ud;
     uint32_t rgb = c & 0x00FFFFFFu;
-    uint32_t col = (rgb == 0x00969696u) ? p->inactive : p->active;
+    uint32_t col = (rgb == 0x00969696u || rgb == 0x008D8D8Du || rgb == 0x00555555u) ? p->inactive : p->active;
     return col | (c & 0xFF000000u);
 }
 
@@ -414,7 +414,7 @@ const uint32_t *finn_icon_ref(fsvg *svg, int px, uint32_t active,
     memset(victim->buf, 0, need);
 
     finn_palette p = { active, inactive };
-    fsvg_raster(svg, victim->buf, px, px, finn_tint_pal, &p);
+    fsvg_raster(svg, victim->buf, px, px, (active || inactive) ? finn_tint_pal : NULL, (active || inactive) ? &p : NULL);
 
     victim->svg = svg;
     victim->px = px;

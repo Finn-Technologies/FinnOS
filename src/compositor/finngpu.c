@@ -33,8 +33,13 @@
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
 
-/* how many live textures finngpu will track the size of at once */
-#define FINNGPU_TEX_MAX 16
+/*
+ * Sized for theme fades, which hold both current and previous textures for
+ * seven chrome layers plus wallpaper, cursor, scrim and FBO (~18 textures);
+ * 16 slots evicted live textures and forced full glTexImage2D reallocations
+ * every frame.
+ */
+#define FINNGPU_TEX_MAX 32
 
 typedef struct { unsigned id; int w, h; } gpu_texinfo;
 
@@ -374,10 +379,11 @@ void finngpu_target(finngpu *g, unsigned fbo) {
  * glReadPixels hands back the bottom row first, so the rows are reversed on
  * the way in.
  */
-void finngpu_readback(finngpu *g, uint32_t *dst) {
+int finngpu_readback(finngpu *g, uint32_t *dst) {
+    if (!g || !dst) return -1;
     int w = g->w, h = g->h;
     uint8_t *tmp = malloc((size_t)w * h * 4);
-    if (!tmp) return;
+    if (!tmp) return -1;
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
     for (int y = 0; y < h; y++) {
@@ -389,6 +395,7 @@ void finngpu_readback(finngpu *g, uint32_t *dst) {
         }
     }
     free(tmp);
+    return 0;
 }
 
 int finngpu_fbo(finngpu *g, unsigned *out_fbo, unsigned *out_tex, int w, int h) {

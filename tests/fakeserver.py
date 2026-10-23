@@ -126,6 +126,9 @@ def default_handler(request, server):
     if verb == "pointer.move" or verb == "pointer.by" or verb == "pointer.click":
         return "OK"
 
+    if verb in ("key.press", "key.release", "key.tap"):
+        return "OK"
+
     if verb == "screen.capture":
         return PPM
 

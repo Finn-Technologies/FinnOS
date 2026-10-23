@@ -15,9 +15,6 @@
 #include <strings.h>
 #include <math.h>
 
-#define WIN_GLASS       0.70f
-#define WIN_PILL_GLASS  0.50f
-
 /*
  * Metrics authored for the 1080p canvas, scaled from Figma 12:2 (1280x832 * 1.298077):
  *   Window: 500x300 r=15 -> 649.0 x 389.4 r=19.5
@@ -26,20 +23,34 @@
  *   3 icons inside Window Options pill: 16x16 (20.8), gap 6 (7.8), pad 6,4 (7.8, 5.2)
  *   Empty window label: "Empty window", 12px (15.6), FINN_INK at 70% opacity (0xB2)
  */
-#define WIN_DEF_W       649.0f   /* reference 500 */
-#define WIN_DEF_H       389.4f   /* reference 300 */
-#define WIN_R            19.5f   /* reference 15  */
+#define REF             1.298077f
+#define WIN_DEF_W       (500.0f * REF)   /* reference 500 */
+#define WIN_DEF_H       (300.0f * REF)   /* reference 300 */
+#define WIN_R           (8.0f * REF)     /* reference 8   */
 
-#define OPT_W            93.5f   /* reference 72  */
-#define OPT_H            31.2f   /* reference 24  */
-#define OPT_R            10.4f   /* reference 8   */
-#define OPT_INSET        10.4f   /* reference 8   */
-#define OPT_SLOT_CX      17.8f   /* reference 13.714 (6 + 15.429/2) */
-#define OPT_ICON_EXP     11.7f   /* reference 9.00 ink inside 15.43 slot */
-#define OPT_ICON_MIN     13.4f   /* reference 10.29 ink inside 15.43 slot */
-#define OPT_ICON_CLS     10.0f   /* reference 7.71 ink inside 15.43 slot */
+#define OPT_W           (72.0f * REF)    /* reference 72  */
+#define OPT_H           (24.0f * REF)    /* reference 24  */
+#define OPT_R           (4.14f * REF)    /* reference 4.14 */
+#define OPT_INSET       (10.0f * REF)    /* reference 10  */
+#define OPT_SLOT_CX     (13.714f * REF)  /* reference 13.714 (6 + 15.429/2) */
+#define OPT_ICON_EXP    (12.0f * REF)
+#define OPT_ICON_MIN    (12.0f * REF)
+#define OPT_ICON_CLS    (12.0f * REF)
 
 #define TITLEBAR_H       48.0f   /* drag region height */
+
+/* The least of a window's titlebar that has to stay on screen: a window is
+ * moved by its titlebar, so a titlebar out of reach is a window that can
+ * never be moved back. Reference units, like every other metric here. */
+#define WIN_GRAB         40.0f
+
+/*
+ * The most a window layer may be: 32 Mi pixels, four 4K frames' worth and
+ * 128 MB once each pixel is four bytes. A 4K screen with a window hanging
+ * off each edge is under 20 Mi, so a box past this is a geometry bug, not a
+ * frame worth allocating for.
+ */
+#define FINNWINDOW_LAYER_MAX_PIXELS (32u * 1024u * 1024u)
 
 typedef struct {
     int  id;
@@ -57,6 +68,7 @@ static int      g_n_wins = 0;
 static int      g_next_id = 1;
 
 static fsvg g_ic_expand, g_ic_min, g_ic_close;
+static fsvg g_ic_search, g_ic_wifi, g_ic_bluetooth;
 static int  g_ready = 0;
 
 static finn_font g_f_title;
@@ -85,6 +97,10 @@ static int g_dock_clearance = 0;
 static uint32_t g_build_key = 0;
 static int      g_built = 0;
 static unsigned g_rev = 0;
+
+/* Set when a layer was refused or could not be allocated, so the reason is
+ * printed once per episode instead of on every frame of it. */
+static int g_layer_refused = 0;
 
 static int g_ax = 0, g_ay = 0;
 
@@ -139,6 +155,9 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
     snprintf(p, sizeof p, "%s/window_expand.svg", g_icon_dir);   ok &= fsvg_load(p, &g_ic_expand) == 0;
     snprintf(p, sizeof p, "%s/window_minimize.svg", g_icon_dir); ok &= fsvg_load(p, &g_ic_min) == 0;
     snprintf(p, sizeof p, "%s/window_close.svg", g_icon_dir);    ok &= fsvg_load(p, &g_ic_close) == 0;
+    snprintf(p, sizeof p, "%s/search.svg", g_icon_dir);          fsvg_load(p, &g_ic_search);
+    snprintf(p, sizeof p, "%s/wifi.svg", g_icon_dir);            fsvg_load(p, &g_ic_wifi);
+    snprintf(p, sizeof p, "%s/bluetooth.svg", g_icon_dir);       fsvg_load(p, &g_ic_bluetooth);
 
     if (!ok) fprintf(stderr, "finnwindow: icon set incomplete in %s\n", g_icon_dir);
     g_ready = ok;
@@ -149,10 +168,14 @@ void finnwindow_free(void) {
     fsvg_free(&g_ic_expand);
     fsvg_free(&g_ic_min);
     fsvg_free(&g_ic_close);
+    fsvg_free(&g_ic_search);
+    fsvg_free(&g_ic_wifi);
+    fsvg_free(&g_ic_bluetooth);
     finn_font_free(&g_f_title);
     free(g_layer);
     g_layer = NULL;
     g_lw = g_lh = 0;
+    g_layer_refused = 0;
     free(g_ovl);
     g_ovl = NULL;
     g_ovw = g_ovh = 0;
@@ -200,6 +223,49 @@ int finnwindow_overlaps_band(int y_top) {
     return 0;
 }
 
+/*
+ * The dock's resting top edge, in scanout pixels. The clearance the
+ * compositor reports is the dock's height, and finndock_rest_top turns it
+ * into the edge the dock answers for — the same edge finnwindow_overlaps_band
+ * is asked about, so the drag limit and the dock's sink cannot disagree. A
+ * clearance of zero means the dock has not been measured yet, and then the
+ * screen's bottom edge is the only limit there is.
+ */
+static int dock_band_top(void) {
+    if (g_dock_clearance <= 0) return g_screen_h;
+    return finndock_rest_top(g_screen_h, g_scale);
+}
+
+/*
+ * Keep a window where it can still be moved. The titlebar is the only part
+ * that can be grabbed, so at least WIN_GRAB of its height and of its width
+ * stays inside the screen and the rest of the window may hang off an edge.
+ * The bottom of the titlebar stops at the dock's resting top: the dock is
+ * drawn over the windows, so a titlebar under it is a titlebar out of reach,
+ * even though the window's body may sit in that band.
+ */
+static void clamp_window_pos(const finn_win *w, int *x, int *y) {
+    if (g_screen_w <= 0 || g_screen_h <= 0) return;
+
+    int grab = rs(WIN_GRAB, g_scale);
+    if (grab < 1) grab = 1;
+    int tb = rs(TITLEBAR_H, g_scale);
+    if (tb < grab) tb = grab;
+
+    int xmin = grab - w->w;
+    int xmax = g_screen_w - grab;
+    if (xmax < xmin) xmax = xmin;
+
+    int ymin = grab - tb;
+    int ymax = dock_band_top() - tb;
+    if (ymax < ymin) ymax = ymin;
+
+    if (*x < xmin) *x = xmin;
+    else if (*x > xmax) *x = xmax;
+    if (*y < ymin) *y = ymin;
+    else if (*y > ymax) *y = ymax;
+}
+
 int finnwindow_visible_count(void) {
     int c = 0;
     for (int i = 0; i < g_n_wins; i++)
@@ -226,7 +292,10 @@ int finnwindow_open(const char *arg) {
             if (ap) {
                 ap += 4;
                 int n = 0;
-                while (ap[n] && ap[n] != ' ' && ap[n] != '\t' && n < (int)sizeof app_id - 1) {
+                while (ap[n] && ap[n] != ' ' && ap[n] != '\t') {
+                    /* An id that does not fit would open a window for an app
+                     * nobody asked for, so the request is refused instead. */
+                    if (n >= (int)sizeof app_id - 1) return -1;
                     app_id[n] = ap[n];
                     n++;
                 }
@@ -282,16 +351,16 @@ int finnwindow_open(const char *arg) {
         }
     }
 
-    if (g_n_wins >= FINNWINDOW_MAX) {
-        /* Reuse oldest slot */
-        for (int i = 0; i < FINNWINDOW_MAX - 1; i++)
-            g_wins[i] = g_wins[i + 1];
-        g_n_wins = FINNWINDOW_MAX - 1;
-    }
+    /* The limit is a refusal, not an eviction: the window that is already
+     * open stays exactly where it is, and the caller is told why the new
+     * one did not appear. Reusing the app_id above is not affected — that
+     * request does not add a window. */
+    if (g_n_wins >= FINNWINDOW_MAX) return FINNWINDOW_ERR_LIMIT;
 
-    int ww = rs(WIN_DEF_W, g_scale);
-    int wh = rs(WIN_DEF_H, g_scale);
-    if (ww < 300) { ww = 649; wh = 389; }
+    int is_settings = (strcasecmp(app_id, "settings") == 0 || strcasecmp(title, "Settings") == 0);
+    int ww = is_settings ? rs(900.0f * REF, g_scale) : rs(WIN_DEF_W, g_scale);
+    int wh = is_settings ? rs(500.0f * REF, g_scale) : rs(WIN_DEF_H, g_scale);
+    if (ww < 300) { ww = is_settings ? 1168 : 649; wh = is_settings ? 649 : 389; }
 
     /* Center exactly as in Figma 12:2 (with slight cascade when multiple windows are open) */
     int vis = finnwindow_visible_count();
@@ -306,7 +375,8 @@ int finnwindow_open(const char *arg) {
     snprintf(w->app_id, sizeof w->app_id, "%s", app_id);
     snprintf(w->title, sizeof w->title, "%s", title[0] ? title : "Empty window");
     w->x = wx; w->y = wy; w->w = ww; w->h = wh;
-    w->saved_x = wx; w->saved_y = wy; w->saved_w = ww; w->saved_h = wh;
+    clamp_window_pos(w, &w->x, &w->y);
+    w->saved_x = w->x; w->saved_y = w->y; w->saved_w = ww; w->saved_h = wh;
 
     g_built = 0;
     finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
@@ -333,6 +403,29 @@ int finnwindow_focus(int id) {
     g_built = 0;
     finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
     return 0;
+}
+
+int finnwindow_cycle_focus(int dir) {
+    if (g_n_wins == 0) return -1;
+    if (g_n_wins == 1) return finnwindow_focus(g_wins[0].id);
+
+    /*
+     * The array is stored in z-order, with the focused window at the top
+     * (g_wins[g_n_wins - 1]). A forward step (Alt+Tab) wants to reveal the
+     * window directly underneath; pushing the current top to the bottom
+     * advances the whole stack by one without losing order across repeated
+     * presses. A backward step (Shift+Alt+Tab) is the inverse permutation:
+     * bringing the bottom window to the front with finnwindow_focus shifts
+     * the rest down and restores the previous top.
+     */
+    if (dir >= 0) {
+        finn_win top = g_wins[g_n_wins - 1];
+        for (int i = g_n_wins - 1; i > 0; i--)
+            g_wins[i] = g_wins[i - 1];
+        g_wins[0] = top;
+        return finnwindow_focus(g_wins[g_n_wins - 1].id);
+    }
+    return finnwindow_focus(g_wins[0].id);
 }
 
 int finnwindow_minimize(int id) {
@@ -420,9 +513,14 @@ int finnwindow_maximize(int id) {
 int finnwindow_move(int id, int x, int y) {
     int idx = find_idx(id);
     if (idx < 0) return -1;
-    g_wins[idx].x = x;
-    g_wins[idx].y = y;
-    g_wins[idx].maximized = 0;
+    finn_win *w = &g_wins[idx];
+
+    /* The control plane may place a window anywhere it likes, except
+     * somewhere the pointer cannot get it back. */
+    clamp_window_pos(w, &x, &y);
+    w->x = x;
+    w->y = y;
+    w->maximized = 0;
     g_built = 0;
     return 0;
 }
@@ -528,7 +626,11 @@ static void opt_pill_rect(const finn_win *w, float s,
 
 int finnwindow_hit(int px, int py, int *out_win_id) {
     if (out_win_id) *out_win_id = 0;
-    if (g_min_active) return FINNWINDOW_HIT_NONE;
+    /* The fold and the maximize zoom both draw an interpolated rect, so a
+     * hit tested against the destination would land on a control that is
+     * not where it is drawn. Nothing inside the rect takes a click until it
+     * lands — and the hover clears with it, because hover_at asks this. */
+    if (g_min_active || g_zoom_active) return FINNWINDOW_HIT_NONE;
     if (finnwindow_visible_count() == 0 || finn_anim_v(&g_a_open) < 0.85f)
         return FINNWINDOW_HIT_NONE;
 
@@ -610,13 +712,11 @@ int finnwindow_drag(int px, int py) {
     if (idx < 0) { g_dragging = 0; return 0; }
     int nx = px - g_drag_dx;
     int ny = py - g_drag_dy;
-    int margin = rs(12.0f, g_scale);
-    if (nx < margin) nx = margin;
-    if (ny < margin) ny = margin;
-    if (nx + g_wins[idx].w > g_screen_w - margin)
-        nx = g_screen_w - margin - g_wins[idx].w;
-    if (ny + g_wins[idx].h > g_screen_h - margin)
-        ny = g_screen_h - margin - g_wins[idx].h;
+
+    /* Pointer dragging and window.move share one rule: the titlebar stays
+     * grabbable on screen and stops at the dock's resting top. */
+    clamp_window_pos(&g_wins[idx], &nx, &ny);
+
     if (nx != g_wins[idx].x || ny != g_wins[idx].y) {
         g_wins[idx].x = nx;
         g_wins[idx].y = ny;
@@ -738,6 +838,54 @@ static void render_overlay(int idx, int part, float s) {
     }
 }
 
+/*
+ * The union box is the layer's size, and the layer is the one allocation in
+ * this module that a position can grow without bound. `lw*lh` is checked in
+ * 64 bits before either factor becomes an int, and the cap is the line
+ * between a large frame and a geometry bug. The refusal is reported once:
+ * a bad position would otherwise print on every frame it lasted.
+ */
+static int layer_fits(int64_t lw, int64_t lh) {
+    if (lw > 0 && lh > 0 && lw * lh <= (int64_t)FINNWINDOW_LAYER_MAX_PIXELS)
+        return 1;
+    if (!g_layer_refused) {
+        fprintf(stderr, "finnwindow: refusing a %lldx%lld window layer "
+                        "(cap %u pixels)\n",
+                (long long)lw, (long long)lh,
+                (unsigned)FINNWINDOW_LAYER_MAX_PIXELS);
+        g_layer_refused = 1;
+    }
+    return 0;
+}
+
+/*
+ * Make the body layer the size of the union box. The new raster is taken
+ * beside the old one and swapped in only once it is there, so a refused or
+ * failed allocation leaves the last frame exactly as it was rather than
+ * blanking the screen.
+ */
+static int layer_reserve(int lw, int lh) {
+    if (g_layer && lw == g_lw && lh == g_lh) return 1;
+    if (!layer_fits(lw, lh)) return 0;
+
+    uint32_t *p = malloc((size_t)lw * (size_t)lh * 4);
+    if (!p) {
+        if (!g_layer_refused) {
+            fprintf(stderr, "finnwindow: cannot allocate a %dx%d window layer\n",
+                    lw, lh);
+            g_layer_refused = 1;
+        }
+        return 0;
+    }
+
+    free(g_layer);
+    g_layer = p;
+    g_lw = lw;
+    g_lh = lh;
+    g_layer_refused = 0;
+    return 1;
+}
+
 void finnwindow_render(int screen_w, int screen_h, float scale,
                        int dock_x, int dock_y, int dock_w, int dock_h,
                        const finn_state *st) {
@@ -756,29 +904,43 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
     int vis = finnwindow_visible_count();
     if (vis == 0 && !finnwindow_visible()) return;
 
-    /* Compute union bounding box of visible windows */
-    int min_x = screen_w, min_y = screen_h, max_x = 0, max_y = 0;
+    /*
+     * The union bounding box of the visible windows. It is int64 because a
+     * window may hang off an edge by all but its titlebar, so a corner is
+     * not inside the screen and the sum of a position and a size is not a
+     * position an int has to hold: the box is measured first and refused if
+     * it is not a frame, rather than allowed to wrap into a negative one.
+     */
+    int64_t min_x = screen_w, min_y = screen_h, max_x = 0, max_y = 0;
     for (int i = 0; i < g_n_wins; i++) {
         if (!g_wins[i].used || g_wins[i].minimized) continue;
-        if (g_wins[i].x < min_x) min_x = g_wins[i].x;
-        if (g_wins[i].y < min_y) min_y = g_wins[i].y;
-        if (g_wins[i].x + g_wins[i].w > max_x) max_x = g_wins[i].x + g_wins[i].w;
-        if (g_wins[i].y + g_wins[i].h > max_y) max_y = g_wins[i].y + g_wins[i].h;
+        int64_t x0 = g_wins[i].x, y0 = g_wins[i].y;
+        int64_t x1 = x0 + g_wins[i].w, y1 = y0 + g_wins[i].h;
+        if (x0 < min_x) min_x = x0;
+        if (y0 < min_y) min_y = y0;
+        if (x1 > max_x) max_x = x1;
+        if (y1 > max_y) max_y = y1;
     }
 
-    if (vis > 0 && max_x > min_x && max_y > min_y) {
-        g_lx0 = min_x;
-        g_ly0 = min_y;
-        g_ax = (min_x + max_x) / 2;
-        g_ay = (min_y + max_y) / 2;
-    } else {
+    if (vis <= 0 || max_x <= min_x || max_y <= min_y) {
         /* Keep last geometry while close animation finishes */
-        if (!g_layer) return;
         return;
     }
 
-    int lw = max_x - min_x;
-    int lh = max_y - min_y;
+    int64_t uw = max_x - min_x;
+    int64_t uh = max_y - min_y;
+    if (!layer_fits(uw, uh)) return;
+
+    /* The cap above is what makes these two safe to narrow. */
+    int lw = (int)uw;
+    int lh = (int)uh;
+
+    int old_lx0 = g_lx0, old_ly0 = g_ly0;
+    int old_ax = g_ax, old_ay = g_ay;
+    g_lx0 = (int)min_x;
+    g_ly0 = (int)min_y;
+    g_ax = (int)((min_x + max_x) / 2);
+    g_ay = (int)((min_y + max_y) / 2);
 
     uint32_t key = build_key(scale, lw, lh, st);
     int body_dirty = !g_built || key != g_build_key || lw != g_lw || lh != g_lh;
@@ -810,17 +972,18 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
     if (!body_dirty && !ov_dirty) return;
 
     if (body_dirty) {
+        if (!layer_reserve(lw, lh)) {
+            /* The last frame stays where it was drawn: the union moved, but
+             * the layer it would have gone into does not exist. */
+            g_lx0 = old_lx0; g_ly0 = old_ly0;
+            g_ax = old_ax; g_ay = old_ay;
+            return;
+        }
         g_build_key = key;
         g_built = 1;
         g_rev++;
 
-        if (lw != g_lw || lh != g_lh) {
-            free(g_layer);
-            g_layer = malloc((size_t)lw * lh * 4);
-            g_lw = lw; g_lh = lh;
-        }
-        if (!g_layer) return;
-        memset(g_layer, 0, (size_t)lw * lh * 4);
+        memset(g_layer, 0, (size_t)lw * (size_t)lh * 4);
 
         float s = scale;
 
@@ -838,7 +1001,7 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             float body_r = w->maximized ? 0.0f : s * WIN_R;
             finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                              (float)wx, (float)wy, (float)w->w, (float)w->h,
-                             body_r, FINN_GLASS, WIN_GLASS);
+                             body_r, FINN_GLASS, FINN_GLASS_PANEL);
 
             /* Top-right Window Options pill (Figma 12:2: 72x24 r=8, inset 8, frost 0.50) */
             int ox_abs, oy_abs, ow, oh;
@@ -848,7 +1011,7 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
 
             finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                              (float)ox, (float)oy, (float)ow, (float)oh,
-                             s * OPT_R, FINN_GLASS, WIN_PILL_GLASS);
+                             s * OPT_R, FINN_GLASS, FINN_GLASS_TILE);
 
             /* Icon centers inside the 72x24 pill (Figma 12:2: 15.43x15.43 slots at pad 6,4 gap 6) */
             int cy_opt = oy + oh / 2;
@@ -863,19 +1026,82 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
                                rs(OPT_ICON_CLS, s), FINN_INK, FINN_INK, 0);
 
-            /* Centered window label (Figma 12:2: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
-            const char *label = (!w->title[0] ||
-                                 strcasecmp(w->title, "Empty window") == 0 ||
-                                 strcasecmp(w->title, "Finn Window") == 0)
-                              ? "Empty window"
-                              : w->title;
-            float tw = finn_text_width(&g_f_title, label);
-            float cap = finn_text_cap_height(&g_f_title);
-            uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
-            finn_text_draw(&g_f_title, g_layer, lw, lh,
-                           (float)wx + ((float)w->w - tw) * 0.5f,
-                           (float)wy + (float)w->h * 0.5f + cap * 0.5f,
-                           label, col);
+            if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
+                float sb_w = s * (250.0f * REF);
+                if (sb_w > (float)w->w) sb_w = (float)w->w;
+                finn_fill_rrect(g_layer, lw, lh, (float)wx, (float)wy, sb_w, (float)w->h, body_r, 0xFFFFFFFFu);
+                /* Title: Settings */
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + s * (15.0f * REF),
+                               (float)wy + s * (44.0f * REF),
+                               "Settings", FINN_INK);
+                /* Search Box */
+                float sx = (float)wx + s * (15.0f * REF);
+                float sy = (float)wy + s * (70.0f * REF);
+                float sw = s * (220.0f * REF);
+                float sh = s * (30.0f * REF);
+                finn_fill_rrect(g_layer, lw, lh, sx, sy, sw, sh, s * (4.0f * REF), 0x40C7C7C7u);
+                if (g_ic_search.vw > 0) {
+                    int s_sz = rs(14.0f * REF, s);
+                    finn_icon_blit(&g_ic_search, g_layer, lw, lh,
+                                   (int)lroundf(sx + s * (8.0f * REF)),
+                                   (int)lroundf(sy + (sh - (float)s_sz) * 0.5f),
+                                   s_sz, FINN_DIM, FINN_DIM, 0);
+                }
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               sx + s * (28.0f * REF), sy + sh * 0.65f,
+                               "Type here to search", FINN_DIM);
+                /* Network section */
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + s * (15.0f * REF),
+                               (float)wy + s * (120.0f * REF),
+                               "NETWORK", 0xFF555555u);
+                /* Wi-Fi row */
+                float wr_y = (float)wy + s * (138.0f * REF);
+                float c_sz = s * (18.0f * REF);
+                float w_bx = (float)wx + s * (15.0f * REF);
+                float w_by = wr_y + s * (6.0f * REF);
+                finn_fill_rrect(g_layer, lw, lh, w_bx, w_by, c_sz, c_sz, c_sz * 0.5f, FINN_ON);
+                if (g_ic_wifi.vw > 0) {
+                    int ico_sz = rs(12.0f * REF, s);
+                    finn_icon_blit(&g_ic_wifi, g_layer, lw, lh,
+                                   (int)lroundf(w_bx + (c_sz - (float)ico_sz) * 0.5f),
+                                   (int)lroundf(w_by + (c_sz - (float)ico_sz) * 0.5f),
+                                   ico_sz, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+                }
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + s * (42.0f * REF), wr_y + s * (20.0f * REF),
+                               "Wi-Fi", FINN_INK);
+                /* Bluetooth row */
+                float br_y = (float)wy + s * (173.0f * REF);
+                float b_bx = (float)wx + s * (15.0f * REF);
+                float b_by = br_y + s * (6.0f * REF);
+                finn_fill_rrect(g_layer, lw, lh, b_bx, b_by, c_sz, c_sz, c_sz * 0.5f, FINN_ON);
+                if (g_ic_bluetooth.vw > 0) {
+                    int ico_sz = rs(12.0f * REF, s);
+                    finn_icon_blit(&g_ic_bluetooth, g_layer, lw, lh,
+                                   (int)lroundf(b_bx + (c_sz - (float)ico_sz) * 0.5f),
+                                   (int)lroundf(b_by + (c_sz - (float)ico_sz) * 0.5f),
+                                   ico_sz, 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+                }
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + s * (42.0f * REF), br_y + s * (20.0f * REF),
+                               "Bluetooth", FINN_INK);
+            } else {
+                /* Centered window label (Figma 12:2: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
+                const char *label = (!w->title[0] ||
+                                     strcasecmp(w->title, "Empty window") == 0 ||
+                                     strcasecmp(w->title, "Finn Window") == 0)
+                                  ? "Empty window"
+                                  : w->title;
+                float tw = finn_text_width(&g_f_title, label);
+                float cap = finn_text_cap_height(&g_f_title);
+                uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + ((float)w->w - tw) * 0.5f,
+                               (float)wy + (float)w->h * 0.5f + cap * 0.5f,
+                               label, col);
+            }
         }
     }
 

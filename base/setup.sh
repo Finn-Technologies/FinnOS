@@ -16,7 +16,8 @@
 # that is not used here is airootfs/etc/mkinitcpio.conf, which is the live
 # medium's initramfs and would be wrong on a machine that boots from a
 # partition.
-set -eux
+set -euo pipefail
+set -x
 
 case "${1:-}" in
     x86_64|aarch64) ARCH="$1" ;;
@@ -58,25 +59,63 @@ pacman -Syu --noconfirm
 pacman -S --needed --noconfirm $(list "$PKGS")
 
 # 4. the dev user: in the groups that own input, video and the seat, with
-#    no password for sudo. This is the account the shell and the control
-#    plane are driven from.
+#    sudo that does not ask. This is the dev machine, and vm/deploy.sh drives
+#    `sudo` over ssh with no terminal to ask on. It is not the installed
+#    image: the installer sets a generated password and sudo asks for it,
+#    because a passwordless root on a machine with a network is remote root
+#    after one guess.
 id finn 2>/dev/null || useradd -m -G wheel,input,video,seat,render -s /bin/bash finn
+install -d -m755 /etc/sudoers.d
 printf 'finn ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/finn
-chmod 440 /etc/sudoers.d/finn
+chmod 0440 /etc/sudoers.d/finn
 
-# 5. the services the base needs before anything is drawn.
+# 5. the services the base needs before anything is drawn. sshd is installed
+#    (the package list carries it so a machine can be reached without a
+#    console) and deliberately not enabled: a network login is a decision
+#    someone makes with `systemctl enable --now sshd`, not a default.
 systemctl enable seatd
 systemctl enable NetworkManager
 systemctl enable systemd-timesyncd 2>/dev/null || true
-systemctl enable sshd 2>/dev/null || true
 
-# 6. the system units, straight from this directory.
-install -Dm644 "$HERE/finn-comp.service" /etc/systemd/system/finn-comp.service
-install -Dm644 "$HERE/finnd.service"     /etc/systemd/system/finnd.service
-install -Dm644 "$HERE/finn-tmpfiles.conf" /usr/lib/tmpfiles.d/finn.conf
+# 6. the system units, straight from this directory. finn-failure.service is
+#    pulled in by finn-comp's OnFailure=, so it is installed beside it.
+#
+#    tty1 belongs to the compositor, not to a login: the old drop-in
+#    autologged finn in there, but finn-comp conflicts with getty@tty1 and
+#    comes up first, so the getty never ran and the file only ever hid that.
+#    It is removed where an older base left one behind.
+rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
+install -Dm644 "$HERE/finn-comp.service"    /etc/systemd/system/finn-comp.service
+install -Dm644 "$HERE/finnd.service"        /etc/systemd/system/finnd.service
+install -Dm644 "$HERE/finn-failure.service" /etc/systemd/system/finn-failure.service
+install -Dm644 "$HERE/finn-tmpfiles.conf"   /usr/lib/tmpfiles.d/finn.conf
 systemctl daemon-reload
 
-# 7. the assets: the fonts, both wallpapers, every icon, and the app
+# tty2 is the rescue console: the compositor owns tty1, so tty1 is not a way
+# in, and Ctrl+Alt+F2 reaches a login whether or not the shell is running.
+systemctl enable getty@tty2.service 2>/dev/null ||
+    echo "WARN: could not enable getty@tty2.service; there is no rescue console"
+
+# 7. the session. Enabling a unit whose binary is not on the machine is a
+#    machine that fails at every boot, so the target and the units are only
+#    turned on once the session actually exists. Until then the machine
+#    boots to a login console and the script says what is missing.
+missing=""
+[ -x /usr/local/bin/finn-comp ] || missing="$missing finn-comp"
+[ -x /usr/local/bin/finnd ]     || missing="$missing finnd"
+if [ -z "$missing" ]; then
+    systemctl enable finn-comp finnd
+    systemctl set-default graphical.target
+    echo "session enabled: finn-comp on tty1, finnd behind it"
+else
+    echo "not enabled, missing:$missing"
+    echo "build it: cd /opt/finnos && make && sudo make install"
+    echo "then enable it: sudo systemctl enable --now finn-comp finnd"
+    echo "and:            sudo systemctl set-default graphical.target"
+fi
+
+# 8. the assets: the fonts, both wallpapers, every icon, and the app
 #    registry the shell draws its tiles from. The compositor starts with
 #    default.webp; setup.webp is the wallpaper the first-run screen shows,
 #    and it is installed beside it so that screen has one on any machine.
@@ -87,12 +126,12 @@ install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/se
 cp "$ROOT"/src/compositor/icons/*.svg /usr/share/finn/icons/
 install -m755 "$ROOT/src/pkg/finnpkg" /usr/local/bin/finnpkg
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-echo window > /var/lib/finnpkg/installed
+printf 'settings\nfiles\narc\nwindow\n' > /var/lib/finnpkg/installed
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l
 
-# 8. the branding. os-release is what tools read to know what this machine
+# 9. the branding. os-release is what tools read to know what this machine
 #    is; issue and motd are what a person reads at the console.
 [ -f /etc/os-release.finn-backup ] || cp /etc/os-release /etc/os-release.finn-backup 2>/dev/null || true
 install -m644 "$HERE/airootfs/etc/os-release" /etc/os-release
@@ -112,17 +151,6 @@ else
     echo "hostname left as $(hostname): it is not the default one"
 fi
 
-# 9. autologin on tty1, as the finn user. The compositor takes the console
-#    from there: finn-comp.service conflicts with getty@tty1 and comes up
-#    first, so the login is what is left when the shell is not running.
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<'EOF'
-[Service]
-ExecStart=
-ExecStart=-/usr/bin/agetty --autologin finn --noclear %I $TERM
-EOF
-chmod 644 /etc/systemd/system/getty@tty1.service.d/autologin.conf
-
 # 10. the sources, so the machine can build the compositor and the control
 #     plane. This is the machine with the DRM headers.
 mkdir -p /opt/finnos
@@ -134,9 +162,13 @@ for f in Makefile README.md NAMING.md; do
 done
 chown -R finn:finn /opt/finnos
 
-# The units are installed but not enabled: enabling a unit whose binary is
-# not on the machine is a machine that fails at every boot. Build first,
-# then `systemctl enable --now finn-comp finnd`.
+echo
 echo "FinnOS base ready on $ARCH."
-echo "Build the shell: cd /opt/finnos && make && sudo make install"
-echo "Then enable it:  sudo systemctl enable --now finn-comp finnd"
+echo "  session    /usr/local/bin/finn-comp on tty1, finnd behind it"
+echo "  rescue     Ctrl+Alt+F2, a getty on tty2"
+echo "  sshd       installed, not enabled"
+echo "  accounts   finn (wheel, passwordless sudo here), root"
+if [ -n "$missing" ]; then
+    echo
+    echo "The session is not enabled yet; the machine boots to a login console."
+fi

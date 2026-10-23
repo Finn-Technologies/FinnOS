@@ -90,11 +90,11 @@ app's own state, and the power row.
 `NAMING.md`: a brand and a plain English noun — **Finn Code**, **Finn
 Files**, **Finn Store**.
 
-An app is not yet a running program. There is no window manager and no
-compositor client protocol, so a `.fui` file is a design that the compiler
-turns into a `.fbin` and the system does not yet draw. The application
-registry (`assets/apps.registry`) is what the Start Menu shows, and it
-carries the honest state of each app: installed or not.
+An app is not yet a running program. There is a window manager
+(`finnwindow`), but no compositor client protocol, so a `.fui` file is a
+design that the compiler turns into a `.fbin` and the system does not yet
+draw. The application registry (`assets/apps.registry`) is what the Start
+Menu shows, and it carries the honest state of each app: installed or not.
 
 ## The grammar
 
