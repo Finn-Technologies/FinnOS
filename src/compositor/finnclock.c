@@ -116,7 +116,7 @@ int finnclock_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir);
     if (icon_dir && *icon_dir) {
         char p[600];
-        snprintf(p, sizeof p, "%s/start_button.svg", icon_dir);
+        snprintf(p, sizeof p, "%s/boot-mark.svg", icon_dir);
         g_has_icon = (fsvg_load(p, &g_ic_start) == 0);
     }
     return 0;

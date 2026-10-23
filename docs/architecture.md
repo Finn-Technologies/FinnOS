@@ -213,9 +213,10 @@ Keeping them apart is what lets the shell show an app that is honestly
 ships — and it keeps a catalogue update from wiping the user's install
 list.
 
-The catalogue currently has one entry, **Finn Window**. The icons for the
-other apps in the roadmap exist, but a catalogue entry that claimed them
-would put a tile on the desktop for a program nobody can start.
+The catalogue currently has one entry, **Settings** (`settings-app.svg`).
+Files, Arc, and every other application from earlier prototypes have been
+removed; the shell, the dock and the Start Menu expose Settings as the sole
+first-party application.
 
 ## The session
 

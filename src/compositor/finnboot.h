@@ -16,7 +16,7 @@
  * shapes in a 2x2 grid — a rounded square, a circle, a four-point
  * sparkle and a turned square — in white on black, with a 150-unit line
  * below it. The mark is the same drawing as the dock's launcher icon
- * (icons/start_button.svg), so there is one mark in the system and not
+ * (icons/boot-mark.svg), so there is one mark in the system and not
  * two.
  *
  * Everything here is authored for the 1080p canvas and scaled, like the

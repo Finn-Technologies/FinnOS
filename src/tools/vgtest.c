@@ -34,7 +34,11 @@ static void draw_one(uint32_t *buf, int W, const char *path, int S,
     memset(ic, 0, (size_t)sz * sz * 4);
 
     uint32_t ink = 0xFF1A1D24u;
-    fsvg_raster(&svg, ic, sz, sz, fsvg_mono, &ink);
+    if (strstr(path, "avatar") || strstr(path, "settings-app")) {
+        fsvg_raster(&svg, ic, sz, sz, NULL, NULL);
+    } else {
+        fsvg_raster(&svg, ic, sz, sz, fsvg_mono, &ink);
+    }
 
     for (int y = 0; y < sz; y++)
         for (int x = 0; x < sz; x++) {
@@ -55,11 +59,11 @@ int main(int argc, char **argv) {
 
     /* the icon set, in the order they appear in the shell */
     static const char *files[] = {
-        "start_button", "cursor",
-        "volume", "wifi", "battery", "battery_bolt",
-        "bluetooth", "ethernet", "sun", "moon",
-        "code", "files", "notes", "studio", "store", "sync", "vault",
-        "terminal"
+        "boot-mark", "search-01", "home-09", "view-open-windows",
+        "settings-app", "volume-02", "wifi-02", "battery",
+        "bluetooth", "sun-01", "sun-03", "edit-01", "settings-02",
+        "power", "refresh", "avatar", "chevron-right",
+        "expand", "minus-sign", "x", "cursor"
     };
     const int N = (int)(sizeof files / sizeof files[0]);
 

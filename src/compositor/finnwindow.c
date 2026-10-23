@@ -152,11 +152,11 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
 
     char p[600];
     int ok = 1;
-    snprintf(p, sizeof p, "%s/window_expand.svg", g_icon_dir);   ok &= fsvg_load(p, &g_ic_expand) == 0;
-    snprintf(p, sizeof p, "%s/window_minimize.svg", g_icon_dir); ok &= fsvg_load(p, &g_ic_min) == 0;
-    snprintf(p, sizeof p, "%s/window_close.svg", g_icon_dir);    ok &= fsvg_load(p, &g_ic_close) == 0;
-    snprintf(p, sizeof p, "%s/search.svg", g_icon_dir);          fsvg_load(p, &g_ic_search);
-    snprintf(p, sizeof p, "%s/wifi.svg", g_icon_dir);            fsvg_load(p, &g_ic_wifi);
+    snprintf(p, sizeof p, "%s/expand.svg", g_icon_dir);         ok &= fsvg_load(p, &g_ic_expand) == 0;
+    snprintf(p, sizeof p, "%s/minus-sign.svg", g_icon_dir);     ok &= fsvg_load(p, &g_ic_min) == 0;
+    snprintf(p, sizeof p, "%s/x.svg", g_icon_dir);              ok &= fsvg_load(p, &g_ic_close) == 0;
+    snprintf(p, sizeof p, "%s/search-01.svg", g_icon_dir);       fsvg_load(p, &g_ic_search);
+    snprintf(p, sizeof p, "%s/wifi-02.svg", g_icon_dir);         fsvg_load(p, &g_ic_wifi);
     snprintf(p, sizeof p, "%s/bluetooth.svg", g_icon_dir);       fsvg_load(p, &g_ic_bluetooth);
 
     if (!ok) fprintf(stderr, "finnwindow: icon set incomplete in %s\n", g_icon_dir);

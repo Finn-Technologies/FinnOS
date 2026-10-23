@@ -19,7 +19,7 @@
  * REF = 1080 / 832 = 1.298077):
  *
  * 4 floating pills at rest:
- *   1. Taskbar (Apps):    w=115, h=42, r=8 (chips 26x26 r5.91 at x=9, 45, 81)
+ *   1. Taskbar (Apps):    w=42, h=42, r=8 (Settings chip 26x26 r5.91 at x=8)
  *   2. Navigation:        w=116, h=42, r=8 (search x=10, home x=47, windows x=84)
  *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px, sun 24px, 23°C/Sunny)
  *   4. Status:            w=116, h=42, r=8 (volume x=10, wifi x=47, battery x=84)
@@ -34,7 +34,7 @@
 #define DOCK_GAP      (15.0f * REF)
 #define DOCK_BOTTOM   (15.0f * REF)
 
-#define PILL1_W       (115.0f * REF)
+#define PILL1_W       (42.0f * REF)
 #define PILL2_W       (116.0f * REF)
 #define PILL3_W       (139.0f * REF)
 #define PILL4_W       (116.0f * REF)
@@ -47,10 +47,10 @@
 #define GLASS_BAR     0.94f
 
 /* ---------------- assets ---------------- */
-static fsvg g_ic_files, g_ic_arc, g_ic_settings_app;
+static fsvg g_ic_settings_app;
 static fsvg g_ic_search, g_ic_home, g_ic_windows;
 static fsvg g_ic_sun_weather;
-static fsvg g_ic_vol, g_ic_wifi, g_ic_bat, g_ic_bolt;
+static fsvg g_ic_vol, g_ic_wifi, g_ic_bat;
 static int  g_ready = 0;
 
 /* typography */
@@ -66,7 +66,7 @@ static const uint32_t *icon_battery(int px, const finn_state *st) {
     int pct = st->battery_pct < 0 ? 100 : st->battery_pct;
     if (pct > 100) pct = 100;
     if (g_ic_bat.n > 1) {
-        g_ic_bat.shapes[1].clip_x = 4.0f + 14.0f * (float)pct / 100.0f;
+        g_ic_bat.shapes[1].clip_x = 3.0f + 14.0f * (float)pct / 100.0f;
     }
     uint32_t rev = 1000u + (uint32_t)pct * 2u + (st->charging ? 1u : 0u);
     return finn_icon_ref(&g_ic_bat, px, FINN_INK, FINN_MUTE, rev);
@@ -79,11 +79,18 @@ static const uint32_t *icon_wifi(int px, const finn_state *st) {
         for (int i = 0; i < sh->npolys; i++) {
             fpoly *q = &sh->polys[i];
             q->vis = 1;
-            if (i == 3) {
-                q->col = (sig < 0) ? FINN_MUTE : FINN_INK;
+            if (sig < 0) {
+                q->col = FINN_MUTE;
+            } else if (i >= 3) {
+                q->col = FINN_INK;
+            } else if (sig == 1 && i == 2) {
+                q->col = FINN_INK;
+            } else if (sig == 2 && (i == 1 || i == 2)) {
+                q->col = FINN_INK;
+            } else if (sig >= 3) {
+                q->col = FINN_INK;
             } else {
-                int first_lit = 3 - sig;
-                q->col = (sig >= 0 && i >= first_lit) ? FINN_INK : FINN_MUTE;
+                q->col = FINN_MUTE;
             }
         }
     }
@@ -292,20 +299,17 @@ int finndock_init(const char *icon_dir, const char *font_dir) {
 
     char p[512];
     int ok = 1;
-    snprintf(p, sizeof p, "%s/app_files.svg", icon_dir);        ok &= fsvg_load(p, &g_ic_files) == 0;
-    snprintf(p, sizeof p, "%s/app_arc.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_arc) == 0;
-    snprintf(p, sizeof p, "%s/app_settings.svg", icon_dir);     ok &= fsvg_load(p, &g_ic_settings_app) == 0;
+    snprintf(p, sizeof p, "%s/settings-app.svg", icon_dir);     ok &= fsvg_load(p, &g_ic_settings_app) == 0;
 
-    snprintf(p, sizeof p, "%s/search.svg", icon_dir);           ok &= fsvg_load(p, &g_ic_search) == 0;
-    snprintf(p, sizeof p, "%s/home.svg", icon_dir);             ok &= fsvg_load(p, &g_ic_home) == 0;
-    snprintf(p, sizeof p, "%s/windows.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_windows) == 0;
+    snprintf(p, sizeof p, "%s/search-01.svg", icon_dir);        ok &= fsvg_load(p, &g_ic_search) == 0;
+    snprintf(p, sizeof p, "%s/home-09.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_home) == 0;
+    snprintf(p, sizeof p, "%s/view-open-windows.svg", icon_dir); ok &= fsvg_load(p, &g_ic_windows) == 0;
 
-    snprintf(p, sizeof p, "%s/sun_weather.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_sun_weather) == 0;
+    snprintf(p, sizeof p, "%s/sun-03.svg", icon_dir);           ok &= fsvg_load(p, &g_ic_sun_weather) == 0;
 
-    snprintf(p, sizeof p, "%s/volume.svg", icon_dir);           ok &= fsvg_load(p, &g_ic_vol) == 0;
-    snprintf(p, sizeof p, "%s/wifi.svg", icon_dir);             ok &= fsvg_load(p, &g_ic_wifi) == 0;
+    snprintf(p, sizeof p, "%s/volume-02.svg", icon_dir);        ok &= fsvg_load(p, &g_ic_vol) == 0;
+    snprintf(p, sizeof p, "%s/wifi-02.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_wifi) == 0;
     snprintf(p, sizeof p, "%s/battery.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_bat) == 0;
-    snprintf(p, sizeof p, "%s/battery_bolt.svg", icon_dir);     ok &= fsvg_load(p, &g_ic_bolt) == 0;
 
     if (!ok) fprintf(stderr, "finndock: some icons could not be loaded from %s\n", icon_dir);
     g_ready = 1;
@@ -313,8 +317,6 @@ int finndock_init(const char *icon_dir, const char *font_dir) {
 }
 
 void finndock_free(void) {
-    fsvg_free(&g_ic_files);
-    fsvg_free(&g_ic_arc);
     fsvg_free(&g_ic_settings_app);
     fsvg_free(&g_ic_search);
     fsvg_free(&g_ic_home);
@@ -323,7 +325,6 @@ void finndock_free(void) {
     fsvg_free(&g_ic_vol);
     fsvg_free(&g_ic_wifi);
     fsvg_free(&g_ic_bat);
-    fsvg_free(&g_ic_bolt);
 
     finn_font_free(&g_font);
     finn_font_free(&g_f_temp);
@@ -351,7 +352,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     float gap = (15.0f * (1.0f - sink) + 7.5f * sink) * u;
     float bottom_m = (15.0f * (1.0f - sink)) * u;
 
-    float p1_w = 115.0f * u;
+    float p1_w = 42.0f * u;
     float p2_w = 116.0f * u;
     float p3_w = 139.0f * u;
     float p4_w = 116.0f * u;
@@ -449,37 +450,27 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
         }
 
-        /* Running app highlight on slot 2 (Settings) if window is active */
+        /* Running app highlight on Settings if window is active */
         if (g_well_apps > 0.004f) {
             float bg_w = 34.0f * u, bg_h = 34.0f * u;
-            float bg_x = p1_bx + 77.0f * u;
+            float bg_x = p1_bx + 4.0f * u;
             float bg_y = by + 4.0f * u;
             finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u, 0xFFFFFFFFu);
 
             /* Blue underline indicator */
-            float ind_w = 6.0f * u, ind_h = 2.0f * u;
-            float ind_x = p1_bx + (81.0f + 13.0f - 3.0f) * u;
+            float ind_w = 4.0f * u, ind_h = 2.0f * u;
+            float ind_x = p1_bx + (42.0f * u - ind_w) * 0.5f;
             float ind_y = by + dh - ind_h - 1.0f * u;
             finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h, 1.0f * u, FINN_ON);
         }
 
-        /* 3 App chips: Files (x=9), Arc (x=45), Settings (x=81) */
+        /* 1 App chip: Settings (x=8) */
         int chip_sz = rs(26.0f * REF, f);
         float cy = by + 8.0f * u;
 
-        if (g_ic_files.vw > 0) {
-            finn_icon_blit(&g_ic_files, g_layer, lw, lh,
-                           (int)lroundf(p1_bx + 9.0f * u), (int)lroundf(cy),
-                           chip_sz, 0, 0, 0);
-        }
-        if (g_ic_arc.vw > 0) {
-            finn_icon_blit(&g_ic_arc, g_layer, lw, lh,
-                           (int)lroundf(p1_bx + 45.0f * u), (int)lroundf(cy),
-                           chip_sz, 0, 0, 0);
-        }
         if (g_ic_settings_app.vw > 0) {
             finn_icon_blit(&g_ic_settings_app, g_layer, lw, lh,
-                           (int)lroundf(p1_bx + 81.0f * u), (int)lroundf(cy),
+                           (int)lroundf(p1_bx + 8.0f * u), (int)lroundf(cy),
                            chip_sz, 0, 0, 0);
         }
     }

@@ -313,11 +313,8 @@ int finnsetup_init(const char *icon_dir, const char *font_dir) {
 
     char p[600];
     int ok = 1;
-    snprintf(p, sizeof p, "%s/start_button.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_start) == 0;
-    snprintf(p, sizeof p, "%s/language.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_lang) == 0;
-    snprintf(p, sizeof p, "%s/accessibility.svg", icon_dir); ok &= fsvg_load(p, &g_ic_acc) == 0;
-    snprintf(p, sizeof p, "%s/chevron_down.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_chev_down) == 0;
-    snprintf(p, sizeof p, "%s/chevron_right.svg", icon_dir); ok &= fsvg_load(p, &g_ic_chev_right) == 0;
+    snprintf(p, sizeof p, "%s/boot-mark.svg", icon_dir);     ok &= fsvg_load(p, &g_ic_start) == 0;
+    snprintf(p, sizeof p, "%s/chevron-right.svg", icon_dir); ok &= fsvg_load(p, &g_ic_chev_right) == 0;
 
     if (!ok) fprintf(stderr, "finnsetup: icon set incomplete in %s\n", icon_dir);
     load_hero_webp();
@@ -368,9 +365,6 @@ int finnsetup_init(const char *icon_dir, const char *font_dir) {
 
 void finnsetup_free(void) {
     fsvg_free(&g_ic_start);
-    fsvg_free(&g_ic_lang);
-    fsvg_free(&g_ic_acc);
-    fsvg_free(&g_ic_chev_down);
     fsvg_free(&g_ic_chev_right);
     finn_font_free(&g_f_brand);
     finn_font_free(&g_f_head);

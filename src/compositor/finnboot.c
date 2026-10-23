@@ -51,7 +51,7 @@ static int rs(float v, float s) { return (int)lroundf(v * s); }
 
 int finnboot_init(const char *icon_dir) {
     char p[512];
-    snprintf(p, sizeof p, "%s/start_button.svg", icon_dir);
+    snprintf(p, sizeof p, "%s/boot-mark.svg", icon_dir);
     if (fsvg_load(p, &g_ic_mark) != 0) {
         fprintf(stderr, "finnboot: cannot load the mark from %s\n", p);
         g_ready = 0;

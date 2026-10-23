@@ -6,17 +6,22 @@
 /*
  * finnvg — minimal SVG subset rasteriser for FinnOS iconography.
  *
- * Supports: <path> (M L H V C S Q T Z), <rect> (+rx), <circle>,
+ * Supports: <path> (M L H V C S Q T A Z), <rect> (+rx), <circle>, <ellipse>,
  * fill / stroke / stroke-width, transform (matrix, translate, scale,
  * rotate) and the colours #rgb, #rrggbb, rgb(), black, white, none.
  *
+ * Supports <g> with inheritance of transform, opacity, fill-opacity,
+ * stroke-opacity, stroke-linecap and stroke-linejoin.
+ * Supports <defs>, <clipPath> (circular, rectangular, paths) and
+ * <linearGradient> with stops (userSpaceOnUse, objectBoundingBox,
+ * gradientTransform).
+ *
  * Subpaths are kept separate on purpose. The wifi asset is a single <path>
- * whose four subpaths are three arcs and a dot, so the shell can light them
+ * whose subpaths are three arcs and a dot, so the shell can light them
  * up one at a time as signal improves without needing four files.
  *
- * Fill uses the non-zero winding rule. Stroke is rendered as the union of
- * round-capped capsules over the flattened polyline, which yields exact
- * round caps and round joins with no polygon offsetting.
+ * Fill supports non-zero and evenodd winding rules. Stroke respects
+ * authored stroke-linecap (butt, round, square) and stroke-linejoin.
  */
 
 typedef struct { float x, y; } fv2;
@@ -29,6 +34,33 @@ typedef struct {
     uint32_t col;        /* 0 = inherit the shape colour             */
 } fpoly;
 
+typedef struct { float a, b, c, d, e, f; } fmat;
+
+#define FSVG_MAX_STOPS 16
+
+typedef struct {
+    float offset;        /* 0.0 .. 1.0 */
+    uint32_t color;      /* 0xAARRGGBB */
+} fgrad_stop;
+
+typedef struct {
+    char id[64];
+    float x1, y1, x2, y2;
+    int is_object_bbox;  /* 1 = objectBoundingBox, 0 = userSpaceOnUse */
+    fmat transform;      /* gradientTransform */
+    fmat inv_transform;  /* inverse of gradientTransform */
+    int nstops;
+    fgrad_stop stops[FSVG_MAX_STOPS];
+} fgrad;
+
+typedef struct {
+    char id[64];
+    fpoly *polys;
+    int npolys, cpolys;
+    float bx0, by0, bx1, by1;
+    int is_viewbox;
+} fclip;
+
 typedef struct {
     fpoly   *polys;
     int      npolys, cpolys;
@@ -38,12 +70,21 @@ typedef struct {
     int      visible;    /* set 0 to hide this shape entirely          */
     float    clip_x;     /* fill is discarded where x > clip_x (charge) */
     float    bx0, by0, bx1, by1;   /* geometry bbox, SVG user units    */
+    int      grad_idx;   /* -1 = solid fill, >=0 = index in s->grads   */
+    int      fill_rule;  /* 0 = nonzero, 1 = evenodd                   */
+    int      linecap;    /* 0 = butt, 1 = round, 2 = square            */
+    int      linejoin;   /* 0 = miter, 1 = round, 2 = bevel            */
+    const fclip *clip;   /* clipping path or NULL                      */
 } fshape;
 
 typedef struct {
     fshape *shapes;
     int     n, cap;
     float   vw, vh;
+    fgrad  *grads;
+    int     ngrads, cgrads;
+    fclip  *clips;
+    int     nclips, cclips;
 } fsvg;
 
 /*

@@ -80,7 +80,7 @@
 #define PANEL_H         CC_H
 
 /* ---------------- assets + fonts ---------------- */
-static fsvg g_ic_wifi, g_ic_bt, g_ic_eth, g_ic_sun, g_ic_moon, g_ic_vol, g_ic_bat;
+static fsvg g_ic_wifi, g_ic_bt, g_ic_sun, g_ic_vol, g_ic_bat;
 static fsvg g_ic_edit, g_ic_settings;
 static int  g_ready = 0;
 
@@ -252,7 +252,7 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
 
     if (g_ic_bat.n > 1) {
         g_ic_bat.shapes[1].visible = 1;
-        g_ic_bat.shapes[1].clip_x = 4.0f + 14.0f * (float)pct / 100.0f;
+        g_ic_bat.shapes[1].clip_x = 3.0f + 14.0f * (float)pct / 100.0f;
     }
 
     float bat_cx = fx + s * FOOTER_BAT_X + s * (FOOTER_BAT_SZ * 0.5f);
@@ -324,15 +324,13 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
 
     char p[512];
     int ok = 1;
-    snprintf(p, sizeof p, "%s/wifi.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_wifi) == 0;
-    snprintf(p, sizeof p, "%s/bluetooth.svg", icon_dir); ok &= fsvg_load(p, &g_ic_bt) == 0;
-    snprintf(p, sizeof p, "%s/ethernet.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_eth) == 0;
-    snprintf(p, sizeof p, "%s/sun.svg", icon_dir);       ok &= fsvg_load(p, &g_ic_sun) == 0;
-    snprintf(p, sizeof p, "%s/moon.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_moon) == 0;
-    snprintf(p, sizeof p, "%s/volume.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_vol) == 0;
-    snprintf(p, sizeof p, "%s/battery.svg", icon_dir);   ok &= fsvg_load(p, &g_ic_bat) == 0;
-    snprintf(p, sizeof p, "%s/edit.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_edit) == 0;
-    snprintf(p, sizeof p, "%s/settings.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_settings) == 0;
+    snprintf(p, sizeof p, "%s/wifi-02.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_wifi) == 0;
+    snprintf(p, sizeof p, "%s/bluetooth.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_bt) == 0;
+    snprintf(p, sizeof p, "%s/sun-01.svg", icon_dir);       ok &= fsvg_load(p, &g_ic_sun) == 0;
+    snprintf(p, sizeof p, "%s/volume-02.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_vol) == 0;
+    snprintf(p, sizeof p, "%s/battery.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_bat) == 0;
+    snprintf(p, sizeof p, "%s/edit-01.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_edit) == 0;
+    snprintf(p, sizeof p, "%s/settings-02.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_settings) == 0;
 
     if (!ok) fprintf(stderr, "finncontrol: icon set incomplete in %s\n", icon_dir);
     g_ready = ok;
@@ -340,8 +338,8 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
 }
 
 void finncontrol_free(void) {
-    fsvg_free(&g_ic_wifi); fsvg_free(&g_ic_bt);  fsvg_free(&g_ic_eth);
-    fsvg_free(&g_ic_sun);  fsvg_free(&g_ic_moon); fsvg_free(&g_ic_vol);
+    fsvg_free(&g_ic_wifi); fsvg_free(&g_ic_bt);
+    fsvg_free(&g_ic_sun);  fsvg_free(&g_ic_vol);
     fsvg_free(&g_ic_bat);  fsvg_free(&g_ic_edit); fsvg_free(&g_ic_settings);
     finn_font_free(&g_f_footer);
     finn_font_free(&g_f_label);
@@ -573,8 +571,16 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     const char *labels[2] = { conn_name, "Bluetooth" };
     const finn_font *lf = fit_all(labels, 2, tile_text_avail(&g_r_wifi, s));
 
+    if (g_ic_wifi.n > 0) {
+        fshape *sh = &g_ic_wifi.shapes[0];
+        for (int i = 0; i < sh->npolys; i++) {
+            sh->polys[i].vis = 1;
+            sh->polys[i].col = 0;
+        }
+    }
+
     if (g_conn_wired)
-        status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_eth, 0,
+        status_tile(g_layer, lw, lh, s, g_r_wifi, &g_ic_wifi, 0,
                     conn_name,
                     st->wired ? "Connected" : "No link",
                     st->wired > 0, lf);

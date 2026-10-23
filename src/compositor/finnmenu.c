@@ -62,8 +62,8 @@ static char  g_icon_dir[512];
 static char  g_registry[512];
 
 /* ---------------- icons ---------------- */
-static fsvg g_ic_user, g_ic_avatar, g_ic_refresh, g_ic_power;
-static fsvg g_ic_app_settings, g_ic_app_files, g_ic_app_arc;
+static fsvg g_ic_avatar, g_ic_refresh, g_ic_power;
+static fsvg g_ic_app_settings;
 
 typedef struct {
     fsvg svg;
@@ -125,24 +125,18 @@ int finnmenu_init(const char *icon_dir, const char *font_dir, const char *regist
 
     char p[600];
     snprintf(p, sizeof p, "%s/avatar.svg", g_icon_dir);          fsvg_load(p, &g_ic_avatar);
-    snprintf(p, sizeof p, "%s/user.svg", g_icon_dir);            fsvg_load(p, &g_ic_user);
     snprintf(p, sizeof p, "%s/refresh.svg", g_icon_dir);         fsvg_load(p, &g_ic_refresh);
     snprintf(p, sizeof p, "%s/power.svg", g_icon_dir);           fsvg_load(p, &g_ic_power);
-    snprintf(p, sizeof p, "%s/app_settings.svg", g_icon_dir);    fsvg_load(p, &g_ic_app_settings);
-    snprintf(p, sizeof p, "%s/app_files.svg", g_icon_dir);       fsvg_load(p, &g_ic_app_files);
-    snprintf(p, sizeof p, "%s/app_arc.svg", g_icon_dir);         fsvg_load(p, &g_ic_app_arc);
+    snprintf(p, sizeof p, "%s/settings-app.svg", g_icon_dir);    fsvg_load(p, &g_ic_app_settings);
 
     return 0;
 }
 
 void finnmenu_free(void) {
     fsvg_free(&g_ic_avatar);
-    fsvg_free(&g_ic_user);
     fsvg_free(&g_ic_refresh);
     fsvg_free(&g_ic_power);
     fsvg_free(&g_ic_app_settings);
-    fsvg_free(&g_ic_app_files);
-    fsvg_free(&g_ic_app_arc);
 
     for (int i = 0; i < FINN_APP_MAX; i++) {
         if (g_icons[i].loaded) fsvg_free(&g_icons[i].svg);
@@ -311,13 +305,11 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
     float row_step = s * (APP_ROW_H + APP_ROW_GAP);
     int icon_sz = rs(APP_ICON_SZ, s);
 
-    /* Built-in fallback apps list if registry has fewer */
+    /* Built-in fallback apps list: Settings only */
     struct { const char *name; fsvg *ic; } def_apps[] = {
-        { "Settings", &g_ic_app_settings },
-        { "Files",    &g_ic_app_files },
-        { "Arc",      &g_ic_app_arc }
+        { "Settings", &g_ic_app_settings }
     };
-    int n_display = n > 3 ? n : 3;
+    int n_display = 1;
 
     for (int i = 0; i < n_display && i < FINN_APP_MAX; i++) {
         float ry = row_y + (float)i * row_step;
@@ -333,8 +325,8 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
                             s * (4.0f * REF), (FINN_INK & 0x00FFFFFFu) | 0x1A000000u);
         }
 
-        fsvg *ic = (i < 3) ? def_apps[i].ic : NULL;
-        const char *name = (i < 3) ? def_apps[i].name : "App";
+        fsvg *ic = def_apps[0].ic;
+        const char *name = def_apps[0].name;
 
         if (i < n) {
             const finn_app *a = finn_apps_at(i);
@@ -374,13 +366,7 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
         float av_cy = ac_y + ac_h * 0.5f;
         float av_r = s * (AVATAR_SZ * 0.5f);
         finn_fill_rrect(g_layer, pw, ph, av_cx - av_r, av_cy - av_r,
-                        av_r * 2.0f, av_r * 2.0f, av_r, FINN_ON);
-        if (g_ic_user.vw > 0) {
-            int u_sz = rs(18.0f * REF, s);
-            finn_icon_blit(&g_ic_user, g_layer, pw, ph,
-                           (int)lroundf(av_cx - u_sz * 0.5f), (int)lroundf(av_cy - u_sz * 0.5f),
-                           u_sz, 0, 0, 0);
-        }
+                         av_r * 2.0f, av_r * 2.0f, av_r, FINN_ON);
     }
 
     /* Name */
