@@ -30,11 +30,11 @@
 #define WIN_R           (8.0f * REF)     /* reference 8   */
 
 #define OPT_W           (72.0f * REF)    /* reference 72  */
-#define OPT_H           (24.0f * REF)    /* reference 24  */
+#define OPT_H           (20.0f * REF)    /* reference 20 (thinner pill) */
 #define OPT_R           (4.14f * REF)    /* reference 4.14 */
 #define OPT_INSET       (10.0f * REF)    /* reference 10  */
-#define OPT_SLOT_CX     (12.0f * REF)    /* center of left 24px slot */
-#define OPT_ICON_SZ     (15.43f * REF)   /* Figma 14:238/240/242: 15.43px */
+#define OPT_SLOT_CX     (10.0f * REF)    /* center of 20px slot */
+#define OPT_ICON_SZ     (13.0f * REF)    /* slightly smaller glyphs */
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -862,15 +862,15 @@ static void render_overlay(int idx, int part, float s) {
     if (part == FINNWINDOW_HIT_EXPAND) {
         cx = ox + rs(OPT_SLOT_CX, s) - g_ovx0;
         finn_icon_blit_ink(&g_ic_expand, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_INK, FINN_INK, 0);
+                           icon, FINN_DIM, FINN_DIM, 0);
     } else if (part == FINNWINDOW_HIT_MINIMIZE) {
         cx = ox + ow / 2 - g_ovx0;
         finn_icon_blit_ink(&g_ic_min, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_INK, FINN_INK, 0);
+                           icon, FINN_DIM, FINN_DIM, 0);
     } else {
         cx = ox + ow - rs(OPT_SLOT_CX, s) - g_ovx0;
         finn_icon_blit_ink(&g_ic_close, g_ovl, g_ovw, g_ovh, cx, cy,
-                           icon, FINN_INK, FINN_INK, 0);
+                           icon, FINN_DIM, FINN_DIM, 0);
     }
 }
 
@@ -1058,11 +1058,11 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             int ico_sz = rs(OPT_ICON_SZ, s);
 
             finn_icon_blit_ink(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt,
-                               ico_sz, FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_DIM, FINN_DIM, 0);
             finn_icon_blit_ink(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt,
-                               ico_sz, FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_DIM, FINN_DIM, 0);
             finn_icon_blit_ink(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt,
-                               ico_sz, FINN_INK, FINN_INK, 0);
+                               ico_sz, FINN_DIM, FINN_DIM, 0);
 
             if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
                 int focused = (i == g_n_wins - 1);
