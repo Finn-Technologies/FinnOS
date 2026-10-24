@@ -121,6 +121,18 @@ The names are the US layout's (`a`, `f1`, `leftshift`, `enter`, `esc`,
 `super`, …). An unknown name is `ERR unknown key '<name>'`, not a silent
 no-op.
 
+The shell's own chords are:
+
+| Chord | What it does |
+|---|---|
+| `Super` (tap) | open or close the Start Menu |
+| `Super+Left` / `Super+Right` | snap the focused window to that half |
+| `Super+Shift+Left` / `Super+Shift+Right` | snap it to that quarter |
+| `Super+Up` | maximize; pressed again restores |
+| `Super+Down` | restore |
+| `Alt+Tab` / `Shift+Alt+Tab` | cycle focus forward or back |
+| `Ctrl+Alt+F1`…`F6` | switch VT |
+
 ### The machine
 
 | Verb | Reply | What it does |
@@ -185,13 +197,17 @@ Provided by the compositor (`finnwindow`), proxied by the control plane.
 
 | Verb | Reply | What it does |
 |---|---|---|
-| `window.list` | `OK count=… [id\|app\|state\|title]…` | list open windows and their state (`normal`, `minimized`, `maximized`) |
+| `window.list` | `OK count=… [id\|app\|state\|title]…` | list open windows and their state (`normal`, `minimized`, `maximized`, `snapped`) |
 | `window.open [app=<id>\|title=<title>]` | `OK id=…` / `ERR window limit reached (8)` | open an empty window or an app window; the ninth is refused, never evicted |
 | `window.close [id=<id>]` | `OK` | close the window (or the top visible window when `id` is omitted) |
 | `window.focus [id=<id>]` | `OK` | unminimize and raise the window to the front |
 | `window.minimize [id=<id>]` | `OK` | toggle the window's minimized state |
 | `window.maximize [id=<id>]` | `OK` | toggle the window's maximized state |
-| `window.move id=<id> x=<x> y=<y>` | `OK` | move the window's top-left corner |
+| `window.restore [id=<id>]` | `OK` | leave maximize or snap and return to the floating rect |
+| `window.get [id=<id>]` | `OK id=… state=… x=… y=… w=… h=…` | the window's resolved id, state and rect; without `id`, the focused window |
+| `window.move id=<id> x=<x> y=<y>` | `OK` | move the window's top-left corner; a maximized or snapped window returns to its floating size first |
+| `window.resize id=<id> w=<w> h=<h>` | `OK` | set the window's size, clamped to the smallest usable window and to the screen |
+| `window.snap id=<id> edge=<edge>` | `OK` | tile the window to `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right`, `top` (maximize) or `restore`; the same edge twice restores |
 
 ### Settings
 

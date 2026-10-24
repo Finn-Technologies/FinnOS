@@ -5,6 +5,29 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Windows that can be arranged, and a Meta key with two jobs
+
+- **A window resizes from any edge or corner.** The border under the pointer
+  is the handle; a drag applies every move to the edge the gesture started
+  on, clamps at a minimum that still fits the titlebar controls, and stops at
+  the dock. There is no separate grip drawn on the glass.
+- **Dragging a window to the edge snaps it.** The top edge maximises, the
+  left and right halves tile, and the corners tile a quarter. The commit
+  happens on release, so the window stays under the pointer while it is
+  carried; the same edge twice, or `window.restore`, puts back the floating
+  rect it came from.
+- **The titlebar is a gesture.** A second click within 400 ms toggles
+  maximize and back. A snapped window is not un-snapped by a click that
+  never moves.
+- **Super+arrow tiles the focused window.** Left and right are halves,
+  Shift+Left and Shift+Right the top quarters, Up maximises and Down
+  restores. Meta therefore opens the Start Menu on *release*: a press that
+  is followed by another key is a modifier, not a menu key.
+- **The control plane can arrange windows too.** `window.resize`,
+  `window.snap`, `window.restore` and `window.get` join the existing window
+  verbs, and `window.list` reports a snapped window as `snapped` rather than
+  as a normal one.
+
 ### Settings that are the Figma frame, and glass that knows what is behind it
 
 - **Every surface frosts the desktop, not the wallpaper.** `finnblur` now

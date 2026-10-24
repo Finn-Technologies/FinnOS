@@ -16,6 +16,7 @@
 #include <string.h>
 #include <strings.h>
 #include <math.h>
+#include <time.h>
 
 /*
  * Metrics authored for the Figma design system (1280x832 * 1.298077):
@@ -75,6 +76,7 @@ typedef struct {
     int  saved_x, saved_y, saved_w, saved_h;
     int  maximized;
     int  minimized;
+    int  snapped;       /* FINNWINDOW_SNAP_*; 0 when the window floats free */
 } finn_win;
 
 static finn_win g_wins[FINNWINDOW_MAX];
@@ -138,10 +140,23 @@ static int       g_hover_win = 0;
 static int       g_press_part = FINNWINDOW_HIT_NONE;
 static int       g_press_win = 0;
 
-/* Dragging state */
+/* Dragging and resizing state. A resize keeps the rect it started from and
+ * the pointer it started at, because every move is applied to the original
+ * edge — accumulating deltas would drift when a clamp refused one. */
 static int g_dragging = 0;
 static int g_drag_win = 0;
 static int g_drag_dx = 0, g_drag_dy = 0;
+static int g_resizing = 0;
+static int g_resize_win = 0;
+static int g_resize_edge = FINNWINDOW_HIT_NONE;
+static int g_resize_px = 0, g_resize_py = 0;
+static int g_resize_x = 0, g_resize_y = 0, g_resize_w = 0, g_resize_h = 0;
+
+/* The titlebar's second click within this window toggles maximize. 400 ms is
+ * the platform convention and long enough to survive a slow double click. */
+#define FINNWINDOW_DOUBLE_MS 400
+static int g_last_title_win = 0;
+static double g_last_title_ms = 0.0;
 
 static int g_settings_hit = 0;
 static int g_settings_sub = 0;
@@ -236,6 +251,57 @@ static void bring_to_front(int idx) {
     for (int i = idx; i < g_n_wins - 1; i++)
         g_wins[i] = g_wins[i + 1];
     g_wins[g_n_wins - 1] = tmp;
+}
+
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+
+/*
+ * Remember where a window came from, once. Repeated maximize or snap calls
+ * must not overwrite the floating rect with an already-maximized one, or the
+ * window can only ever be restored to the size it was snapped to.
+ */
+static void save_free_rect(finn_win *w) {
+    if (w->maximized || w->snapped) return;
+    w->saved_x = w->x; w->saved_y = w->y;
+    w->saved_w = w->w; w->saved_h = w->h;
+}
+
+static int screen_bottom(void) {
+    return g_dock_clearance > 0 ? g_screen_h - g_dock_clearance
+                                : g_screen_h - rs(115.0f, g_scale);
+}
+
+/* The rect a snap edge asks for, in scanout pixels. The dock is never covered
+ * by a snapped window, for the same reason a maximized window stops above it:
+ * the band belongs to the shell, not to the app. */
+static void snap_rect(int edge, int *x, int *y, int *w, int *h) {
+    int sw = g_screen_w > 0 ? g_screen_w : 1920;
+    int bottom = screen_bottom();
+    if (bottom < 120) bottom = g_screen_h > 0 ? g_screen_h : 1080;
+    int half_w = sw / 2;
+    int half_h = bottom / 2;
+
+    switch (edge) {
+    case FINNWINDOW_SNAP_LEFT:
+        *x = 0; *y = 0; *w = half_w; *h = bottom; break;
+    case FINNWINDOW_SNAP_RIGHT:
+        *x = half_w; *y = 0; *w = sw - half_w; *h = bottom; break;
+    case FINNWINDOW_SNAP_TOPLEFT:
+        *x = 0; *y = 0; *w = half_w; *h = half_h; break;
+    case FINNWINDOW_SNAP_TOPRIGHT:
+        *x = half_w; *y = 0; *w = sw - half_w; *h = half_h; break;
+    case FINNWINDOW_SNAP_BOTTOMLEFT:
+        *x = 0; *y = half_h; *w = half_w; *h = bottom - half_h; break;
+    case FINNWINDOW_SNAP_BOTTOMRIGHT:
+        *x = half_w; *y = half_h; *w = sw - half_w; *h = bottom - half_h; break;
+    case FINNWINDOW_SNAP_TOP:
+    default:
+        *x = 0; *y = 0; *w = sw; *h = bottom; break;
+    }
 }
 
 int finnwindow_count(void) { return g_n_wins; }
@@ -406,10 +472,20 @@ int finnwindow_open(const char *arg) {
      * request does not add a window. */
     if (g_n_wins >= FINNWINDOW_MAX) return FINNWINDOW_ERR_LIMIT;
 
+    /*
+     * Every first-party view gets the shape it was drawn for. A Files window
+     * needs a list and a preview; a browser needs a page. They share the
+     * window chrome, not one arbitrary 500x300 rectangle.
+     */
     int is_settings = (strcasecmp(app_id, "settings") == 0 || strcasecmp(title, "Settings") == 0);
-    int ww = is_settings ? rs(860.0f * REF, g_scale) : rs(WIN_DEF_W, g_scale);
-    int wh = is_settings ? rs(480.0f * REF, g_scale) : rs(WIN_DEF_H, g_scale);
-    if (ww < 300) { ww = is_settings ? 1168 : 649; wh = is_settings ? 649 : 389; }
+    float ref_w = WIN_DEF_W, ref_h = WIN_DEF_H;
+    if (is_settings)                                  { ref_w = 860.0f; ref_h = 480.0f; }
+    else if (strcasecmp(app_id, "files") == 0)        { ref_w = 900.0f; ref_h = 540.0f; }
+    else if (strcasecmp(app_id, "store") == 0)        { ref_w = 900.0f; ref_h = 560.0f; }
+    else if (strcasecmp(app_id, "flourish") == 0)     { ref_w = 900.0f; ref_h = 600.0f; }
+    int ww = rs(ref_w * REF, g_scale);
+    int wh = rs(ref_h * REF, g_scale);
+    if (ww < 300) { ww = (int)(ref_w * 1.36f); wh = (int)(ref_h * 1.36f); }
 
     /* Center exactly as in Figma 12:2 (with slight cascade when multiple windows are open) */
     int vis = finnwindow_visible_count();
@@ -543,8 +619,8 @@ int finnwindow_maximize(int id) {
     w->minimized = 0;
     int oldx = w->x, oldy = w->y, oldw = w->w, oldh = w->h;
     if (!w->maximized) {
-        w->saved_x = w->x; w->saved_y = w->y;
-        w->saved_w = w->w; w->saved_h = w->h;
+        save_free_rect(w);
+        w->snapped = 0;
 
         /*
          * A maximized window is the whole screen less the dock. There is no
@@ -585,17 +661,96 @@ int finnwindow_maximize(int id) {
     return 0;
 }
 
+int finnwindow_restore(int id) {
+    int idx = find_idx(id);
+    if (idx < 0) return -1;
+    finn_win *w = &g_wins[idx];
+    if (!w->maximized && !w->snapped) return 0;
+
+    w->x = w->saved_x; w->y = w->saved_y;
+    w->w = w->saved_w; w->h = w->saved_h;
+    w->maximized = 0;
+    w->snapped = 0;
+    clamp_window_pos(w, &w->x, &w->y);
+    bring_to_front(idx);
+    g_built = 0;
+    return 0;
+}
+
 int finnwindow_move(int id, int x, int y) {
     int idx = find_idx(id);
     if (idx < 0) return -1;
     finn_win *w = &g_wins[idx];
 
+    /* Moving a window that is filling the screen only makes sense if it
+     * stops filling it; the saved rect is the shape it returns to first. */
+    if (w->maximized || w->snapped) {
+        w->w = w->saved_w; w->h = w->saved_h;
+    }
+
     /* The control plane may place a window anywhere it likes, except
-     * somewhere the pointer cannot get it back. */
+     * somewhere the pointer cannot get it back. Moving a snapped window is
+     * a request to leave the snap; it keeps the floating rect it came from
+     * so restore still means restore. */
     clamp_window_pos(w, &x, &y);
     w->x = x;
     w->y = y;
     w->maximized = 0;
+    w->snapped = 0;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_resize(int id, int width, int height) {
+    int idx = find_idx(id);
+    if (idx < 0) return -1;
+    finn_win *w = &g_wins[idx];
+
+    int minw = rs(FINNWINDOW_MIN_W, g_scale);
+    int minh = rs(FINNWINDOW_MIN_H, g_scale);
+    if (width < minw) width = minw;
+    if (height < minh) height = minh;
+
+    int maxw = g_screen_w > 0 ? g_screen_w - w->x : width;
+    int maxh = screen_bottom() - w->y;
+    if (maxw < minw) maxw = minw;
+    if (maxh < minh) maxh = minh;
+    if (width > maxw) width = maxw;
+    if (height > maxh) height = maxh;
+
+    w->w = width;
+    w->h = height;
+    w->maximized = 0;
+    w->snapped = 0;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_snap(int id, int edge) {
+    int idx = find_idx(id);
+    if (idx < 0) return -1;
+    if (edge < FINNWINDOW_SNAP_LEFT || edge > FINNWINDOW_SNAP_RESTORE) return -1;
+
+    if (edge == FINNWINDOW_SNAP_RESTORE)
+        return finnwindow_restore(id);
+
+    /* The same edge twice is a toggle: snap, then put it back. That is what
+     * the keyboard shortcut does when it is pressed again. */
+    if (g_wins[idx].snapped == edge || (edge == FINNWINDOW_SNAP_TOP && g_wins[idx].maximized))
+        return finnwindow_restore(id);
+
+    if (edge == FINNWINDOW_SNAP_TOP)
+        return finnwindow_maximize(id);
+
+    finn_win *w = &g_wins[idx];
+    save_free_rect(w);
+    int x, y, width, height;
+    snap_rect(edge, &x, &y, &width, &height);
+    w->x = x; w->y = y; w->w = width; w->h = height;
+    w->maximized = 0;
+    w->snapped = edge;
+    w->minimized = 0;
+    bring_to_front(idx);
     g_built = 0;
     return 0;
 }
@@ -625,6 +780,26 @@ void finnwindow_taskbar_toggle(void) {
     }
 }
 
+static const char *window_state(const finn_win *w) {
+    return w->minimized ? "minimized"
+         : (w->maximized ? "maximized"
+         : (w->snapped ? "snapped" : "normal"));
+}
+
+int finnwindow_get(int id, int *wid, int *x, int *y, int *w, int *h,
+                   const char **state) {
+    int idx = find_idx(id);
+    if (idx < 0) return -1;
+    const finn_win *win = &g_wins[idx];
+    if (wid) *wid = win->id;
+    if (x) *x = win->x;
+    if (y) *y = win->y;
+    if (w) *w = win->w;
+    if (h) *h = win->h;
+    if (state) *state = window_state(win);
+    return 0;
+}
+
 int finnwindow_list(char *buf, size_t cap) {
     int count = 0;
     for (int i = 0; i < g_n_wins; i++)
@@ -636,8 +811,7 @@ int finnwindow_list(char *buf, size_t cap) {
     for (int i = 0; i < g_n_wins && (size_t)used + 96 < cap; i++) {
         const finn_win *w = &g_wins[i];
         if (!w->used) continue;
-        const char *st = w->minimized ? "minimized"
-                       : (w->maximized ? "maximized" : "normal");
+        const char *st = window_state(w);
         int n = snprintf(buf + used, cap - (size_t)used,
                          " [%d|%s|%s|%s]",
                          w->id,
@@ -719,6 +893,33 @@ static void opt_pill_rect(const finn_win *w, float s,
     *oh = ph;
 }
 
+/*
+ * The resize handle under a point, or NONE. The border is only active on a
+ * window that can be resized: a maximized window has no edge to pull, and a
+ * snapped one leaves its snap in finnwindow_resize.
+ */
+static int resize_hit(const finn_win *w, int px, int py) {
+    if (w->maximized) return FINNWINDOW_HIT_NONE;
+
+    int edge = rs(6.0f, g_scale);
+    if (edge < 4) edge = 4;
+    int l = px - w->x, t = py - w->y;
+    int r = w->x + w->w - px, b = w->y + w->h - py;
+    int west = l <= edge, east = r <= edge;
+
+    /* The diagonal handles win over the single edges at a corner, because a
+     * corner is both and the diagonal is the one the pointer is aiming at. */
+    if (t <= edge && west) return FINNWINDOW_HIT_RESIZE_NW;
+    if (t <= edge && east) return FINNWINDOW_HIT_RESIZE_NE;
+    if (b <= edge && west) return FINNWINDOW_HIT_RESIZE_SW;
+    if (b <= edge && east) return FINNWINDOW_HIT_RESIZE_SE;
+    if (west) return FINNWINDOW_HIT_RESIZE_W;
+    if (east) return FINNWINDOW_HIT_RESIZE_E;
+    if (t <= edge) return FINNWINDOW_HIT_RESIZE_N;
+    if (b <= edge) return FINNWINDOW_HIT_RESIZE_S;
+    return FINNWINDOW_HIT_NONE;
+}
+
 int finnwindow_hit(int px, int py, int *out_win_id) {
     if (out_win_id) *out_win_id = 0;
     /* The fold and the maximize zoom both draw an interpolated rect, so a
@@ -737,6 +938,9 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
             continue;
 
         if (out_win_id) *out_win_id = w->id;
+
+        int resize = resize_hit(w, px, py);
+        if (resize != FINNWINDOW_HIT_NONE) return resize;
 
         int ox, oy, ow, oh;
         opt_pill_rect(w, g_scale, &ox, &oy, &ow, &oh);
@@ -802,13 +1006,57 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
     if (raised) g_built = 0;
     g_ov_built = 0;
 
-    if (hit_part == FINNWINDOW_HIT_TITLEBAR && idx >= 0 && !g_wins[idx].maximized) {
-        g_dragging = 1;
-        g_drag_win = g_wins[idx].id;
-        g_drag_dx = px - g_wins[idx].x;
-        g_drag_dy = py - g_wins[idx].y;
+    g_resizing = 0;
+
+    if (hit_part == FINNWINDOW_HIT_TITLEBAR && idx >= 0) {
+        /*
+         * A double click on the titlebar is the oldest window gesture there
+         * is: maximize, and the second double click puts it back. It is
+         * detected here, before a drag can start, so the pointer does not
+         * also move the window under the hand that clicked it.
+         */
+        double t = now_ms();
+        int is_double = (g_last_title_win == g_wins[idx].id &&
+                         t - g_last_title_ms <= (double)FINNWINDOW_DOUBLE_MS);
+        g_last_title_win = g_wins[idx].id;
+        g_last_title_ms = t;
+
+        if (is_double) {
+            g_last_title_win = 0;
+            g_dragging = 0;
+            if (g_wins[idx].maximized || g_wins[idx].snapped)
+                finnwindow_restore(g_wins[idx].id);
+            else
+                finnwindow_maximize(g_wins[idx].id);
+            g_press_part = FINNWINDOW_HIT_NONE;
+            return;
+        }
+
+        if (!g_wins[idx].maximized) {
+            /* Dragging a snapped window takes it out of the snap, but not
+             * until the pointer has actually moved: a click that misses a
+             * control must not un-snap the window under the hand. The saved
+             * rect stays either way so restore still has somewhere to go. */
+            g_dragging = 1;
+            g_drag_win = g_wins[idx].id;
+            g_drag_dx = px - g_wins[idx].x;
+            g_drag_dy = py - g_wins[idx].y;
+        } else {
+            g_dragging = 0;
+        }
     } else {
         g_dragging = 0;
+    }
+
+    if (hit_part >= FINNWINDOW_HIT_RESIZE_E &&
+        hit_part <= FINNWINDOW_HIT_RESIZE_SW && idx >= 0) {
+        g_dragging = 0;
+        g_resizing = 1;
+        g_resize_win = g_wins[idx].id;
+        g_resize_edge = hit_part;
+        g_resize_px = px; g_resize_py = py;
+        g_resize_x = g_wins[idx].x; g_resize_y = g_wins[idx].y;
+        g_resize_w = g_wins[idx].w; g_resize_h = g_wins[idx].h;
     }
 
     if (hit_part == FINNWINDOW_HIT_SETTINGS_CTRL && idx >= 0) {
@@ -824,6 +1072,61 @@ int finnwindow_drag(int px, int py) {
     int s_drag = finnsettingsapp_drag(px, py, g_scale, &g_last_st);
     if (s_drag) g_built = 0;
 
+    if (g_resizing) {
+        int idx = find_idx(g_resize_win);
+        if (idx < 0) { g_resizing = 0; return s_drag; }
+        finn_win *w = &g_wins[idx];
+
+        int dx = px - g_resize_px;
+        int dy = py - g_resize_py;
+        int minw = rs(FINNWINDOW_MIN_W, g_scale);
+        int minh = rs(FINNWINDOW_MIN_H, g_scale);
+        int x = g_resize_x, y = g_resize_y;
+        int ww = g_resize_w, hh = g_resize_h;
+
+        if (g_resize_edge == FINNWINDOW_HIT_RESIZE_E ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_NE ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_SE) {
+            ww = g_resize_w + dx;
+            if (ww < minw) ww = minw;
+            if (x + ww > g_screen_w) ww = g_screen_w - x;
+            if (ww < minw) ww = minw;
+        }
+        if (g_resize_edge == FINNWINDOW_HIT_RESIZE_W ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_NW ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_SW) {
+            x = g_resize_x + dx;
+            ww = g_resize_w - dx;
+            if (x < 0) { ww += x; x = 0; }
+            if (ww < minw) { x = g_resize_x + g_resize_w - minw; ww = minw; }
+        }
+        if (g_resize_edge == FINNWINDOW_HIT_RESIZE_S ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_SE ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_SW) {
+            hh = g_resize_h + dy;
+            if (hh < minh) hh = minh;
+            if (y + hh > screen_bottom()) hh = screen_bottom() - y;
+            if (hh < minh) hh = minh;
+        }
+        if (g_resize_edge == FINNWINDOW_HIT_RESIZE_N ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_NE ||
+            g_resize_edge == FINNWINDOW_HIT_RESIZE_NW) {
+            y = g_resize_y + dy;
+            hh = g_resize_h - dy;
+            if (y < 0) { hh += y; y = 0; }
+            if (hh < minh) { y = g_resize_y + g_resize_h - minh; hh = minh; }
+        }
+
+        if (x != w->x || y != w->y || ww != w->w || hh != w->h) {
+            w->x = x; w->y = y; w->w = ww; w->h = hh;
+            w->maximized = 0;
+            w->snapped = 0;
+            g_built = 0;
+            return 1;
+        }
+        return s_drag;
+    }
+
     if (!g_dragging) return s_drag;
     int idx = find_idx(g_drag_win);
     if (idx < 0) { g_dragging = 0; return s_drag; }
@@ -837,14 +1140,51 @@ int finnwindow_drag(int px, int py) {
     if (nx != g_wins[idx].x || ny != g_wins[idx].y) {
         g_wins[idx].x = nx;
         g_wins[idx].y = ny;
+        if (g_wins[idx].snapped)
+            g_wins[idx].snapped = 0;
         g_built = 0;
         return 1;
     }
     return s_drag;
 }
 
-void finnwindow_release(void) {
+/*
+ * Which edge, if any, a dropped window is asking for. The margin is generous
+ * on purpose: the gesture is "throw it at the side", not "place its corner
+ * on the last pixel", and a pointer that has reached the edge of the screen
+ * is unambiguous even if it overshot.
+ */
+static int snap_edge_at(int px, int py) {
+    int m = rs(18.0f, g_scale);
+    if (m < 10) m = 10;
+
+    int left  = px <= m;
+    int right = px >= g_screen_w - m;
+    int top   = py <= m;
+
+    if (left && top)  return FINNWINDOW_SNAP_TOPLEFT;
+    if (right && top) return FINNWINDOW_SNAP_TOPRIGHT;
+    if (top)          return FINNWINDOW_SNAP_TOP;
+    if (left)         return FINNWINDOW_SNAP_LEFT;
+    if (right)        return FINNWINDOW_SNAP_RIGHT;
+    return FINNWINDOW_SNAP_NONE;
+}
+
+void finnwindow_release(int px, int py) {
+    /*
+     * Dropping at an edge snaps the window that was dragged. This is decided
+     * here, once, and not on every drag frame: the window stays under the
+     * pointer while it is being carried and only commits on release.
+     */
+    if (g_dragging && g_drag_win > 0) {
+        int edge = snap_edge_at(px, py);
+        if (edge != FINNWINDOW_SNAP_NONE)
+            finnwindow_snap(g_drag_win, edge);
+    }
+
     g_dragging = 0;
+    g_drag_win = 0;
+    g_resizing = 0;
     g_press_part = FINNWINDOW_HIT_NONE;
     g_press_win = 0;
     g_ov_built = 0;
@@ -876,6 +1216,7 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
         MIX(g_wins[i].x); MIX(g_wins[i].y);
         MIX(g_wins[i].w); MIX(g_wins[i].h);
         MIX(g_wins[i].minimized); MIX(g_wins[i].maximized);
+        MIX(g_wins[i].snapped);
         for (const char *p = g_wins[i].title; *p; p++) MIX(*p);
         for (const char *p = g_wins[i].app_id; *p; p++) MIX(*p);
         if (strcasecmp(g_wins[i].title, "Settings") == 0 ||

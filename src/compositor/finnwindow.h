@@ -33,8 +33,39 @@ enum {
     FINNWINDOW_HIT_EXPAND,
     FINNWINDOW_HIT_MINIMIZE,
     FINNWINDOW_HIT_CLOSE,
-    FINNWINDOW_HIT_SETTINGS_CTRL
+    FINNWINDOW_HIT_SETTINGS_CTRL,
+    /* The eight resize handles. A window is resized by the edge under the
+     * pointer, not by a separate grip: the chrome already owns its border,
+     * and a visible handle would be one more thing drawn on the glass. */
+    FINNWINDOW_HIT_RESIZE_E,
+    FINNWINDOW_HIT_RESIZE_W,
+    FINNWINDOW_HIT_RESIZE_N,
+    FINNWINDOW_HIT_RESIZE_S,
+    FINNWINDOW_HIT_RESIZE_NE,
+    FINNWINDOW_HIT_RESIZE_NW,
+    FINNWINDOW_HIT_RESIZE_SE,
+    FINNWINDOW_HIT_RESIZE_SW
 };
+
+/* The edges a window can be snapped to. `restore` puts it back where it was
+ * before the snap, which is what a second press on the same edge does too. */
+enum {
+    FINNWINDOW_SNAP_NONE = 0,
+    FINNWINDOW_SNAP_LEFT,
+    FINNWINDOW_SNAP_RIGHT,
+    FINNWINDOW_SNAP_TOP,
+    FINNWINDOW_SNAP_TOPLEFT,
+    FINNWINDOW_SNAP_TOPRIGHT,
+    FINNWINDOW_SNAP_BOTTOMLEFT,
+    FINNWINDOW_SNAP_BOTTOMRIGHT,
+    FINNWINDOW_SNAP_RESTORE
+};
+
+/* The smallest a window may be made by the pointer. A window smaller than
+ * this cannot show its own titlebar controls and the content has nowhere to
+ * go, so the resize stops there instead of letting the frame collapse. */
+#define FINNWINDOW_MIN_W 360.0f
+#define FINNWINDOW_MIN_H 240.0f
 
 #include "finnkbd.h"
 
@@ -54,8 +85,16 @@ int  finnwindow_focus(int id);
 int  finnwindow_cycle_focus(int dir);
 int  finnwindow_minimize(int id);          /* toggles minimize on id (<=0 focused) */
 int  finnwindow_maximize(int id);          /* toggles maximize on id (<=0 focused) */
+int  finnwindow_restore(int id);           /* leave maximize/snap, back to saved */
 int  finnwindow_move(int id, int x, int y);
+int  finnwindow_resize(int id, int w, int h);
+int  finnwindow_snap(int id, int edge);    /* FINNWINDOW_SNAP_*; top maximizes */
 int  finnwindow_list(char *buf, size_t cap);
+/* Geometry and state of one window (id<=0: the focused one). `state` is the
+ * same word window.list uses, and `wid` gets the id it resolved to.
+ * Returns 0, or -1 when there is no such window. */
+int  finnwindow_get(int id, int *wid, int *x, int *y, int *w, int *h,
+                    const char **state);
 
 /*
  * The band the dock reserves at the bottom edge, in scanout pixels. A
@@ -87,8 +126,11 @@ int  finnwindow_tick(float dt);
 int  finnwindow_hit(int px, int py, int *out_win_id);
 void finnwindow_hover_at(int px, int py);
 void finnwindow_press(int hit_part, int win_id, int px, int py);
-int  finnwindow_drag(int px, int py);      /* 1 if dragging a window */
-void finnwindow_release(void);
+int  finnwindow_drag(int px, int py);      /* 1 if dragging or resizing */
+/* Release the pointer. The position is the release point, so a drag that
+ * ends against an edge can snap and a press that did not move can still be
+ * a click. */
+void finnwindow_release(int px, int py);
 
 /* Rendering & compositing */
 void finnwindow_render(int screen_w, int screen_h, float scale,

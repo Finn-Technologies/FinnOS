@@ -764,6 +764,20 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         else finn_write_str(fd, "ERR window.list failed\n");
         return;
     }
+    if (!strcmp(verb, "window.get")) {
+        int id = 0, wid = 0, x = 0, y = 0, w = 0, h = 0;
+        if (!kv_int(rest, "id", &id) && *rest) id = atoi(rest);
+        const char *state = "";
+        if (finnwindow_get(id, &wid, &x, &y, &w, &h, &state) != 0) {
+            finn_write_str(fd, "ERR no such window\n");
+            return;
+        }
+        char b[160];
+        snprintf(b, sizeof b, "OK id=%d state=%s x=%d y=%d w=%d h=%d\n",
+                 wid, state, x, y, w, h);
+        finn_write_str(fd, b);
+        return;
+    }
     if (!strcmp(verb, "window.open")) {
         int id = finnwindow_open(rest);
         if (id == FINNWINDOW_ERR_LIMIT) {
@@ -780,7 +794,8 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "window.close") || !strcmp(verb, "window.focus") ||
-        !strcmp(verb, "window.minimize") || !strcmp(verb, "window.maximize")) {
+        !strcmp(verb, "window.minimize") || !strcmp(verb, "window.maximize") ||
+        !strcmp(verb, "window.restore")) {
         int id = 0;
         if (!kv_int(rest, "id", &id) && *rest) id = atoi(rest);
         int rc = 0;
@@ -788,7 +803,52 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         else if (!strcmp(verb, "window.focus"))    rc = finnwindow_focus(id);
         else if (!strcmp(verb, "window.minimize")) rc = finnwindow_minimize(id);
         else if (!strcmp(verb, "window.maximize")) rc = finnwindow_maximize(id);
+        else                                       rc = finnwindow_restore(id);
         if (rc != 0) { finn_write_str(fd, "ERR no such window\n"); return; }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+    if (!strcmp(verb, "window.resize")) {
+        int id = 0, w = 0, h = 0;
+        if (!kv_int(rest, "id", &id)) id = atoi(rest);
+        if (!kv_int(rest, "w", &w) || !kv_int(rest, "h", &h)) {
+            finn_write_str(fd, "ERR window.resize needs id= w= h=\n");
+            return;
+        }
+        if (finnwindow_resize(id, w, h) != 0) {
+            finn_write_str(fd, "ERR no such window\n");
+            return;
+        }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
+        return;
+    }
+    if (!strcmp(verb, "window.snap")) {
+        int id = 0;
+        char edge[24] = "";
+        if (!kv_int(rest, "id", &id)) id = atoi(rest);
+        if (!kv_str(rest, "edge", edge, sizeof edge)) {
+            finn_write_str(fd, "ERR window.snap needs id= edge=left|right|top|top-left|top-right|bottom-left|bottom-right|restore\n");
+            return;
+        }
+        int e = -1;
+        if (!strcmp(edge, "left"))              e = FINNWINDOW_SNAP_LEFT;
+        else if (!strcmp(edge, "right"))        e = FINNWINDOW_SNAP_RIGHT;
+        else if (!strcmp(edge, "top"))          e = FINNWINDOW_SNAP_TOP;
+        else if (!strcmp(edge, "top-left"))     e = FINNWINDOW_SNAP_TOPLEFT;
+        else if (!strcmp(edge, "top-right"))    e = FINNWINDOW_SNAP_TOPRIGHT;
+        else if (!strcmp(edge, "bottom-left"))  e = FINNWINDOW_SNAP_BOTTOMLEFT;
+        else if (!strcmp(edge, "bottom-right")) e = FINNWINDOW_SNAP_BOTTOMRIGHT;
+        else if (!strcmp(edge, "restore"))      e = FINNWINDOW_SNAP_RESTORE;
+        if (e < 0) {
+            finn_write_str(fd, "ERR unknown edge\n");
+            return;
+        }
+        if (finnwindow_snap(id, e) != 0) {
+            finn_write_str(fd, "ERR no such window\n");
+            return;
+        }
         cx->dirty = 1;
         finn_write_str(fd, "OK\n");
         return;
@@ -1538,11 +1598,30 @@ static int setup_finish(void) {
     return 0;
 }
 
+/* 1 while the Meta key is down as a modifier rather than as a press of its
+ * own. The menu opens on the release of a Meta press that no other key
+ * followed, so Super+arrow can act without the menu opening first. */
+static int g_meta_chord = 0;
+
 /* Returns 1 when the chrome changed. Keys are handled here, in the
  * compositor, because there is no client surface protocol to deliver them
  * to; what a key does is the shell's decision (finnkbd.h). */
 static int key_action(const finn_key_event *e, const finn_state *st) {
     (void)st;
+
+    /* Meta is a modifier first and the menu key second. Opening the menu on
+     * the way down would put it in front of the window the chord is about
+     * to move. */
+    if (e->code == KEY_LEFTMETA || e->code == KEY_RIGHTMETA) {
+        if (e->pressed) { g_meta_chord = 0; return 0; }
+        if (g_meta_chord) { g_meta_chord = 0; return 0; }
+        int open = !finnmenu_is_open();
+        finncontrol_set_open(0);
+        finnclock_set_open(0);
+        finnmenu_set_open(open);
+        return 1;
+    }
+
     if (!e->pressed) return 0;
 
     /* The console chord is checked before anything else: it must work from a
@@ -1554,6 +1633,36 @@ static int key_action(const finn_key_event *e, const finn_state *st) {
         return 0;
     }
     if (!g_vt_active) return 0;
+
+    /*
+     * Super+arrow is the window-tiling chord. It is checked before the
+     * focused window sees the key, because a text field that swallowed the
+     * arrow would make the chord depend on what is focused.
+     */
+    if ((e->mods & FINN_MOD_SUPER) && e->code >= KEY_LEFT && e->code <= KEY_DOWN) {
+        g_meta_chord = 1;
+        finnmenu_set_open(0);
+        finncontrol_set_open(0);
+        finnclock_set_open(0);
+        int shift = (e->mods & FINN_MOD_SHIFT) != 0;
+        switch (e->code) {
+        case KEY_LEFT:
+            finnwindow_snap(0, shift ? FINNWINDOW_SNAP_TOPLEFT
+                                     : FINNWINDOW_SNAP_LEFT);
+            break;
+        case KEY_RIGHT:
+            finnwindow_snap(0, shift ? FINNWINDOW_SNAP_TOPRIGHT
+                                     : FINNWINDOW_SNAP_RIGHT);
+            break;
+        case KEY_UP:
+            finnwindow_snap(0, FINNWINDOW_SNAP_TOP);
+            break;
+        case KEY_DOWN:
+            finnwindow_snap(0, FINNWINDOW_SNAP_RESTORE);
+            break;
+        }
+        return 1;
+    }
 
     if (finnwindow_key(e)) return 1;
     if (e->repeat) return 0;
@@ -1587,14 +1696,6 @@ static int key_action(const finn_key_event *e, const finn_state *st) {
         finncontrol_set_open(0);
         finnclock_set_open(0);
         return was_open;
-    }
-
-    if (e->code == KEY_LEFTMETA || e->code == KEY_RIGHTMETA) {
-        int open = !finnmenu_is_open();
-        finncontrol_set_open(0);
-        finnclock_set_open(0);
-        finnmenu_set_open(open);
-        return 1;
     }
 
     if ((e->mods & FINN_MOD_ALT) && e->code == KEY_TAB) {
@@ -1801,7 +1902,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         finncontrol_press(FINNCONTROL_NONE);
         finnmenu_press(FINNMENU_NONE);
         finnsetup_press(FINNSETUP_NONE);
-        finnwindow_release();
+        finnwindow_release(p->x, p->y);
         return changed;
     }
 
