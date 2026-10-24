@@ -99,7 +99,7 @@ Provided by the compositor, proxied by the control plane.
 | `pointer.by` | `OK` | nudge it: `pointer.by dx=10 dy=-4` |
 | `pointer.click` | `OK` | press and release |
 | `pointer.down` / `pointer.up` | `OK` | hold it down, or let it go |
-| `pointer.scroll` | `ERR` | not implemented; scrollable content does not exist yet |
+| `pointer.scroll` | `OK` | queue wheel clicks: `pointer.scroll clicks=-3` (or `dy=`); the shell delivers them to the window under the pointer |
 
 A click is an edge the shell can see, so an injected click is pressed now
 and released after the shell has handled it.
@@ -208,6 +208,18 @@ Provided by the compositor (`finnwindow`), proxied by the control plane.
 | `window.move id=<id> x=<x> y=<y>` | `OK` | move the window's top-left corner; a maximized or snapped window returns to its floating size first |
 | `window.resize id=<id> w=<w> h=<h>` | `OK` | set the window's size, clamped to the smallest usable window and to the screen |
 | `window.snap id=<id> edge=<edge>` | `OK` | tile the window to `left`, `right`, `top-left`, `top-right`, `bottom-left`, `bottom-right`, `top` (maximize) or `restore`; the same edge twice restores |
+
+### Finn Files
+
+Provided by the compositor (`finnfilesapp`), proxied by the control plane.
+The view reads the real filesystem as the desktop user and is read-only in
+this build, because the compositor's home mount is read-only.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `files.get` | `OK path=… selected=…` | the folder the view is showing and the selected entry, or `-` |
+| `files.open <path>` | `OK path=…` / `ERR <reason>` | show a folder (absolute or resolved from `/`); opens the Files window if it is not already open. The rest of the line is the path, so spaces are allowed |
+| `files.select <name>` | `OK` / `ERR no such item in this folder` | select an entry in the current folder; the filter is cleared |
 
 ### Settings
 

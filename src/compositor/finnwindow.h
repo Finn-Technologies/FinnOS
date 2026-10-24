@@ -34,6 +34,10 @@ enum {
     FINNWINDOW_HIT_MINIMIZE,
     FINNWINDOW_HIT_CLOSE,
     FINNWINDOW_HIT_SETTINGS_CTRL,
+    /* A control inside one of the window's own app views. The view keeps the
+     * sub-hit; the window manager only needs to know the press belongs to
+     * the app rather than to the chrome. */
+    FINNWINDOW_HIT_APP_CTRL,
     /* The eight resize handles. A window is resized by the edge under the
      * pointer, not by a separate grip: the chrome already owns its border,
      * and a visible handle would be one more thing drawn on the glass. */
@@ -131,6 +135,9 @@ int  finnwindow_drag(int px, int py);      /* 1 if dragging or resizing */
  * ends against an edge can snap and a press that did not move can still be
  * a click. */
 void finnwindow_release(int px, int py);
+/* Wheel clicks over a window, delivered to the app view under the pointer.
+ * Returns 1 when something scrolled. */
+int  finnwindow_scroll(int px, int py, int clicks);
 
 /* Rendering & compositing */
 void finnwindow_render(int screen_w, int screen_h, float scale,

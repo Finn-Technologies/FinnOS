@@ -38,6 +38,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <time.h>
@@ -59,6 +60,7 @@
 #include "finnmenu.h"
 #include "finnwindow.h"
 #include "finnsettingsapp.h"
+#include "finnfilesapp.h"
 #include "finnsetup.h"
 #include "finnboot.h"
 #include "finnnotify.h"
@@ -750,10 +752,17 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         return;
     }
     if (!strcmp(verb, "pointer.scroll")) {
-        /* Nothing in the shell scrolls yet. The wheel is read by the pointer
-         * module so it cannot get stuck, but a verb that answers OK while
-         * doing nothing is a lie the next client would build on. */
-        finn_write_str(fd, "ERR scroll is not implemented\n");
+        /* The wheel is queued, not delivered here: the shell loop takes it
+         * on the next frame and gives it to the window under the pointer,
+         * exactly as a hardware notch would be. */
+        int clicks = 1;
+        if (!kv_int(rest, "clicks", &clicks)) kv_int(rest, "dy", &clicks);
+        if (clicks == 0) {
+            finn_write_str(fd, "ERR pointer.scroll needs a nonzero clicks=\n");
+            return;
+        }
+        cx->ptr->wheel += clicks;
+        finn_write_str(fd, "OK\n");
         return;
     }
 
@@ -893,6 +902,57 @@ static void ctl_dispatch(char *line, int fd, ctl_ctx *cx) {
         char b[64];
         snprintf(b, sizeof b, "OK page=%s\n", finnsettingsapp_get_page());
         finn_write_str(fd, b);
+        return;
+    }
+
+    /* ---- Finn Files ---- */
+    if (!strcmp(verb, "files.open")) {
+        const char *p = rest;
+        while (*p == ' ') p++;
+        if (!strncmp(p, "path=", 5)) p += 5;
+        if (!*p) {
+            finn_write_str(fd, "ERR files.open needs a path\n");
+            return;
+        }
+        if (finnfilesapp_open_path(p) != 0) {
+            char b[320];
+            snprintf(b, sizeof b, "ERR %s\n",
+                     finnfilesapp_error()[0] ? finnfilesapp_error() : "could not open that folder");
+            finn_write_str(fd, b);
+            return;
+        }
+        if (finnwindow_open("files") == FINNWINDOW_ERR_LIMIT) {
+            finn_write_str(fd, "ERR window limit reached\n");
+            return;
+        }
+        cx->dirty = 1;
+        char b[PATH_MAX + 32];
+        snprintf(b, sizeof b, "OK path=%s\n", finnfilesapp_path());
+        finn_write_str(fd, b);
+        return;
+    }
+    if (!strcmp(verb, "files.get")) {
+        char b[PATH_MAX + 160];
+        snprintf(b, sizeof b, "OK path=%s selected=%s\n",
+                 finnfilesapp_path()[0] ? finnfilesapp_path() : "-",
+                 finnfilesapp_selection()[0] ? finnfilesapp_selection() : "-");
+        finn_write_str(fd, b);
+        return;
+    }
+    if (!strcmp(verb, "files.select")) {
+        const char *p = rest;
+        while (*p == ' ') p++;
+        if (!strncmp(p, "name=", 5)) p += 5;
+        if (!*p) {
+            finn_write_str(fd, "ERR files.select needs a name\n");
+            return;
+        }
+        if (finnfilesapp_select(p) != 0) {
+            finn_write_str(fd, "ERR no such item in this folder\n");
+            return;
+        }
+        cx->dirty = 1;
+        finn_write_str(fd, "OK\n");
         return;
     }
 
@@ -2486,6 +2546,17 @@ int main(int argc, char **argv) {
         float adt = dt > 0.034f ? 0.034f : dt;
 
         int shell_changed = shell_input(&ptr, &st) | key_changed;
+
+        /* A notch of the wheel belongs to the window under the pointer, and
+         * only when no floating surface is in front of it. The menu, the
+         * panels and setup are modal-ish: scrolling the desktop behind them
+         * would move something the person is not looking at. */
+        int wheel = finn_pointer_take_wheel(&ptr);
+        if (wheel && !finnmenu_is_open() && !finncontrol_is_open() &&
+            !finnclock_is_open() && !finnsetup_is_open()) {
+            shell_changed |= finnwindow_scroll(ptr.x, ptr.y, wheel);
+        }
+
         if (cx.click_release > 0 && --cx.click_release == 0) {
             ptr.buttons &= ~cx.click_pending;
             shell_input(&ptr, &st);

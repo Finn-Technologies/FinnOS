@@ -214,10 +214,10 @@ Keeping them apart is what lets the shell show an app that is honestly
 ships — and it keeps a catalogue update from wiping the user's install
 list.
 
-The catalogue currently has one entry, **Settings** (`settings-app.svg`).
-Files, Arc, and every other application from earlier prototypes have been
-removed; the shell, the dock and the Start Menu expose Settings as the sole
-first-party application.
+The catalogue currently has two entries: **Settings** (`settings-app.svg`)
+and **Finn Files** (`files.svg`). Both are first-party applications drawn
+inside the compositor. The Store and the browser join the catalogue when
+their views are real; an entry is not a promise that the window is useful.
 
 ## The session
 
@@ -263,20 +263,20 @@ them:
 
 - **No external client surface protocol.** `finnwindow` manages frosted
   desktop windows (`window.open`, `window.list`, `window.close`,
-  `window.minimize`, `window.maximize`, `window.move`, `window.focus`),
-  and hosts the built-in Settings application (`finnsettingsapp`) with
-  interactive search filtering, working ALSA mixer volume controls, appearance
-  theme switching, and real hardware state. However, external processes
-  started by `app.launch` cannot yet stream their own pixel buffers over a
-  socket.
+  `window.minimize`, `window.maximize`, `window.restore`, `window.move`,
+  `window.resize`, `window.snap`, `window.get`, `window.focus`), and hosts
+  the built-in Settings (`finnsettingsapp`) and Finn Files
+  (`finnfilesapp`) views. However, external processes started by
+  `app.launch` cannot yet stream their own pixel buffers over a socket, so
+  a third-party GUI application has nowhere to draw.
 - **No text delivery into external apps.** The compositor reads a real keyboard
-  (`finnkbd`) and delivers keyboard events to the Settings application search
-  field (with text input, caret blinking, and backspace), setup,
-  `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc` and the Super key. There is no external
-  focused client surface protocol yet.
-- **No window resize.** Windows move, maximize, minimize, close and
-  cycle focus; they do not resize, and there is no stacking protocol for
-  a client.
+  (`finnkbd`) and delivers keyboard events to the focused built-in app
+  (Settings search, Files navigation and filter, setup), plus
+  `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Super` and `Super+arrow`. There is no
+  external focused client surface protocol yet.
+- **Windows resize and tile, but no client joins the stack.** A window can
+  be resized from any edge, snapped to a half or quarter, maximized and
+  restored. There is still no stacking protocol for a client surface.
 - **No OTA.** `finnpkg` installs, lists and removes packages; `finnpkg
   update` is a stub, and the A/B slots are a design in
   [roadmap.md](roadmap.md), not a feature.

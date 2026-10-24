@@ -5,6 +5,30 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Finn Files, reading the machine as the person at it
+
+- **A real browser of the real filesystem.** Finn Files opens on the
+  desktop user's home, lists folders and files, sorts folders first, and
+  navigates by click, double-click, keyboard, the up button or the places
+  sidebar. It hides dotfiles and caps a listing at 512 entries, saying so
+  when it does.
+- **It reads as the user, not as the compositor.** The compositor is root
+  because it owns DRM. Every directory read in Files drops the filesystem
+  uid to the session user for the duration, so the kernel's permissions
+  decide what can be seen: `/etc/shadow` is not a preview.
+- **Text previews, honestly bounded.** Selecting a file shows its name,
+  size, date and the first screenful of text. A binary or oversized file
+  says there is no text preview instead of drawing noise. The preview does
+  not claim to render images.
+- **Read-only, and it says so.** The compositor's home mount is read-only,
+  so the footer says "Read-only" rather than offering a delete that would
+  fail. Copy, move and rename are not implemented.
+- **The wheel works.** `finn_pointer` already collected wheel notches;
+  they now go to the window under the pointer, and `pointer.scroll` queues
+  one for a test. The Files list scrolls, and the control plane can open a
+  folder with `files.open`, read the view with `files.get`, and select an
+  entry with `files.select`.
+
 ### Windows that can be arranged, and a Meta key with two jobs
 
 - **A window resizes from any edge or corner.** The border under the pointer
