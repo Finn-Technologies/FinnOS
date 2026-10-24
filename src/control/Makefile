@@ -38,6 +38,8 @@ install: all
 	install -Dm755 finn-window $(DESTDIR)$(BINDIR)/finn-window
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-settings
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-files
+	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-store
+	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-browser
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/arc
 
 clean:

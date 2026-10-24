@@ -5,6 +5,24 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Finn Store, and a package manager with one owner
+
+- **A store that lists what the OS actually has.** Finn Store reads the
+  same registry as the Start Menu. Installed is finnpkg's answer, re-read
+  after every action; an entry whose launcher is missing is shown as
+  unavailable instead of offering an install that would fail.
+- **Installing goes through the control plane.** `app.install` and
+  `app.remove` validate the id, confirm the catalogue knows it, and run
+  `finnpkg`; the Store never edits the install list. finnpkg's refusal
+  is passed back in its own words rather than replaced by a generic
+  failure.
+- **Removing asks twice.** The first press turns the button into
+  "Remove?"; the second performs it. Installing is one press, because it
+  changes only the install list.
+- **The catalogue ships with the system.** This build does not download
+  packages, and the Store says so rather than drawing a progress bar for
+  a network it does not have.
+
 ### Finn Files, reading the machine as the person at it
 
 - **A real browser of the real filesystem.** Finn Files opens on the

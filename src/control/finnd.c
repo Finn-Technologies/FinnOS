@@ -315,6 +315,107 @@ static int run_systemctl(const char *verb) {
     return WEXITSTATUS(status);
 }
 
+/*
+ * The package manager owns the install list, so the control plane runs it
+ * instead of editing the list itself. Its own words are the answer: a
+ * catalogue id it refuses is a refusal here too, and the reason it gives is
+ * more useful to the person in the Store than a generic failure.
+ *
+ * The wait is bounded. finnpkg installs from the catalogue by marking an app
+ * installed; it does not fetch anything, so this is a file edit and not a
+ * download. A child that somehow takes longer than that is killed rather than
+ * holding the single control connection — and every client queued behind it —
+ * open.
+ */
+#define FINN_PKG_TIMEOUT_MS 1500
+
+static int valid_pkg_id(const char *id) {
+    if (!id || !(id[0] >= 'a' && id[0] <= 'z')) return 0;
+    size_t n = 1;
+    for (; id[n]; n++) {
+        char c = id[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+            return 0;
+    }
+    return n <= 32;
+}
+
+static void pkg_message_clean(char *s) {
+    char *p = s;
+    while (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') p++;
+    char *end = strpbrk(p, "\r\n");
+    if (end) *end = 0;
+    if (!strncmp(p, "finnpkg: ", 9)) p += 9;
+    if (p != s) memmove(s, p, strlen(p) + 1);
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = 0;
+}
+
+/* 0 on success, -1 when the child could not run or said no, -2 on timeout.
+ * `msg` carries finnpkg's first line, with its own prefix removed. */
+static int run_pkg_verb(const char *verb, const char *id, char *msg, size_t cap) {
+    if (msg && cap) msg[0] = 0;
+
+    int p[2];
+    if (pipe2(p, O_CLOEXEC) != 0) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(p[0]); close(p[1]);
+        return -1;
+    }
+
+    if (pid == 0) {
+        close(p[0]);
+        dup2(p[1], STDOUT_FILENO);
+        dup2(p[1], STDERR_FILENO);
+        if (p[1] > STDERR_FILENO) close(p[1]);
+        setsid();
+        execl("/usr/local/bin/finnpkg", "finnpkg", verb, id, (char *)NULL);
+        _exit(127);
+    }
+
+    close(p[1]);
+
+    struct pollfd pf = { p[0], POLLIN, 0 };
+    int pr;
+    do { pr = poll(&pf, 1, FINN_PKG_TIMEOUT_MS); } while (pr < 0 && errno == EINTR);
+
+    int timed_out = 0;
+    if (pr > 0 && msg && cap > 0) {
+        ssize_t got = read(p[0], msg, cap - 1);
+        if (got > 0) {
+            msg[got] = 0;
+            pkg_message_clean(msg);
+        }
+    } else if (pr == 0) {
+        timed_out = 1;
+    }
+    close(p[0]);
+
+    if (timed_out) {
+        kill(pid, SIGKILL);
+        if (msg && cap) snprintf(msg, cap, "the package manager did not answer");
+    }
+
+    int status = 0;
+    for (int i = 0; i < 100; i++) {
+        pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid) break;
+        if (done < 0) { status = -1; break; }
+        usleep(10000);
+    }
+
+    if (timed_out) return -2;
+    if (!WIFEXITED(status)) return -1;
+    if (WEXITSTATUS(status) != 0) {
+        if (msg && cap && !msg[0])
+            snprintf(msg, cap, "the package manager exited %d", WEXITSTATUS(status));
+        return -1;
+    }
+    return 0;
+}
+
 /* Returns a short result string for the log. */
 static const char *handle(char *line, int fd) {    /* work on a copy: the verb split must not disturb the request that gets
      * forwarded to the provider */
@@ -483,6 +584,59 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
         snprintf(b, sizeof b, "OK launched %s\n", a->id);
         finn_write_str(fd, b);
         return "OK";
+    }
+
+    /*
+     * Installing and removing app packages.
+     *
+     * The catalogue says what exists; finnpkg says whether it is on this
+     * machine, and is the only writer of that list. Both verbs take exactly
+     * one id: an extra word is a malformed request, not a second app. The id
+     * pattern is the one in finnpkg, checked here as well because it reaches
+     * a path and a root-owned list on the other side.
+     */
+    if (!strcmp(verb, "app.install") || !strcmp(verb, "app.remove")) {
+        int install = !strcmp(verb, "app.install");
+        char id[64] = "";
+        char *save = NULL;
+        char *tok = strtok_r(rest, " \t", &save);
+        char *extra = tok ? strtok_r(NULL, " \t", &save) : NULL;
+
+        if (tok) snprintf(id, sizeof id, "%s", tok);
+        if (!tok || extra || !valid_pkg_id(id)) {
+            finn_write_str(fd, "ERR app.install and app.remove take one app id\n");
+            return install ? "ERR install id" : "ERR remove id";
+        }
+
+        finn_apps_load(NULL, NULL);
+        if (!finn_apps_find(id)) {
+            finn_write_str(fd, "ERR unknown app\n");
+            return "ERR unknown app";
+        }
+
+        char why[512] = "";
+        int rc = run_pkg_verb(install ? "install" : "remove", id, why, sizeof why);
+        if (rc != 0) {
+            char reply[600];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "the package manager could not run");
+            finn_write_str(fd, reply);
+
+            static char result[160];
+            snprintf(result, sizeof result, "ERR %s %s",
+                     install ? "install" : "remove", id);
+            return result;
+        }
+
+        char reply[96];
+        snprintf(reply, sizeof reply, "OK %s %s\n",
+                 install ? "installed" : "removed", id);
+        finn_write_str(fd, reply);
+
+        static char result[96];
+        snprintf(result, sizeof result, "OK %s %s",
+                 install ? "installed" : "removed", id);
+        return result;
     }
 
     /* ---- display + input + machine: proxied to the provider ---- */

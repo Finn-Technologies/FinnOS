@@ -45,7 +45,11 @@ ssh "$HOST" "cd $REMOTE && sudo make install && \
              sudo install -Dm644 assets/wallpaper/default.webp /usr/share/finn/wallpaper/default.webp && \
              sudo install -Dm644 assets/wallpaper/setup.webp /usr/share/finn/wallpaper/setup.webp && \
              sudo install -d /var/lib/finnpkg && \
-             printf 'settings\n' | sudo tee /var/lib/finnpkg/installed >/dev/null && \
+             if ! sudo test -f /var/lib/finnpkg/installed; then \
+                 for app in settings files store browser; do \
+                     sudo /usr/local/bin/finnpkg install \$app; \
+                 done; \
+             fi && \
              sudo chgrp -R finn /usr/share/finn /var/lib/finnpkg"
 
 if [ "$RESTART" = "1" ]; then

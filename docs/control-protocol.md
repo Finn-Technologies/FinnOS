@@ -181,10 +181,21 @@ session, and systemd's `Restart=on-failure` is the recovery path.
 |---|---|---|
 | `app.list` | `OK count=… [id\|state\|name]…` | the catalogue and what is installed |
 | `app.launch <id>` | `OK launched <id>` | start it, as the user |
+| `app.install <id>` | `OK installed <id>` / `ERR <reason>` | mark a catalogue app installed, through `finnpkg` |
+| `app.remove <id>` | `OK removed <id>` / `ERR <reason>` | take an app off the install list, through `finnpkg` |
 
 The control plane is the only place in the system that starts user
 programs. The compositor asks it, a script asks it, an agent asks it, and
 every one of those goes through the same audit log.
+
+`app.install` and `app.remove` are the only writers of the install list,
+and they do not write it themselves: they run `finnpkg`, which owns the
+list and refuses an app whose launcher is not executable. The control
+plane checks the id shape and that the catalogue knows the app before it
+runs anything, and passes the package manager's own first line back as
+the reason for a refusal. The wait is bounded at 1.5 seconds; a package
+manager that hangs is killed so it cannot hold the single control
+connection open.
 
 An app is started by systemd, as the user, in its own transient unit: that
 is how a program is started on a modern Linux, and it means the app is
@@ -220,6 +231,16 @@ this build, because the compositor's home mount is read-only.
 | `files.get` | `OK path=… selected=…` | the folder the view is showing and the selected entry, or `-` |
 | `files.open <path>` | `OK path=…` / `ERR <reason>` | show a folder (absolute or resolved from `/`); opens the Files window if it is not already open. The rest of the line is the path, so spaces are allowed |
 | `files.select <name>` | `OK` / `ERR no such item in this folder` | select an entry in the current folder; the filter is cleared |
+
+### Finn Store
+
+Provided by the compositor (`finnstoreapp`), not by a control verb. The
+Store lists the same catalogue as `app.list`, reads installed state from
+finnpkg's list, and asks finnd for `app.install` / `app.remove`. A
+catalogue app whose launcher is not executable is shown as unavailable
+and has no action, because installing it would only produce finnpkg's
+refusal. Removing asks for a second press. This build installs from the
+catalogue that ships with FinnOS and does not download packages.
 
 ### Settings
 

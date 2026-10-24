@@ -3,6 +3,7 @@
 #include "finnwindow.h"
 #include "finnsettingsapp.h"
 #include "finnfilesapp.h"
+#include "finnstoreapp.h"
 #include "finndock.h"
 #include "finndraw.h"
 #include "finntext.h"
@@ -203,6 +204,7 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
     g_ready = ok;
     finnsettingsapp_init(g_icon_dir, g_font_dir);
     finnfilesapp_init(g_icon_dir, g_font_dir);
+    finnstoreapp_init(g_icon_dir, g_font_dir, g_registry);
     return ok ? 0 : -1;
 }
 
@@ -217,6 +219,7 @@ static finn_frost_plate g_body_plate[FINNWINDOW_MAX];
 void finnwindow_free(void) {
     finnsettingsapp_free();
     finnfilesapp_free();
+    finnstoreapp_free();
     fsvg_free(&g_ic_expand);
     fsvg_free(&g_ic_min);
     fsvg_free(&g_ic_close);
@@ -487,7 +490,7 @@ int finnwindow_open(const char *arg) {
     if (is_settings)                                  { ref_w = 860.0f; ref_h = 480.0f; }
     else if (strcasecmp(app_id, "files") == 0)        { ref_w = 900.0f; ref_h = 540.0f; }
     else if (strcasecmp(app_id, "store") == 0)        { ref_w = 900.0f; ref_h = 560.0f; }
-    else if (strcasecmp(app_id, "flourish") == 0)     { ref_w = 900.0f; ref_h = 600.0f; }
+    else if (strcasecmp(app_id, "browser") == 0)      { ref_w = 900.0f; ref_h = 600.0f; }
     int ww = rs(ref_w * REF, g_scale);
     int wh = rs(ref_h * REF, g_scale);
     if (ww < 300) { ww = (int)(ref_w * 1.36f); wh = (int)(ref_h * 1.36f); }
@@ -966,6 +969,16 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
             }
         }
 
+        if (strcasecmp(w->app_id, "store") == 0) {
+            int sub = -1;
+            int sh = finnstoreapp_hit(w->x, w->y, w->w, w->h, px, py, g_scale, &sub);
+            if (sh != FINNSTORE_HIT_NONE) {
+                g_app_hit = sh;
+                g_app_sub = sub;
+                return FINNWINDOW_HIT_APP_CTRL;
+            }
+        }
+
         int is_settings = (strcasecmp(w->title, "Settings") == 0 ||
                            strcasecmp(w->app_id, "settings") == 0);
         if (is_settings) {
@@ -1082,6 +1095,9 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
     if (hit_part == FINNWINDOW_HIT_APP_CTRL && idx >= 0) {
         if (strcasecmp(g_wins[idx].app_id, "files") == 0 &&
             finnfilesapp_press(g_app_hit, g_app_sub, px, py, g_scale))
+            g_built = 0;
+        else if (strcasecmp(g_wins[idx].app_id, "store") == 0 &&
+                 finnstoreapp_press(g_app_hit, g_app_sub, px, py, g_scale))
             g_built = 0;
     }
 
@@ -1221,6 +1237,8 @@ int finnwindow_key(const finn_key_event *e) {
     int res = 0;
     if (strcasecmp(g_wins[idx].app_id, "files") == 0)
         res = finnfilesapp_key(e);
+    else if (strcasecmp(g_wins[idx].app_id, "store") == 0)
+        res = finnstoreapp_key(e);
     else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
              strcasecmp(g_wins[idx].app_id, "settings") == 0)
         res = finnsettingsapp_key(e);
@@ -1239,6 +1257,8 @@ int finnwindow_scroll(int px, int py, int clicks) {
     int res = 0;
     if (strcasecmp(g_wins[idx].app_id, "files") == 0)
         res = finnfilesapp_scroll(clicks, px, py, g_scale);
+    else if (strcasecmp(g_wins[idx].app_id, "store") == 0)
+        res = finnstoreapp_scroll(clicks, g_scale);
     if (res) g_built = 0;
     return res;
 }
@@ -1269,6 +1289,8 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
             MIX(finnsettingsapp_build_key(s, st));
         } else if (strcasecmp(g_wins[i].app_id, "files") == 0) {
             MIX(finnfilesapp_build_key(s));
+        } else if (strcasecmp(g_wins[i].app_id, "store") == 0) {
+            MIX(finnstoreapp_build_key(s));
         }
     }
     #undef MIX
@@ -1582,6 +1604,11 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             } else if (strcasecmp(w->app_id, "files") == 0) {
                 int focused = (i == g_n_wins - 1);
                 finnfilesapp_render(g_layer, lw, lh, g_lx0, g_ly0,
+                                    w->x, w->y, w->w, w->h,
+                                    s, st, focused);
+            } else if (strcasecmp(w->app_id, "store") == 0) {
+                int focused = (i == g_n_wins - 1);
+                finnstoreapp_render(g_layer, lw, lh, g_lx0, g_ly0,
                                     w->x, w->y, w->w, w->h,
                                     s, st, focused);
             } else {
