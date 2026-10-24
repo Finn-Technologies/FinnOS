@@ -17,3 +17,4 @@
 # The names are the brand and a plain English noun: Finn Window.
 
 settings | Settings | settings-app.svg | /usr/local/bin/finn-settings | Settings
+files | Finn Files | files.svg | /usr/local/bin/finn-files | File manager

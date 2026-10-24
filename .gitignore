@@ -33,3 +33,4 @@ build/
 .idea/
 .vscode/
 /tests/c/test_finnvg
+/tests/c/test_finnblur

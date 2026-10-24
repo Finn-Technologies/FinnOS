@@ -12,7 +12,7 @@ SAN    ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 
 CORE   = ../../src/core
 COMP   = ../../src/compositor
-BINS   = test_finnconn test_finnsettings test_finnvg
+BINS   = test_finnconn test_finnsettings test_finnvg test_finnblur
 
 all: $(BINS)
 
@@ -20,6 +20,7 @@ run: $(BINS)
 	./test_finnconn
 	./test_finnsettings
 	./test_finnvg
+	./test_finnblur
 
 test_finnconn: test_finnconn.c $(CORE)/finnconn.c $(CORE)/finnconn.h
 	$(CC) $(CFLAGS) $(SAN) -I$(CORE) -o $@ test_finnconn.c $(CORE)/finnconn.c
@@ -29,6 +30,9 @@ test_finnsettings: test_finnsettings.c $(CORE)/finnsettings.c $(CORE)/finnsettin
 
 test_finnvg: test_finnvg.c $(COMP)/finnvg.c $(COMP)/finnvg.h
 	$(CC) $(CFLAGS) $(SAN) -I$(COMP) -o $@ test_finnvg.c $(COMP)/finnvg.c -lm
+
+test_finnblur: test_finnblur.c $(COMP)/finnblur.c $(COMP)/finnblur.h
+	$(CC) $(CFLAGS) $(SAN) -I$(COMP) -o $@ test_finnblur.c $(COMP)/finnblur.c
 
 clean:
 	rm -f $(BINS)

@@ -1,6 +1,7 @@
 /* finncontrol — the FinnOS Control Center (Figma 9:63 / 9:82). */
 #include "finncontrol.h"
 #include "finndock.h"
+#include "finnblur.h"
 #include "finndraw.h"
 #include "finntext.h"
 #include "finnanim.h"
@@ -25,19 +26,21 @@
 /* ---------------- metrics, authored for a 1080p canvas ----------------
  *
  * Every number here is the Figma measurement in 1280x832 units multiplied
- * by 1.298077 (1080 / 832):
- *   panel 405x500 r=8 (Figma 9:82)
- *   Wi-Fi tile 188x40 at 10,10; Bluetooth tile 188x40 at 207,10
- *   Brightness slider 385x35 r=100 at 10,60
- *   Volume slider 385x35 r=100 at 10,105
- *   Footer Account Options 385x40 at 10,450
- *   Battery icon at 9,9, text at 41,16
- *   Edit icon at 328,11, Settings icon at 356,11
+ * by 1.298077 (1080 / 832). The panel is sized by its contents: the old
+ * 500-unit height left a third of the panel as empty glass below the
+ * sliders, which is not a Control Center, it is a hole.
+ *
+ *   panel 405 wide, height follows the last row
+ *   Wi-Fi tile 188x76 at 10,10; Bluetooth tile 188x76 at 207,10
+ *   Appearance tile 385x60 at 10,94
+ *   Brightness slider 385x35 r=100 at 10,162
+ *   Volume slider 385x35 r=100 at 10,205
+ *   Footer 385x40 at 10,250
  */
 #define REF          1.298077f
 
 #define CC_W        (405.0f * REF)
-#define CC_H        (500.0f * REF)
+#define CC_H        (200.0f * REF)
 #define CC_PAD      (10.0f * REF)
 #define CC_R_PANEL  (8.0f * REF)
 #define CC_R_TILE   (4.14f * REF)
@@ -46,8 +49,14 @@
 #define TILE_H      (40.0f * REF)
 #define TILE2_X     (207.0f * REF)
 
+#define APPEAR_X    (355.0f * REF)
+#define APPEAR_Y    (60.0f * REF)
+#define APPEAR_W    (40.0f * REF)
+#define APPEAR_H    (35.0f * REF)
+
 #define SLIDER_W    (385.0f * REF)
 #define SLIDER_H    (35.0f * REF)
+#define SLIDER_BRIGHT_W (335.0f * REF)
 #define SLIDER_BRIGHT_Y (60.0f * REF)
 #define SLIDER_VOL_Y    (105.0f * REF)
 #define SLIDER_ICON_X   (8.0f * REF)
@@ -59,7 +68,7 @@
 #define STATUS_TEXT_X   (42.0f * REF)
 
 #define FOOTER_X        (10.0f * REF)
-#define FOOTER_Y        (450.0f * REF)
+#define FOOTER_Y        (150.0f * REF)
 #define FOOTER_W        (385.0f * REF)
 #define FOOTER_H        (40.0f * REF)
 #define FOOTER_R        (4.14f * REF)
@@ -76,7 +85,7 @@
 
 /* ---------------- assets + fonts ---------------- */
 static fsvg g_ic_wifi, g_ic_bt, g_ic_sun, g_ic_vol, g_ic_bat;
-static fsvg g_ic_edit, g_ic_settings;
+static fsvg g_ic_moon, g_ic_settings;
 static int  g_ready = 0;
 
 static finn_font g_f_footer, g_f_label, g_f_label_sm, g_f_sub, g_f_micro;
@@ -97,7 +106,7 @@ static int      g_built = 0;
 static unsigned g_cc_rev = 0;
 
 typedef struct { int x, y, w, h; } cc_rect;
-static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_app, g_r_settings,
+static cc_rect g_r_panel, g_r_wifi, g_r_bt, g_r_appearance, g_r_settings,
                g_r_bright, g_r_vol, g_r_footer;
 
 /* ---------------- motion ---------------- */
@@ -163,12 +172,20 @@ static float tile_text_avail(const cc_rect *r, float s) {
     return (float)r->w - s * STATUS_TEXT_X;
 }
 
+static void tile_edge(uint32_t *L, int lw, int lh, float s, cc_rect r) {
+    /* The hairline is what separates a tile from the panel when both are
+     * white in the light appearance. */
+    finn_stroke_rrect(L, lw, lh, (float)r.x, (float)r.y, (float)r.w,
+                      (float)r.h, s * CC_R_TILE, 1.0f, FINN_HAIR);
+}
+
 static void status_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
                         fsvg *icon, uint32_t vkey, const char *name,
                         const char *detail, int on, const finn_font *lf_set) {
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
                      (float)r.x, (float)r.y, (float)r.w, (float)r.h,
                      s * CC_R_TILE, FINN_GLASS, FINN_GLASS_TILE);
+    tile_edge(L, lw, lh, s, r);
 
     float cr = s * (STATUS_C * 0.5f);
     float ccx = (float)r.x + s * (STATUS_INSET + STATUS_C * 0.5f);
@@ -200,12 +217,17 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     /* Background track: black 25% */
     finn_fill_rrect(L, lw, lh, x, y, w, h, rad, FINN_TRACK);
 
-    /* Filled bar: solid white (when hardware available) */
+    /*
+     * Filled bar: the bone fill, rounded where it starts and square where
+     * the level currently is. The track carries on to the right of it, so a
+     * round cap there would close the bar instead of marking a point on it.
+     */
+    float fw = 0.0f;
     if (available && fill > 0) {
-        float fw = w * ((float)fill / 100.0f);
+        fw = w * ((float)fill / 100.0f);
         if (fw > w) fw = w;
         if (fw < h) fw = h;
-        finn_fill_rrect(L, lw, lh, x, y, fw, h, rad, FINN_FILL);
+        finn_fill_bar(L, lw, lh, x, y, fw, h, rad, FINN_FILL);
     }
 
     /* Icon on the left */
@@ -231,6 +253,33 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     }
 }
 
+/*
+ * The appearance tile.
+ *
+ * It is a control, not a readout: the whole tile toggles the theme and the
+ * switch says which half is current. The disc carries the sun or the moon,
+ * so the answer is legible before the label is read.
+ */
+/*
+ * The appearance control sits beside the brightness bar, as a plain icon: a
+ * sun in the light appearance and a moon in the dark one. It is a button, so
+ * it takes the same hover and press washes as the other tiles — the icon
+ * itself is the whole control, and nothing on it pretends to be a readout.
+ */
+static void appearance_tile(uint32_t *L, int lw, int lh, float s, cc_rect r,
+                            int dark) {
+    finn_frost_rrect(L, lw, lh, g_lx0, g_ly0,
+                     (float)r.x, (float)r.y, (float)r.w, (float)r.h,
+                     s * CC_R_TILE, FINN_GLASS, FINN_GLASS_TILE);
+    tile_edge(L, lw, lh, s, r);
+
+    fsvg *ic = dark ? &g_ic_moon : &g_ic_sun;
+    if (ic->vw > 0)
+        finn_icon_blit_ink(ic, L, lw, lh,
+                           r.x + r.w / 2, r.y + r.h / 2,
+                           rs(18.0f * REF, s), FINN_INK, FINN_INK, 0);
+}
+
 static void footer_row(uint32_t *L, int lw, int lh, float s,
                        const finn_state *st, float hover, float press) {
     float fx = (float)g_r_footer.x;
@@ -242,6 +291,7 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
     /* Inset frosted tile */
     finn_frost_rrect(L, lw, lh, g_lx0, g_ly0, fx, fy, fw, fh,
                      s * FOOTER_R, FINN_GLASS, FINN_GLASS_TILE);
+    tile_edge(L, lw, lh, s, g_r_footer);
 
     /*
      * A machine with no battery has no level to report, so its glyph is an
@@ -274,12 +324,6 @@ static void footer_row(uint32_t *L, int lw, int lh, float s,
     float cap = finn_text_cap_height(&g_f_footer);
     float tx = fx + s * FOOTER_BAT_TXT_X;
     finn_text_draw(&g_f_footer, L, lw, lh, tx, cy + cap * 0.45f, bat_s, FINN_INK);
-
-    /* Edit button: inert / disabled look (does not pretend to work) */
-    finn_icon_blit_ink(&g_ic_edit, L, lw, lh,
-                       g_r_app.x + g_r_app.w / 2,
-                       g_r_app.y + g_r_app.h / 2,
-                       rs(FOOTER_ICO, s), FINN_MUTE, FINN_MUTE, 0);
 
     /* Settings button: opens Settings app */
     float hit_r = (float)g_r_settings.h * 0.5f;
@@ -329,9 +373,9 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
     snprintf(p, sizeof p, "%s/wifi-02.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_wifi) == 0;
     snprintf(p, sizeof p, "%s/bluetooth.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_bt) == 0;
     snprintf(p, sizeof p, "%s/sun-01.svg", icon_dir);       ok &= fsvg_load(p, &g_ic_sun) == 0;
+    snprintf(p, sizeof p, "%s/moon.svg", icon_dir);         ok &= fsvg_load(p, &g_ic_moon) == 0;
     snprintf(p, sizeof p, "%s/volume-02.svg", icon_dir);    ok &= fsvg_load(p, &g_ic_vol) == 0;
     snprintf(p, sizeof p, "%s/battery.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_bat) == 0;
-    snprintf(p, sizeof p, "%s/edit-01.svg", icon_dir);      ok &= fsvg_load(p, &g_ic_edit) == 0;
     snprintf(p, sizeof p, "%s/settings-02.svg", icon_dir);  ok &= fsvg_load(p, &g_ic_settings) == 0;
 
     if (!ok) fprintf(stderr, "finncontrol: icon set incomplete in %s\n", icon_dir);
@@ -342,7 +386,7 @@ int finncontrol_init(const char *icon_dir, const char *font_dir) {
 void finncontrol_free(void) {
     fsvg_free(&g_ic_wifi); fsvg_free(&g_ic_bt);
     fsvg_free(&g_ic_sun);  fsvg_free(&g_ic_vol);
-    fsvg_free(&g_ic_bat);  fsvg_free(&g_ic_edit); fsvg_free(&g_ic_settings);
+    fsvg_free(&g_ic_bat);  fsvg_free(&g_ic_moon); fsvg_free(&g_ic_settings);
     finn_font_free(&g_f_footer);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_label_sm);
@@ -400,6 +444,8 @@ void finncontrol_hover_at(int px, int py) {
                 act = FINNCONTROL_WIFI;
             } else if (in_rect(&g_r_bt, x, y) && g_r_bt.w > 0) {
                 act = FINNCONTROL_BLUETOOTH;
+            } else if (in_rect(&g_r_appearance, x, y)) {
+                act = FINNCONTROL_APPEARANCE;
             } else if (in_rect(&g_r_settings, x, y)) {
                 act = FINNCONTROL_SETTINGS;
             }
@@ -458,6 +504,8 @@ static uint32_t build_key(float s, int pw, int ph,
     MIX(g_hover_act);
     MIX((int)(finn_anim_v(&g_a_vol) * 8.0f));
     MIX((int)(finn_anim_v(&g_a_bright) * 8.0f));
+    /* the glass is the desktop under it: when that moves, this redraws */
+    MIX(finnblur_generation());
     #undef MIX
     return h ? h : 1u;
 }
@@ -511,9 +559,14 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     g_r_bt.w   = rs(TILE_W, s);
     g_r_bt.h   = rs(TILE_H, s);
 
+    g_r_appearance.x = rs(APPEAR_X, s);
+    g_r_appearance.y = rs(APPEAR_Y, s);
+    g_r_appearance.w = rs(APPEAR_W, s);
+    g_r_appearance.h = rs(APPEAR_H, s);
+
     g_r_bright.x = rs(CC_PAD, s);
     g_r_bright.y = rs(SLIDER_BRIGHT_Y, s);
-    g_r_bright.w = rs(SLIDER_W, s);
+    g_r_bright.w = rs(SLIDER_BRIGHT_W, s);
     g_r_bright.h = rs(SLIDER_H, s);
 
     g_r_vol.x    = rs(CC_PAD, s);
@@ -526,12 +579,7 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     g_r_footer.w = rs(FOOTER_W, s);
     g_r_footer.h = rs(FOOTER_H, s);
 
-    int hit = rs(26.0f * REF, s);
-    g_r_app.x      = rs(FOOTER_X + FOOTER_EDIT_X + FOOTER_ICO * 0.5f, s) - hit / 2;
-    g_r_app.y      = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
-    g_r_app.w      = hit;
-    g_r_app.h      = hit;
-
+    int hit = rs(30.0f * REF, s);
     g_r_settings.x = rs(FOOTER_X + FOOTER_SET_X + FOOTER_ICO * 0.5f, s) - hit / 2;
     g_r_settings.y = rs(FOOTER_Y + FOOTER_H * 0.5f, s) - hit / 2;
     g_r_settings.w = hit;
@@ -566,6 +614,8 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
     finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                      0.0f, 0.0f, (float)pw, (float)ph,
                      s * CC_R_PANEL, FINN_GLASS, FINN_GLASS_PANEL);
+    finn_stroke_rrect(g_layer, lw, lh, 0.0f, 0.0f, (float)pw, (float)ph,
+                      s * CC_R_PANEL, 1.0f, FINN_HAIR);
 
     float press = finn_anim_v(&g_a_press);
     float hover = g_hover;
@@ -615,6 +665,13 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
         if (g_press == FINNCONTROL_BLUETOOTH)
             press_wash(g_layer, lw, lh, s, g_r_bt, press);
     }
+
+    appearance_tile(g_layer, lw, lh, s, g_r_appearance, st->dark);
+    if (g_hover_act == FINNCONTROL_APPEARANCE)
+        control_wash(g_layer, lw, lh, s, g_r_appearance,
+                     FINN_MOTION_HOVER_WASH * hover);
+    if (g_press == FINNCONTROL_APPEARANCE)
+        press_wash(g_layer, lw, lh, s, g_r_appearance, press);
 
     slider_row(g_layer, lw, lh, s, g_r_bright,
                &g_ic_sun, fill_bright, st->brightness >= 0);
@@ -688,7 +745,7 @@ int finncontrol_hit(int px, int py, float *out01) {
 
     if (in_rect(&g_r_wifi, x, y))     return FINNCONTROL_WIFI;
     if (in_rect(&g_r_bt, x, y))       return FINNCONTROL_BLUETOOTH;
-    /* edit-01 icon does not pretend to work: no hit returned */
+    if (in_rect(&g_r_appearance, x, y)) return FINNCONTROL_APPEARANCE;
     if (in_rect(&g_r_settings, x, y)) return FINNCONTROL_SETTINGS;
     if (in_rect(&g_r_bright, x, y)) {
         if (out01) *out01 = slider_frac(&g_r_bright, x, g_scale);

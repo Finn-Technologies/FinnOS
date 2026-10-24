@@ -54,7 +54,7 @@ DATADIR ?= /usr/share/finn
 install: finn-comp
 	install -Dm755 finn-comp $(DESTDIR)$(BINDIR)/finn-comp
 	install -d $(DESTDIR)$(ICONDIR)
-	install -m644 icons/*.svg $(DESTDIR)$(ICONDIR)/
+	install -m644 ../../assets/icons/shell/*.svg ../../assets/icons/apps/*.svg $(DESTDIR)$(ICONDIR)/
 	install -Dm644 ../../assets/apps.registry $(DESTDIR)$(DATADIR)/apps.registry
 
 clean:

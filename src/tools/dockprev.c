@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
 
     /* The icons and the face are found relative to the tree, so the preview
      * can be run from anywhere in it. */
-    if (finndock_init("../compositor/icons", "../../assets/fonts/FixelDisplay") != 0) {
+    if (finndock_init("../../assets/icons/shell", "../../assets/fonts/FixelDisplay") != 0) {
         fprintf(stderr, "dockprev: cannot load the icons and the face\n"
                         "           (run it from src/tools/)\n");
         return 1;
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
 
     /* the preview's backdrop is a stand-in, but the glass samples the real
      * blur path so the material is what ships */
-    finnblur_build(buf, W, H);
+    finnblur_wall(buf, W, H);
 
     finndock_render(W, H, scale, &st);
     finndock_blit(buf, W, H, 0, 0);

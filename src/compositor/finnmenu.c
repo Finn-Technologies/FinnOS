@@ -7,6 +7,7 @@
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnapps.h"
+#include "finnblur.h"
 #include "finnvg.h"
 
 #include <stdio.h>
@@ -57,6 +58,16 @@
 #define BTN_ICO_SZ   (18.0f * REF)
 
 #define ANCHOR_GAP   (15.0f * REF)
+
+/*
+ * The menu's glass is the shell's panel weight plus a step. The panel weight
+ * is measured over wallpaper, and when the menu opens over a window the same
+ * 60% lets the window's own labels read through the panel. A menu is a sheet
+ * of paper held in front of the desktop, not a filter over it, so it takes a
+ * denser tint. The blur underneath is unchanged: the glow of the window still
+ * reaches through, its text does not.
+ */
+#define MENU_GLASS   0.84f
 
 /* ---------------- fonts ---------------- */
 static finn_font g_f_head, g_f_label, g_f_sub, g_f_micro;
@@ -335,7 +346,13 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
     MIX(g_hover_idx + 2);
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
     MIX(g_press_idx + 2);
+    /* the glass is the desktop under it: when that moves, this redraws */
+    MIX(finnblur_generation());
     for (int k = 0; username[k]; k++) MIX(username[k]);
+    for (int i = 0; i < n; i++) {
+        const finn_app *a = finn_apps_at(i);
+        if (a) MIX(a->installed);
+    }
     #undef MIX
 
     if (g_built && key == g_build_key) return;
@@ -351,10 +368,12 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
     if (!g_layer) return;
     memset(g_layer, 0, (size_t)pw * ph * 4);
 
-    /* 1. Main frosted glass panel (r=8, 65% white) */
+    /* 1. Main frosted glass panel */
     finn_frost_rrect(g_layer, pw, ph, g_lx0, g_ly0,
                      0.0f, 0.0f, (float)pw, (float)ph,
-                     s * MENU_R, FINN_GLASS, FINN_GLASS_PANEL);
+                     s * MENU_R, FINN_GLASS, MENU_GLASS);
+    finn_stroke_rrect(g_layer, pw, ph, 0.0f, 0.0f, (float)pw, (float)ph,
+                      s * MENU_R, 1.0f, FINN_HAIR);
 
     /* 2. Left Header: "Apps" + "View all" pill with chevron-right icon */
     float head_x = s * LEFT_PAD;
@@ -380,20 +399,21 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
                            chev_sz, FINN_DIM, FINN_DIM, 0);
     }
 
-    /* 3. Left App List — Settings is the single app */
+    /* 3. Left App List — every app the registry knows, installed or not */
     float row_y = s * APPLIST_Y;
     float row_step = s * (APP_ROW_H + APP_ROW_GAP);
     int icon_sz = rs(APP_ICON_SZ, s);
 
-    struct { const char *name; fsvg *ic; } def_apps[] = {
-        { "Settings", &g_ic_app_settings }
-    };
-    int n_display = 1;
-
     float hover_v = g_hover;
     float press_v = finn_anim_v(&g_a_press);
 
-    for (int i = 0; i < n_display && i < FINN_APP_MAX; i++) {
+    int n_rows = n;
+    if (n_rows > 8) n_rows = 8;   /* the list stops at the account row */
+
+    for (int i = 0; i < n_rows; i++) {
+        const finn_app *a = finn_apps_at(i);
+        if (!a) break;
+
         float ry = row_y + (float)i * row_step;
         g_r_app[i].x = rs(LEFT_PAD, s);
         g_r_app[i].y = (int)lroundf(ry);
@@ -408,28 +428,26 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
             control_wash_r(g_layer, pw, ph, g_r_app[i], s * (4.0f * REF),
                            FINN_MOTION_PRESS_WASH * press_v);
 
-        fsvg *ic = def_apps[0].ic;
-        const char *name = def_apps[0].name;
-
-        if (i < n) {
-            const finn_app *a = finn_apps_at(i);
-            if (a) {
-                name = a->name;
-                fsvg *reg_ic = icon_for(i, a);
-                if (reg_ic && reg_ic->vw > 0) ic = reg_ic;
-            }
-        }
-
-        if (ic && ic->vw > 0) {
+        fsvg *ic = icon_for(i, a);
+        if (!ic || ic->vw <= 0) ic = &g_ic_app_settings;
+        if (ic && ic->vw > 0)
             finn_icon_blit(ic, g_layer, pw, ph,
                            rs(LEFT_PAD, s), (int)lroundf(ry),
                            icon_sz, 0, 0, 0);
-        }
 
         float lcap = finn_text_cap_height(&g_f_label);
+        float ty = ry + (float)g_r_app[i].h * 0.5f + lcap * 0.45f;
         finn_text_draw(&g_f_label, g_layer, pw, ph,
-                       s * APP_TEXT_X, ry + (float)g_r_app[i].h * 0.5f + lcap * 0.45f,
-                       name, FINN_INK);
+                       s * APP_TEXT_X, ty, a->name,
+                       a->installed ? FINN_INK : FINN_DIM);
+
+        if (!a->installed) {
+            const char *tag = "Not installed";
+            float tw = finn_text_width(&g_f_micro, tag);
+            finn_text_draw(&g_f_micro, g_layer, pw, ph,
+                           s * (VIEWALL_X + VIEWALL_W) - s * 8.0f - tw,
+                           ty - lcap * 0.12f, tag, FINN_MUTE);
+        }
     }
 
     /* 4. Left Account Row */
@@ -501,12 +519,69 @@ void finnmenu_render(int screen_w, int screen_h, float scale,
                            btn_sz, FINN_INK, FINN_INK, 0);
     }
 
-    /* 5. Right White Panel (385x480 r=4.14, 85% white) */
+    /* 5. Right panel: the hovered application, at a glance. It is the one
+     * raised sheet in the menu, so it takes the tile weight over the panel. */
     float r_x = s * RIGHT_X, r_y = s * RIGHT_Y;
     float r_w = s * RIGHT_W, r_h = s * RIGHT_H;
     finn_frost_rrect(g_layer, pw, ph, g_lx0, g_ly0,
                      r_x, r_y, r_w, r_h, s * RIGHT_R,
                      FINN_GLASS, FINN_GLASS_TILE);
+    finn_stroke_rrect(g_layer, pw, ph, r_x, r_y, r_w, r_h, s * RIGHT_R,
+                      1.0f, FINN_HAIR);
+
+    const finn_app *sel = (g_hover_idx >= 0 && g_hover_idx < n)
+                        ? finn_apps_at(g_hover_idx) : NULL;
+    float rcx = r_x + r_w * 0.5f;
+
+    if (sel) {
+        fsvg *ic = icon_for(g_hover_idx, sel);
+        float big = s * 64.0f;
+        float by = r_y + r_h * 0.30f;
+        if (ic && ic->vw > 0) {
+            finn_icon_blit(ic, g_layer, pw, ph,
+                           (int)lroundf(rcx - big * 0.5f),
+                           (int)lroundf(by - big * 0.5f),
+                           (int)lroundf(big), 0, 0, 0);
+        } else {
+            finn_fill_rrect(g_layer, pw, ph, rcx - big * 0.5f, by - big * 0.5f,
+                            big, big, s * 14.0f, FINN_ON);
+        }
+
+        float nw = finn_text_width(&g_f_head, sel->name);
+        finn_text_draw(&g_f_head, g_layer, pw, ph, rcx - nw * 0.5f,
+                       by + big * 0.5f + s * 30.0f, sel->name, FINN_INK);
+
+        const char *note = sel->note[0] ? sel->note : "Application";
+        float nw2 = finn_text_width(&g_f_sub, note);
+        finn_text_draw(&g_f_sub, g_layer, pw, ph, rcx - nw2 * 0.5f,
+                       by + big * 0.5f + s * 48.0f, note, FINN_DIM);
+
+        /* The status is the registry's answer, not a guess. */
+        const char *status = sel->installed ? "Installed" : "Not installed";
+        uint32_t sc = sel->installed ? FINN_ON : FINN_MUTE;
+        float sw = finn_text_width(&g_f_sub, status);
+        float pill_w = sw + s * 22.0f, pill_h = s * 24.0f;
+        float pill_x = rcx - pill_w * 0.5f;
+        float pill_y = by + big * 0.5f + s * 66.0f;
+        finn_fill_rrect(g_layer, pw, ph, pill_x, pill_y, pill_w, pill_h,
+                        pill_h * 0.5f,
+                        sel->installed ? 0x1F006FFFu
+                                       : (finn_theme_dark() ? 0x1AFFFFFFu : 0x14000000u));
+        finn_text_draw(&g_f_sub, g_layer, pw, ph,
+                       pill_x + (pill_w - sw) * 0.5f,
+                       pill_y + pill_h * 0.5f + finn_text_cap_height(&g_f_sub) * 0.45f,
+                       status, sc);
+    } else {
+        float cap = finn_text_cap_height(&g_f_sub);
+        const char *l1 = "Choose an application";
+        const char *l2 = "Its details appear here.";
+        float w1 = finn_text_width(&g_f_sub, l1);
+        float w2 = finn_text_width(&g_f_micro, l2);
+        finn_text_draw(&g_f_sub, g_layer, pw, ph, rcx - w1 * 0.5f,
+                       r_y + r_h * 0.46f + cap, l1, FINN_DIM);
+        finn_text_draw(&g_f_micro, g_layer, pw, ph, rcx - w2 * 0.5f,
+                       r_y + r_h * 0.46f + cap + s * 22.0f, l2, FINN_MUTE);
+    }
 }
 
 void finnmenu_blit(uint32_t *dst, int dw, int dh, int dx, int dy) {

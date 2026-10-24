@@ -64,6 +64,7 @@
 #include "finnnotify.h"
 #include "finndraw.h"
 #include "finnblur.h"
+/* TEMP timing */
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnstate.h"
@@ -86,8 +87,8 @@
  * screen; these are composition, and live here because they are a relationship
  * between two surfaces rather than a property of either.
  */
-#define DOCK_SCALE   1.0f
-#define PANEL_SCALE  1.0f
+#define DOCK_SCALE   0.97f
+#define PANEL_SCALE  0.96f
 
 /*
  * The scrim behind the Start Menu. The desktop does not go away when the
@@ -915,10 +916,147 @@ static double finn_now(void) {
     return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
 }
 
+/*
+ * The desktop under the chrome: the wallpaper with every open window on it,
+ * in the places they are actually drawn. This is what a frosted surface
+ * samples, so the glass over a window shows that window's colour rather than
+ * the picture it hides.
+ *
+ * It lives here, in the compositor, because the compositor is the only part
+ * of the system that knows where the windows currently are: the window
+ * manager caches one layer and the transform is applied at composition time.
+ */
+static uint32_t *g_backdrop = NULL;
+static int g_backdrop_w = 0, g_backdrop_h = 0;
+
+/*
+ * The backdrop only has to be rebuilt when what it is a picture of moves: the
+ * window's layer revision, or where the transform puts it. Dock hovers, menu
+ * fades and a cursor crossing a panel are chrome-only frames — rebuilding
+ * four million pixel reads for them is what made the shell feel heavy.
+ */
+static unsigned g_scene_key = 0;
+static int g_scene_valid = 0;
+static int g_bd_had_win = 0;
+static int g_bd_rect[4] = {0, 0, 0, 0};
+
+/* Where the window layer lands this frame, clipped to the screen. Returns 0
+ * when no window is showing; r is x, y, w, h. */
+static int window_footprint(int w, int h, int r[4]) {
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    unsigned rev = 0;
+    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &rev);
+    if (!wl || ww <= 0 || wh <= 0) return 0;
+
+    float x = (float)wx, y = (float)wy, rw = (float)ww, rh = (float)wh, a = 1.0f;
+    finnwindow_transform(&x, &y, &rw, &rh, &a);
+    if (a <= 0.004f || rw < 1.0f || rh < 1.0f) return 0;
+
+    /* a cell of slack: a scaled blit can land a pixel outside the rect */
+    int x0 = (int)floorf(x) - 2, y0 = (int)floorf(y) - 2;
+    int x1 = (int)ceilf(x + rw) + 2, y1 = (int)ceilf(y + rh) + 2;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > w) x1 = w;
+    if (y1 > h) y1 = h;
+    if (x1 <= x0 || y1 <= y0) return 0;
+    r[0] = x0; r[1] = y0; r[2] = x1 - x0; r[3] = y1 - y0;
+    return 1;
+}
+
+static uint32_t scene_key(int w, int h) {
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    unsigned rev = 0;
+    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &rev);
+    float x = (float)wx, y = (float)wy, rw = (float)ww, rh = (float)wh, a = 1.0f;
+    if (wl) finnwindow_transform(&x, &y, &rw, &rh, &a);
+
+    uint32_t k = 2166136261u;
+#define MIX(v) do { k ^= (uint32_t)(v); k *= 16777619u; } while (0)
+    MIX(w); MIX(h); MIX(wl ? 1u : 0u); MIX(rev);
+    MIX((uint32_t)lroundf(x * 4.0f)); MIX((uint32_t)lroundf(y * 4.0f));
+    MIX((uint32_t)lroundf(rw * 4.0f)); MIX((uint32_t)lroundf(rh * 4.0f));
+    MIX((uint32_t)lroundf(a * 4000.0f));
+#undef MIX
+    return k ? k : 1u;
+}
+
+/*
+ * Paint the desktop under the chrome: the wallpaper, with the window in the
+ * place the transform currently puts it, over the rect (r) it occupies. Only
+ * that rect is touched, so the two full-screen copies this used to make per
+ * frame are gone.
+ */
+static void backdrop_paint(const uint32_t *wall, int w, int h, const int r[4]) {
+    if (!wall || !g_backdrop) return;
+    int rx = r[0], ry = r[1], rw = r[2], rh = r[3];
+    for (int y = ry; y < ry + rh; y++)
+        memcpy(g_backdrop + (size_t)y * w + rx,
+               wall + (size_t)y * w + rx, (size_t)rw * 4);
+
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    unsigned rev = 0;
+    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &rev);
+    if (wl && ww > 0 && wh > 0) {
+        float x = (float)wx, y = (float)wy, rw2 = (float)ww, rh2 = (float)wh, a = 1.0f;
+        finnwindow_transform(&x, &y, &rw2, &rh2, &a);
+        if (a > 0.004f)
+            finn_blit_scaled(g_backdrop, w, h, wl, ww, wh, x, y, rw2, rh2, a);
+    }
+}
+
+/*
+ * Bring the blurred backdrop up to date, doing only the work the change
+ * warrants: nothing when the scene is the same as last frame, the window's
+ * own rect when the window moved or redrew, and everything on a new geometry.
+ */
+static void backdrop_update(const uint32_t *wall, int w, int h) {
+    if (!wall || w <= 0 || h <= 0) return;
+
+    int r[4];
+    int has = window_footprint(w, h, r);
+
+    if (g_backdrop_w != w || g_backdrop_h != h || !g_backdrop) {
+        free(g_backdrop);
+        g_backdrop = malloc((size_t)w * h * 4);
+        g_backdrop_w = g_backdrop ? w : 0;
+        g_backdrop_h = g_backdrop ? h : 0;
+        g_scene_valid = 0;
+    }
+    if (!g_backdrop) return;
+
+    /* the old footprint has to go back to the wallpaper, and the new one has
+     * to be painted: one union rect covers both */
+    if (!has && !g_bd_had_win) {
+        /* nothing under the chrome but the wallpaper, and that is what the
+         * live backdrop already holds */
+        finnblur_reset();
+        return;
+    }
+    int u[4];
+    if (has) memcpy(u, r, sizeof u);
+    else     memcpy(u, g_bd_rect, sizeof u);
+    if (has && g_bd_had_win) {
+        int x0 = u[0], y0 = u[1], x1 = u[0] + u[2], y1 = u[1] + u[3];
+        if (g_bd_rect[0] < x0) x0 = g_bd_rect[0];
+        if (g_bd_rect[1] < y0) y0 = g_bd_rect[1];
+        if (g_bd_rect[0] + g_bd_rect[2] > x1) x1 = g_bd_rect[0] + g_bd_rect[2];
+        if (g_bd_rect[1] + g_bd_rect[3] > y1) y1 = g_bd_rect[1] + g_bd_rect[3];
+        u[0] = x0; u[1] = y0; u[2] = x1 - x0; u[3] = y1 - y0;
+    }
+
+    backdrop_paint(wall, w, h, u);
+    finnblur_live_rect(g_backdrop, w, h, u[0], u[1], u[2], u[3]);
+
+    if (has) memcpy(g_bd_rect, r, sizeof g_bd_rect);
+    g_bd_had_win = has;
+}
+
 /* Build the chrome layers for this frame. Both backends want these first —
  * the software one blits them into a buffer, the accelerated one uploads them
  * as textures — so the shell is rasterised exactly once either way. */
-static void build_chrome(int w, int h, float scale, const finn_state *st) {
+static void build_chrome(int w, int h, float scale, const finn_state *st,
+                         const uint32_t *wall) {
     finn_theme_set(st->dark);
 
     /*
@@ -946,13 +1084,53 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
     finndock_set_launcher_well(finnmenu_openness());
     finndock_set_apps_well(finnwindow_visible_count() > 0 ? 1.0f
                            : (finnwindow_count() > 0 ? 0.45f : 0.0f));
-    finndock_render(w, h, dock_scale, st);
+
+    /*
+     * The frosted surfaces blur what is behind them, and what is behind them
+     * is the desktop, not only the wallpaper: a menu over a window frosts that
+     * window. The backdrop is therefore a picture of the wallpaper plus the
+     * windows, kept up to date by the compositor, which is the only part of
+     * the system that knows where the windows are.
+     *
+     * Windows draw against it and bake themselves in as they go, so window two
+     * frosts window one. Everything above them — dock, Control Center, menu —
+     * frosts the desktop under its own rect.
+     */
+    int hide_chrome = finnsetup_is_open() || finnsetup_visible();
+    int win_showing = !hide_chrome &&
+                      (finnwindow_visible_count() > 0 || finnwindow_visible());
+
+    /*
+     * The backdrop has to be refreshed when the windows move, and only then:
+     * a frame whose only change is the dock's hover state leaves it alone.
+     * Rebuilding it for the chrome's own redraws was four million pixel reads
+     * a frame, which is what made hovering the shell feel heavy.
+     */
+    int scene_changed = !g_scene_valid || g_scene_key != scene_key(w, h);
+    if (hide_chrome) {
+        finnblur_reset();
+        g_scene_valid = 0;
+    } else if (scene_changed) {
+        /* A window frosts what is *under* it, so the windows themselves have
+         * to draw against the desktop before they are part of it. Without
+         * this reset the glass would sample its own picture back out of the
+         * backdrop and read as a pale ghost of itself. */
+        finnblur_reset();
+    }
 
     int dx, dy, dw, dh;
     finndock_geometry(&dx, &dy, &dw, &dh);
 
-    if (finnwindow_visible_count() > 0 || finnwindow_visible())
+    if (win_showing)
         finnwindow_render(w, h, dock_scale, dx, dy, dw, dh, st);
+
+    if (!hide_chrome && scene_changed) {
+        backdrop_update(wall, w, h);
+        g_scene_key = scene_key(w, h);
+        g_scene_valid = 1;
+    }
+
+    finndock_render(w, h, dock_scale, st);
 
     if (finncontrol_visible())
         finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
@@ -969,7 +1147,7 @@ static void build_chrome(int w, int h, float scale, const finn_state *st) {
 
 static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
                          float scale, const finn_state *st) {
-    build_chrome(w, h, scale, st);
+    build_chrome(w, h, scale, st, wall);
     memcpy(base, wall, (size_t)w * h * 4);
 
     int hide_chrome = finnsetup_is_open() || finnsetup_visible();
@@ -1065,8 +1243,9 @@ static unsigned gpu_upload(gpu_ctx *g, const uint32_t *px,
  * swap — the one moment it exists here. */
 static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
                           const finn_state *st, const finn_pointer *ptr,
+                          const uint32_t *wall,
                           float theme_t, uint32_t *shot, int *shot_ok) {
-    build_chrome(w, h, scale, st);
+    build_chrome(w, h, scale, st, wall);
 
     int wx = 0, wy = 0, ww = 0, wh = 0;
     unsigned wrev = 0;
@@ -1121,7 +1300,7 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
     if (stl) finnsetup_transform(&sux, &suy, &suw, &suh, &sua);
 
     int fading = theme_t < 0.999f && g->has_prev;
-    unsigned wall = g->tex_wall;
+    unsigned walltex = g->tex_wall;
 
     if (fading) {
         if (!g->fbo || g->fbo_w != w || g->fbo_h != h) {
@@ -1142,7 +1321,7 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
 
     if (fading && g->fbo) {
         finngpu_target(g->gpu, g->fbo);
-        finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        finngpu_paste(g->gpu, walltex, 0, 0, (float)w, (float)h, 1.0f);
         if (!hide_chrome && wl) finngpu_paste_dissolve(g->gpu, wtex, wtx, wty, wtw, wth, wta, wdust);
         if (!hide_chrome && vol) finngpu_paste_dissolve(g->gpu, vtex, vtx, vty, vtw, vth, vta, wdust);
         if (!hide_chrome && dl) finngpu_paste(g->gpu, dtex, (float)dx, (float)dy, (float)dw, (float)dh, 1.0f);
@@ -1151,7 +1330,7 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
         if (stl) finngpu_paste(g->gpu, sttex, sux, suy, suw, suh, sua);
         finngpu_target(g->gpu, 0);
 
-        finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        finngpu_paste(g->gpu, walltex, 0, 0, (float)w, (float)h, 1.0f);
         if (!hide_chrome && wl && g->tex_win_prev)
             finngpu_paste(g->gpu, g->tex_win_prev, wtx, wty, wtw, wth, wta);
         if (!hide_chrome && vol && g->tex_win_ovl_prev)
@@ -1167,7 +1346,7 @@ static uint32_t gpu_frame(gpu_ctx *g, int w, int h, float scale,
             finngpu_paste(g->gpu, g->tex_setup_prev, sux, suy, suw, suh, sua);
         finngpu_paste_raw(g->gpu, g->fbo_tex, 0, 0, (float)w, (float)h, theme_t);
     } else {
-        finngpu_paste(g->gpu, wall, 0, 0, (float)w, (float)h, 1.0f);
+        finngpu_paste(g->gpu, walltex, 0, 0, (float)w, (float)h, 1.0f);
         if (!hide_chrome && wl)
             finngpu_paste_dissolve(g->gpu, wtex, wtx, wty, wtw, wth, wta, wdust);
         if (!hide_chrome && vol)
@@ -1876,7 +2055,7 @@ int main(int argc, char **argv) {
      * From this point every frosted surface samples this instead of the
      * picture itself — see finnblur.h for why that is free per frame.
      */
-    finnblur_build(wall, w, h);
+    finnblur_wall(wall, w, h);
     BOOT_TO(82);
 
     /*
@@ -1996,7 +2175,7 @@ int main(int argc, char **argv) {
         finnboot_render(w, h, scale);
 
         if (gpu) {
-            uint32_t fbid = gpu_frame(&gx, w, h, scale, &st, &ptr, 1.0f, NULL, NULL);
+            uint32_t fbid = gpu_frame(&gx, w, h, scale, &st, &ptr, wall, 1.0f, NULL, NULL);
             if (fbid && display_flip(fbid) == 0) finngpu_release(gpu);
         } else {
             int next = cur ^ 1;
@@ -2025,7 +2204,7 @@ int main(int argc, char **argv) {
      * already showing the boot screen, and the desktop takes its place. */
     uint32_t first_fb;
     if (gpu) {
-        first_fb = gpu_frame(&gx, w, h, scale, &st, &ptr, 1.0f, NULL, NULL);
+        first_fb = gpu_frame(&gx, w, h, scale, &st, &ptr, wall, 1.0f, NULL, NULL);
         if (!first_fb) {
             fprintf(stderr, "finn-comp: the GPU produced no first frame\n");
             return 1;
@@ -2333,9 +2512,16 @@ int main(int argc, char **argv) {
              * materialised on the CPU at all */
             uint32_t *shot = cx.capture_fd >= 0 ? base : NULL;
             int shot_ok = 0;
-            uint32_t fbid = gpu_frame(&gx, w, h, scale, &st, &ptr,
+            double _t0 = finn_now();
+            uint32_t fbid = gpu_frame(&gx, w, h, scale, &st, &ptr, wall,
                                       finn_anim_v(&theme_fade), shot, &shot_ok);
+            double _t1 = finn_now();
             int landed = fbid ? display_flip(fbid) : -1;
+            double _t2 = finn_now();
+            if (access("/tmp/finn-timing", F_OK) == 0)
+                fprintf(stderr, "FRAME build=%.2f flip=%.2f dock=%u win=%u gen=%u\n",
+                        (_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0,
+                        gx.dock_rev, gx.win_rev, finnblur_generation());
 
             /* Only a frame that landed may release the buffer it replaced;
              * releasing one the display is still showing is how a recoverable

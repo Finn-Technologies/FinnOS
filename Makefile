@@ -55,11 +55,7 @@ install: all
 	install -d $(DESTDIR)/usr/share/finn
 	install -m644 assets/apps.registry $(DESTDIR)/usr/share/finn/apps.registry
 	install -d $(DESTDIR)/usr/share/finn/icons
-	@if [ -d assets/icons/shell ]; then \
-		install -m644 assets/icons/shell/*.svg $(DESTDIR)/usr/share/finn/icons/; \
-	else \
-		install -m644 src/compositor/icons/*.svg $(DESTDIR)/usr/share/finn/icons/; \
-	fi
+	install -m644 assets/icons/shell/*.svg assets/icons/apps/*.svg $(DESTDIR)/usr/share/finn/icons/
 	install -d $(DESTDIR)/usr/share/finn/wallpaper
 	install -m644 assets/wallpaper/default.webp assets/wallpaper/setup.webp $(DESTDIR)/usr/share/finn/wallpaper/
 	install -d $(DESTDIR)/usr/share/fonts/OTF

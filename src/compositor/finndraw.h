@@ -61,8 +61,8 @@ extern uint32_t FINN_GLASS;
  * inset tile in the shell shares these two weights so surfaces do not drift
  * apart in visual density.
  */
-#define FINN_GLASS_PANEL 0.65f
-#define FINN_GLASS_TILE  0.85f
+#define FINN_GLASS_PANEL 0.60f
+#define FINN_GLASS_TILE  0.90f
 
 void finn_theme_set(int dark);
 int  finn_theme_dark(void);
@@ -81,6 +81,23 @@ void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
                      float rw, float rh, float r, uint32_t c);
 
 /*
+ * A rounded-rect outline of `thickness`, anti-aliased by the same distance
+ * field as the fill. Surfaces use it for the one-pixel hairline that keeps a
+ * white tile from disappearing into a white panel.
+ */
+void finn_stroke_rrect(uint32_t *b, int w, int h, float x, float y,
+                       float rw, float rh, float r, float thickness, uint32_t c);
+
+/*
+ * A progress fill: rounded on its left end, square on its right. The right
+ * edge is where the level currently is, with the unfilled track continuing
+ * past it, so a round cap there would read as the end of the bar rather than
+ * as a point along it.
+ */
+void finn_fill_bar(uint32_t *b, int w, int h, float x, float y,
+                   float rw, float rh, float r, uint32_t c);
+
+/*
  * Fill a rounded rect with the blurred backdrop tinted by `tint`.
  * (ox,oy) is the layer's origin on screen, so the glass is sampled from the
  * wallpaper actually underneath this rect — a frosted surface that samples
@@ -96,6 +113,37 @@ void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
 void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
                       float x, float y, float rw, float rh, float r,
                       uint32_t tint, float alpha);
+
+/*
+ * A glass plate kept between rasters.
+ *
+ * A window that redraws its contents redraws its frost with them, and the
+ * frost is the most expensive thing on the surface: a maximized window is
+ * several million backdrop samples. The plate is that result, parked. When
+ * nothing it depends on has moved — the backdrop generation, the theme, the
+ * rect, the tint — putting it back is one copy instead of all that sampling.
+ *
+ * The plate is the frost over nothing, so the destination rect must still be
+ * untouched: callers use it on a freshly cleared layer, which is what a
+ * surface's first glass always is. One plate per surface; a shared one across
+ * windows would miss every time and pay the copy for nothing.
+ */
+typedef struct {
+    uint32_t *px;
+    int w, h, ox, oy;
+    float x, y, rw, rh, r;
+    uint32_t tint;
+    float alpha;
+    unsigned gen;
+    int dark, ready, valid;
+} finn_frost_plate;
+
+void finn_frost_plate_free(finn_frost_plate *p);
+
+void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
+                            int ox, int oy,
+                            float x, float y, float rw, float rh, float r,
+                            uint32_t tint, float alpha);
 
 /* Blend src over dst at (dx,dy), skipping fully transparent source pixels. */
 void finn_blit(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh,

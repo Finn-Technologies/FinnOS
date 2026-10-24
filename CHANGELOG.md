@@ -5,6 +5,59 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Settings that are the Figma frame, and glass that knows what is behind it
+
+- **Every surface frosts the desktop, not the wallpaper.** `finnblur` now
+  keeps a live, blurred copy of what the compositor has actually drawn —
+  windows included — and every frosted rect samples it. A window opened over
+  another window shows the one underneath through its glass; the Start Menu
+  over a window shows that window; the dock shows whatever it is docked over.
+  The blur is built at 1/8 scale with three 2px box passes and is rebuilt only
+  when the desktop under it changes, so an idle shell still costs nothing.
+- **Settings is drawn in the frame's own units.** The app's layout is the
+  900x500 frame, and `ui_scale()` maps one design unit onto the compositor's
+  pixels at a fixed ratio, so a 250px sidebar is 28% of the window and a 13px
+  label is a 13px label. Previously the sidebar took 34% of the window while
+  its contents were drawn at 78% — some things too big, some too small, and a
+  fifth of the content column unused.
+- **A maximised window gets more room, not larger text.** The scale no longer
+  follows the window's current width: maximising keeps every size and lets
+  the content column grow to 780 design units and stop, left-aligned under the
+  sidebar, instead of zooming the whole page off the screen.
+- **The clock pill is only as wide as the clock.** It is authored 139 wide to
+  hold time and weather; on a machine with no weather source that second half
+  was empty air beside the time. The pill now measures its own text when
+  `read_weather()` finds nothing, and goes back to 139 the moment a source
+  appears — the width is part of the dock's build key.
+- **The titles came down and up a size.** "Settings" and the page's own title
+  share one baseline at 60, a size above the frame's 16, and the rows sit on a
+  36px pitch instead of 40 — the frame's airiness at the frame's width, not at
+  a window's worth of empty space. Card heights follow their rows.
+- **One sheet, three depths.** The sidebar is the body glass laid down at 92%,
+  a card is the body at 72% with a hairline, and the page behind them is the
+  window's own 62%. The sidebar no longer paints itself opaque white over
+  glass, which is what made the window read as two windows.
+- **Cards have a rhythm.** Every page is a column of cards on the same grid:
+  a 10px caption at 22, rows 38 tall with their value flush right, a hairline
+  inset by the card's padding, and a quiet well for the sentence a page has
+  instead when there is nothing to list. Wi-Fi and Bluetooth gained an
+  interface/controller card that reports the device the compositor actually
+  found, and About's system card uses the same rows.
+- **The sidebar is the frame's sidebar.** 250 wide, the 17px title at 15,42,
+  a 30px search field with the magnifier at its left, 18px circular accent
+  chips, 32px rows on a 40px pitch, and group captions 18 above their first
+  row. Wider than the frame's own spacing, because the frame is drawn at 1280
+  and the window renders at 0.9 of it.
+- **Focus is visible.** The search field keeps the accent ring while it holds
+  the caret, so a click that lands in it says so.
+- **The Start Menu is a sheet of paper.** Its panel is 84% rather than the
+  shell's 60%: over a window, 60% let the window's labels read through the
+  menu. The blur still comes through; the text does not.
+- **Finn Files uses the asset that was drawn for it.** `assets/icons/apps/files.svg`
+  is the file manager's icon in the dock and the menu, and every icon the
+  shell draws now lives under `assets/icons/` — `shell/` for the chrome,
+  `apps/` for applications — installed flat into `/usr/share/finn/icons`.
+
 ### A window that closes is a window that dissolves
 
 - **Close no longer animates an empty layer.** The 180ms close track dissolved

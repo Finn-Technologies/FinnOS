@@ -1,6 +1,7 @@
 /* finnclock — the FinnOS Notification Center & clock page (Figma 13:31, 13:129). */
 #include "finnclock.h"
 #include "finndock.h"
+#include "finnblur.h"
 #include "finndraw.h"
 #include "finntext.h"
 #include "finnanim.h"
@@ -252,6 +253,7 @@ static uint32_t build_key(float s, int pw, int ph,
     MIX((int)(g_hover * 64.0f));
     MIX((int)(g_tick * 64.0f));
     MIX((int)(g_note * 64.0f));
+    MIX(finnblur_generation());
     time_t t = time(NULL);
     struct tm tm; localtime_r(&t, &tm);
     MIX(tm.tm_min); MIX(tm.tm_hour); MIX(tm.tm_mday); MIX(tm.tm_mon); MIX(tm.tm_year);

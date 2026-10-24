@@ -115,6 +115,45 @@ void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
     }
 }
 
+void finn_fill_bar(uint32_t *b, int w, int h, float x, float y,
+                   float rw, float rh, float r, uint32_t c) {
+    if (rw <= 0.0f || rh <= 0.0f) return;
+    if (r > rw * 0.5f) r = rw * 0.5f;
+    if (r > rh * 0.5f) r = rh * 0.5f;
+    finn_fill_rrect(b, w, h, x, y, rw, rh, r, c);
+    /* Replace the right cap with the square edge it should have had. */
+    if (r > 0.0f && rw > r)
+        finn_fill_rrect(b, w, h, x + rw - r, y, r, rh, 0.0f, c);
+}
+
+void finn_stroke_rrect(uint32_t *b, int w, int h, float x, float y,
+                       float rw, float rh, float r, float thickness, uint32_t c) {
+    if (rw <= 0.0f || rh <= 0.0f) return;
+    if (r > rw * 0.5f) r = rw * 0.5f;
+    if (r > rh * 0.5f) r = rh * 0.5f;
+    if (thickness < 0.5f) thickness = 0.5f;
+
+    int x0 = (int)floorf(x - thickness - 1);
+    int x1 = (int)ceilf(x + rw + thickness + 1);
+    int y0 = (int)floorf(y - thickness - 1);
+    int y1 = (int)ceilf(y + rh + thickness + 1);
+
+    float cx = x + rw * 0.5f, cy = y + rh * 0.5f, hw = rw * 0.5f, hh = rh * 0.5f;
+    float half_th = thickness * 0.5f;
+
+    for (int yy = y0; yy <= y1; yy++) {
+        if (yy < 0 || yy >= h) continue;
+        for (int xx = x0; xx <= x1; xx++) {
+            if (xx < 0 || xx >= w) continue;
+            float d = fabsf(sdf_rrect(xx + 0.5f, yy + 0.5f, cx, cy, hw, hh, r)) - half_th;
+            float a = 0.5f - d;
+            if (a <= 0.0f) continue;
+            if (a > 1.0f) a = 1.0f;
+            b[(size_t)yy * w + xx] = finn_over(b[(size_t)yy * w + xx], c, a);
+        }
+    }
+}
+
 void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
                       float x, float y, float rw, float rh, float r,
                       uint32_t tint, float alpha) {
@@ -182,7 +221,25 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
              */
             size_t idx = (size_t)yy * w + xx;
             uint32_t d = b[idx];
-            uint32_t base = (d >> 24) ? d : finnblur_at(ox + xx, oy + yy);
+            int over_glass = (d >> 24) != 0;
+            uint32_t base = over_glass ? d : finnblur_at(ox + xx, oy + yy);
+
+            /*
+             * A dark material darkens what it covers before it tints it. A
+             * 0.6 tint of #23262E over a bright wallpaper comes out a washed
+             * grey — glass in daylight rather than glass at night — because
+             * the 40% that is not tint is still the full brightness of the
+             * picture. The first pass over the desktop therefore drops the
+             * backdrop's level first. Later passes (a card on a window, a
+             * tile on a panel) are already over glass and are left alone, so
+             * elevation keeps adding rather than compounding the darkening.
+             */
+            if (g_dark && !over_glass) {
+                base = 0xFF000000u |
+                       ((uint32_t)((float)((base >> 16) & 0xFFu) * 0.66f) << 16) |
+                       ((uint32_t)((float)((base >> 8) & 0xFFu) * 0.66f) << 8) |
+                       (uint32_t)((float)(base & 0xFFu) * 0.66f);
+            }
 
             /* Per-channel mix toward the tint. The mixed colour is opaque:
              * the tint's own alpha is not part of the mix, because the
@@ -203,6 +260,71 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
             if (cov <= 0.0f) continue;
             b[idx] = finn_over(d, c, cov);
         }
+    }
+}
+
+void finn_frost_plate_free(finn_frost_plate *p) {
+    if (!p) return;
+    free(p->px);
+    p->px = NULL;
+    p->valid = 0;
+}
+
+/*
+ * The frost, remembered. See the header for why a surface wants this: the
+ * frost is the most expensive thing a window does, and a window that redraws
+ * its own contents asks for the same frost it asked for a keystroke ago.
+ */
+void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
+                            int ox, int oy,
+                            float x, float y, float rw, float rh, float r,
+                            uint32_t tint, float alpha) {
+    if (!p) { finn_frost_rrect(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha); return; }
+
+    /* the same conservative bounds finn_frost_rrect writes */
+    int px0 = (int)floorf(x - 1), px1 = (int)ceilf(x + rw + 1);
+    int py0 = (int)floorf(y - 1), py1 = (int)ceilf(y + rh + 1);
+    if (px0 < 0) px0 = 0;
+    if (py0 < 0) py0 = 0;
+    if (px1 >= w) px1 = w - 1;
+    if (py1 >= h) py1 = h - 1;
+    int pw = px1 - px0 + 1, ph = py1 - py0 + 1;
+    if (pw <= 0 || ph <= 0) return;
+
+    int dark = g_dark, ready = finnblur_ready();
+    unsigned gen = ready ? finnblur_generation() : 0;
+
+    int hit = p->valid && p->px && p->w == pw && p->h == ph &&
+              p->ox == ox && p->oy == oy &&
+              p->x == x && p->y == y && p->rw == rw && p->rh == rh && p->r == r &&
+              p->tint == tint && p->alpha == alpha &&
+              p->gen == gen && p->dark == dark && p->ready == ready;
+
+    if (hit) {
+        for (int row = 0; row < ph; row++)
+            memcpy(b + (size_t)(py0 + row) * w + px0,
+                   p->px + (size_t)row * pw, (size_t)pw * 4);
+        return;
+    }
+
+    finn_frost_rrect(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha);
+
+    if (!p->px || p->w != pw || p->h != ph) {
+        free(p->px);
+        p->px = malloc((size_t)pw * ph * 4);
+        p->w = p->px ? pw : 0;
+        p->h = p->px ? ph : 0;
+        p->valid = 0;
+    }
+    if (p->px) {
+        for (int row = 0; row < ph; row++)
+            memcpy(p->px + (size_t)row * pw, b + (size_t)(py0 + row) * w + px0,
+                   (size_t)pw * 4);
+        p->ox = ox; p->oy = oy;
+        p->x = x; p->y = y; p->rw = rw; p->rh = rh; p->r = r;
+        p->tint = tint; p->alpha = alpha;
+        p->gen = gen; p->dark = dark; p->ready = ready;
+        p->valid = 1;
     }
 }
 

@@ -8,6 +8,7 @@
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnapps.h"
+#include "finnblur.h"
 #include "finnvg.h"
 
 #include <stdio.h>
@@ -47,8 +48,8 @@
  * with the glass gone out of it, which is what a sticker looks like next to a
  * window.
  */
-#define WIN_FROST       0.70f
-#define OPT_FROST       0.50f
+#define WIN_FROST       0.60f
+#define OPT_FROST       0.42f
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -185,6 +186,14 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
     finnsettingsapp_init(g_icon_dir, g_font_dir);
     return ok ? 0 : -1;
 }
+
+/*
+ * One glass plate per window slot: a window that redraws its contents (a
+ * keystroke in the search field, a page change) asks for the same frost over
+ * and over, and on a maximized window that frost is millions of backdrop
+ * samples. The plate is that work parked between rasters.
+ */
+static finn_frost_plate g_body_plate[FINNWINDOW_MAX];
 
 void finnwindow_free(void) {
     finnsettingsapp_free();
@@ -398,8 +407,8 @@ int finnwindow_open(const char *arg) {
     if (g_n_wins >= FINNWINDOW_MAX) return FINNWINDOW_ERR_LIMIT;
 
     int is_settings = (strcasecmp(app_id, "settings") == 0 || strcasecmp(title, "Settings") == 0);
-    int ww = is_settings ? rs(900.0f * REF, g_scale) : rs(WIN_DEF_W, g_scale);
-    int wh = is_settings ? rs(500.0f * REF, g_scale) : rs(WIN_DEF_H, g_scale);
+    int ww = is_settings ? rs(860.0f * REF, g_scale) : rs(WIN_DEF_W, g_scale);
+    int wh = is_settings ? rs(480.0f * REF, g_scale) : rs(WIN_DEF_H, g_scale);
     if (ww < 300) { ww = is_settings ? 1168 : 649; wh = is_settings ? 649 : 389; }
 
     /* Center exactly as in Figma 12:2 (with slight cascade when multiple windows are open) */
@@ -1122,6 +1131,16 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
 
         memset(g_layer, 0, (size_t)lw * (size_t)lh * 4);
 
+        /*
+         * A window frosts what is under it, and what is under it is the
+         * desktop — not the desktop with this same window already on it. The
+         * backdrop is put back to the surfaces drawn so far before anything
+         * is rastered, or the glass samples its own picture back out and the
+         * window reads as a pale ghost of itself. Each window then bakes
+         * itself in below, so the next one in z-order frosts this one.
+         */
+        finnblur_reset();
+
         float s = scale;
 
         for (int i = 0; i < g_n_wins; i++) {
@@ -1136,9 +1155,11 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
              * corners to round: a rounded corner there would leave a sliver of
              * wallpaper between the window and the dock's bar. */
             float body_r = w->maximized ? 0.0f : s * WIN_R;
-            finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
-                             (float)wx, (float)wy, (float)w->w, (float)w->h,
-                             body_r, FINN_GLASS, WIN_FROST);
+            finn_frost_rrect_plate(&g_body_plate[i], g_layer, lw, lh, g_lx0, g_ly0,
+                                   (float)wx, (float)wy, (float)w->w, (float)w->h,
+                                   body_r, FINN_GLASS, WIN_FROST);
+            finn_stroke_rrect(g_layer, lw, lh, (float)wx, (float)wy,
+                              (float)w->w, (float)w->h, body_r, 1.0f, FINN_HAIR);
 
             /* Top-right Window Options pill (Figma 14:237: 72x24 r=4.14,
              * inset 10, frost 0.50) */
@@ -1150,6 +1171,8 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
                              (float)ox, (float)oy, (float)ow, (float)oh,
                              s * OPT_R, FINN_GLASS, OPT_FROST);
+            finn_stroke_rrect(g_layer, lw, lh, (float)ox, (float)oy,
+                              (float)ow, (float)oh, s * OPT_R, 1.0f, FINN_HAIR);
 
             /* Icon centres inside the 72x24 pill (Figma 14:238/240/242:
              * 15.43px boxes at 12, 36 and 60 from the pill's left edge) */
@@ -1183,6 +1206,16 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                                (float)wy + (float)w->h * 0.5f + cap * 0.5f,
                                label, col);
             }
+
+            /*
+             * The window is drawn, so it is now part of what is behind the
+             * next one. Baking it here — window by window, in z-order — is
+             * what lets a window frost another window instead of frosting
+             * the wallpaper through it. The body is opaque over its whole
+             * rect, so the blur can read the layer directly.
+             */
+            finnblur_patch(g_layer, lw, lh, g_lx0, g_ly0,
+                           w->x, w->y, w->w, w->h);
         }
     }
 

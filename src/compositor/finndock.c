@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "finndock.h"
 #include "finndraw.h"
+#include "finnblur.h"
 #include "finntext.h"
 #include "finnanim.h"
 #include "finnmotion.h"
@@ -22,7 +23,9 @@
  * 4 floating pills at rest:
  *   1. Taskbar (Apps):    w=42, h=42, r=8 (Settings chip 26x26 at x=8, running bg 34x34 r=4, indicator 4x0)
  *   2. Navigation:        w=116, h=42, r=8 (search x=10, home x=47, windows x=84)
- *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px at x=10, real weather if present)
+ *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px at x=10, real weather if present).
+ *                         Without a weather source the pill is the clock's own
+ *                         width, so the half that would have held it is not air.
  *   4. Status / Tray:     w=116, h=42, r=8 (volume x=10, wifi x=47, battery x=84)
  *
  * Gaps between pills: 15 design px (30px at 2x).
@@ -410,9 +413,22 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     float gap = (DOCK_GAP * (1.0f - sink) + DOCK_GAP_SUNK * sink) * u;
     float bottom_m = (DOCK_BOTTOM * (1.0f - sink)) * u;
 
+    /*
+     * The clock pill is authored 139 wide because it holds time and weather.
+     * A machine with no weather source has no second half to hold, and the
+     * space it would have used reads as a gap: the pill is then the clock's
+     * own width, with the same 10 left inset and a 12 right one.
+     */
+    char clock_s[8];
+    int minute = clock_minute_now(clock_s, sizeof clock_s);
+    char wtemp[16] = {0}, wcond[32] = {0};
+    int have_weather = read_weather(wtemp, sizeof wtemp, wcond, sizeof wcond);
+
     float p1_w = PILL1_W * u;
     float p2_w = PILL2_W * u;
     float p3_w = PILL3_W * u;
+    if (!have_weather && g_font.face)
+        p3_w = (22.0f * u) + finn_text_width(&g_font, clock_s);
     float p4_w = PILL4_W * u;
 
     float p2_x = ((float)screen_w - p2_w) * 0.5f;
@@ -453,8 +469,6 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     g_p_y = (int)lroundf(y0);
     g_p_h = (int)lroundf(dh);
 
-    char clock_s[8];
-    int minute = clock_minute_now(clock_s, sizeof clock_s);
     g_clock_min = minute;
 
     uint32_t key = 2166136261u;
@@ -463,7 +477,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX(st->wifi + 2); MIX(st->battery_pct + 2); MIX(st->charging + 2);
     MIX(st->volume + 2); MIX(st->dark + 2);
     MIX(g_pressed);
-    MIX(minute);
+    MIX(minute); MIX(have_weather);
     MIX((int)(sink * 512.0f));
     MIX((int)(g_well * 64.0f));
     MIX((int)(g_well_clock * 64.0f));
@@ -476,6 +490,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX((int)(g_hover_c * 64.0f));
     MIX((int)(g_hover_t * 64.0f));
     MIX((int)(finn_anim_v(&g_a_press) * 512.0f));
+    /* the glass is the desktop under it: when that moves, this redraws */
+    MIX(finnblur_generation());
     #undef MIX
 
     if (g_dock_built && key == g_dock_key && g_layer) { g_visible = 1; return; }
@@ -499,6 +515,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
         finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                          bar_x - lx, by, bar_w, dh, bar_r,
                          FINN_GLASS, GLASS_BAR * sink);
+        finn_stroke_rrect(g_layer, lw, lh, bar_x - lx, by, bar_w, dh,
+                          bar_r, 1.0f, FINN_HAIR);
     }
 
     /* ---------------- PILL 1: Apps / Taskbar ---------------- */
@@ -508,6 +526,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p1_bx, by, p1_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
+            finn_stroke_rrect(g_layer, lw, lh, p1_bx, by, p1_w, dh, dr,
+                              1.0f, FINN_HAIR);
         }
 
         /* Running app highlight on Settings when window exists (Figma 14:317) */
@@ -548,6 +568,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p2_bx, by, p2_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
+            finn_stroke_rrect(g_layer, lw, lh, p2_bx, by, p2_w, dh, dr,
+                              1.0f, FINN_HAIR);
         }
 
         /* Active Home well when Start Menu is open (Figma 4:191) */
@@ -595,6 +617,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p3_bx, by, p3_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
+            finn_stroke_rrect(g_layer, lw, lh, p3_bx, by, p3_w, dh, dr,
+                              1.0f, FINN_HAIR);
         }
 
         /* Active well when Notification Center / Clock page is open */
@@ -619,8 +643,9 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
         }
 
         /* Weather text & icon (only when a real weather source exists — never fake) */
-        char temp_s[16] = {0}, cond_s[32] = {0};
-        if (read_weather(temp_s, sizeof temp_s, cond_s, sizeof cond_s)) {
+        if (have_weather) {
+            const char *temp_s = wtemp;
+            const char *cond_s = wcond;
             if (g_ic_sun_weather.vw > 0) {
                 int sun_sz = rs(24.0f, u);
                 float sun_y = by + 9.0f * u;
@@ -646,6 +671,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p4_bx, by, p4_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
+            finn_stroke_rrect(g_layer, lw, lh, p4_bx, by, p4_w, dh, dr,
+                              1.0f, FINN_HAIR);
         }
 
         /* White active well chip behind icons when Control Center is open (Figma 9:64) */

@@ -44,34 +44,41 @@ static int count_nonzero_pixels(const uint32_t *buf, int count) {
 static void test_icon_set(void) {
     static const char *icons[] = {
         "avatar", "battery", "bluetooth", "boot-mark", "chevron-right",
-        "cursor", "edit-01", "expand", "home-09", "minus-sign",
-        "power", "refresh", "search-01", "settings-02", "settings-app",
+        "cursor", "display", "edit-01", "expand", "home-09", "minus-sign",
+        "moon", "power", "refresh", "search-01", "settings-02",
         "sun-01", "sun-03", "view-open-windows", "volume-02", "wifi-02",
         "x"
     };
+    static const char *app_icons[] = { "settings-app", "files" };
     const int num_icons = (int)(sizeof(icons) / sizeof(icons[0]));
+    const int num_app_icons = (int)(sizeof(app_icons) / sizeof(app_icons[0]));
 
     char path[256];
     uint32_t buf[64 * 64];
     uint32_t ink = 0xFFFFFFFFu;
 
-    for (int i = 0; i < num_icons; i++) {
-        snprintf(path, sizeof(path), "../../src/compositor/icons/%s.svg", icons[i]);
+    for (int i = 0; i < num_icons + num_app_icons; i++) {
+        const int app = i >= num_icons;
+        const char *name = app ? app_icons[i - num_icons] : icons[i];
+        snprintf(path, sizeof(path), "../../assets/icons/%s/%s.svg",
+                 app ? "apps" : "shell", name);
+        const char **icons = app ? app_icons : NULL; /* keeps the name handy */
+        (void)icons;
         fsvg svg;
         int err = fsvg_load(path, &svg);
         char msg[128];
-        snprintf(msg, sizeof(msg), "load %s.svg", icons[i]);
+        snprintf(msg, sizeof(msg), "load %s.svg", name);
         ok(msg, err == 0 && svg.n > 0);
 
         memset(buf, 0, sizeof(buf));
         fsvg_raster(&svg, buf, 64, 64, fsvg_mono, &ink);
         int nz = count_nonzero_pixels(buf, 64 * 64);
-        snprintf(msg, sizeof(msg), "raster %s.svg non-empty (%d px)", icons[i], nz);
+        snprintf(msg, sizeof(msg), "raster %s.svg non-empty (%d px)", name, nz);
         ok(msg, nz > 0);
 
         float x0, y0, x1, y1;
         fsvg_ink(&svg, &x0, &y0, &x1, &y1);
-        snprintf(msg, sizeof(msg), "ink bbox %s.svg valid", icons[i]);
+        snprintf(msg, sizeof(msg), "ink bbox %s.svg valid", name);
         ok(msg, x1 > x0 && y1 > y0);
 
         fsvg_free(&svg);
@@ -80,7 +87,7 @@ static void test_icon_set(void) {
 
 static void test_wifi_subpaths(void) {
     fsvg svg;
-    int err = fsvg_load("../../src/compositor/icons/wifi-02.svg", &svg);
+    int err = fsvg_load("../../assets/icons/shell/wifi-02.svg", &svg);
     ok("wifi-02 loads for subpath testing", err == 0);
     if (err != 0) return;
 
@@ -115,7 +122,7 @@ static void test_wifi_subpaths(void) {
 
 static void test_battery_clip_x(void) {
     fsvg svg;
-    int err = fsvg_load("../../src/compositor/icons/battery.svg", &svg);
+    int err = fsvg_load("../../assets/icons/shell/battery.svg", &svg);
     ok("battery loads for clip_x testing", err == 0);
     if (err != 0) return;
 

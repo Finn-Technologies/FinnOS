@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "finnsetup.h"
 #include "finndraw.h"
+#include "finnblur.h"
 #include "finntext.h"
 #include "finnanim.h"
 #include "finnmotion.h"
@@ -455,6 +456,7 @@ static uint32_t build_key(int sw, int sh, float s, const finn_state *st) {
     MIX((int)(g_hover * 64.0f));
     MIX(g_press_act);
     MIX((int)(finn_anim_v(&g_a_press) * 256.0f));
+    MIX(finnblur_generation());
     #undef MIX
     return h ? h : 1u;
 }

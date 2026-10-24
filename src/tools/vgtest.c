@@ -7,7 +7,7 @@
  * the same bone the dock sits on.
  *
  *   make -C src/tools vgtest
- *   ./vgtest ../compositor/icons sheet.ppm
+ *   ./vgtest ../../assets/icons/shell sheet.ppm
  */
 #include "finnvg.c"
 
@@ -52,7 +52,7 @@ static void draw_one(uint32_t *buf, int W, const char *path, int S,
 }
 
 int main(int argc, char **argv) {
-    const char *dir = (argc > 1) ? argv[1] : "../compositor/icons";
+    const char *dir = (argc > 1) ? argv[1] : "../../assets/icons/shell";
     const char *out = (argc > 2) ? argv[2] : "sheet.ppm";
     int S = (argc > 3) ? atoi(argv[3]) : 2;
     if (S < 1) S = 1;
