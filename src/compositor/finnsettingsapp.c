@@ -30,6 +30,8 @@
 #include "finnanim.h"
 #include "finnmotion.h"
 #include "finnaudio.h"
+#include "finnproto.h"
+#include "finnsock.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -465,6 +467,16 @@ static void content_box(int wx, int ww, float s, float *cx, float *cw) {
     if (avail < w) w = avail;
     *cx = (float)wx + sb_w + pad;
     *cw = w;
+}
+
+static void page_update(uint32_t *L, int lw, int lh, int lx0, int ly0, float cx, float card_y, float cw, float s, const finn_state *st) {
+    (void)st;
+    float r = s * 10.0f;
+    float c1_h = s * 132.0f;
+    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, c1_h, r, CARD_GLASS, 0);
+    card_head(L, lw, lh, cx, card_y, "VERSION", s);
+    card_row(L, lw, lh, cx, card_y + s * 38.0f, cw, "FinnOS", "0.1", s);
+    pill_button(L, lw, lh, cx + s * CARD_PAD, card_y + s * 80.0f, s * 160.0f, s * 28.0f, "Check for updates", &g_f_label, 1, 1);
 }
 
 /* ---------------- rendering ---------------- */
@@ -1067,6 +1079,7 @@ void finnsettingsapp_render(uint32_t *layer, int lw, int lh,
     case 2: page_display(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
     case 3: page_sound(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
     case 4: page_power(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
+    case 6: page_update(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
     default: page_about(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
     }
 }
@@ -1124,6 +1137,18 @@ static void mute_rect(int wx, int wy, int ww, float s,
     if (bx) *bx = cx + s * CARD_PAD;
     if (by) *by = card_y + s * 80.0f;
     if (bw) *bw = s * 72.0f;
+    if (bh) *bh = s * 28.0f;
+}
+
+static void update_check_rect(int wx, int wy, int ww, float s,
+                      float *bx, float *by, float *bw, float *bh) {
+    float cx, cw;
+    content_box(wx, ww, s, &cx, &cw);
+    (void)cw;
+    float card_y = (float)wy + s * CARD_TOP;
+    if (bx) *bx = cx + s * CARD_PAD;
+    if (by) *by = card_y + s * 80.0f;
+    if (bw) *bw = s * 160.0f;
     if (bh) *bh = s * 28.0f;
 }
 
@@ -1190,6 +1215,9 @@ int finnsettingsapp_hit(int wx, int wy, int ww, int wh, int px, int py,
         if (in_box(px, py, bx, by, bw, bh)) return FINNSETTINGS_HIT_VOL_SLIDER;
         mute_rect(wx, wy, ww, s, &bx, &by, &bw, &bh);
         if (in_box(px, py, bx, by, bw, bh)) return FINNSETTINGS_HIT_MUTE_TOGGLE;
+    } else if (g_active_page == 6) {
+        update_check_rect(wx, wy, ww, s, &bx, &by, &bw, &bh);
+        if (in_box(px, py, bx, by, bw, bh)) return FINNSETTINGS_HIT_UPDATE_CHECK;
     }
 
     return FINNSETTINGS_HIT_BODY;
@@ -1247,6 +1275,12 @@ void finnsettingsapp_press(int hit, int sub, int px, int py, float scale,
         } else {
             finn_state_set_volume(g_prev_volume > 0 ? g_prev_volume : 50);
         }
+        return;
+    }
+
+    if (hit == FINNSETTINGS_HIT_UPDATE_CHECK) {
+        char reply[256] = "";
+        finn_call(FINN_CONTROL_SOCK, "system.update.check", reply, (int)sizeof reply);
         return;
     }
 }

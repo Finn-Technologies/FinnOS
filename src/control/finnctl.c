@@ -48,6 +48,7 @@ static void usage(void) {
             "       window.get window.move window.resize window.snap\n"
             "       setup.get setup.show setup.complete\n"
             "       settings.page settings.get\n"
+            "       system.update.check\n"
             "       key.press key.release key.tap\n"
             "\n"
             "  notify.post takes one argument: '<title>|<body>'\n"

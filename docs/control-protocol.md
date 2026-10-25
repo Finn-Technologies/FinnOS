@@ -272,6 +272,12 @@ only — there is no locale or keymap consumer yet.
 client                     finnd                      finn-comp
   |  state.get                |                           |
   |-------------------------->|  (answered here)          |
+### System update
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `system.update.check` | `ERR not implemented` | OTA update check (not implemented yet) |
+
   |  OK battery=87 ...        |                           |
   |<--------------------------|                           |
   |  screen.capture           |                           |

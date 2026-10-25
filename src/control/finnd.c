@@ -689,6 +689,11 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
         return result;
     }
 
+    if (!strcmp(verb, "system.update.check")) {
+        finn_write_str(fd, "ERR not implemented\n");
+        return "ERR not implemented";
+    }
+
     finn_write_str(fd, "ERR unknown verb\n");
     return "ERR unknown";
 }
