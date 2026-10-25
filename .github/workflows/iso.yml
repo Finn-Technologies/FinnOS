@@ -112,7 +112,7 @@ jobs:
               exit 1
             }
           done
-          unsquashfs -q -d /tmp/live /tmp/airootfs.sfs \
+          unsquashfs -d /tmp/live /tmp/airootfs.sfs \
             opt/finnos/vm/finn-install.sh \
             opt/finnos/vm/finn-chroot.sh \
             opt/finnos/base/mkfinniso \
