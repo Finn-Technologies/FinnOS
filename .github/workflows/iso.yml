@@ -10,6 +10,12 @@ on:
   push:
     tags: ['v*']
 
+# The ISO is the thing the USB stick is written from, so a tag publishes
+# it to the same GitHub Release the runtime package goes to. The OTA
+# frontend reads that release; the OptiPlex install reads this asset.
+permissions:
+  contents: write
+
 jobs:
   base:
     name: the base tree
@@ -85,13 +91,30 @@ jobs:
           xorriso -osirrox on -indev finnos.iso \
             -extract /finn/x86_64/airootfs.sfs /tmp/airootfs.sfs
           rm -rf /tmp/live
+          echo "--- live root contents (top two levels) ---"
+          unsquashfs -l /tmp/airootfs.sfs | head -60
+          for p in opt/finnos/vm/finn-install.sh opt/finnos/vm/finn-chroot.sh \
+                   opt/finnos/base/mkfinniso opt/finnos/base/profiledef.sh \
+                   usr/local/bin/finn-install etc/os-release \
+                   root/.zprofile root/.bash_profile; do
+            unsquashfs -l /tmp/airootfs.sfs | grep -qx "squashfs-root/$p" || {
+              echo "missing in live root: $p" >&2
+              exit 1
+            }
+          done
           unsquashfs -q -d /tmp/live /tmp/airootfs.sfs \
             opt/finnos/vm/finn-install.sh \
             opt/finnos/vm/finn-chroot.sh \
             opt/finnos/base/mkfinniso \
             opt/finnos/base/profiledef.sh \
             opt/finnos/base/airootfs/etc/os-release \
+            opt/finnos/base/airootfs/etc/issue \
+            opt/finnos/base/airootfs/etc/motd \
+            opt/finnos/base/airootfs/etc/hostname \
             opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
+            opt/finnos/base/airootfs/etc/systemd/system/finnd.service \
+            opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
+            opt/finnos/base/airootfs/usr/local/bin/finn-install \
             usr/local/bin/finn-install \
             etc/os-release etc/issue etc/motd etc/hostname \
             etc/systemd/system/finn-comp.service etc/systemd/system/finnd.service \
@@ -179,6 +202,21 @@ jobs:
         with:
           name: finnos-iso
           path: finnos.iso
+      - name: the ISO checksum
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          (cd "$(dirname finnos.iso)" && sha256sum "$(basename finnos.iso)" > "finnos-${GITHUB_REF_NAME}-x86_64.iso.sha256")
+          mv finnos.iso "finnos-${GITHUB_REF_NAME}-x86_64.iso"
+          sha256sum -c "finnos-${GITHUB_REF_NAME}-x86_64.iso.sha256"
+          ls -lh "finnos-${GITHUB_REF_NAME}-x86_64.iso"*
+      - name: publish the ISO to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            finnos-v*-x86_64.iso
+            finnos-v*-x86_64.iso.sha256
+          fail_on_unmatched_files: true
 
   install:
     name: install to a disk (opt-in)

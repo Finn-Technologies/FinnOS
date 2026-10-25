@@ -6,42 +6,80 @@ local-dev loop once the compositor has to be judged on real hardware.
 
 ## Prerequisites
 
-- A USB stick of at least 4 GB.
-- The Arch Linux x86_64 ISO the disc is remastered from.
+- A USB stick of at least 4 GB (the whole device will be erased).
 - Secure Boot disabled in the OptiPlex firmware (F2 at boot, then
   *Security → Secure Boot → Disabled*). The installer writes an unsigned
   GRUB, and a machine with Secure Boot on refuses it.
 - The disk you are willing to erase named explicitly: the installer has
   no default disk and will not pick one.
 
+No Arch ISO is downloaded: the FinnOS ISO is built natively from the
+`base/` tree in this repo (profile, package lists, live root, boot
+menus) with the FinnOS sources at `/opt/finnos`. The base is
+source-level Arch — a modified package set and configuration — not a
+remaster of a downloaded image. See `base/README.md`.
+
 ## Build the ISO
 
+On an Arch machine (or the OptiPlex once it runs FinnOS):
+
 ```sh
-mkdir -p .cache
-curl -fsSLo .cache/archlinux-x86_64.iso \
-  https://geo.mirror.pkgbuild.com/iso/latest/archlinux-x86_64.iso
-vm/build-iso.sh finnos.iso
+base/mkfinniso --check
+sudo base/mkfinniso finnos.iso
 ```
 
-`vm/build-iso.sh` needs `xorriso`, `unsquashfs` and `mksquashfs`
-(`squashfs-tools`). The result is a hybrid ISO that boots under UEFI and
-BIOS, which matters on an OptiPlex that may be in either mode.
+It needs root, the `archiso` package, and the build-host tools named in
+`base/README.md` (`syslinux` for BIOS, `mtools`/`dosfstools` for UEFI,
+`squashfs-tools` + `xorriso` for the image). The result is a hybrid ISO
+that boots under UEFI and BIOS, which matters on an OptiPlex that may
+be in either mode.
+
+Where there is no Arch machine, CI builds the exact same disc in a
+privileged Arch container — see `.github/workflows/iso.yml` — and the
+release carries the ISO as an artifact. Never write a stick from a
+third-party Arch ISO: only a `mkfinniso` disc is FinnOS.
 
 Check it before trusting it:
 
 ```sh
 base/mkfinniso --check
 vm/test-boot.sh finnos.iso
+vm/menu-shot.sh finnos.iso /tmp/menu
 ```
 
-## Write the stick
+## Write the stick (bootable USB)
+
+The ISO is a hybrid BIOS+UEFI image: a raw copy makes a bootable stick.
+Copy the whole device, never a partition, and eject before unplugging.
+
+Linux:
 
 ```sh
+lsblk -dno NAME,SIZE,MODEL,TRAN
 sudo dd if=finnos.iso of=/dev/sdX bs=4M status=progress conv=fsync
+echo $?
+sudo eject /dev/sdX || sudo umount /dev/sdX* || true
 ```
 
-Replace `/dev/sdX` with the whole device of the USB stick, never a
-partition. On macOS use `/dev/rdiskN`.
+macOS (the stick was connected to a Mac):
+
+```sh
+diskutil list external
+STICK=/dev/diskN   # the whole USB device, not diskNs1
+sudo diskutil unmountDisk "$STICK"
+sudo dd if=finnos.iso of=/dev/rdiskN bs=4m status=progress
+sudo diskutil eject "$STICK"
+```
+
+Verify before booting (size + El Torito):
+
+```sh
+ls -lh finnos.iso
+xorriso -indev finnos.iso -report_el_torito plain
+```
+
+A `dd` that is interrupted leaves a half-written stick: re-run the full
+copy, do not resume it.
 
 ## Boot and install
 
@@ -71,8 +109,13 @@ partition. On macOS use `/dev/rdiskN`.
 
 ## After the install
 
-The compositor is not enabled until its binary exists, so the machine boots
-to a login console the first time. Build it there:
+The installer builds the shell on the machine (`/opt/finnos` →
+`/usr/local/bin/finn-comp`), enables `finn-comp` + `finnd`, and sets
+graphical boot — so a finished install (`FINN_INSTALL_COMPLETE` +
+`FINN_CHROOT_COMPLETE`) reboots straight into FinnOS. No manual build.
+
+If the build failed on the target (no network for deps, toolchain
+missing), it boots to a login console instead. Then, on the machine:
 
 ```sh
 cd /opt/finnos
@@ -80,6 +123,7 @@ make
 sudo make install
 sudo systemctl enable --now finn-comp finnd
 sudo systemctl set-default graphical.target
+systemctl status finn-comp finnd
 ```
 
 For the day-to-day loop over the network, set the dev VM's address to the
