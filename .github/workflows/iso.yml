@@ -2,6 +2,11 @@ name: ISO image
 
 on:
   workflow_dispatch:
+    inputs:
+      full_install:
+        description: 'Also run the unattended install to a disk (slow)'
+        type: boolean
+        default: false
   push:
     tags: ['v*']
 
@@ -13,9 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: the shell scripts parse
         run: |
-          bash -n base/mkfinniso base/setup.sh
+          bash -n base/mkfinniso base/setup.sh \
+            vm/finn-install.sh vm/finn-chroot.sh
           test -x base/mkfinniso
           test -x base/setup.sh
+          test -x vm/finn-install.sh
+          test -x vm/finn-chroot.sh
       - name: the tree checks out
         # The profile, the boot menus against the profile's label and
         # layout, the package lists, the pacman guard rail, the two copies
@@ -37,6 +45,11 @@ jobs:
         run: |
           scripts/lint.sh base
           ! grep -rIn 'Arch Linux' base/boot base/airootfs/etc/issue base/airootfs/etc/motd
+      - name: the boot and package tests
+        # The QEMU cases skip themselves without FINNOS_ISO; the profile
+        # tests run here with a fake mkarchiso, and the real build below
+        # exercises them against the ISO it writes.
+        run: python3 -m unittest tests.test_x86_boot -v
 
   iso:
     name: build and boot the FinnOS install ISO
@@ -44,35 +57,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: the tools that write the image
+      - name: the tools that check and boot the image
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xorriso squashfs-tools qemu-system-x86
-      - name: the Arch Linux base
-        # The remaster path: a GitHub runner is not an Arch machine, so
-        # mkarchiso cannot run here. base/mkfinniso is the native builder,
-        # and base/README.md says which machine it needs.
+            xorriso squashfs-tools mtools qemu-system-x86 ovmf
+      - name: build the ISO natively in Arch
+        # A GitHub runner is not an Arch machine, so mkarchiso runs in a
+        # privileged Arch container: the profile, the package list, the
+        # live root and the boot menus all come from base/ in this tree.
+        # No base image is downloaded; the disc is FinnOS throughout.
         run: |
-          mkdir -p .cache
-          curl -fsSLo .cache/archlinux-x86_64.iso \
-            https://geo.mirror.pkgbuild.com/iso/latest/archlinux-x86_64.iso
-          curl -fsSLo sha256sums.txt \
-            https://geo.mirror.pkgbuild.com/iso/latest/sha256sums.txt
-          (cd .cache && grep 'archlinux-x86_64.iso' ../sha256sums.txt | sha256sum -c -)
-      - name: build the ISO
-        # Root so the file capabilities in the live root survive the
-        # repack; the disc itself stays readable by the runner.
-        run: |
-          sudo vm/build-iso.sh finnos.iso
-          sudo chown "$(id -u):$(id -g)" finnos.iso
+          mkdir -p out
+          docker run --privileged --rm \
+            -v "$PWD:/build" -w /build archlinux:latest \
+            bash -c 'pacman-key --init && pacman-key --populate && \
+              pacman -Sy --noconfirm archiso && \
+              mkarchiso -v -w /tmp/archiso -o /build/out /build/base'
+          mv out/finnos-*.iso finnos.iso
       - name: the disc is bootable
         run: |
           xorriso -indev finnos.iso -report_el_torito plain
       - name: the payload is in the live root
         run: |
           xorriso -osirrox on -indev finnos.iso \
-            -extract /arch/x86_64/airootfs.sfs /tmp/airootfs.sfs
+            -extract /finn/x86_64/airootfs.sfs /tmp/airootfs.sfs
           rm -rf /tmp/live
           unsquashfs -q -d /tmp/live /tmp/airootfs.sfs \
             opt/finnos/vm/finn-install.sh \
@@ -115,16 +124,42 @@ jobs:
           xorriso -osirrox on -indev finnos.iso \
             -extract /boot/syslinux /tmp/syslinux
           grep -rE 'MENU TITLE FinnOS' /tmp/syslinux
-          grep -E 'DEFAULT finnos' /tmp/syslinux/archiso_sys-linux.cfg
-          grep -E 'MENU LABEL Install FinnOS' /tmp/syslinux/archiso_sys-linux.cfg
-          grep -E 'MENU LABEL FinnOS live shell' /tmp/syslinux/archiso_sys-linux.cfg
+          grep -E 'DEFAULT finnos' /tmp/syslinux/syslinux.cfg
+          grep -E 'MENU LABEL Install FinnOS' /tmp/syslinux/syslinux.cfg
+          grep -E 'MENU LABEL FinnOS live shell' /tmp/syslinux/syslinux.cfg
           ! grep -rE 'Arch Linux' /tmp/syslinux/*.cfg
           xorriso -osirrox on -indev finnos.iso \
             -extract /loader/entries /tmp/entries
-          cat /tmp/entries/00-finnos.conf
-          grep -E 'title +Install FinnOS' /tmp/entries/00-finnos.conf
-          grep -E 'finn\.install' /tmp/entries/00-finnos.conf
+          cat /tmp/entries/01-finnos-install.conf
+          grep -E 'title +Install FinnOS' /tmp/entries/01-finnos-install.conf
+          grep -E 'finn\.install' /tmp/entries/01-finnos-install.conf
+          grep -E 'title +FinnOS live shell' /tmp/entries/02-finnos-live.conf
           ! grep -rE 'Arch Linux' /tmp/entries
+      - name: the UEFI menu inside the EFI partition says FinnOS
+        # systemd-boot reads /loader from the FAT image in the appended
+        # partition, not from the ISO9660 /loader checked above. This is the
+        # check the old in-place remaster could not pass.
+        run: |
+          mkdir -p /tmp/boot-images
+          xorriso -osirrox on -indev finnos.iso \
+            -extract_boot_images /tmp/boot-images
+          efi="$(ls /tmp/boot-images/*efi*.img | head -1)"
+          test -n "$efi"
+          mtype -i "$efi" ::/loader/entries/01-finnos-install.conf \
+            | grep -E 'title +Install FinnOS'
+          mtype -i "$efi" ::/loader/entries/01-finnos-install.conf \
+            | grep -E 'finn\.install'
+          for f in $(mdir -i "$efi" -b ::/loader/entries); do
+            if mtype -i "$efi" "::/loader/entries/$f" | grep -q 'Arch Linux'; then
+              echo "the EFI menu still names Arch Linux: $f" >&2
+              exit 1
+            fi
+          done
+      - name: boot it to the installer under BIOS and UEFI
+        env:
+          FINNOS_ISO: finnos.iso
+          FINNOS_QEMU_TIMEOUT: '900'
+        run: python3 -m unittest tests.test_x86_boot.QemuBootTest -v
       - name: boot it
         run: vm/test-boot.sh finnos.iso
       - name: look at the menu
@@ -142,3 +177,31 @@ jobs:
         with:
           name: finnos-iso
           path: finnos.iso
+
+  install:
+    name: install to a disk (opt-in)
+    # The boot-to-installer check above runs on every build. This one is
+    # opt-in because it pacstraps a base system and builds the compositor;
+    # it verifies the installer's own final checks on the disk. Rebooting
+    # the installed disk is the manual check, and a QEMU GPU is not the
+    # OptiPlex's GPU, so it is not claimed here.
+    needs: iso
+    if: github.event_name == 'workflow_dispatch' && inputs.full_install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xorriso qemu-system-x86
+      - name: the ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: finnos-iso
+      - name: install and check the disk
+        env:
+          FINNOS_ISO: finnos.iso
+          FINNOS_FULL_INSTALL: '1'
+          FINNOS_QEMU_TIMEOUT: '3600'
+        run: python3 -m unittest tests.test_x86_boot.QemuFullInstallTest -v

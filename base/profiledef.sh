@@ -12,6 +12,8 @@ iso_publisher='Finn Technologies <https://finnos.org>'
 iso_application='FinnOS Live/Install Medium'
 iso_version="$(date +%Y.%m.%d)"
 install_dir='finn'
+# mkarchiso requires the profile-relative pacman configuration to be explicit.
+pacman_conf='pacman.conf'
 
 # The disc is laid out under /finn, not under /arch: the live root is
 # found by the archiso initramfs hook from install_dir, and a disc that
@@ -21,10 +23,9 @@ arch='x86_64'
 buildmodes=('iso')
 
 # Both firmwares, because the machine this ships to is not always new
-# enough to have UEFI, and not always set to boot it when it does. The
-# BIOS pair is syslinux (MBR plus El Torito); the UEFI pair is
-# systemd-boot, as a partition image and as an El Torito image.
-bootmodes=('bios.syslinux.mbr' 'bios.syslinux.eltorito' 'uefi-x64.systemd-boot.esp' 'uefi-x64.systemd-boot.eltorito')
+# enough to have UEFI, and not always set to boot it when it does. ArchISO's
+# consolidated modes build the BIOS syslinux image and UEFI systemd-boot ESP.
+bootmodes=('bios.syslinux' 'uefi.systemd-boot')
 
 # ARM64 boots through UEFI only; there is no BIOS on an ARM board, and
 # syslinux does not exist for it. The release target is x86_64, and this
@@ -32,7 +33,7 @@ bootmodes=('bios.syslinux.mbr' 'bios.syslinux.eltorito' 'uefi-x64.systemd-boot.e
 # without a second copy of everything.
 if [ "${FINN_ARCH:-$(uname -m)}" = 'aarch64' ]; then
   arch='aarch64'
-  bootmodes=('uefi-aarch64.systemd-boot.esp' 'uefi-aarch64.systemd-boot.eltorito')
+  bootmodes=('uefi.systemd-boot')
 fi
 
 # What the live user may run as root. mkarchiso applies these to the files

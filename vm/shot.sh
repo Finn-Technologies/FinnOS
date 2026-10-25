@@ -10,12 +10,12 @@
 # left where it was and its path is printed.
 set -euo pipefail
 
-HOST="${FINN_HOST:-finn@192.168.44.128}"
+HOST="${FINN_HOST:-finn@10.211.55.6}"
 OUT="${1:-/tmp/finn-shot.png}"
 STEP="${2:-1}"
 
 TMP="$(mktemp -t finnshot).ppm"
-ssh "$HOST" "sudo finnctl screen.capture step=$STEP" > "$TMP"
+ssh "$HOST" "finnctl screen.capture step=$STEP" > "$TMP"
 
 if python3 -c "import PIL" >/dev/null 2>&1; then
     python3 - "$TMP" "$OUT" <<'PY'

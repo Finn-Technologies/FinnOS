@@ -1,12 +1,15 @@
 # FinnOS base image — aarch64, the ARM dev machine.
 #
 # One package per line, as mkarchiso reads it; base/setup.sh reads the same
-# file. The list is the x86_64 one with the ARM kernel and without the
-# Intel microcode, which does not exist for a machine that is not an Intel
-# machine.
+# file. This follows the shared base with the ARM kernel, no x86 microcode,
+# and no Wine runtime (Arch Linux ARM does not package Wine for aarch64, so
+# naming it here would be a list that does not resolve).
 #
-# ARM boots through UEFI only, and it gets firmware from
-# linux-firmware plus whatever the board ships in its own boot chain.
+# ARM boots through UEFI only, and it gets firmware from linux-firmware plus
+# whatever the board ships in its own boot chain. The audio and Bluetooth
+# packages are the same ones the x86_64 image carries, and they exist in
+# the Arch Linux ARM repositories; the 32-bit GL/Vulkan stack does not, and
+# neither does Wine, so neither is named.
 
 # The init system and the shell the disc boots into.
 base
@@ -29,6 +32,9 @@ seatd
 # (that is the compositors), and this is why.
 mesa
 libglvnd
+wayland
+wayland-protocols
+libxkbcommon
 
 # What finn-comp links against.
 freetype2
@@ -38,10 +44,29 @@ alsa-lib
 alsa-ucm-conf
 ttf-dejavu
 
-# The network, and a way in that is not the console.
+# Audio and Bluetooth: the same set the x86_64 profile carries, because the
+# shell's Control Center shows the same tiles and the packages exist for
+# ARM. There is no Vulkan driver for the ARM VM's emulated GPU, so none is
+# named; a machine that has one can add it.
+pipewire
+pipewire-pulse
+wireplumber
+bluez
+bluez-utils
+
+# NetworkManager configures connections; wpa_supplicant provides Wi-Fi.
 networkmanager
+wpa_supplicant
 openssh
 curl
+
+# Linux desktop apps use Flatpak; setup.sh initializes the system Flathub.
+flatpak
+
+# jq and zstd, as on x86_64: finnpkg's winget path parses JSON with jq, and
+# zstd is what pacman and the live squashfs use.
+jq
+zstd
 
 # The installer and the tools it needs.
 arch-install-scripts

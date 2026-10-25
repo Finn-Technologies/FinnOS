@@ -38,19 +38,33 @@ PKGS="$HERE/packages.$ARCH"
 # machine and the medium cannot end up with different sets.
 list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" | grep -v '^$'; }
 
-# 1. remove the second display stack if it is already on the machine. The
-#    base has no X server, no Wayland compositor, no GTK and no Qt; a
-#    machine that has them is running something that is not FinnOS. The
-#    wayland *library* is not in this list: Mesa links it, so it is on the
-#    machine by design, and removing it would only take Mesa's EGL with it.
-pacman -Rns --noconfirm xorg-server xorg-server-common xorg-xwayland \
+# 1. remove competing desktop stacks if they are already on the machine.
+#    FinnOS has its own compositor and hosts Wayland clients; protocol
+#    libraries and the optional Xwayland compatibility bridge are allowed.
+pacman -Rns --noconfirm xorg-server xorg-server-common \
     gtk3 gtk4 gtkmm3 qt5-base qt6-base 2>/dev/null || true
 
 # 2. the configuration: the repo list with the desktop ignored by name.
 #    Kept once as a backup, because a machine whose pacman.conf is
 #    FinnOS's can still be looked at to see what it was.
 [ -f /etc/pacman.conf.finn-backup ] || cp /etc/pacman.conf /etc/pacman.conf.finn-backup
-install -m644 "$HERE/pacman.conf" /etc/pacman.conf
+PACMAN_CONF_TMP="$(mktemp)"
+trap 'rm -f "$PACMAN_CONF_TMP"' EXIT
+cat "$HERE/pacman.conf" > "$PACMAN_CONF_TMP"
+if [ "$ARCH" = "x86_64" ]; then
+    cat "$HERE/pacman.multilib.conf" >> "$PACMAN_CONF_TMP"
+fi
+install -m644 "$PACMAN_CONF_TMP" /etc/pacman.conf
+rm -f "$PACMAN_CONF_TMP"
+
+# The x86_64 list names lib32-mesa and wine, which live in [multilib]. A
+# missing repository section is not a smaller install: pacman cannot resolve
+# the list at all, and the failure arrives halfway through it. It is checked
+# here, before the first package is fetched, so the error names the cause.
+if [ "$ARCH" = "x86_64" ]; then
+    grep -qE '^\[multilib\][[:space:]]*$' /etc/pacman.conf ||
+        { echo "error: [multilib] is not enabled in /etc/pacman.conf; the x86_64 package list needs it for Wine" >&2; exit 1; }
+fi
 
 # 3. the packages. --needed so a machine that is already FinnOS's is only
 #    topped up, and so this can be run again after the list changes.
@@ -73,8 +87,14 @@ chmod 0440 /etc/sudoers.d/finn
 #    (the package list carries it so a machine can be reached without a
 #    console) and deliberately not enabled: a network login is a decision
 #    someone makes with `systemctl enable --now sshd`, not a default.
+#
+#    bluetooth.service carries its own ConditionPathIsDirectory on
+#    /sys/class/bluetooth, so enabling it on a machine with no radio starts
+#    nothing; on a machine with a dongle it is what makes the Bluetooth tile
+#    in the Control Center more than an rfkill switch.
 systemctl enable seatd
 systemctl enable NetworkManager
+systemctl enable bluetooth 2>/dev/null || echo "WARN: bluetooth.service is not on this image"
 systemctl enable systemd-timesyncd 2>/dev/null || true
 
 # 6. the system units, straight from this directory. finn-failure.service is
@@ -123,8 +143,15 @@ mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /v
 cp "$ROOT"/assets/fonts/FixelDisplay/*.otf /usr/share/fonts/OTF/
 install -m644 "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
 install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/setup.webp
-cp "$ROOT"/src/compositor/icons/*.svg /usr/share/finn/icons/
+cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
 install -m755 "$ROOT/src/pkg/finnpkg" /usr/local/bin/finnpkg
+if [ -x /usr/bin/flatpak ]; then
+    if ! /usr/local/bin/finnpkg flatpak init; then
+        echo "WARN: Flathub could not be configured; Flatpak search will be unavailable"
+    fi
+else
+    echo "Flatpak is not packaged for $ARCH; Flatpak apps are unavailable on this image"
+fi
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
 printf 'settings\nfiles\narc\nwindow\n' > /var/lib/finnpkg/installed
 fc-cache -f >/dev/null

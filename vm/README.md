@@ -64,44 +64,25 @@ ssh finn@<guest-ip> '
 
 ## Installing a fresh VM
 
-The FinnOS ISO is bootable: it is the Arch live environment with the
-FinnOS tree inside it at `/opt/finnos`. One disc, no host HTTP server.
-The live root's branding, its installer wrapper and the hook that starts
-the installer come from `base/airootfs`, so the disc built this way and
-the one `base/mkfinniso` builds behave the same.
+The FinnOS ISO is bootable: it is a live medium built from this tree -
+the profile, the package list, the live root and the three boot menus in
+`base/`, with the FinnOS sources inside it at `/opt/finnos`. One disc, no
+host HTTP server, no downloaded base image. The default entry is
+**Install FinnOS**, which boots the live environment and hands over to
+the installer, and **FinnOS live shell** is the way in without installing.
 
-1. Download the Arch Linux ISO the disc is remastered from:
-
-   ```sh
-   curl -Lo .cache/archlinux-x86_64.iso \
-     https://geo.mirror.pkgbuild.com/iso/latest/archlinux-x86_64.iso
-   ```
-
-2. Build the FinnOS ISO on the host or any Linux machine:
-
-   ```sh
-   vm/build-iso.sh
-   ```
-
-   It needs `xorriso`, `unsquashfs` and `mksquashfs`. The boot images and
-   the volume label are copied from the Arch ISO, so the result boots
-   under UEFI (VMware) and BIOS. Both boot menus are rewritten: the
-   default entry is **Install FinnOS**, which boots the live environment
-   and hands over to the installer, and **FinnOS live shell** is the way
-   in without installing.
-
-   This remasters the Arch live environment with the FinnOS tree inside
-   it, and it is the one that runs where there is no Arch machine. On an
-   Arch machine there is a native build, which writes the medium from
-   `base/` alone - the profile, the package list, the live root and the
-   three boot menus:
+1. Build the FinnOS ISO. On an Arch machine (or the OptiPlex once it
+   runs FinnOS), the native build writes the medium from `base/` alone:
 
    ```sh
    sudo base/mkfinniso finnos.iso
    ```
 
-   Either builder is checked beforehand with `base/mkfinniso --check`.
-   `base/README.md` is the account of what each of them is and needs.
+   It needs root, the `archiso` package, and the build-host tools named in
+   `base/README.md`. Where there is no Arch machine, CI builds the same
+   disc in a privileged Arch container — see `.github/workflows/iso.yml`.
+   Either way the tree is checked beforehand with
+   `base/mkfinniso --check`.
 
 3. Check that it boots, if you have QEMU:
 

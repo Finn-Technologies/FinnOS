@@ -9,12 +9,19 @@
 /src/tools/dockprev
 /tests/c/test_finnconn
 /tests/c/test_finnsettings
+/tests/c/test_finncompat
+/tests/c/test_finndraw
+/tests/c/test_finnfbin
+/tests/c/test_finntaskbar
+/tests/c/test_finnsettingsapp_pages
 *.dSYM/
 
 # Captures. The compositor writes PPM frames while it is being worked on;
 # they are artefacts of a session, not part of the OS.
 *.ppm
 *.pgm
+/.finnos-*.png
+/.finnos-*.bmp
 
 # Python
 __pycache__/

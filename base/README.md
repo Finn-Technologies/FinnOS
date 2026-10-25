@@ -24,7 +24,7 @@ product:
 | Removed | Why |
 |---|---|
 | X11 — `xorg-server`, `xorg-server-common`, `xorg-xwayland` | The compositor owns DRM/KMS directly. An X server on the machine would be a second thing claiming the scanout buffer. |
-| Wayland — `weston`, `sway`, `mutter`, `kwin`, `wlroots` | Same: `finn-comp` is the display server, and it is not a Wayland compositor. A client protocol does not exist yet; when it does it will be FinnOS's own, in `src/core/finnproto.h`. The `wayland` *library* is a different thing and is not removed — see below. |
+| External Wayland compositors — `weston`, `sway`, `mutter`, `kwin`, `wlroots` | `finn-comp` owns DRM/KMS directly, so a second compositor is not installed. FinnOS includes a minimal in-process xdg-shell server for SHM toplevels; this is a client protocol inside `finn-comp`, not a competing display server. |
 | GTK and Qt — `gtk2`, `gtk3`, `gtk4`, `qt5-base`, `qt6-base` | Toolkit stacks exist to draw for a display server. There is no second display server to draw for, and a toolkit in the image is a hundred megabytes of libraries that nothing links against. |
 | The desktops — `gnome`, `plasma`, `sddm`, `gdm`, `lightdm` | A session manager would start a shell that is not FinnOS's. `finn-comp` is started by systemd, on tty1, before `getty`. |
 | Arch branding | `os-release`, `issue`, `motd`, the hostname, the boot menus and the volume label all say FinnOS, because a person reading the console should be told what they are running. |
@@ -37,12 +37,11 @@ the transaction when nothing else can satisfy it — but naming the package
 on the command line installs it after a warning, and a package installed
 from a file with `-U` never consults the list.
 
-One name is deliberately not on it. `wayland` is a client library, and
-Mesa's EGL links `libwayland-client`; ignoring it would make `mesa`, and
-with it the base's own package list, unresolvable. So the list refuses the
-compositors and leaves the library, and `mkfinniso --check` holds the two
-halves to that: a package list that carries `mesa` and a guard rail that
-refuses `wayland` cannot both hold.
+Wayland libraries and protocol XML are deliberately allowed: Mesa needs
+`libwayland-client`, while `finn-comp` uses the server library to host limited
+app surfaces. The package guardrail refuses competing compositors, not app
+protocols. No Xwayland bridge is included; x86_64 `multilib` is kept separate
+and appended only to the build/setup configuration for Wine.
 
 ## What replaces them
 
@@ -59,7 +58,8 @@ refuses `wayland` cannot both hold.
 ```
 README.md            this
 profiledef.sh        the archiso profile: name, label, layout, boot modes
-pacman.conf          the configuration, with the desktop refused by name
+pacman.conf          the shared configuration, with competing desktops refused
+pacman.multilib.conf the x86_64-only Wine dependency repository snippet
 packages.x86_64      the release target's package set
 packages.aarch64     the ARM dev machine's package set
 packages.x86         -> packages.x86_64
@@ -93,7 +93,8 @@ airootfs/etc/systemd/system/     finn-comp.service, finnd.service,
                                  finn-failure.service,
                                  getty@tty1 autologin as root,
                                  NetworkManager enabled
-airootfs/usr/lib/tmpfiles.d/     /run/finn, the IPC namespace
+airootfs/usr/lib/sysusers.d/    the live `finn` group, before tmpfiles runs
+airootfs/usr/lib/tmpfiles.d/    `/run/finn`, the IPC namespace
 airootfs/usr/local/bin/          finn-install: the name the boot entry calls
 airootfs/root/.bash_profile      the finn.install hook, for bash and zsh
 ```
@@ -110,15 +111,17 @@ unit behind it, rather than a condition that is silently false for the
 whole boot. `card0` is the trigger, not the only device the compositor can
 open: it enumerates `/dev/dri/card*` itself.
 
-`boot/` is the three menus, which say the same thing three ways because a
-machine gets one of them and not the others:
+`boot/` contains the menu configurations. The x86_64 profile selects BIOS
+/syslinux and UEFI/systemd-boot boot modes; the ARM profile selects UEFI only.
+The GRUB configuration is included for manual use, but GRUB is not a separate
+`mkarchiso` boot mode and has not been verified as an ISO boot path:
 
 ```
-boot/syslinux/syslinux.cfg       the BIOS menu; syslinux
-boot/loader/loader.conf          the UEFI menu; systemd-boot
+boot/syslinux/syslinux.cfg       BIOS menu; syslinux
+boot/loader/loader.conf          UEFI menu; systemd-boot
 boot/loader/entries/01-…         Install FinnOS, with finn.install
 boot/loader/entries/02-…         FinnOS live shell
-boot/grub/grub.cfg               GRUB, for the firmware that boots neither
+boot/grub/grub.cfg               GRUB configuration for manual use
 ```
 
 ## Installing onto a machine
@@ -140,6 +143,12 @@ names follow the device: `nvme0n1p1`, `mmcblk0p1`, `sda1`. Every step is
 checked rather than assumed, and `FINN_INSTALL_COMPLETE` is printed only
 after looking at the disk that was written: `/usr/local/bin/finn-comp` must
 be executable there and a boot entry must name the root by its UUID.
+
+The x86_64 release includes both `intel-ucode` and `amd-ucode`; the
+reference CPU does not narrow the profile to one vendor. The image's UEFI
+boot path is not Secure Boot signed, so firmware Secure Boot must be disabled.
+The live ISO uses systemd-boot; the installer prefers GRUB's UEFI loader and
+falls back to systemd-boot when GRUB cannot register its EFI entry.
 
 The password is not on the disc. Without `FINN_PASSWORD` the chroot
 generates one for `root` and `finn` and prints it once at the end of the
@@ -181,11 +190,14 @@ against the repositories, runs `mkinitcpio` with the hooks in
 sources go into the live root at `/opt/finnos`, where the installer reads
 them. This is the real build and needs a network.
 
-It needs root, the `archiso` package, and the tools archiso itself calls:
+It needs root, the `archiso` package, and build-host tools including
 `syslinux` for the BIOS boot sector, `mtools` and `dosfstools` for the EFI
-system partition, `squashfs-tools` and `xorriso` for the image. Those are
-the *build machine's* dependencies, which is why they are not in
-`packages.<arch>` — the medium does not carry what was used to write it.
+system partition, and `squashfs-tools` plus `xorriso` for the image. The
+`packages.<arch>` files are the installed-system manifests; `mkfinniso`
+adds `archiso`, `mkinitcpio-archiso` and (on x86_64) `syslinux` to the live
+profile only. `mkinitcpio-archiso` supplies the `archiso` and
+`archiso_loop_mnt` hooks named by the live root's `mkinitcpio.conf`; none of
+these ISO-only packages are installed to the target system.
 
 **Assemble**, when there is no archiso:
 
@@ -215,12 +227,10 @@ the profile's label and layout, the package lists, the `IgnorePkg` guard
 rail, the unit copies, and that nothing on the disc names another
 distribution.
 
-`vm/build-iso.sh` is the third way and a different thing: it remasters an
-Arch release ISO, putting the tree into that ISO's live root inside the
-existing squashfs. It needs no archiso and no network beyond one download,
-and it is what the ISO workflow uses, because a GitHub runner is not an
-Arch machine. The image it produces is the Arch live environment with
-FinnOS in it; the image `mkfinniso` produces is FinnOS.
+There is no third way. The ISO workflow builds the same native image in a
+privileged Arch container, because a GitHub runner is not an Arch
+machine — see `.github/workflows/iso.yml`. No base image is ever
+downloaded: every disc is FinnOS, built from this tree.
 
 ## Applying the base to a running machine
 
@@ -234,8 +244,9 @@ It reads the same `packages.<arch>` the disc does, installs
 removes any X server, Wayland compositor, GTK or Qt stack that is on the
 machine (the `wayland` client library stays, because `mesa` links it),
 creates the
-`finn` user, enables `seatd` and `NetworkManager`, and installs the units
-(the compositor, the control plane and the failure unit), the fonts, both
+`finn` user, enables `seatd` and `NetworkManager` (with `wpa_supplicant`
+installed as its Wi-Fi backend), and installs the units (the compositor, the
+control plane and the failure unit), the fonts, both
 wallpapers, every icon, the app registry, `finnpkg`, and the branding:
 `os-release`, `issue`, `motd` and the hostname.
 
@@ -304,18 +315,16 @@ and the failure to avoid is two of them disagreeing.
 
 ## What is not here
 
-- **No client surface protocol, no terminal, no text input into an app.**
-  The window manager is there (`finnwindow`: move, maximize, minimize,
-  close), and the compositor reads its own input devices, keyboard
-  included. What does not exist is the surface protocol that would let a
-  program draw into a window or receive typed text from it, so a tile opens
-  an empty rectangle and there is nothing to run a command in. See
-  `docs/architecture.md`; the shell's own gaps are listed there rather than
-  papered over here.
-- **No Wayland compositor and no Wayland client protocol.** The `wayland`
-  library is on the disc because Mesa links it, and that is all it is: no
-  compositor starts it and nothing speaks its protocol. A `wayland`
-  compositor would be a second display server, and the base has one.
+- **The external client host is a limited implementation.** `finn-comp`
+  exposes an in-process xdg-shell server and accepts SHM toplevels, with
+  compositor-managed windows and routed focus/input. Popup roles, subsurfaces,
+  dmabuf, touch, scaling, clipboard and drag-and-drop are not implemented, and
+  the new path has not yet been built or run on the Linux target. See
+  `docs/architecture.md` for the exact boundaries.
+- **No X11 or external Wayland compositor.** The `wayland` client/server
+  libraries are on the disc for Mesa and FinnOS's limited app-surface server;
+  FinnOS still owns the display directly through DRM/KMS. Xwayland and other
+  competing display servers are not part of the base.
 - **No AI, and no weights.** FinnAI is opt-in and off by default, and
   nothing in this directory talks to a model.
 - **No OTA.** `finnpkg update` is a stub. The A/B slots are a design in

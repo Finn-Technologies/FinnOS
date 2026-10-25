@@ -4,9 +4,10 @@ FinnOS is an operating system for a small, quiet machine: an i3-class laptop
 or a handheld, a screen, a pointer, a battery. It is built around a few
 decisions that everything else follows from.
 
-- **The compositor owns the display.** Direct DRM/KMS, page flips, no X11,
-  no Wayland, no toolkit. The shell is drawn by the same process that owns
-  the scanout buffer.
+- **The compositor owns the display.** Direct DRM/KMS and page flips; no X11
+  or external Wayland compositor. `finn-comp` includes a limited in-process
+  Wayland xdg-shell server for shared-memory toplevels. The shell is drawn by
+  the same process that owns the scanout buffer.
 - **The control plane owns the authority.** One permissioned entry point for
   state, input, display, power and apps. It is off by default, it is a unix
   socket and never TCP, and every call is audited.
@@ -214,10 +215,11 @@ Keeping them apart is what lets the shell show an app that is honestly
 ships — and it keeps a catalogue update from wiping the user's install
 list.
 
-The catalogue currently has two entries: **Settings** (`settings-app.svg`)
-and **Finn Files** (`files.svg`). Both are first-party applications drawn
-inside the compositor. The Store and the browser join the catalogue when
-their views are real; an entry is not a promise that the window is useful.
+The catalogue currently has three entries: **Settings** (`settings-app.svg`),
+**Finn Files** (`files.svg`) and **Finn Store** (`store.svg`). All three are
+first-party applications drawn inside the compositor. An app joins the
+catalogue when its view is real; an entry is not a promise that the window
+is useful. There is no browser entry yet, because no browser view exists.
 
 ## The session
 
@@ -261,22 +263,48 @@ Honesty is a property of the documentation too. These are the parts of the
 system that do not exist yet, stated plainly so that nobody looks for
 them:
 
-- **No external client surface protocol.** `finnwindow` manages frosted
-  desktop windows (`window.open`, `window.list`, `window.close`,
-  `window.minimize`, `window.maximize`, `window.restore`, `window.move`,
-  `window.resize`, `window.snap`, `window.get`, `window.focus`), and hosts
-  the built-in Settings (`finnsettingsapp`) and Finn Files
-  (`finnfilesapp`) views. However, external processes started by
-  `app.launch` cannot yet stream their own pixel buffers over a socket, so
-  a third-party GUI application has nowhere to draw.
-- **No text delivery into external apps.** The compositor reads a real keyboard
-  (`finnkbd`) and delivers keyboard events to the focused built-in app
-  (Settings search, Files navigation and filter, setup), plus
-  `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Super` and `Super+arrow`. There is no
-  external focused client surface protocol yet.
-- **Windows resize and tile, but no client joins the stack.** A window can
-  be resized from any edge, snapped to a half or quarter, maximized and
-  restored. There is still no stacking protocol for a client surface.
+- **No `.fbin` renderer or native app host yet.** FinnOS core can safely
+  validate and decode the compiled scene tree, but `.fbin` apps are not
+  rasterised into windows or launched by the compositor. The next step is a
+  FinnOS-native renderer that composes directly into `finn-comp`'s DRM frame.
+- **External client surfaces are deliberately limited.** `finnwayland`
+  implements an in-process xdg-shell server and imports ARGB8888/XRGB8888
+  `wl_shm` toplevel buffers into `finnwindow`. The compositor routes surface
+  lifecycle, title, configure/close, frame callbacks, focus, pointer, wheel
+  and keyboard events. This is not a complete Wayland implementation:
+  popups, subsurfaces, linux-dmabuf, touch, non-unit scale, transformed
+  buffers, clipboard/data-device and drag-and-drop are not supported; some
+  protocol requests are no-ops. The current sources built on an ARM Linux VM
+  and hosted a real GTK Calculator surface through a standalone test server;
+  this does not verify a booted FinnOS desktop.
+- **External input is only partly validated.** The compositor routes pointer,
+  wheel and keyboard events to a focused imported surface as well as to the
+  built-in Settings, Files and setup surfaces. A Calculator test confirmed
+  pointer and basic key input through the isolated server; input methods and
+  text-input-v3 are not provided, and the full desktop path remains unverified.
+- **External windows are source-integrated and isolated-runtime tested.**
+  Imported SHM toplevels join the existing window stack and use the compositor's
+  configure, close, focus, resize, snap, maximize and restore behavior. The
+  server rendered a 410×666 Calculator window and accepted click/key input on
+  the ARM test VM, but the full FinnOS desktop has not been booted and checked.
+- **Third-party Linux app compatibility is limited, not complete.**
+  `finnd flatpak.run` checks the system installation and starts an installed
+  Flatpak as Finn in the Wayland session; Finn Store's Library offers Open for
+  installed Flatpaks. On the ARM test VM, that path launched GNOME Calculator
+  into the standalone server and pointer/key input changed its expression to
+  `78`. The x86_64 image includes Flatpak and setup attempts to register
+  canonical Flathub (warning if offline); the aarch64 image does not include
+  Flatpak. This does not verify Store search/install/open in a booted FinnOS
+  desktop; apps requiring unsupported protocols may still fail.
+- **Wine has a minimal x86_64-only app lifecycle, not an installer.** A user
+  can register an existing portable or already-installed `.exe` with
+  `finnpkg wine register`; FinnOS records its path and reserves a private
+  per-app prefix. `finnpkg wine run` routes through the audited `finnd wine.run`
+  verb, which starts `/usr/bin/wine` as Finn with that prefix. Finn Store lists
+  validated registrations in Library and opens them through the same audited
+  route; registration remains a CLI step. There is no installer flow or
+  host-app auto-discovery. aarch64 refuses Wine actions; no ARM Wine is
+  promised. Actual Wine GUI execution remains unverified on Linux.
 - **No OTA.** `finnpkg` installs, lists and removes packages; `finnpkg
   update` is a stub, and the A/B slots are a design in
   [roadmap.md](roadmap.md), not a feature.

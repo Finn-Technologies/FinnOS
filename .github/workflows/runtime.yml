@@ -1,0 +1,58 @@
+name: Runtime package
+
+# The OTA frontend reads GitHub Releases. This job builds the package that
+# `finnpkg update` installs, so a tag is the one place where the version in
+# the tree, the release tag and the asset name have to agree.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  runtime:
+    name: build the runtime package
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: the build toolchain
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git freetype2 alsa-lib libwebp libdrm libinput \
+            wayland wayland-protocols libxkbcommon mesa libglvnd jq zstd
+      - name: the tag and the tree agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          test "v$(cat VERSION)" = "$GITHUB_REF_NAME" || {
+            echo "VERSION is $(cat VERSION), tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          }
+      - name: build as a normal user
+        # makepkg refuses root, and the checkout is owned by root in the
+        # container. The build user gets the workspace and nothing else.
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+          su - builder -c "cd '$PWD' && scripts/build-runtime-pkg.sh dist"
+      - name: the package is what the frontend expects
+        run: |
+          version="$(cat VERSION)"
+          arch="$(uname -m)"
+          asset="dist/finnos-runtime-${version}-${arch}.pkg.tar.zst"
+          test -f "$asset"
+          test -f "$asset.sha256"
+          (cd dist && sha256sum -c "$(basename "$asset").sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finnos-runtime
+          path: dist/*
+      - name: publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

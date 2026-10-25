@@ -13,7 +13,7 @@
 # minimal Arch install and does not have rsync on it.
 set -euo pipefail
 
-HOST="${FINN_HOST:-finn@192.168.44.128}"
+HOST="${FINN_HOST:-finn@10.211.55.6}"
 REMOTE="${FINN_REMOTE:-~/finnos}"
 RESTART=1
 [ "${1:-}" = "--no-restart" ] && RESTART=0
@@ -46,7 +46,7 @@ ssh "$HOST" "cd $REMOTE && sudo make install && \
              sudo install -Dm644 assets/wallpaper/setup.webp /usr/share/finn/wallpaper/setup.webp && \
              sudo install -d /var/lib/finnpkg && \
              if ! sudo test -f /var/lib/finnpkg/installed; then \
-                 for app in settings files store browser; do \
+                 for app in settings files store; do \
                      sudo /usr/local/bin/finnpkg install \$app; \
                  done; \
              fi && \

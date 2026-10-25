@@ -202,6 +202,68 @@ is how a program is started on a modern Linux, and it means the app is
 tracked, logged and cleaned up by the init system rather than by a daemon
 holding its process. The unit is collected when the app exits.
 
+### Flatpak package management
+
+Flatpak package operations are owned by `finnpkg` and routed through `finnd`,
+so they use the same authenticated socket and audit log as other system
+changes. Listing and search return the package manager's multi-line output as
+an `OK BINARY` payload. Install and remove start a systemd service and return
+its job id immediately; they do not block the control connection while
+Flatpak downloads or applies a transaction.
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `flatpak.list` | `OK BINARY …` | list apps in the system Flatpak installation |
+| `flatpak.search <term>` | `OK BINARY …` | search configured system remotes; rows include the originating remote |
+| `flatpak.install <app-id> [remote]` | `OK job=<id>` | start an install job from the named configured remote (defaults to canonical Flathub) |
+| `flatpak.remove <app-id>` | `OK job=<id>` | start a removal job; Flatpak user data is preserved |
+| `flatpak.job <id>` | `OK job=<id> state=…` | report `queued`, `running`, `complete` or `failed` from systemd |
+| `flatpak.run <app-id>` | `OK launched <app-id>` / `ERR …` | verify the app is system-installed and start it as Finn in the Wayland session |
+
+Application ids and remote names are validated before a job is started; a
+non-Flathub remote must already be configured in the system installation, and
+Flathub is checked against its canonical repository URL. Use `finnctl flatpak.job`
+with the returned id to observe completion; systemd may eventually garbage
+collect old unit state, after which the job id expires. Finn Store reads
+`flatpak.list`, searches with `flatpak.search`, and passes each result's remote
+through to the audited install job rather than silently substituting Flathub.
+It refreshes job state on F5 rather than blocking while a transaction runs.
+A completed package transaction does not prove that an app will render or
+behave correctly. The source now includes a limited xdg-shell/`wl_shm`
+client host and an audited launch path, but apps that need popups, subsurfaces,
+dmabuf or other unsupported protocols may fail. Flatpak is in the x86_64
+image; the aarch64 manifest does not include it. This path still needs a Linux
+build and a real install/discovery/launch test.
+
+### Wine app lifecycle
+
+Wine is included only in the x86_64 image. FinnOS deliberately exposes a
+minimal lifecycle for a user-provided, already-installed or portable Windows
+application rather than pretending that running an installer is a completed
+app installation:
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `wine.list` | `OK BINARY …` | list validated IDs whose registrations and prefixes are private to Finn; newline-separated, capped at 64 KiB |
+| `wine.run <id>` | `OK launched <id>` / `ERR …` | validate a registered app and launch it as Finn with its own `WINEPREFIX` |
+
+Use `finnpkg wine register <id> <absolute-exe-path>` to register the app, and
+`finnpkg wine list` to list registrations from the command line. The
+control-plane verb `finnctl wine.list` returns validated IDs from Finn-owned
+private registrations in a bounded binary-framed payload for clients such as
+Finn Store. A missing Wine data root is an empty list; unvalidated, incomplete
+or non-private entries are omitted. Registration stores
+the executable path and creates a private per-app prefix directory under Finn's
+home; Wine initializes the prefix when first launched. `finnpkg wine run <id>`
+forwards the id through `finnctl`, so GUI processes still pass through the
+authenticated, audited `finnd` boundary. `finnd` validates the id and private
+registration, then uses `systemd-run` argv arguments to start Wine with the
+registered executable as Finn, `WINEPREFIX`, the Wayland session environment
+and a transient unit. There is no installer command or host-app auto-discovery. The
+list and run verbs enforce the x86_64-only architecture guard; this does not
+promise ARM Wine. Actual Wine GUI behavior remains unverified on the Linux
+target.
+
 ### Windows
 
 Provided by the compositor (`finnwindow`), proxied by the control plane.
@@ -235,12 +297,24 @@ this build, because the compositor's home mount is read-only.
 ### Finn Store
 
 Provided by the compositor (`finnstoreapp`), not by a control verb. The
-Store lists the same catalogue as `app.list`, reads installed state from
-finnpkg's list, and asks finnd for `app.install` / `app.remove`. A
+Store lists the same native catalogue as `app.list`, reads installed state
+from finnpkg's list, and asks finnd for `app.install` / `app.remove`. A
 catalogue app whose launcher is not executable is shown as unavailable
 and has no action, because installing it would only produce finnpkg's
-refusal. Removing asks for a second press. This build installs from the
-catalogue that ships with FinnOS and does not download packages.
+refusal. Removing asks for a second press. The category selector also has Flatpak Apps and Windows Apps views. The
+Flatpak view lists installed apps, searches the control plane's configured
+remotes on a background worker, carries each search row's remote into the
+install request, and starts audited asynchronous install/remove jobs. Results
+without usable source metadata cannot be installed. The UI applies query
+results on its frame loop, and F5 checks a running job. The Library offers Open
+for installed apps through `flatpak.run`. On an ARM Linux test VM, the current
+control path launched GNOME Calculator into a standalone FinnWayland server;
+the 410×666 surface responded to pointer and keyboard input. This was not a
+booted FinnOS desktop or a full Store search/install/open walkthrough. The
+Windows Apps view lists validated registrations in Library and exposes Open
+actions through `wine.run`; registering an existing `.exe` remains a CLI step.
+The path remains x86_64-only, has no installer flow, and has not had real Wine
+GUI runtime validation.
 
 ### Settings
 
@@ -248,7 +322,7 @@ Provided by the compositor (`finnsettingsapp`), proxied by the control plane.
 
 | Verb | Reply | What it does |
 |---|---|---|
-| `settings.page [name=<page>]` | `OK` / `ERR no such page` | navigate to a settings page (`wifi`, `bluetooth`, `display`, `sound`, `power`, `about`); opens the settings window if not already open |
+| `settings.page [name=<page>]` | `OK` / `ERR no such page` | navigate to `wifi`, `bluetooth`, `network`, `personalization`, `about`, or a searchable legacy `display`, `sound`, or `power` page; opens the settings window if not already open |
 | `settings.get` | `OK page=<page>` | read the name of the currently active settings page |
 
 ### First-boot setup

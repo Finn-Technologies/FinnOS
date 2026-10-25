@@ -52,7 +52,14 @@ install: all
 	$(MAKE) -C src/control install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m755 src/pkg/finnpkg $(DESTDIR)$(PREFIX)/bin/finnpkg
+	install -d $(DESTDIR)$(PREFIX)/lib/finn
+	for helper in src/pkg/finn-winget-install scripts/finn-winget-install; do \
+		if [ -f "$$helper" ]; then \
+			install -m755 "$$helper" "$(DESTDIR)$(PREFIX)/lib/finn/$${helper##*/}"; \
+		fi; \
+	done
 	install -d $(DESTDIR)/usr/share/finn
+	install -m644 VERSION $(DESTDIR)/usr/share/finn/version
 	install -m644 assets/apps.registry $(DESTDIR)/usr/share/finn/apps.registry
 	install -d $(DESTDIR)/usr/share/finn/icons
 	install -m644 assets/icons/shell/*.svg assets/icons/apps/*.svg $(DESTDIR)/usr/share/finn/icons/

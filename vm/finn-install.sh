@@ -8,20 +8,58 @@
 # erase a disk nobody named, so the target is an argument, and an interactive
 # install asks for the device path again before anything is written.
 #
+# A machine with no console can name the disk on the kernel command line
+# instead, which is how the boot entry of an unattended install does it:
+#
+#   finn.disk=/dev/vda finn.yes
+#
+# /proc/cmdline is writable only by root (and by whoever can edit the boot
+# entry, who can already erase the disk), and finn.disk is treated exactly
+# like --disk: it must resolve to a whole disk that is not the running one.
+# Without it the install is interactive, as before.
+#
 # The payload comes from the FINNOS install disc, which a VM or a machine has
 # attached; if the disc is not there the script falls back to the host HTTP
 # server, which is how the old workflow worked.
 set -euo pipefail
-exec > >(tee /tmp/finn-install.log) 2>&1
 
 HOST=http://192.168.44.1:8765
 ISO_MNT=/finnos-iso
+LOG=/tmp/finn-install.log
 SRC=""
 DISK=""
 DISK_ARG=""
 ASSUME_YES=0
 
-post() { curl -s -X POST --data-binary @/tmp/finn-install.log "$HOST/log" -o /dev/null 2>/dev/null || true; }
+# A machine with no screen - a CI runner, a server, an install driven over a
+# serial cable - has no tty1 to read. When the kernel was told to use a serial
+# console, the same log goes there as well, so the install can be watched and
+# a test can see the installer start without a display. The condition is the
+# kernel command line rather than the device node, because a machine can have
+# a COM port with nothing attached to it.
+if grep -qw 'console=ttyS0' /proc/cmdline 2>/dev/null && [ -w /dev/ttyS0 ]; then
+    exec > >(tee "$LOG" /dev/ttyS0) 2>&1
+else
+    exec > >(tee "$LOG") 2>&1
+fi
+
+# The log is posted to the host that serves the disc, when there is one. It
+# is best effort: an install on a machine with no host server must not stop
+# at a step because a POST timed out. The timeouts are what make "best
+# effort" bounded; without them a machine with a default route but no host
+# at 192.168.44.1 waits for the TCP stack at every step.
+post() {
+    curl -s --connect-timeout 2 --max-time 5 \
+         -X POST --data-binary @"$LOG" "$HOST/log" -o /dev/null 2>/dev/null || true
+}
+
+# The completion line is posted on its own rather than read back out of the
+# log: tee writes the log asynchronously, and a CI runner watching for the
+# end of an unattended install must not race it.
+post_line() {
+    curl -s --connect-timeout 2 --max-time 5 \
+         --data-binary "$1" "$HOST/log" -o /dev/null 2>/dev/null || true
+}
 
 STEP="arguments"
 die() { echo "error: $*" >&2; exit 1; }
@@ -82,6 +120,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# The boot entry of an unattended install names the disk and the "yes" on the
+# kernel command line, because a machine with no console cannot answer the
+# questions. Only a word that starts with finn. is read, and only /proc/cmdline
+# is consulted; the argument form still wins, and a cmdline without finn.disk
+# leaves the install interactive.
+for word in $(cat /proc/cmdline 2>/dev/null || true); do
+    case "$word" in
+        finn.disk=*) [ -n "$DISK_ARG" ] || DISK_ARG="${word#finn.disk=}" ;;
+        finn.yes)    ASSUME_YES=1 ;;
+    esac
+done
+
 if [ -z "$DISK_ARG" ]; then
     # Not an install that failed, so no FINN_INSTALL_FAILED line: nothing
     # was attempted and nothing was written.
@@ -131,6 +181,30 @@ if [ -f /etc/pacman.d/mirrorlist ]; then
         grep -v '^Server = https://geo.mirror.pkgbuild.com' /etc/pacman.d/mirrorlist
     } > /etc/pacman.d/mirrorlist.new
     mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+fi
+# Wine's 32-bit GL and Vulkan stack lives in [multilib]. The live root is
+# Arch's, and its pacman.conf may have the section or not; the disc carries
+# the same snippet base/setup.sh appends, so the machine that is installed
+# and the machine that ran setup.sh get the same repositories. The section
+# is checked by name rather than by the append's exit code, because a file
+# that already has [multilib] must not get a second copy of it.
+if [ "$(uname -m)" = 'x86_64' ]; then
+    if ! grep -Fqx '[multilib]' /etc/pacman.conf; then
+        if [ -n "$SRC" ] && [ -f "$SRC/base/pacman.multilib.conf" ]; then
+            cat "$SRC/base/pacman.multilib.conf" >> /etc/pacman.conf
+        else
+            # No disc and no tree: the section is two lines, and a live root
+            # without it cannot resolve the x86_64 package list at all.
+            cat >> /etc/pacman.conf <<'EOF'
+
+[multilib]
+Include = /etc/pacman.d/mirrorlist
+EOF
+        fi
+    fi
+    grep -Fqx '[multilib]' /etc/pacman.conf ||
+        die "[multilib] is not in /etc/pacman.conf; the x86_64 package list needs it for Wine"
+    echo "multilib: [multilib] enabled"
 fi
 if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
     sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
@@ -298,12 +372,36 @@ for f in "${PKGLISTS[@]}"; do
 done
 if [ -z "$PKGS" ]; then
     echo "no package list on the disc; using the installer's own"
-    PKGS="base linux linux-firmware systemd sudo openssh networkmanager
+    # The kernel is named for the architecture, as the disc's list is:
+    # Arch Linux ARM has no `linux` package, and no Wine at all.
+    KERNEL=linux
+    [ "$(uname -m)" = 'x86_64' ] || KERNEL=linux-aarch64
+    PKGS="base $KERNEL linux-firmware systemd sudo openssh networkmanager wpa_supplicant
           grub efibootmgr mesa libdrm libinput seatd fontconfig ttf-dejavu
           git python vim nano base-devel pkgconf libwebp freetype2 alsa-lib
           alsa-ucm-conf arch-install-scripts dosfstools e2fsprogs parted
-          gptfdisk util-linux kbd libglvnd intel-ucode"
+          gptfdisk util-linux kbd libglvnd pipewire pipewire-pulse wireplumber
+          bluez bluez-utils jq zstd"
+    if [ "$(uname -m)" = 'x86_64' ]; then
+        # Wine and its 32-bit GL/Vulkan stack are x86_64's, and they are in
+        # [multilib], which step 1 puts in front of pacman.
+        PKGS="$PKGS vulkan-intel lib32-mesa lib32-vulkan-icd-loader
+              lib32-vulkan-intel wine winetricks wine-mono wine-gecko
+              intel-ucode amd-ucode"
+    fi
 fi
+
+# The x86_64 list names wine and the lib32-* stack, which live in
+# [multilib]. pacstrap resolves the list against the live system's
+# pacman.conf, not the one the chroot gets later, so a missing section is
+# named here rather than surfacing as "target not found: wine" halfway
+# through the transaction.
+case " $PKGS " in
+    *" wine "*|*" lib32-"*)
+        grep -Fqx '[multilib]' /etc/pacman.conf ||
+            die "[multilib] is not enabled in /etc/pacman.conf; the x86_64 list needs it for Wine"
+        ;;
+esac
 
 # A mirror that stalls must not fail the install. pacman keeps what it has
 # downloaded, so a retry only fetches what is missing, and it picks another
@@ -376,6 +474,33 @@ step "[8/8] VERIFY"
 [ -e /mnt/etc/systemd/system/graphical.target.wants/finn-comp.service ] ||
     die "finn-comp is installed but not enabled, so the machine would boot to a console"
 
+# The hardware stack is checked on the disk rather than inferred from the
+# list that was requested: the list is a file on the disc, and the disk is
+# what boots. pacman's local database is the record of what resolved and
+# installed; the retry loop and the fallback list are exactly where a set
+# can drift from what was asked for.
+installed_pkg() {
+    compgen -G "/mnt/var/lib/pacman/local/$1-[0-9]*" >/dev/null
+}
+for pkg in linux-firmware mesa libglvnd pipewire pipewire-pulse wireplumber \
+           bluez bluez-utils jq zstd; do
+    installed_pkg "$pkg" || die "$pkg is not installed on $DISK"
+done
+if [ "$(uname -m)" = 'x86_64' ]; then
+    installed_pkg linux || die "the linux kernel is not installed on $DISK"
+    for pkg in intel-ucode amd-ucode vulkan-intel lib32-mesa \
+               lib32-vulkan-icd-loader lib32-vulkan-intel wine winetricks \
+               wine-mono wine-gecko; do
+        installed_pkg "$pkg" || die "$pkg is not installed on $DISK"
+    done
+    HARDWARE="x86_64: firmware, microcode, mesa, vulkan, wine, audio, bluetooth"
+else
+    installed_pkg linux-aarch64 ||
+        die "the linux-aarch64 kernel is not installed on $DISK"
+    HARDWARE="aarch64: firmware, mesa, audio, bluetooth"
+fi
+echo "HARDWARE=$HARDWARE"
+
 bootentry=""
 if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "root=UUID=$ROOTUUID" /mnt/boot/grub/grub.cfg; then
     bootentry=grub
@@ -401,3 +526,4 @@ echo "  disk       $DISK"
 echo "  root UUID  $ROOTUUID"
 echo "  boot       $bootentry"
 echo "  console    Ctrl+Alt+F2 if the compositor does not come up"
+post_line "FINN_INSTALL_COMPLETE disk=$DISK root=$ROOTUUID boot=$bootentry"

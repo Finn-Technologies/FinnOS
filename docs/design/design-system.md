@@ -1,9 +1,23 @@
 # The FinnOS design system
 
 This is the design language of the shell: the palette, the type, the
-radii, the spacing and the anatomy of each surface. It is written from the
-code that draws them — `src/compositor/` — and every number here can be
-found there.
+radii, the spacing and the anatomy of each surface. It is written from the checked-in theme tokens in `ui/_tokens.fui`; the
+compositor maps those tokens into its drawing code. The live FinnOS Figma
+file currently has seven named top-level frames on Page 1 and no Variables
+collection. It contains Boot, Desktop, Home, Control Center, Empty Window,
+stacked Empty Windows and Settings; there is no Store or compatibility-app
+frame. Finn Store's redesign is therefore a new FinnOS design decision rather
+than a direct Figma copy. Layer-level colors and effects still need sampling
+for full palette parity; source comparisons and runtime screenshots are still
+needed before the OS can be called design-complete.
+
+## Measured Figma frame geometry
+
+All seven named top-level frames measure 1280 × 832. Their canvas positions
+use 40-unit gutters: Boot at (0, 0), Desktop at (1320, 0), Desktop - Home at
+(2640, 0), Desktop - Control Center at (3960, 0), Empty Window at (1320, 872),
+Empty Window behind an Empty Window at (2640, 872), and Settings at (1320, 1744).
+These are Figma canvas placements, not component offsets within FinnOS.
 
 It is not a wish list. Where a token exists but nothing draws with it yet,
 this document says so; where the code has to work around a limitation, it
@@ -38,28 +52,39 @@ as a different operating system.
 
 The material is **glass**: the blurred wallpaper brought toward bone.
 
-There are exactly two weights of it, and the arithmetic matters:
+The shared material tokens are defined in `ui/_tokens.fui`; the compositor
+uses the panel weight directly and derives the second tile pass so the
+resulting density matches the theme:
 
-| Pass | Weight | What it is |
-|---|---|---|
-| the panel | **0.70** | the Control Center, the clock page and the Start Menu |
-| a tile over a panel | **0.50** | the inset tiles inside a panel |
-| the tray's well | **0.53** | the dock's inset, a second pass over the pill |
+| Token | Weight | What it is |
+|---|---:|---|
+| `glass_panel` | **0.65** | the panel's first pass |
+| `glass_tile_pass` | **0.5714286** | the second pass over a panel |
+| `glass_tile` | **0.85 effective** | the resulting density after both passes |
+| `glass_well` | **0.53** | the dock's inset, a second pass over the pill |
 
 The tile is not a second colour. `finn_frost_rrect()` mixes toward the
-tint over whatever the layer already carries, so a tile laid over a panel
-*compounds*: 0.70 + 0.30 × 0.50 ≈ **0.85**. That is the whole reason it
-is a second pass rather than one fill of 0.85 — it is the same glass, laid
-down twice, and it deepens the way glass does.
+tint over whatever the layer already carries, so the density compounds:
+0.65 + (1 − 0.65) × 0.5714286 ≈ **0.85**. It is the same glass, laid down
+twice, and it deepens the way glass does.
 
-The dock's glass is 0.70 as well, and the tray's well is a second pass at
-0.53 over it: 0.70 + 0.30 × 0.53 ≈ **0.86**.
+The dock uses the same 0.65 panel pass, and the tray's well is a second
+pass at 0.53 over it: 0.65 + (1 − 0.65) × 0.53 ≈ **0.84**.
 
-**There are no shadows.** The reference's edges are a hard one-pixel step,
-and a soft drop shadow under a frosted panel would fight the glass: the
-panel would look like it was floating *above* the wallpaper rather than
-being *made of* it. Every edge in the shell is the anti-aliased edge of a
-rounded rectangle.
+The window surface has its own Figma-authored weights: **0.70** for the
+window body and **0.50** for the Window Options pill. The pill is a lift over
+the window, not another tile pass; `finnwindow.c` keeps these two values
+separate from the shared panel material.
+
+The **Window** and **Home** surfaces share Figma's subtle effect: a black 3%
+drop shadow at (0, 4) with blur 100, plus a uniform 15-unit background blur.
+Window rendering applies the shadow beneath floating windows and omits it for
+maximized windows; Home paints the same effect beneath its panel, including
+while the panel animates open. Home's fill is 65%, while the Window body is
+70%. The existing 1/8-resolution, three-pass backdrop blur is scaled to the
+Figma 15-unit radius. This is a measured per-surface effect, not a global
+elevation token; other surfaces should only gain shadows when their own Figma
+layer effects are measured.
 
 ### The glass tint
 
@@ -78,27 +103,28 @@ is the one thing a dark shell must not look like.
 
 ## The palette
 
-The palette lives in `src/compositor/finndraw.c` and nowhere else. It is a
-set of globals rather than constants because the shell has an appearance:
-switching light/dark swaps every surface at once, and every surface picks
-the change up without being told.
+The palette is specified by `ui/_tokens.fui` and mapped into the shared
+C globals in `src/compositor/finndraw.c`. A regression test checks both
+appearances against the token file so those copies cannot quietly drift.
+The globals are selected at runtime because switching light/dark swaps
+every surface at once.
 
 ### Light
 
 | Token | Value | What it is for |
 |---|---|---|
-| `bone` | `#F6F1E7` | the chrome surface — *defined, not yet drawn with* |
-| `tile` | `#E7E1D5` | an inset tile — *defined, not yet drawn with* |
-| `tile_on` | `#D3E6FF` | a tile carrying an active control — *defined, not yet drawn with* |
-| `hair` | `#22FFFFFF` | the hairline: a rule at 13% white |
-| `ink` | `#1A1D24` | primary ink: names, values, the wordmark |
+| `bone` | `#FFFFFF` | the chrome surface |
+| `tile` | `#FFFFFF` | an inset tile |
+| `tile_on` | `#D3E6FF` | a tile carrying an active control |
+| `hair` | `#1A000000` | the hairline: a rule at 10% black |
+| `ink` | `#000000` | primary ink: names, values, the wordmark |
 | `mute` | `#969696` | secondary ink: inactive glyphs, detail lines |
-| `dim` | `#7B7776` | detail text — stronger than mute, weaker than ink |
-| `accent` | `#7AB8FF` | the family accent — *defined, not yet drawn with* |
-| `track` | `#CFC7B8` | a slider track — *defined, not yet drawn with* |
+| `dim` | `#5D5C5C` | detail text — stronger than mute, weaker than ink |
+| `accent` | `#006FFF` | the family accent |
+| `track` | `#40000000` | a 25% black slider track |
 | `knob` | `#FFFFFF` | a slider's thumb, and the glyph over a filled disc |
 | `on` | `#006FFF` | a filled, "on" status disc |
-| `fill` | `#998481` | the lit portion of a slider bar |
+| `fill` | `#FFFFFF` | the lit portion of a slider bar |
 | `glass` | `#FFFFFF` | the tint of the frosted chrome |
 
 ### Dark
@@ -112,7 +138,7 @@ the change up without being told.
 | `ink` | `#F4F0E8` | primary ink — ivory, never pure white |
 | `mute` | `#8B9099` | secondary ink |
 | `dim` | `#A9A59E` | detail text |
-| `accent` | `#7AB8FF` | the family accent — the same in both appearances |
+| `accent` | `#006FFF` | the family accent — the same in both appearances |
 | `track` | `#3B4048` | a slider track |
 | `knob` | `#EDE9E1` | a slider's thumb |
 | `on` | `#0A84FF` | a filled, "on" status disc |
@@ -121,16 +147,15 @@ the change up without being told.
 
 ### Why `on` and `fill` are separate from `accent`
 
-The family accent `#7AB8FF` is a *pastel*, and pastels do not survive
-being made into a solid shape. A 31-pixel disc of `#7AB8FF` on bone reads
-as a smear; a filled slider bar of the same colour reads as a mistake.
-So a filled, "on" shape has its own token:
+The family accent is distinct from the other color roles. A filled, "on"
+shape has its own token so status controls can use the appearance-specific
+full-strength value:
 
 - **`on`** — `#006FFF` light, `#0A84FF` dark. This is the accent at full
-  strength, and it is what the Start Menu's installed app tiles and the
-  Control Center's active status discs are painted with.
-- **`fill`** — `#998481` light, `#EDE9E1` dark. A warm grey measured off the
-  reference, used for the lit portion of a slider. The unfilled portion of
+  strength, used for active controls and installed-app emphasis in the
+  Start Menu and Control Center.
+- **`fill`** — `#FFFFFF` light, `#EDE9E1` dark. It is the appearance-specific
+  lit portion of a slider. The unfilled portion of
   the same bar is `fill` at 22% — a fifth of it over the glass reads as
   "this much is not in use" and inherits the appearance without a track
   token of its own.
@@ -167,7 +192,7 @@ the screen's density. The name is the role, not the size.
 | Role | Size | Where |
 |---|---|---|
 | `time` | 34 | the clock page's time |
-| `title` | 17 | the Start Menu's "Applications" and the "FinnOS" wordmark |
+| `title` | 17 | the Home panel's "Apps" heading and prominent account labels |
 | `clock` | 18 | the tray's clock |
 | `label` | 12 – 12.5 | a control's name, an app's name, "Notifications" |
 | `label_sm` | 11 | a label that could not fit at 12 — the Control Center only |
@@ -201,18 +226,19 @@ and a tile's radius is a fraction of the tile.
 
 | Element | Radius | Note |
 |---|---|---|
-| the dock's bubbles and the tray's pill | 19.5 | the reference's r15, scaled |
-| the Control Center's panel | 20.8 | the reference's r16 |
-| the Control Center's tiles | 9.7 | the reference's r7.5 |
-| the clock page's panel | 20.8 | the same as the Control Center's, by design |
-| the clock page's tiles | 9.7 | the same as the Control Center's, by design |
-| the Start Menu's panel | 34 | the menu is a room, and a room has soft corners |
-| the Start Menu's app tiles | 22 | |
+| the dock's bubbles and tray pills | 8 design px | Figma `Desktop - Home`; `finndock.c` |
+| the Control Center panel | 8 design px (10.4 at the 1080 reference) | Figma `Desktop - Control Center / Home` |
+| the Control Center tiles | 4.14 design px (5.38 at the 1080 reference) | Figma tile corners; `finncontrol.c` |
+| the clock page panel | 8 design px (10.4 at the 1080 reference) | Code-defined; no separate Figma frame |
+| the clock page cards | 8 design px (10.4 at the 1080 reference) | Code-defined; no separate Figma frame |
+| the Start Menu (Home) panel | 8 design px (10.4 at the 1080 reference) | Figma `Home`, 800 × 500 |
+| the Start Menu's right panel | 4.14 design px (5.38 at the 1080 reference) | Figma `Right Panel` |
+| the Start Menu's account row | 4.14 design px (5.38 at the 1080 reference) | Figma `Account Options` |
 | a slider row | half its height | a row that is a pill |
 
-The Control Center and the clock page have *identical* radii, because
-they are the same panel with different contents: opening one after the
-other must not make the surface under your eyes change shape.
+The Control Center and Start Menu panels both use the measured 8 px radius.
+The clock page uses the same outer radius in code, but its cards have a
+separate code-defined radius and are not shown as a dedicated Figma frame.
 
 ---
 
@@ -220,69 +246,72 @@ other must not make the surface under your eyes change shape.
 
 The rhythm is 4px, with the exceptions the reference forced.
 
-### The Control Center and the clock page
+### The Control Center
 
-Both are authored in the Control Center's units, which are the
-reference's divided by 0.770 — the density its 1280×832 frame implies
-against a 1080p canvas.
+Figma Page 1's `Desktop - Control Center` is a 1280 × 832 frame. Its `Home`
+panel is 405 × 500 at (721, 260), radius 8. Child geometry in the panel is:
 
-| | |
+| Element | Size and position |
 |---|---|
-| panel | 351 × 351 (the reference's 260 square, plus 4% for the longest label) |
-| padding | 10.4 |
-| gap between rows | 10.4 |
-| a status tile | 150.6 × 46.7, two to a row, 15.6 apart |
-| a slider row | 330.2 × 38.9 |
-| the slider's thumb | 48 wide — the row's own left cap |
-| the status disc | 31.2 across, 7.8 in from the tile's edge |
-| the disc's glyph | 18 of ink |
-| the slider's glyph | 21 of ink |
-| the gap to the tile's text | 6.5 |
-| the panel to the dock | 19.5 |
+| Wi-Fi tile | 188 × 40 at (10, 10) |
+| Bluetooth tile | 188 × 40 at (207, 10) |
+| Brightness row | 335 × 35 at (10, 60), plus a 40 × 35 appearance tile at (355, 60) |
+| Volume row | 385 × 35 at (10, 105) |
+| Status/footer row | 385 × 40 at (10, 450) |
 
-The panel is **square**, 351 × 351, and its content is stacked at the top.
-The empty strip below the controls is deliberate: the reference has it,
-because that strip is where widgets would go, and this shell has none. A
-panel that hugged its contents would be a different shape from the
-reference's.
+The substantial gap below the sliders is intentional space in the Figma
+frame. The panel and bottom footer must keep their 500/450-unit geometry; the
+previous compact layout did not match the design. The source scales these
+measurements by 1080 / 832 for its 1080p reference. The Figma file has no
+separate clock-page frame, so `finnclock.c` still needs its own visual audit.
 
-### The Start Menu
+### The Start Menu (Home)
 
-The menu is the one surface with a width of its own: a launcher has to
-hold a grid, and a grid does not fit in the width of a control panel.
-Everything inside it is the Control Center's language.
-
-| | |
-|---|---|
-| panel | 760 wide; the height follows the number of app rows |
-| padding | 28 |
-| the gap to the footer | 24 |
-| the header | 30, then 24 before the grid |
-| a grid cell | 176 wide (the panel's inner width ÷ 4) |
-| an app's tile | 76 square, centred in its cell |
-| an app's glyph | 40 of ink inside its 76 |
-| the gap to the caption | 12 |
-| the caption's line | 22 |
-| the detail line | 18 |
-| the gap between rows | 18 |
-| the footer | 46 |
+The Figma `Desktop - Home` canvas is 1280 × 832. Its Home panel is
+800 × 500 at (240, 260), with an 8 px radius. Inside it, the right panel is
+385 × 480 at (405, 10), radius 4.14; the account-options row is 385 × 40 at
+(10, 450), also radius 4.14. The left side is an app list with a View All
+action, not a four-column app grid. These measured local coordinates match
+the authored constants in `finnmenu.c` before render scaling. The effective
+scale and placement still need a screenshot comparison on the target display
+resolutions.
 
 ### The dock
 
-| | |
-|---|---|
-| island height | 52 (at 1080p canvas) |
-| island corner radius | 16 |
-| gap between islands | 10 |
-| gap from the bottom of the screen | 24 |
-| pill 1: Taskbar padding | 8 |
-| pill 2: Navigation padding | 6 |
-| pill 3: Clock/Weather padding | 12 |
-| pill 4: Status padding | 12 |
-| app chip size | 36 square (r=9) |
-| navigation icon size | 24 |
-| active launcher well | 42 square (r=8) in bone/white |
-| status glyphs | 16–18 |
+Figma `Desktop - Home` measures the four islands relative to its 1280 × 832
+frame:
+
+| Island | Position | Size | Notes |
+|---|---:|---:|---|
+| Taskbar | (451, 775) | 115 × 42 | Three app items; 10 px internal spacing |
+| Navigation | (581, 775) | 116 × 42 | 5 px internal spacing |
+| Time & Weather | (712, 775) | 139 × 42 | Clock and weather |
+| Status / tray | (866, 775) | 116 × 42 | 15 px internal spacing |
+
+All four have radius 8; outer gaps are 15 px and bottom margin is 15 px.
+The Navigation island is the compositor's centered anchor. The Taskbar is
+content-sized. Pixel measurements from the exported frame resolve its item
+layout: three 26 px tiles on a 36 px center step (10 px gaps), with 8.5 px
+outer insets, produce the measured 115 px width. `finndock.c` uses those
+values and centers the 26 px tiles vertically in the 42 px island. Code also
+defines 24 px navigation icons, a 42 px active launcher well and 16–18 px
+status glyphs.
+
+### Boot and windows
+
+The Figma `Boot` board is a 1280 × 832 black frame. Its 50 × 50 mark sits
+at (615, 391); the 150 × 5 progress track starts at (565, 541), with a 15 px
+white lit segment over a 40%-opacity `#6C6C6C` track. These match the metrics
+in `finnboot.c`.
+
+The `Empty Window` board is also 1280 × 832. Its centered default window is
+500 × 300 with radius 8; the options pill is 72 × 24, radius 4.14, inset 10,
+with three 15.43 px icons. The centered “Empty window” label is 12 px at 70%
+ink opacity, matching `finnwindow.c`.
+
+The stacked-window board contains two 500 × 300 windows, radius 8, at
+(390, 266) and (539, 189). The second is offset +149/−77 design units from
+the centered first window; `finnwindow.c` now uses this measured cascade.
 
 ### Icons
 
@@ -348,41 +377,41 @@ navigation island strictly centered horizontally:
 
 ### The Control Center
 
-A square panel above the tray, its left edge flush with the pill's.
+Figma's Control Center Home panel is a 405 × 500 frame with Wi-Fi and
+Bluetooth tiles at the top, a brightness row with an appearance control, a
+volume row, a large intentional widget area, and a status/footer row at the
+bottom. Its exact measured geometry is listed in Spacing above. The old
+compact 200-unit panel placed the footer too high and did not match Figma.
 
 ```
   ┌───────────────────────────────┐
-  │ ⬤ Wi-Fi          ⬤ Bluetooth   │   two status tiles
-  │   Connected       No adapter   │
-  │ ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ │   a slider row: a pill
-  │ ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬ │
-  │ ⬤ Appearance      ⬤ Power       │
+  │ [Wi-Fi]         [Bluetooth]   │
+  │ Sun ━━━━━━━━━━━━━━━ Sun       │  brightness / appearance
+  │ Vol ━━━━━━━━━━━━━━━━━━━       │  volume
+  │                               │
+  │        widget space           │
+  │ Battery / charge      Edit ⚙ │
   └───────────────────────────────┘
 ```
 
 - **A status tile is the reference's unit**: a lighter frosted tile, a
   filled circle carrying the glyph, then a name with a grey detail under
   it. The circle is the state — `on` when the control is on, `mute` when
-  it is off or the hardware is absent. The name and the detail keep their
-  colours, so "No adapter" reads as information rather than as damage.
-- **One connection slot, not two.** When the machine has no radio the slot
-  shows the wire it actually has, instead of standing empty next to a
-  second "Wired" tile. Both interfaces would otherwise compete for the
-  same sentence, and the honest one is the one carrying traffic. A wire
-  is not a switch: that tile is inert while it shows one.
+  it is off or the hardware is absent. The name and detail remain readable,
+  so "No adapter" is information rather than a broken-looking switch.
+- **Wi-Fi and Bluetooth are distinct tiles.** The network tile can report
+  the active interface; it is not a second Bluetooth or wired toggle.
 - **A slider row is one pill, not a disc with a track beside it.** Its
-  left 48 pixels are white — the row's own left cap — and the value
-  emerges from under it with a square edge instead of a curve. Nothing is
-  drawn at all when there is no level to draw, so an absent control is a
-  bare track reading "n/a", never a fake 100%.
-- **The sliders do not squeeze when pressed.** A toggle is a button and can
-  give under the finger; the point of a slider is that the surface stays
-  still while the value travels across it.
+  left end carries the control glyph and the value emerges from beneath it.
+  Nothing is drawn as an active level when the machine has no level to set.
+- **The sliders do not squeeze when pressed.** A toggle can give under the
+  finger; a slider's surface stays still while its value travels across it.
 
 ### The clock page
 
-The same panel, the same width, the same radii — opened from the clock
-instead of the tray.
+The notification/clock page is currently code-defined as a 338 × 338 panel.
+Figma Page 1 has no dedicated clock-page frame, so its layout below describes
+implementation intent, not verified design parity.
 
 ```
   ┌───────────────────────────────┐
@@ -401,37 +430,15 @@ When nothing has happened, the page says so — "No new notifications" and
 what that means — rather than showing an empty list it cannot fill. The
 notification queue is empty at every start, by design.
 
-### The Start Menu
+### The Start Menu (Home)
 
-A card in the middle of the screen, because it is the front door and a
-front door is in the middle of the wall you walk through.
-
-```
-  ┌──────────────────────────────────────────────┐
-  │ Applications                        1 of 8 ready │
-  │   ▣      ▣      ▣      ▣                    │
-  │  Code   Files  Notes  Studio                 │
-  │          Not installed                        │
-  │  ▣      ▣      ▣      ▣                     │
-  │ ─────────────────────────────────────────── │
-  │ FinnOS                          Restart  Shut down │
-  └──────────────────────────────────────────────┘
-```
-
-- **A grid of four columns.** The cell's tile is centred in it, so a row
-  of tiles reads as a row rather than as a staircase.
-- **An installed app is a coloured tile**: `on` behind a `knob` glyph, the
-  name in `ink`. **An app that is not installed is a quiet wash** — 10%
-  ink — with a `mute` glyph, the name in `dim`, and the detail line
-  reading **"Not installed"**. A muted tile says "not here" more honestly
-  than a coloured one that does nothing when it is pressed, and it takes
-  no hover and no press.
-- **The header says what is true**: "1 of 8 ready" — how many of the
-  catalogue's apps this machine can actually open.
-- **The footer is the wordmark and the power row.** "Restart" and "Shut
-  down" are the two things the menu can do that are not an app, and they
-  are drawn like every other control rather than as a line of quiet text
-  that happens to be clickable.
+The Figma Home panel is 800 × 500 at (240, 260) in the 1280 × 832 desktop
+frame. Its left side is an app list headed `Apps`, with a `View all` action;
+the right side is a widget area with two placeholder cards; the bottom-left
+account row carries the avatar/name and restart/power controls. This is not a
+four-column launcher grid. The measured panel, right-panel and account-row
+coordinates are recorded above and match the authored values in
+`finnmenu.c` before responsive render scaling.
 
 ---
 
@@ -440,15 +447,16 @@ front door is in the middle of the wall you walk through.
 Three of the rules above are really one rule: **a control that cannot act
 must not look like it can.**
 
-- The Start Menu's app tiles come from two files with two owners:
+- The Start Menu's app list is populated from two sources:
   `/usr/share/finn/apps.registry` says which apps exist, and
   `/var/lib/finnpkg/installed` says which of them are on this machine.
-  The shell draws the difference.
+  The shell draws the difference without changing the Figma list layout.
 - The Control Center's tiles are bound to the machine's state. A machine
   with no wireless adapter shows "No adapter" over a grey circle — not a
   switch that lies. Such a tile takes no press, because there is nothing
   behind it to promise.
-- The dock's first bubble is an empty slot and is drawn as one.
+- The dock's icon islands follow the Figma Home layout; do not add a blank
+  placeholder where the reference shows an app or system icon.
 - The tray shows only the hardware that exists.
 - The sliders read "n/a" when there is no level to set, and they cannot be
   dragged when there is none.
@@ -457,7 +465,19 @@ must not look like it can.**
 
 ## Where this document and the code meet
 
-The palette in `finndraw.c` and the theme in `ui/_tokens.fui` are two
-copies of the same thing, and they are kept in step by hand. That is a
-debt the compiler will eventually pay. The compositor's copy is the
-truth; the `.fui` copy is the design system's statement of intent.
+The C palette and `.fui` theme remain separate representations, and
+`tests/test_theme.py` checks their values and material-pass arithmetic. That
+proves consistency with the checked-in tokens, not Figma color parity: the
+Variables view is empty. Home, Control Center, Boot, and single-window
+geometry have been measured. The Settings sidebar now follows Figma's five
+visible entries: Wi-Fi, Bluetooth, Network, Personalization, and System
+Information. Network reports live interface link state only; the frame does not
+show separate Network or Personalization page compositions, so those bodies
+adapt existing system status and appearance components rather than claiming
+pixel-for-pixel unseen screens. Display, Sound, and Power remain searchable and
+control-addressable. System Information uses the Figma hero/four-card composition
+with live RAM, root-storage and CPU values; GPU details remain explicitly
+unavailable. The measured stacked-window positions now match Figma; z-order and
+other runtime interactions remain unverified. Dock/desktop scaling needs a
+runtime comparison, and neither the clock page nor Finn Store has a dedicated
+Figma frame.

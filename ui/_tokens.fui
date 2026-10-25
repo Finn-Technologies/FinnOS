@@ -67,11 +67,13 @@ theme FinnTokens {
   type: micro 9/12 "Fixel Display" 400
 
   // ---- the material ---------------------------------------------------
-  // The glass is the blurred wallpaper brought toward bone. A tile over a
-  // panel is a second pass, and it compounds: 0.65 + 0.35 x 0.57 = 0.85.
-  // There are no shadows: the reference's edges are a hard one-pixel step.
+  // The glass is the blurred wallpaper brought toward bone. glass_tile is
+  // the effective density after two passes: 0.65 + 0.35 x 0.57 = 0.85.
+  // The compositor uses glass_tile_pass for the second pass itself. Figma's
+  // Window and Home surfaces separately use a black 3% drop shadow at (0,4),
+  // blur 100; it is intentionally not a global elevation token.
 
-  weight: glass_panel 0.65, glass_tile 0.85, glass_well 0.53
+  weight: glass_panel 0.65, glass_tile 0.85, glass_tile_pass 0.5714286, glass_well 0.53
   weight: surface_scale 0.92
 
   // ---- the wallpaper --------------------------------------------------

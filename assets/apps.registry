@@ -19,4 +19,3 @@
 settings | Settings | settings-app.svg | /usr/local/bin/finn-settings | Settings
 files | Finn Files | files.svg | /usr/local/bin/finn-files | File manager
 store | Finn Store | store.svg | /usr/local/bin/finn-store | Applications
-browser | Finn Browser | browser.svg | /usr/local/bin/finn-browser | Web pages as text

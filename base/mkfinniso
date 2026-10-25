@@ -12,12 +12,14 @@
 # live root at /opt/finnos so the installer can put them on a machine.
 #
 # There are two ways to write the disc, and which one was used is printed
-# rather than left to be guessed:
+# rather than left to be guessed. Both build from this tree alone: no base
+# image is ever downloaded, and there is no remaster path.
 #
 #   native    mkarchiso, from Arch's archiso package. It resolves the
 #             package list against the repositories, runs mkinitcpio with
-#             this profile's hooks, and builds syslinux, systemd-boot and
-#             GRUB for the disc. It needs an Arch machine, root, and a
+#             this profile's hooks, and builds BIOS/syslinux and
+#             UEFI/systemd-boot media. GRUB is configured by the installer.
+#             It needs an Arch machine, root, and a
 #             network. This is the real build.
 #
 #   assemble  xorriso and mksquashfs, for a machine that has neither
@@ -106,12 +108,13 @@ problem() { printf '  %s\n' "$*" >&2; PROBLEMS=$((PROBLEMS + 1)); }
 
 check_tree() {
   say "checking the profile"
-  for v in iso_name iso_label iso_publisher iso_application install_dir bootmodes; do
+  for v in iso_name iso_label iso_publisher iso_application install_dir pacman_conf bootmodes; do
     grep -qE "^$v=" "$HERE/profiledef.sh" || problem "profiledef.sh does not set $v"
   done
   grep -q "iso_name='finnos'" "$HERE/profiledef.sh" || problem "the ISO is not named finnos"
   grep -q "iso_label='FINNOS'" "$HERE/profiledef.sh" || problem "the volume label is not FINNOS"
   grep -q "install_dir='finn'" "$HERE/profiledef.sh" || problem "the disc is not laid out under /finn"
+  grep -q "pacman_conf='pacman.conf'" "$HERE/profiledef.sh" || problem "the profile does not select its pacman.conf"
 
   # The label and the layout are written twice: once in the profile, and
   # once in each boot menu, because a bootloader cannot read a shell
@@ -142,6 +145,12 @@ check_tree() {
              "$HERE/airootfs/etc/motd" 2>/dev/null || true)
 
   say "checking the package list"
+  if [ "$ARCH" = 'x86_64' ]; then
+    [ -f "$HERE/pacman.multilib.conf" ] ||
+      problem "the x86_64 Wine runtime needs pacman.multilib.conf"
+    grep -qE '^\[multilib\][[:space:]]*$' "$HERE/pacman.multilib.conf" 2>/dev/null ||
+      problem "pacman.multilib.conf does not enable the multilib repository"
+  fi
   # shellcheck disable=SC2013
   [ "$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$PKGS" | grep -c .)" -ge 20 ] ||
     problem "$PKGS is suspiciously short"
@@ -152,6 +161,7 @@ check_tree() {
 linux(-aarch64)?
 systemd
 networkmanager
+wpa_supplicant
 openssh
 freetype2
 libwebp
@@ -160,6 +170,56 @@ libdrm
 seatd
 python
 EOF
+
+  # The hardware set is the difference between a medium that draws on the
+  # machine it is installed on and one that does not. Both lists are checked
+  # against the set their architecture can actually resolve: Wine and the
+  # 32-bit GL/Vulkan stack exist for x86_64 only, and Arch Linux ARM does
+  # not package Wine at all. Naming a package that does not exist is a list
+  # that fails at build time, which is why it is refused here.
+  say "checking the hardware packages"
+  pkg_has() { grep -qE "^[[:space:]]*$1([[:space:]]|$)" "$PKGS"; }
+  for want in linux-firmware mesa libglvnd pipewire pipewire-pulse \
+              wireplumber bluez bluez-utils jq zstd; do
+    pkg_has "$want" || problem "$PKGS does not carry $want"
+  done
+  if [ "$ARCH" = 'x86_64' ]; then
+    for want in intel-ucode amd-ucode vulkan-intel lib32-mesa \
+                lib32-vulkan-icd-loader lib32-vulkan-intel wine winetricks \
+                wine-mono wine-gecko; do
+      pkg_has "$want" || problem "$PKGS does not carry $want"
+    done
+  else
+    for want in wine winetricks wine-mono wine-gecko vulkan-intel \
+                lib32-mesa lib32-vulkan-icd-loader lib32-vulkan-intel; do
+      if pkg_has "$want"; then
+        problem "$PKGS names $want, which Arch Linux ARM does not package"
+      fi
+    done
+  fi
+  # One name per line is what makes a duplicate visible; a list that names a
+  # package twice is a package fetched twice and a reader who cannot tell
+  # which copy is the real one.
+  dupes="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$PKGS" |
+           grep -v '^$' | sort | uniq -d | tr '\n' ' ')"
+  [ -z "$dupes" ] || problem "$PKGS names a package twice: $dupes"
+
+  # Wine and the lib32-* stack are in [multilib], so every path that writes
+  # a pacman.conf has to apply the section: setup.sh on a machine, the
+  # installer before pacstrap, and the chroot on the installed system. A
+  # list that resolves on the build machine and not on the installed one is
+  # the failure this catches.
+  if [ "$ARCH" = 'x86_64' ]; then
+    grep -q 'pacman.multilib.conf' "$HERE/setup.sh" ||
+      problem "base/setup.sh does not apply pacman.multilib.conf"
+    grep -q 'pacman.multilib.conf' "$HERE/../vm/finn-install.sh" ||
+      problem "vm/finn-install.sh does not apply pacman.multilib.conf"
+    grep -q 'pacman.multilib.conf' "$HERE/../vm/finn-chroot.sh" ||
+      problem "vm/finn-chroot.sh does not apply pacman.multilib.conf"
+    if grep -qE '^\[multilib\]' "$HERE/pacman.conf"; then
+      problem "base/pacman.conf carries [multilib]; setup.sh appends it and there must be one copy"
+    fi
+  fi
 
   say "checking that the desktop stays out"
   # The servers, not the client library: wayland is checked just below,
@@ -199,6 +259,11 @@ EOF
     [ -f "$dst" ] || { problem "missing $dst"; continue; }
     cmp -s "$src" "$dst" || problem "$dst has drifted from $src; the first is the source"
   done
+
+  local sysusers="$HERE/airootfs/usr/lib/sysusers.d/finn.conf"
+  [ -f "$sysusers" ] || problem "missing live sysusers rule for group finn"
+  grep -qE '^g[[:space:]]+finn([[:space:]]|$)' "$sysusers" 2>/dev/null ||
+    problem "the live sysusers rule does not create group finn"
 
   say "checking the held-out files"
   [ -x "$HERE/../vm/finn-install.sh" ] || problem "vm/finn-install.sh is not executable"
@@ -262,7 +327,8 @@ stage_boot_menus() {
   local profile="$1"
   mkdir -p "$profile/grub" "$profile/efiboot/loader/entries"
   cp -a "$HERE/boot/grub/." "$profile/grub/"
-  cp -a "$HERE/boot/loader/." "$profile/efiboot/"
+  cp -a "$HERE/boot/loader/loader.conf" "$profile/efiboot/loader/loader.conf"
+  cp -a "$HERE/boot/loader/entries/." "$profile/efiboot/loader/entries/"
   if [ "$ARCH" = 'x86_64' ]; then
     mkdir -p "$profile/syslinux"
     cp -a "$HERE/boot/syslinux/." "$profile/syslinux/"
@@ -279,25 +345,43 @@ stage_boot_menus() {
 
 build_native() {
   command -v mkarchiso >/dev/null 2>&1 ||
-    die "mkarchiso is not on this machine; it comes from Arch's archiso package. Use --mode=assemble for the xorriso path, or vm/build-iso.sh for the remaster path."
+    die "mkarchiso is not on this machine; it comes from Arch's archiso package. Use --mode=assemble for the xorriso path."
   [ "$(id -u)" = 0 ] || die "mkarchiso has to run as root: sudo base/mkfinniso"
   say "mode: native (mkarchiso)"
 
   local profile="$WORK/profile"
   mkdir -p "$profile"
-  cp "$HERE/profiledef.sh" "$HERE/pacman.conf" "$PKGS" "$profile/"
+  cp "$HERE/profiledef.sh" "$PKGS" "$profile/"
+  cp "$HERE/pacman.conf" "$profile/pacman.conf"
+  local profile_packages="$profile/$(basename "$PKGS")"
+  # The live initramfs uses hooks from mkinitcpio-archiso; archiso supplies
+  # the profile tooling, and BIOS-mode x86 media also needs syslinux. These
+  # are ISO-only packages, not installed-system packages.
+  for package in archiso mkinitcpio-archiso; do
+    grep -qxF "$package" "$profile_packages" ||
+      printf '%s\n' "$package" >> "$profile_packages"
+  done
+  if [ "$ARCH" = 'x86_64' ]; then
+    grep -qxF 'syslinux' "$profile_packages" ||
+      printf '%s\n' 'syslinux' >> "$profile_packages"
+    cat "$HERE/pacman.multilib.conf" >> "$profile/pacman.conf"
+  fi
   cp -a "$HERE/airootfs" "$profile/airootfs"
   stage_boot_menus "$profile"
   stage_sources "$profile/airootfs/opt/finnos"
 
   mkdir -p "$WORK/out"
   say "running mkarchiso"
-  mkarchiso -v -w "$WORK/archiso" -o "$WORK/out" "$profile"
+  FINN_ARCH="$ARCH" mkarchiso -v -w "$WORK/archiso" -o "$WORK/out" "$profile"
   local built
   built="$(find "$WORK/out" -name '*.iso' -print -quit)"
   [ -n "$built" ] || die "mkarchiso wrote no ISO into $WORK/out"
   install -m644 "$built" "$OUT"
-  BOOTS="BIOS (syslinux), UEFI (systemd-boot) and GRUB"
+  if [ "$ARCH" = 'x86_64' ]; then
+    BOOTS="BIOS (syslinux) and UEFI (systemd-boot)"
+  else
+    BOOTS="UEFI (systemd-boot)"
+  fi
 }
 
 build_assemble() {

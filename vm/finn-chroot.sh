@@ -15,7 +15,8 @@
 #   ROOTUUID   the UUID of the filesystem mounted at /, for every boot entry
 #   FINN_DISK  the whole disk, for the BIOS boot code (grub i386-pc)
 # FINN_PASSWORD is optional; without it the two accounts get a generated
-# password, which is printed once at the end.
+# password, which is printed once at the end. A supplied password is never
+# echoed into the installation log.
 set -euo pipefail
 HOST=http://192.168.44.1:8765
 SRC=/root/finnos-src
@@ -34,6 +35,10 @@ credentials() {
     [ -n "$PW" ] || return 0
     [ "$CREDS_SHOWN" = 0 ] || return 0
     CREDS_SHOWN=1
+    if [ -n "${FINN_PASSWORD:-}" ]; then
+        echo "  operator-supplied credentials are omitted from this log."
+        return 0
+    fi
     cat <<EOF
 
   Credentials, shown once:
@@ -88,6 +93,17 @@ get /etc/os-release base/airootfs/etc/os-release
 get /etc/issue base/airootfs/etc/issue
 get /etc/motd base/airootfs/etc/motd
 get /etc/pacman.conf base/pacman.conf
+if [ "$(uname -m)" = 'x86_64' ]; then
+    MULTILIB_CONF="$(mktemp)"
+    get "$MULTILIB_CONF" base/pacman.multilib.conf
+    cat "$MULTILIB_CONF" >> /etc/pacman.conf
+    rm -f "$MULTILIB_CONF"
+    # The section is what makes Wine's 32-bit dependencies resolvable
+    # after the install; a pacman.conf without it is a machine that cannot
+    # update or reinstall what it was built with.
+    grep -Fqx '[multilib]' /etc/pacman.conf ||
+        { echo "error: [multilib] was not applied to /etc/pacman.conf" >&2; exit 1; }
+fi
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 finnos.localdomain finnos\n' > /etc/hosts
 
 step "accounts"
@@ -108,9 +124,14 @@ printf 'finn ALL=(ALL) ALL\n' > /etc/sudoers.d/finn
 chmod 0440 /etc/sudoers.d/finn
 
 step "services"
-systemctl enable NetworkManager systemd-networkd 2>/dev/null || true
+systemctl enable NetworkManager 2>/dev/null || true
 systemctl enable seatd 2>/dev/null || true
 systemctl enable systemd-timesyncd 2>/dev/null || true
+# bluetooth.service carries ConditionPathIsDirectory=/sys/class/bluetooth,
+# so enabling it on a machine with no radio starts nothing; with a USB
+# dongle it is what the Control Center's Bluetooth tile drives.
+systemctl enable bluetooth 2>/dev/null ||
+    echo "WARN: bluetooth.service is not installed"
 # sshd is installed and disabled: a network login is a decision somebody
 # makes on the machine, not something an install turns on.
 # tty2 is the rescue console. tty1 belongs to the compositor, so the old
@@ -155,6 +176,13 @@ else
 fi
 get /usr/local/bin/finnpkg src/pkg/finnpkg
 chmod +x /usr/local/bin/finnpkg
+if [ -x /usr/bin/flatpak ]; then
+    if ! /usr/local/bin/finnpkg flatpak init; then
+        echo "WARN: Flathub could not be configured; Flatpak search will be unavailable"
+    fi
+else
+    echo "WARN: Flatpak is not packaged for this target; Flatpak apps are unavailable"
+fi
 chown -R root:finn /usr/share/finn /var/lib/finnpkg
 ls /usr/share/finn/icons/
 

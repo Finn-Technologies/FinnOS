@@ -22,7 +22,7 @@
 ## System components
 | Binary | Role |
 |---|---|
-| `finn-comp` | The compositor / rendering engine and the shell (direct DRM/KMS, dumb buffers; no X11, no Wayland, no EGL) |
+| `finn-comp` | The compositor / rendering engine and the shell (direct DRM/KMS; no X11; limited in-process Wayland xdg-shell/SHM client support; software buffers or GBM/EGL acceleration) |
 | `finnd` | The control plane: the single permissioned entry point for state, input, display, power and apps |
 | `finnctl` | Control-plane client — every `finnd` verb is scriptable from a shell |
 | `finn-mcp` | MCP adapter. Exposes the control plane to agents. Runs where the agent runs, not on the device |

@@ -216,35 +216,33 @@ child*      a node:
 
 ## Reading one in C
 
-The format is small enough to read in an afternoon. The shape of a
-reader is:
+FinnOS core provides a bounded reader in `src/core/finnfbin.c` and
+`finnfbin.h`. It owns a copy of the input, validates the header, sections,
+values and scene-tree bounds, then exposes the decoded nodes and values to a
+compositor-side renderer. The current reader does not draw the tree or launch
+an app. The API's hard limits (16 MiB per file, 4096 nodes, 16384 values and
+64 levels of nesting) keep malformed files from causing unbounded allocation
+or recursion.
+
+A compositor-side caller can load the scene and inspect its sections with
+`finnfbin.h`:
 
 ```c
-struct fbin_reader {
-    const uint8_t *data;
-    size_t len;
-    size_t pos;
-};
-
-static int take(struct fbin_reader *r, size_t n, const uint8_t **out);
-static uint8_t u8(struct fbin_reader *r);
-static uint16_t u16(struct fbin_reader *r);
-static uint32_t u32(struct fbin_reader *r);
-static int64_t i64(struct fbin_reader *r);
-static double f64(struct fbin_reader *r);
-static int string(struct fbin_reader *r, const uint8_t **out, uint16_t *len);
+finn_fbin_document document;
+char error[128];
+if (finn_fbin_parse(bytes, length, &document, error, sizeof error) == 0) {
+    const finn_fbin_section *screen = finn_fbin_find(&document, "screen");
+    if (screen && screen->node) {
+        /* Compose screen->node into finn-comp's DRM-owned frame. */
+    }
+    finn_fbin_free(&document);
+}
 ```
 
-Read the header, check the magic and the version, then read the
-section list. For each section, read the name and skip the payload,
-unless the name is `screen` or begins with `screen:` — those are read
-as nodes — or the name is `tokens`, whose payload is read as a value.
-
-A reader must be strict about two things: the version, and the length
-of every string, list and map, because those are what tell it where
-the next thing starts. Every length in the format is a count of
-something that has a known size, so a reader that checks its bounds
-never reads past the end of the file.
+The parser rejects unsupported versions and flags, truncation, invalid node
+or value kinds, trailing bytes, non-finite numbers and inputs beyond its
+resource limits. Unknown sections remain available as opaque payloads so a
+future reader can add data without changing the file header.
 
 ## What is not in the format
 

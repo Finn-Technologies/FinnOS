@@ -18,28 +18,36 @@ human or agent — knows what "done" means for each piece.
 
 ## Next
 
-### Windows
+### Compatibility packages
 
-Windows exist — open, close, move, maximize, minimize, and `Alt+Tab` cycles
-focus — but they are empty. Everything else is smaller without the client
-protocol.
+Finn Store lists installed Flatpaks, searches configured remotes, starts
+audited install/remove jobs, and offers Open for installed Library entries.
+`finnd flatpak.run` now verifies system installation and starts the app as Finn
+in the Wayland session. The x86_64 base manifest includes Flatpak; setup tries
+to register canonical system Flathub and warns if unavailable. The aarch64
+manifest still omits Flatpak. Current core, compositor and control sources
+build on an ARM Linux VM. An installed GNOME Calculator launched through the
+Flatpak control path rendered a 410×666 SHM surface on a standalone
+FinnWayland test server; pointer and keyboard input produced `78`. This was
+not a booted FinnOS desktop or a full Store search/install/launch walkthrough.
+Popups, subsurfaces, dmabuf, touch, clipboard and drag-and-drop remain
+unsupported. Wine is x86_64-only and supports registering an existing `.exe`,
+listing registrations, and launching through audited `finnd` with a private
+prefix per app. It has no installer or automatic discovery flow, and real Wine
+GUI behavior remains unverified.
 
-A window manager needs three things the system does not have yet:
+### Windows and external clients
 
-1. **A compositor client protocol.** A client connects, says "I want a
-   surface, this size, at this position", and the compositor gives it
-   back. The protocol should be the same line protocol the control plane
-   uses, with a second socket for surfaces, and it should be binary —
-   a surface stream is pixels, not text.
-2. **A window list a client can join.** The shell knows its own windows;
-   it does not know about a process that wants one, so the dock's
-   first bubble cannot show a running app that is not `finnwindow`, and
-   `Alt+Tab` has nothing but empty windows to switch between.
-3. **A focus and stacking model.** Click to raise is there. A keyboard
-   focus that a client can own, and therefore receive typed text, is not.
-
-The rules for the shell chrome that are already in force apply to windows
-too: nothing moves under the pointer, and a surface is a cached layer.
+The window manager now hosts external Wayland xdg-shell toplevels backed by
+SHM; imported buffers join the existing window stack, and finn-comp routes
+configure, close, frame, pointer and keyboard events. A real GNOME Calculator
+Flatpak was launched against the server in an ARM Linux test VM; click and key
+input changed its expression. This verifies a client path in isolation, not a
+booted FinnOS desktop. Next, verify the full Store search/install/open flow on
+a booted target and implement protocol pieces apps require (including
+clipboard/DND where needed). Wine still needs a real x86_64 runtime and GUI test. The Store lists validated
+registrations in Library and launches them through `wine.run`; registering an
+existing `.exe` remains a CLI step, and installers are not managed.
 
 ### Keyboard
 
@@ -48,16 +56,20 @@ held keys rather than from the event, handles `SYN_DROPPED`, picks up a
 keyboard plugged in later, and exposes `key.press/release/tap`. The shell
 uses it for setup, `Ctrl+Alt+F1..F6`, `Alt+Tab`, `Esc` and the Super key.
 
-What is missing is the other end: a focused surface to deliver text to.
-Until the client protocol exists there is no text field, no Super+Space
-search and no terminal input, and the documentation says so rather than
-drawing a field that cannot take a character.
+The compositor forwards keyboard input to a focused external Wayland surface
+as well as the built-in search/filter fields. A GNOME Calculator test confirmed
+basic key entry through the isolated Wayland server. Full FinnOS desktop
+validation remains open; text-input-v3, input methods and clipboard are not
+provided, and a terminal application is not included.
 
 ### Apps that draw
 
-`app.launch` starts a program, and the program has no way to talk to the
-compositor. When the client protocol exists, a `.fui` app becomes a
-client: the `.fbin` is its scene graph, and it asks for a surface.
+`app.launch` starts a program. A limited external Wayland host now exists for
+traditional GUI clients; current sources build on ARM Linux, and an installed
+GTK Calculator rendered and accepted basic input on a standalone test server.
+A booted FinnOS desktop remains unverified. A `.fui` app does not yet become a
+client: the `.fbin` is its scene graph, and FinnOS still needs a native renderer
+that composes it directly into `finn-comp`.
 
 The first-party apps are named and waiting:
 
@@ -102,8 +114,9 @@ the same door every other client uses.
   `ui/_targets.fui` and there is no code behind them. The compositor's
   density model is already in place; the input model is not.
 - **The UI language, finished.** `fuic` compiles a `.fui` file to a
-  `.fbin`. The renderer that draws a `.fbin` does not exist, and the
-  token table is still kept in two places by hand.
+  `.fbin`. FinnOS core now has a bounded C reader for the compiled scene
+  tree, but the renderer that draws it and the native app host do not exist
+  yet; the token table is still kept in two places by hand.
 - **A second shell.** The compositor draws the shell in C. A shell that
   loads its own layout would let the OS be themed without touching the
   compositor — but it would also mean a shell crash takes the display

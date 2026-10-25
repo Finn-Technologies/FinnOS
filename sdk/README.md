@@ -6,6 +6,11 @@ The toolkit for building on FinnOS. It has two halves:
 - **`finnsdk`**, the client library: talk to a running FinnOS over the
   control protocol.
 
+FinnOS core now includes a bounded C reader for `.fbin` scene trees in
+[`src/core/finnfbin.c`](../src/core/finnfbin.c). It is runtime groundwork
+only: the compositor does not render those trees yet, and there is no `.fbin`
+app host.
+
 Neither needs a third-party package. The SDK has to run on whatever host
 the agent runs on, and a toolkit that needs a wheel to answer a question
 about a window is a toolkit nobody will use.

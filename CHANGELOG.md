@@ -5,6 +5,33 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The ISO is FinnOS, built from this tree
+
+- There is no downloaded base image and no remaster path. `vm/build-iso.sh`
+  is gone; `base/mkfinniso` natively (or CI, which runs the same native
+  build in a privileged Arch container) is the only way to write the
+  medium, from the profile, the package list, the live root and the boot
+  menus in `base/`.
+- CI verifies the native disc: the `/finn` live root, the FinnOS syslinux
+  and systemd-boot menus, the payload, and the boot-to-installer QEMU run.
+- The VMware dev-VM script takes the one FinnOS disc; the stock-Arch
+  two-disc fallback is gone.
+
+### Wayland client frame copies
+
+- Reuse each external window's owned pixel allocation when its buffer dimensions stay the same, instead of allocating and freeing the full SHM surface on every commit.
+- Copy opaque, unscaled SHM content through row-sized `memcpy` spans, retaining the rounded lower corners and clipping at screen edges. Alpha surfaces and resized/scaled content keep the general blend path.
+
+### x86-64 runtime coverage
+
+- Both architecture manifests now include `wpa_supplicant` for NetworkManager Wi-Fi; the installer fallback package set stays consistent.
+
+### Shared theme tokens stay in step
+
+- The compositor's shared palette now follows the checked-in light/dark tokens, including the active tile and dark accent values.
+- Frosted panel and tile passes now match the theme's 0.65 panel weight and 0.85 effective tile density; a regression test checks both the values and the compounding math.
+- Figma's Window and Home effects are now measured and rendered: a black 3% shadow at (0, 4), blur 100, plus the 15-unit backdrop blur. Home's material now matches its measured 65% fill instead of 84%; the shadow remains scoped to those surfaces, not treated as a global elevation token.
+
 ### Finn Store, and a package manager with one owner
 
 - **A store that lists what the OS actually has.** Finn Store reads the
@@ -20,8 +47,39 @@ and the changes to it are worth reading.
   "Remove?"; the second performs it. Installing is one press, because it
   changes only the install list.
 - **The catalogue ships with the system.** This build does not download
-  packages, and the Store says so rather than drawing a progress bar for
+  native packages, and the Store says so rather than drawing a progress bar for
   a network it does not have.
+- **Flatpak package management and launch go through the audit log.** `finnd`
+  exposes system list/search, queues install/remove transactions as systemd
+  jobs, verifies installed state and starts installed apps as Finn in the
+  Wayland session. Finn Store passes each search row's remote through the
+  validated install job; Library entries offer Open. `finnpkg flatpak run`
+  now delegates through the same audited verb instead of refusing launch or
+  starting a process itself. The x86_64 base manifest includes Flatpak and
+  setup attempts to configure canonical system Flathub; the aarch64 manifest
+  does not include Flatpak.
+- **A limited in-process Wayland client host joins the window stack.**
+  `finn-comp` implements xdg-shell toplevels backed by `wl_shm`, with
+  compositor-managed configure, focus, pointer, keyboard, frame and close
+  routing. Current sources build on an ARM Linux VM. An installed GNOME
+  Calculator launched through the Flatpak control path rendered a 410×666
+  surface; after activation and frame callbacks, pointer and keyboard input
+  changed its display to `78`. This used a standalone test server, not a booted
+  FinnOS desktop. Popups, subsurfaces, dmabuf, touch, scaling, clipboard and
+  drag-and-drop remain unsupported; x86_64 hardware and real Wine GUI behavior
+  are not verified.
+- **Three source filters.** FinnOS Native, Flatpak Apps and Windows Apps are
+  selectable in the Store. The Windows Apps Library lists validated Wine
+  registrations and opens them through `finnd wine.run`. `finnpkg wine install`
+  now creates a private prefix and starts a chosen installer through finnd;
+  `wine set` selects the installed executable for later launches. Setup and
+  executable selection remain CLI steps, and real Wine GUI validation is still
+  outstanding on FinnOS.
+- **Launching a native app does not invoke a shell.** `finnd` passes the
+  catalogue's executable path to `systemd-run` as one argument. A regression
+  test verifies shell metacharacters remain inert, while preserving the
+  transient, user-owned systemd unit.
+
 
 ### Finn Files, reading the machine as the person at it
 
@@ -173,19 +231,19 @@ and the changes to it are worth reading.
   12px Fixel Display Regular "Empty window" label at 70% opacity.
 - **Settings desktop application (Figma 14:330/14:289).** A 900x500 window
   centered on the desktop, draggable by its titlebar and maximizable /
-  minimizable / closable. Features a 250px solid white sidebar with r=8 outer
+  minimizable / closable. Features a 250px shared-glass sidebar with r=8 outer
   corners, "Settings" title at (15, 44), interactive search field at (15, 70)
-  with active focus ring, blinking caret, and backspace for filtering sidebar
-  rows, and section headers (NETWORK, DEVICE, SYSTEM).
-- **Honest system state across six Settings pages:**
+  with active focus ring, blinking caret, backspace filtering, and the Figma
+  section headers (NETWORK, PERSONALIZATION, SYSTEM).
+- **The five visible Settings pages follow the Figma frame:**
   - *Wi-Fi:* hardware presence, connection state, and functional toggle.
   - *Bluetooth:* controller status, honest absent state, and toggle.
-  - *Display:* DRM/KMS scanout resolution, canvas scale factor, and working
-    Light/Dark appearance toggle persisted to `/var/lib/finn/settings`.
-  - *Sound:* master volume slider bound directly to ALSA mixer, and mute toggle.
-  - *Power:* real battery charge percentage or AC mains status.
-  - *About:* system specifications with kernel release, device name, system
-    uptime, total RAM, and compositor engine.
+  - *Network:* live interface link state from sysfs; configuration remains read-only.
+  - *Personalization:* display scale and Light/Dark appearance toggle persisted
+    to `/var/lib/finn/settings`.
+  - *System Information:* kernel release, device name, system uptime, total RAM,
+    root-storage and CPU details; GPU telemetry is unavailable.
+  - Legacy Display, Sound and Power pages remain searchable and control-addressable.
 - **Control protocol navigation.** Added `settings.page name=<page>` and
   `settings.get` to `finn-comp`, proxied by `finnd`, with CLI support in
   `finnctl` and SDK client methods.

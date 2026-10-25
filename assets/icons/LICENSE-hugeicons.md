@@ -11,7 +11,8 @@ directly from [HugeIcons free core icons](https://github.com/hugeicons/hugeicons
 | `shell/moon.svg` | `Moon02Icon` |
 
 The rest are the shell's own drawing, authored to the same grid and stroke so
-the set reads as one family. Every stroke is black: `finndraw` recolours an
+the set reads as one family. `shell/internet.svg`, `shell/paint-brush.svg`
+and `shell/info.svg` are exported from the FinnOS Figma file's Settings frame. Every stroke is black: `finndraw` recolours an
 icon through its palette, so an icon never carries a colour of its own.
 
 `apps/settings-app.svg` and `apps/files.svg` are app tiles rather than glyphs:

@@ -4,9 +4,12 @@
 # a comment only at the start of a line. base/setup.sh reads the same file,
 # so what the disc carries and what a machine installs cannot drift.
 #
-# The target is an i3-4130 with HD Graphics 4400, 4 GB of RAM and a 1080p
-# panel. The compositor's budget there is under 120 MB of RAM and 60 MB of
-# VRAM, and an idle desktop redraws nothing at all.
+# The machine this profile is built and checked against is a Dell OptiPlex
+# 3020: an i3-4130 (Haswell), Intel HD Graphics 4400, 4 GB of RAM and a
+# 1080p panel. It is a general Arch x86_64 profile, not a model-specific
+# one: what is below is what Arch's own hardware support expects on an
+# Intel or AMD machine, and a package that only made sense on that one
+# desktop would not belong here.
 #
 # What is deliberately absent is as much of the list as what is present:
 # no X server, no Wayland compositor, no GTK, no Qt, no desktop environment.
@@ -21,21 +24,40 @@ util-linux
 kbd
 
 # The kernel, its firmware and the DRM/KMS stack the compositor drives.
-# linux-firmware carries the GPU firmware for Intel, AMD and NVIDIA parts;
-# it is large, and the alternative is a machine with no accelerated path.
+# linux-firmware is the GPU firmware for Intel, AMD and NVIDIA parts, the
+# Wi-Fi and Bluetooth firmware, and the firmware the i915 driver loads on
+# newer Intel chips. Both microcode packages are here because the profile
+# is a general one and the bootloader loads whichever the CPU needs; on the
+# OptiPlex that is intel-ucode. A machine without linux-firmware has no
+# Wi-Fi and no Bluetooth, which is the failure this list exists to avoid.
 linux
 linux-firmware
 intel-ucode
+amd-ucode
 libdrm
 libinput
 seatd
 
 # Mesa provides the GBM and EGL the accelerated path uses; libglvnd is the
 # EGL/GLES dispatch, which is what pkg-config's egl and glesv2 look for.
-# Mesa's own dependencies name `wayland`, the client library; it is not what
+# vulkan-intel is ANV, the Vulkan driver for Intel GPUs from Haswell on,
+# which is the OptiPlex's HD 4400 and every Intel desktop since. Mesa's own
+# dependencies name `wayland`, the client library; it is not what
 # pacman.conf refuses (that is the compositors), and this is why.
 mesa
 libglvnd
+vulkan-intel
+wayland
+wayland-protocols
+libxkbcommon
+
+# Wine runs 32-bit programs on x86_64 even inside a 64-bit prefix, so its
+# GL and Vulkan need the multilib copies too. base/pacman.multilib.conf is
+# what puts [multilib] in front of pacman; without it this list does not
+# resolve, which is a build error rather than a machine without Wine.
+lib32-mesa
+lib32-vulkan-icd-loader
+lib32-vulkan-intel
 
 # What finn-comp links against.
 freetype2
@@ -44,14 +66,48 @@ libwebp
 alsa-lib
 alsa-ucm-conf
 
+# Audio. PipeWire is the session's sound server, pipewire-pulse is the
+# PulseAudio socket a Wine program and a Flatpak app expect to find, and
+# wireplumber is the session manager that gives it devices. The compositor
+# is not a sound server and does not pretend to be one.
+pipewire
+pipewire-pulse
+wireplumber
+
+# Bluetooth. bluez is the daemon and bluez-utils is bluetoothctl. The
+# OptiPlex has no radio of its own; a USB dongle is what makes these do
+# anything, and the service's own condition keeps it from starting on a
+# machine with no controller.
+bluez
+bluez-utils
+
 # A font to fall back to when Fixel Display is missing. The shell ships its
 # own face; this is what a text editor on the machine can use.
 ttf-dejavu
 
-# The network, and a way into the machine that is not its own console.
+# NetworkManager configures connections; wpa_supplicant provides Wi-Fi.
 networkmanager
+wpa_supplicant
 openssh
 curl
+
+# Flatpak package management and Wine compatibility target the x86_64
+# release image. Flatpak GUI apps require Wayland surfaces hosted by
+# finn-comp. wine-mono and wine-gecko are the two runtimes Wine downloads
+# on first run on a machine with a network; carrying them means a machine
+# without one still runs a .NET or Gecko-based installer. winetricks is
+# the verb list the Windows page of the Store drives.
+flatpak
+wine
+winetricks
+wine-mono
+wine-gecko
+
+# jq is what finnpkg's winget path parses the API with; zstd is what pacman
+# writes and the live medium's squashfs is compressed with. Both are on the
+# disc so an installed machine has them without a network.
+jq
+zstd
 
 # The installer and the tools it needs: pacstrap is arch-install-scripts,
 # and a disk is partitioned and formatted before it is installed on.
