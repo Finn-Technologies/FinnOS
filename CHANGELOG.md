@@ -23,6 +23,16 @@ and the changes to it are worth reading.
   packages, and the Store says so rather than drawing a progress bar for
   a network it does not have.
 
+### Finn Store, Microsoft-Store-style redesign
+
+- **Nav rail, Home, Apps and Library.** The Store now opens on a navigation
+  rail with Home, Apps and Library destinations, matching the shape a
+  person already knows from the Microsoft Store, while keeping FinnOS
+  material, type and colour.
+- **Detail page and icons.** Selecting a catalogue entry opens a full
+  product page; app icons are loaded from the shared icon set so the
+  Store shows the same glyphs as the Start Menu.
+
 ### Finn Files, reading the machine as the person at it
 
 - **A real browser of the real filesystem.** Finn Files opens on the

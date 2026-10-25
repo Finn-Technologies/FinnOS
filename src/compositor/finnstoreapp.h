@@ -14,6 +14,12 @@
  * that the package manager has not marked, and never offers an install for a
  * catalogue entry whose launcher is not on the machine.
  *
+ * The arrangement follows the Microsoft Store — a navigation rail, a header
+ * search, a featured app and shelves on Home, a grid in Apps, a list in
+ * Library and a full product page — because that is the shape a person
+ * already knows. The material, type and colour are FinnOS's, and the content
+ * is only what the registry and finnpkg can actually answer.
+ *
  * Installing and removing go through the control plane (`app.install` /
  * `app.remove`), which is the only writer of the machine's package state.
  * The view then re-reads the registry so what is drawn afterwards is the
@@ -24,9 +30,13 @@ enum {
     FINNSTORE_HIT_NONE = 0,
     FINNSTORE_HIT_BODY,
     FINNSTORE_HIT_FILTER,
-    FINNSTORE_HIT_ROW,          /* out_sub = catalogue index */
-    FINNSTORE_HIT_ROW_ACTION,   /* narrow layout: the row's own button */
-    FINNSTORE_HIT_ACTION        /* wide layout: the detail pane button */
+    FINNSTORE_HIT_FILTER_CLEAR,
+    FINNSTORE_HIT_NAV,          /* out_sub = page */
+    FINNSTORE_HIT_CARD,         /* out_sub = catalogue index; opens detail */
+    FINNSTORE_HIT_CARD_ACTION,  /* out_sub = catalogue index */
+    FINNSTORE_HIT_SEE_ALL,      /* out_sub = page */
+    FINNSTORE_HIT_BACK,
+    FINNSTORE_HIT_DETAIL_ACTION
 };
 
 int  finnstoreapp_init(const char *icon_dir, const char *font_dir,
