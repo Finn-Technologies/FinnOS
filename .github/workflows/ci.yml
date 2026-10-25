@@ -32,7 +32,7 @@ jobs:
             build-essential pkg-config \
             libdrm-dev libwebp-dev libfreetype-dev libasound2-dev \
             libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
-            wayland-protocols libwayland-dev
+            wayland-protocols libwayland-dev libxkbcommon-dev
       - name: build
         run: make
       - name: the host-side tools
