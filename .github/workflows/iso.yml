@@ -88,6 +88,7 @@ jobs:
           xorriso -indev finnos.iso -report_el_torito plain
       - name: the payload is in the live root
         run: |
+          set -x
           xorriso -osirrox on -indev finnos.iso \
             -extract /finn/x86_64/airootfs.sfs /tmp/airootfs.sfs
           rm -rf /tmp/live
