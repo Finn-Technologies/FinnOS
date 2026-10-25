@@ -852,7 +852,9 @@ static void draw_rail(store_canvas *c, const store_layout *L, float s) {
     float h = L->footer_rule_y - L->rail_y;
     if (h <= 0.0f) return;
 
-    c_frost(c, 0.0f, L->rail_y, L->rail_w, h, 0.0f, FINN_GLASS, 0.68f);
+    static finn_frost_plate rail_plate;
+    finn_frost_rrect_plate(&rail_plate, c->px, c->w, c->h, c->ox, c->oy,
+                           0.0f, L->rail_y, L->rail_w, h, 0.0f, FINN_GLASS, 0.68f);
     if (finn_theme_dark())
         c_fill(c, 0.0f, L->rail_y, L->rail_w, h, 0.0f, 0x08FFFFFFu);
     c_fill(c, L->rail_w - 1.0f, L->rail_y, 1.0f, h, 0.0f, FINN_HAIR);
