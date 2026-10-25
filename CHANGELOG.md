@@ -5,6 +5,16 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Multi-catalog App Store (scaffolding)
+
+- **Flatpak and Windows tabs in Finn Store.** The Store now has dedicated
+  Flatpak and Windows navigation entries; each renders the registry entries
+  whose `source` is `flatpak` or `winget`, including x86_64 and ARM64
+  Flatpak entries.
+- **Control-plane verbs `app.install.flatpak` and `app.install.wine`.** Stubs
+  that validate the catalogue id and record intent in the audit log; they do
+  not install a package yet.
+
 ### Finn Store, and a package manager with one owner
 
 - **A store that lists what the OS actually has.** Finn Store reads the

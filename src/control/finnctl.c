@@ -41,6 +41,8 @@ static void usage(void) {
             "       radio.set appearance.set\n"
             "       notify.post notify.list notify.clear\n"
             "       app.list app.launch app.install app.remove\n"
+            "       app.install.flatpak app.install.wine\\n"
+
             "       window.list window.open window.close window.focus\n"
             "       window.minimize window.maximize window.restore\n"
             "       window.get window.move window.resize window.snap\n"

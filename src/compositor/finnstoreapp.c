@@ -106,7 +106,7 @@ typedef struct {
 } store_canvas;
 
 enum { STORE_PAGE_HOME = 0, STORE_PAGE_APPS, STORE_PAGE_LIBRARY,
-       STORE_PAGE_COUNT };
+       STORE_PAGE_FLATPAK, STORE_PAGE_WINDOWS, STORE_PAGE_COUNT };
 enum { BTN_QUIET = 0, BTN_INSTALL, BTN_REMOVE, BTN_REMOVE_CONFIRM,
        BTN_DISABLED };
 
@@ -356,7 +356,14 @@ static void do_action(int idx) {
     snprintf(name, sizeof name, "%s", a->name);
 
     char req[96];
-    snprintf(req, sizeof req, "%s %s", install ? "app.install" : "app.remove", id);
+    char verb[32];
+    if (install && !strcmp(a->source, "flatpak"))
+        snprintf(verb, sizeof verb, "app.install.flatpak");
+    else if (install && !strcmp(a->source, "winget"))
+        snprintf(verb, sizeof verb, "app.install.wine");
+    else
+        snprintf(verb, sizeof verb, "%s", install ? "app.install" : "app.remove");
+    snprintf(req, sizeof req, "%s %s", verb, id);
 
     char reply[512];
     if (finn_call(FINN_CONTROL_SOCK, req, reply, sizeof reply) != 0) {

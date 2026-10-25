@@ -650,6 +650,45 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
         return g_reply_status;
     }
 
+    /* ---- multi-catalog install stubs ----
+     *
+     * Flatpak and Wine/Winget installs are not wired to a package manager yet.
+     * The verbs exist so the Store and finnctl can record intent; the control
+     * plane logs it and reports success without pretending a package landed.
+     */
+    if (!strcmp(verb, "app.install.flatpak") || !strcmp(verb, "app.install.wine")) {
+        int flatpak = !strcmp(verb, "app.install.flatpak");
+        char id[64] = "";
+        char *save = NULL;
+        char *tok = strtok_r(rest, " \t", &save);
+        char *extra = tok ? strtok_r(NULL, " \t", &save) : NULL;
+
+        if (tok) snprintf(id, sizeof id, "%s", tok);
+        if (!tok || extra || !valid_pkg_id(id)) {
+            finn_write_str(fd, "ERR app.install.flatpak/wine take one app id\n");
+            return flatpak ? "ERR flatpak id" : "ERR wine id";
+        }
+
+        finn_apps_load(NULL, NULL);
+        if (!finn_apps_find(id)) {
+            finn_write_str(fd, "ERR unknown app\n");
+            return "ERR unknown app";
+        }
+
+        if (g_log_fd >= 0)
+            dprintf(g_log_fd, "intent %s %s\n", flatpak ? "flatpak" : "wine", id);
+
+        char reply[96];
+        snprintf(reply, sizeof reply, "OK recorded %s %s\n",
+                 flatpak ? "flatpak" : "wine", id);
+        finn_write_str(fd, reply);
+
+        static char result[96];
+        snprintf(result, sizeof result, "OK recorded %s %s",
+                 flatpak ? "flatpak" : "wine", id);
+        return result;
+    }
+
     finn_write_str(fd, "ERR unknown verb\n");
     return "ERR unknown";
 }
