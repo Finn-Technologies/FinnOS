@@ -257,7 +257,10 @@ EOF
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
     [ -f "$src" ] || { problem "missing $src"; continue; }
     [ -f "$dst" ] || { problem "missing $dst"; continue; }
-    cmp -s "$src" "$dst" || problem "$dst has drifted from $src; the first is the source"
+    # sha256sum, not cmp: the check has to run on a bare container that may
+    # not have diffutils, and a missing comparator must not read as drift.
+    [ "$(sha256sum "$src" | cut -d' ' -f1)" = "$(sha256sum "$dst" | cut -d' ' -f1)" ] ||
+      problem "$dst has drifted from $src; the first is the source"
   done
 
   local sysusers="$HERE/airootfs/usr/lib/sysusers.d/finn.conf"

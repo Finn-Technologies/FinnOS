@@ -13,8 +13,18 @@ permissions:
 
 jobs:
   runtime:
-    name: build the runtime package
-    runs-on: ubuntu-latest
+    name: build the runtime package (${{ matrix.arch }})
+    strategy:
+      # The OptiPlex runs x86_64; the dev VM runs aarch64. OTA looks for
+      # finnos-runtime-<version>-<uname -m>.pkg.tar.zst, so a release needs
+      # both or one machine's check honestly reports no asset for its arch.
+      matrix:
+        include:
+          - arch: x86_64
+            runs_on: ubuntu-latest
+          - arch: aarch64
+            runs_on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs_on }}
     container: archlinux:latest
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +57,7 @@ jobs:
           (cd dist && sha256sum -c "$(basename "$asset").sha256")
       - uses: actions/upload-artifact@v4
         with:
-          name: finnos-runtime
+          name: finnos-runtime-${{ matrix.arch }}
           path: dist/*
       - name: publish the release
         if: startsWith(github.ref, 'refs/tags/v')
