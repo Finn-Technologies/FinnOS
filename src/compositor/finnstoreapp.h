@@ -39,6 +39,15 @@ enum {
     FINNSTORE_HIT_DETAIL_ACTION
 };
 
+enum {
+    STORE_PAGE_HOME = 0,
+    STORE_PAGE_APPS,
+    STORE_PAGE_LIBRARY,
+    STORE_PAGE_FLATPAK,
+    STORE_PAGE_WINDOWS,
+    STORE_PAGE_COUNT
+};
+
 int  finnstoreapp_init(const char *icon_dir, const char *font_dir,
                        const char *registry);
 void finnstoreapp_free(void);

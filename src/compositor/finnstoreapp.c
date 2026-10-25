@@ -200,6 +200,8 @@ static int matches(int i) {
     if (!g_filter[0]) return 1;
     const finn_app *a = finn_apps_at(i);
     if (!a) return 0;
+    if (g_page == STORE_PAGE_FLATPAK && strcmp(a->source, "flatpak") != 0) return 0;
+    if (g_page == STORE_PAGE_WINDOWS && strcmp(a->source, "winget") != 0) return 0;
     return strcasestr(a->name, g_filter) != NULL ||
            strcasestr(a->id, g_filter) != NULL ||
            strcasestr(a->note, g_filter) != NULL;
@@ -865,10 +867,10 @@ static void draw_rail(store_canvas *c, const store_layout *L, float s) {
                        (int)lroundf(s * 20.0f), (int)lroundf(L->rail_y + s * 14.0f),
                        (int)lroundf(s * 26.0f), 0, 0, 0);
 
-    static const char *labels[3] = { "Home", "Apps", "Library" };
-    fsvg *icons[3] = { &g_ic_home, &g_ic_grid, &g_ic_library };
+    static const char *labels[5] = { "Home", "Apps", "Library", "Flatpak", "Windows" };
+    fsvg *icons[5] = { &g_ic_home, &g_ic_grid, &g_ic_library, &g_ic_grid, &g_ic_grid };
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 5; i++) {
         float x, y, w, hgt;
         nav_item_rect(L, i, s, &x, &y, &w, &hgt);
         int active = (i == g_page);
@@ -1680,7 +1682,7 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
         if (g_page == STORE_PAGE_HOME) {
             home_build(&L, s, &HG);
             content_h = HG.content_h;
-        } else if (g_page == STORE_PAGE_APPS) {
+        } else if (g_page == STORE_PAGE_APPS || g_page == STORE_PAGE_FLATPAK || g_page == STORE_PAGE_WINDOWS) {
             apps_build(&L, s, &AG);
             content_h = AG.content_h;
         } else {
@@ -1705,7 +1707,7 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
             if (g_page == STORE_PAGE_HOME && HG.nvis > 0) {
                 ty = HG.top_y;
                 th = SHELF_CARD_H;
-            } else if (g_page == STORE_PAGE_APPS) {
+            } else if (g_page == STORE_PAGE_APPS || g_page == STORE_PAGE_FLATPAK || g_page == STORE_PAGE_WINDOWS) {
                 int k = visible_index_of(sel);
                 if (k >= 0) {
                     ty = AG.list_y +
@@ -1787,7 +1789,7 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
             store_canvas cc = { cp, cw, ch, lx0 + wx + cx, ly0 + wy + cy };
             if (g_page == STORE_PAGE_HOME)
                 draw_home(&cc, &L, s, &HG, scroll_px);
-            else if (g_page == STORE_PAGE_APPS)
+            else if (g_page == STORE_PAGE_APPS || g_page == STORE_PAGE_FLATPAK || g_page == STORE_PAGE_WINDOWS)
                 draw_apps(&cc, &L, s, &AG, scroll_px);
             else
                 draw_library(&cc, &L, s, &LG, scroll_px);
@@ -1818,7 +1820,7 @@ int finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     float y = (float)(py - wy);
     if (y < s * 44.0f) return FINNSTORE_HIT_NONE;   /* the titlebar belongs to the WM */
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < (L.rail ? 5 : 3); i++) {
         float nx, ny, nw, nh;
         nav_item_rect(&L, i, s, &nx, &ny, &nw, &nh);
         if (point_in(x, y, nx, ny, nw, nh)) {
@@ -1897,7 +1899,7 @@ int finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
         return FINNSTORE_HIT_BODY;
     }
 
-    if (g_page == STORE_PAGE_APPS) {
+    if (g_page == STORE_PAGE_APPS || g_page == STORE_PAGE_FLATPAK || g_page == STORE_PAGE_WINDOWS) {
         apps_geom G;
         apps_build(&L, s, &G);
         for (int k = 0; k < G.nvis; k++) {
@@ -2332,6 +2334,7 @@ uint32_t finnstoreapp_build_key(float scale) {
         for (const char *p = a->icon; *p; p++) MIX(*p);
         for (const char *p = a->command; *p; p++) MIX(*p);
         for (const char *p = a->note; *p; p++) MIX(*p);
+        for (const char *p = a->source; *p; p++) MIX(*p);
     }
 
     #undef MIX
