@@ -14,7 +14,7 @@
 set -euo pipefail
 exec > >(tee /tmp/finn-install.log) 2>&1
 
-HOST=http://192.168.44.1:8765
+HOST="${FINN_HOST_URL:-http://192.168.44.1:8765}"
 ISO_MNT=/finnos-iso
 SRC=""
 DISK=""
