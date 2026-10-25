@@ -46,4 +46,7 @@ file_permissions=(
   ["/root/.ssh"]="0:0:700"
   ["/etc/sudoers.d"]="0:0:750"
   ["/usr/local/bin/finn-install"]="0:0:755"
+  ["/opt/finnos/vm/finn-install.sh"]="0:0:755"
+  ["/opt/finnos/vm/finn-chroot.sh"]="0:0:755"
+  ["/opt/finnos/base/mkfinniso"]="0:0:755"
 )
