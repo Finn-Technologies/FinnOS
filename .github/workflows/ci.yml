@@ -31,7 +31,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libdrm-dev libwebp-dev libfreetype-dev libasound2-dev \
-            libgbm-dev libegl1-mesa-dev libgles2-mesa-dev
+            libgbm-dev libegl1-mesa-dev libgles2-mesa-dev \
+            wayland-protocols libwayland-dev
       - name: build
         run: make
       - name: the host-side tools
