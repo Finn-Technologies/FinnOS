@@ -95,7 +95,17 @@ jobs:
           unsquashfs -l /tmp/airootfs.sfs | head -60
           for p in opt/finnos/vm/finn-install.sh opt/finnos/vm/finn-chroot.sh \
                    opt/finnos/base/mkfinniso opt/finnos/base/profiledef.sh \
-                   usr/local/bin/finn-install etc/os-release \
+                   opt/finnos/base/airootfs/etc/os-release \
+                   opt/finnos/base/airootfs/etc/issue \
+                   opt/finnos/base/airootfs/etc/motd \
+                   opt/finnos/base/airootfs/etc/hostname \
+                   opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
+                   opt/finnos/base/airootfs/etc/systemd/system/finnd.service \
+                   opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
+                   opt/finnos/base/airootfs/usr/local/bin/finn-install \
+                   usr/local/bin/finn-install etc/os-release etc/issue etc/motd etc/hostname \
+                   etc/systemd/system/finn-comp.service etc/systemd/system/finnd.service \
+                   usr/lib/tmpfiles.d/finn.conf \
                    root/.zprofile root/.bash_profile; do
             unsquashfs -l /tmp/airootfs.sfs | grep -qx "squashfs-root/$p" || {
               echo "missing in live root: $p" >&2
