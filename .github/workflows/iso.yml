@@ -147,7 +147,13 @@ jobs:
           # is the same file the tree carries, so they are compared rather
           # than eyeballed.
           grep -q '^ID=finnos$' /tmp/live/etc/os-release
-          for f in etc/os-release etc/issue etc/motd etc/hostname \
+          # mkarchiso stamps IMAGE_ID/IMAGE_VERSION into the live os-release,
+          # so that file is a superset of the tree's, not a copy of it.
+          if [ -n "$(comm -23 <(sort /tmp/live/opt/finnos/base/airootfs/etc/os-release) <(sort /tmp/live/etc/os-release))" ]; then
+            echo "the live os-release lost the tree's lines" >&2
+            exit 1
+          fi
+          for f in etc/issue etc/motd etc/hostname \
                    etc/systemd/system/finn-comp.service \
                    etc/systemd/system/finnd.service \
                    usr/lib/tmpfiles.d/finn.conf \
