@@ -48,8 +48,10 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <dirent.h>
+#include <pwd.h>
 #include <linux/input.h>
 #include <linux/vt.h>
+#include <wayland-server-protocol.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <webp/decode.h>
@@ -76,8 +78,10 @@
 #include "finnconn.h"
 #include "finngpu.h"
 #include "finnapps.h"
+#include "finntaskbar.h"
 #include "finnproto.h"
 #include "finnsock.h"
+#include "finnwayland.h"
 
 /*
  * One visual weight for the chrome.
@@ -456,8 +460,388 @@ typedef struct {
     int dirty;
 } ctl_ctx;
 
+typedef struct {
+    FinnWaylandSurface *surface;
+    int window_id;
+    int sent_width, sent_height;
+    int sent_active, sent_maximized;
+} finn_wayland_window;
+
+typedef struct {
+    FinnWayland *server;
+    ctl_ctx *control;
+    finn_wayland_window windows[FINNWINDOW_MAX];
+    int default_width, default_height;
+    int pointer_window;
+    unsigned pointer_buttons;
+    int keyboard_window;
+    FinnWaylandSurface *pointer_surface;
+} finn_wayland_ctx;
+
+static uint32_t wayland_time_msec(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u +
+                      (uint64_t)ts.tv_nsec / 1000000u);
+}
+
+static finn_wayland_window *wayland_window_for_surface(
+        finn_wayland_ctx *ctx, FinnWaylandSurface *surface) {
+    if (!ctx || !surface) return NULL;
+    for (int i = 0; i < FINNWINDOW_MAX; i++)
+        if (ctx->windows[i].surface == surface) return &ctx->windows[i];
+    return NULL;
+}
+
+static finn_wayland_window *wayland_window_for_id(finn_wayland_ctx *ctx,
+                                                   int id) {
+    if (!ctx || id <= 0) return NULL;
+    for (int i = 0; i < FINNWINDOW_MAX; i++)
+        if (ctx->windows[i].surface && ctx->windows[i].window_id == id)
+            return &ctx->windows[i];
+    return NULL;
+}
+
+static FinnWaylandSurface *wayland_surface_for_id(finn_wayland_ctx *ctx,
+                                                   int id) {
+    finn_wayland_window *window = wayland_window_for_id(ctx, id);
+    return window ? window->surface : NULL;
+}
+
+static void wayland_surface_created(void *userdata,
+                                    FinnWaylandSurface *surface) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *slot = NULL;
+    const char *title = finn_wayland_surface_title(surface);
+    for (int i = 0; i < FINNWINDOW_MAX; i++)
+        if (!ctx->windows[i].surface) { slot = &ctx->windows[i]; break; }
+    if (!slot) {
+        fprintf(stderr, "finn-comp: Wayland surface limit reached\n");
+        finn_wayland_toplevel_close(surface);
+        return;
+    }
+    int id = finnwindow_external_open(NULL, title, ctx->default_width,
+                                      ctx->default_height);
+    if (id <= 0) {
+        fprintf(stderr, "finn-comp: could not create Wayland window (%d)\n", id);
+        finn_wayland_toplevel_close(surface);
+        return;
+    }
+    memset(slot, 0, sizeof *slot);
+    slot->surface = surface;
+    slot->window_id = id;
+    slot->sent_width = -1;
+    slot->sent_height = -1;
+    slot->sent_active = -1;
+    slot->sent_maximized = -1;
+    ctx->control->dirty = 1;
+}
+
+static void wayland_surface_destroyed(void *userdata,
+                                     FinnWaylandSurface *surface) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    if (!window) return;
+    int id = window->window_id;
+    if (ctx->pointer_window == id) {
+        ctx->pointer_window = 0;
+        ctx->pointer_buttons = 0;
+        ctx->pointer_surface = NULL;
+    }
+    if (ctx->keyboard_window == id) ctx->keyboard_window = 0;
+    memset(window, 0, sizeof *window);
+    (void)finnwindow_external_destroy(id);
+    ctx->control->dirty = 1;
+}
+
+static void wayland_title_changed(void *userdata,
+                                  FinnWaylandSurface *surface,
+                                  const char *title) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    if (window)
+        (void)finnwindow_external_title(window->window_id, title);
+    if (ctx->control) ctx->control->dirty = 1;
+}
+
+static void wayland_surface_committed(void *userdata,
+                                      FinnWaylandSurface *surface) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    int32_t width = 0, height = 0, stride = 0;
+    FinnWaylandFormat format = FINN_WAYLAND_ARGB8888;
+    const uint32_t *pixels = finn_wayland_surface_pixels(
+        surface, &width, &height, &stride, &format);
+    if (window && !pixels && width == 0 && height == 0) {
+        (void)finnwindow_external_commit(window->window_id, NULL, 0, 0, 0, 0);
+    } else if (window && pixels && width > 0 && height > 0) {
+        if (finnwindow_external_commit(window->window_id, pixels, width, height,
+                                       stride,
+                                       format == FINN_WAYLAND_XRGB8888) == 0) {
+            window->sent_width = width;
+            window->sent_height = height;
+        } else {
+            fprintf(stderr, "finn-comp: rejected Wayland SHM surface %dx%d\n",
+                    width, height);
+        }
+    }
+    if (ctx->control) ctx->control->dirty = 1;
+}
+
+static void wayland_window_close_request(int id, void *userdata) {
+    finn_wayland_ctx *ctx = userdata;
+    FinnWaylandSurface *surface = wayland_surface_for_id(ctx, id);
+    if (surface) finn_wayland_toplevel_close(surface);
+}
+
+static void wayland_frame_done_all(finn_wayland_ctx *ctx,
+                                   uint32_t time_msec) {
+    if (!ctx) return;
+    for (int i = 0; i < FINNWINDOW_MAX; i++)
+        if (ctx->windows[i].surface)
+            finn_wayland_frame_done(ctx->windows[i].surface, time_msec);
+}
+
+static int wayland_dispatch_now(finn_wayland_ctx *ctx) {
+    if (!ctx || !ctx->server) return 0;
+    if (finn_wayland_dispatch(ctx->server, 0) == 0) return 0;
+    fprintf(stderr, "finn-comp: Wayland dispatch failed: %s\n", strerror(errno));
+    finn_wayland_destroy(ctx->server);
+    ctx->server = NULL;
+    return -1;
+}
+
+static void wayland_sync_focus(finn_wayland_ctx *ctx) {
+    if (!ctx || !ctx->server) return;
+    int id = finnwindow_external_focused();
+    FinnWaylandSurface *surface = wayland_surface_for_id(ctx, id);
+    if (id != ctx->keyboard_window) {
+        finn_wayland_keyboard_focus(ctx->server, surface);
+        ctx->keyboard_window = id;
+    }
+    for (int i = 0; i < FINNWINDOW_MAX; i++) {
+        finn_wayland_window *window = &ctx->windows[i];
+        if (!window->surface) continue;
+        int width = 0, height = 0;
+        if (finnwindow_external_get_size(window->window_id, &width, &height) != 0)
+            continue;
+        int active = window->window_id == id;
+        int x, y, ww, wh;
+        const char *state = NULL;
+        int maximized = finnwindow_get(window->window_id, NULL, &x, &y,
+                                        &ww, &wh, &state) == 0 &&
+                        state && !strcmp(state, "maximized");
+        if (width == window->sent_width && height == window->sent_height &&
+            active == window->sent_active &&
+            maximized == window->sent_maximized)
+            continue;
+        uint32_t states = (active ? FINN_WAYLAND_CONFIGURE_ACTIVATED : 0) |
+                          (maximized ? FINN_WAYLAND_CONFIGURE_MAXIMIZED : 0);
+        if (finn_wayland_configure(window->surface, width, height, states,
+                                   NULL) == 0) {
+            window->sent_width = width;
+            window->sent_height = height;
+            window->sent_active = active;
+            window->sent_maximized = maximized;
+        }
+    }
+}
+
+static void wayland_sync_pointer(finn_wayland_ctx *ctx, int px, int py,
+                                 uint32_t time_msec) {
+    if (!ctx || !ctx->server) return;
+    if (ctx->pointer_window) {
+        int sx, sy;
+        finn_wayland_window *window = wayland_window_for_id(
+            ctx, ctx->pointer_window);
+        if (!window || !finnwindow_external_coordinates(ctx->pointer_window,
+                                                        px, py, &sx, &sy)) {
+            ctx->pointer_window = 0;
+            ctx->pointer_buttons = 0;
+            ctx->pointer_surface = NULL;
+        } else {
+            finn_wayland_pointer_motion(ctx->server, sx, sy, time_msec);
+            return;
+        }
+    }
+    int blocked = finnmenu_is_open() || finncontrol_is_open() ||
+                  finnclock_is_open() || finnsetup_is_open();
+    int dock = finndock_hit(px, py);
+    int id = 0, sx = 0, sy = 0;
+    if (!blocked && dock == FINNDOCK_HIT_NONE &&
+        finnwindow_external_hit(px, py, &id, &sx, &sy)) {
+        FinnWaylandSurface *surface = wayland_surface_for_id(ctx, id);
+        if (surface) {
+            if (ctx->pointer_surface != surface) {
+                finn_wayland_pointer_focus(ctx->server, surface, sx, sy,
+                                           time_msec);
+                ctx->pointer_surface = surface;
+            } else {
+                finn_wayland_pointer_motion(ctx->server, sx, sy, time_msec);
+            }
+            return;
+        }
+    }
+    if (ctx->pointer_surface) {
+        finn_wayland_pointer_focus(ctx->server, NULL, 0, 0, time_msec);
+        ctx->pointer_surface = NULL;
+    }
+}
+
+static void wayland_send_button(finn_wayland_ctx *ctx, uint32_t button,
+                                uint32_t state, unsigned mask,
+                                int px, int py, uint32_t time_msec) {
+    if (!ctx || !ctx->server) return;
+    if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        if (!ctx->pointer_window) {
+            int sx = 0, sy = 0, hit_id = 0;
+            if (!finnwindow_external_hit(px, py, &hit_id, &sx, &sy)) return;
+            int id = hit_id;
+            ctx->pointer_window = id;
+            ctx->pointer_surface = wayland_surface_for_id(ctx, id);
+            if (!ctx->pointer_surface) {
+                ctx->pointer_window = 0;
+                return;
+            }
+            finn_wayland_pointer_focus(ctx->server, ctx->pointer_surface,
+                                       sx, sy, time_msec);
+            finn_wayland_keyboard_focus(ctx->server, ctx->pointer_surface);
+            ctx->keyboard_window = id;
+        } else {
+            int sx, sy;
+            if (finnwindow_external_coordinates(ctx->pointer_window, px, py,
+                                                &sx, &sy))
+                finn_wayland_pointer_motion(ctx->server, sx, sy, time_msec);
+        }
+        finn_wayland_pointer_button(ctx->server, button,
+                                    WL_POINTER_BUTTON_STATE_PRESSED,
+                                    time_msec);
+        ctx->pointer_buttons |= mask;
+    } else if (ctx->pointer_buttons & mask) {
+        finn_wayland_pointer_button(ctx->server, button,
+                                    WL_POINTER_BUTTON_STATE_RELEASED,
+                                    time_msec);
+        ctx->pointer_buttons &= ~mask;
+        if (!ctx->pointer_buttons) ctx->pointer_window = 0;
+    }
+}
+
 static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
-                         float scale, const finn_state *st);
+                         float scale, const finn_state *st, float theme_t);
+
+/* ---------------- taskbar ----------------
+ *
+ * The dock draws tiles; it does not know what a window is or where pins are
+ * kept. This is the join: the pin list from the settings store, the open
+ * windows from the window manager, and the catalogue for the icon and the
+ * label. Pinned entries come first in pin order; an app that is running but
+ * not pinned follows in the order its first window appeared. A running app
+ * is always shown, even if its launcher is missing — the window is proof it
+ * is here.
+ */
+
+static int pin_has(char ids[FINNTASKBAR_MAX][FINNTASKBAR_ID_MAX], int n,
+                   const char *id) {
+    for (int i = 0; i < n; i++)
+        if (!strcmp(ids[i], id)) return 1;
+    return 0;
+}
+
+static int task_find(const finndock_app *apps, int n, const char *id) {
+    for (int i = 0; i < n; i++)
+        if (!strcmp(apps[i].id, id)) return i;
+    return -1;
+}
+
+static int app_launchable(const finn_app *a) {
+    return a && a->command[0] && access(a->command, X_OK) == 0;
+}
+
+/*
+ * The pin list is a file, and the taskbar is rebuilt whenever anything on
+ * screen moves. Read it when the pins change, not once per frame; -1 means
+ * "not read yet". A store that cannot be read leaves the last answer in
+ * place — dropping every tile because of one failed read would hide apps
+ * that are still running.
+ */
+static char g_pins[FINNTASKBAR_MAX][FINNTASKBAR_ID_MAX];
+static int  g_n_pins = -1;
+
+static void taskbar_pins_reload(void) {
+    int n = finntaskbar_pins(g_pins, FINNTASKBAR_MAX);
+    g_n_pins = n < 0 ? 0 : n;
+}
+
+/* The list the dock is currently drawing. The pointer acts on the tile it
+ * sees, so the compositor has to keep the same list the dock got. */
+static finndock_app g_task_apps[FINNDOCK_APPS_MAX];
+static int          g_n_task_apps = 0;
+
+static void taskbar_sync(void) {
+    if (finn_apps_count() <= 0) {
+        const char *reg = getenv("FINN_APPS");
+        finn_apps_load(reg && reg[0] ? reg : FINN_APPS_CATALOGUE, NULL);
+    }
+    if (g_n_pins < 0) taskbar_pins_reload();
+
+    finnwindow_brief briefs[FINNWINDOW_MAX];
+    int nb = finnwindow_briefs(briefs, FINNWINDOW_MAX);
+
+    finndock_app apps[FINNDOCK_APPS_MAX];
+    int n = 0;
+    memset(apps, 0, sizeof apps);
+
+    for (int i = 0; i < g_n_pins && n < FINNDOCK_APPS_MAX; i++) {
+        if (task_find(apps, n, g_pins[i]) >= 0) continue;
+        const finn_app *a = finn_apps_find(g_pins[i]);
+        /* A pin outlives the package: it is kept in the store and comes back
+         * when the app does, but a pin for something the machine does not
+         * have is not drawn as a live tile. */
+        if (!app_launchable(a) || !a->installed) continue;
+        finndock_app *t = &apps[n++];
+        snprintf(t->id, sizeof t->id, "%s", a->id);
+        snprintf(t->name, sizeof t->name, "%s", a->name);
+        snprintf(t->icon, sizeof t->icon, "%s", a->icon);
+        t->pinned = 1;
+    }
+
+    for (int i = 0; i < nb && n < FINNDOCK_APPS_MAX; i++) {
+        const finnwindow_brief *b = &briefs[i];
+        char id[32];
+        if (b->app_id[0])
+            snprintf(id, sizeof id, "%s", b->app_id);
+        else
+            snprintf(id, sizeof id, "@%d", b->id);
+
+        int at = task_find(apps, n, id);
+        if (at < 0) {
+            finndock_app *t = &apps[n];
+            at = n++;
+            memset(t, 0, sizeof *t);
+            snprintf(t->id, sizeof t->id, "%s", id);
+            if (b->app_id[0]) {
+                const finn_app *a = finn_apps_find(b->app_id);
+                snprintf(t->name, sizeof t->name, "%s",
+                         a ? a->name : b->title);
+                snprintf(t->icon, sizeof t->icon, "%s", a ? a->icon : "");
+                t->pinned = pin_has(g_pins, g_n_pins, b->app_id);
+            } else {
+                snprintf(t->name, sizeof t->name, "%s",
+                         b->title[0] ? b->title : "Window");
+            }
+        }
+
+        finndock_app *t = &apps[at];
+        t->windows++;
+        if (b->focused) t->focused = 1;
+        if (!b->minimized) t->minimized = 0;
+        else if (t->windows == 1) t->minimized = 1;
+    }
+
+    finndock_set_apps(apps, n);
+    memcpy(g_task_apps, apps, sizeof apps);
+    g_n_task_apps = n;
+}
 
 /* Non-destructive: scanning must not mutate the line, because a single
  * command carries several key=value tokens. */
@@ -1037,6 +1421,83 @@ static double finn_now(void) {
 }
 
 /*
+ * Frame timing, for looking at the shell without a profiler. It is off
+ * unless /tmp/finn-timing exists — the file is the switch the old FRAME line
+ * used — and checking it costs one access() a second rather than one a
+ * frame. The summary is per second, because an average hides exactly the
+ * single stall that makes a drag feel heavy; the max and the over-budget
+ * count do not.
+ *
+ * A sample is build plus the wait for the flip to land: the frame the user
+ * actually waited for, not only the CPU cost. The FRAME line still splits
+ * the two, so a summary that sits at 16.7ms can be read as "on cadence"
+ * rather than "the renderer is using all of it".
+ */
+#define TIMING_SAMPLES 240
+#define TIMING_BUDGET_MS 16.7f
+
+static float  g_timing_ms[TIMING_SAMPLES];
+static int    g_timing_n = 0;
+static int    g_timing_over = 0;
+static int    g_timing_on = 0;
+static double g_timing_last_check = 0.0;
+static double g_timing_last_summary = 0.0;
+
+static int timing_on(double now) {
+    if (now - g_timing_last_check >= 1.0) {
+        g_timing_last_check = now;
+        int was = g_timing_on;
+        g_timing_on = access("/tmp/finn-timing", F_OK) == 0;
+        if (g_timing_on && !was) {
+            /* A summary must describe the window that was just measured,
+             * not samples left over from an earlier switch-on. */
+            g_timing_n = 0;
+            g_timing_over = 0;
+            g_timing_last_summary = now;
+        }
+    }
+    return g_timing_on;
+}
+
+static int timing_cmp(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+static void timing_summary(double now) {
+    int n = g_timing_n;
+    if (!n) { g_timing_last_summary = now; return; }
+
+    float sorted[TIMING_SAMPLES];
+    memcpy(sorted, g_timing_ms, (size_t)n * sizeof *sorted);
+    qsort(sorted, (size_t)n, sizeof *sorted, timing_cmp);
+
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) sum += g_timing_ms[i];
+
+    int i50 = (n * 50) / 100; if (i50 >= n) i50 = n - 1;
+    int i95 = (n * 95) / 100; if (i95 >= n) i95 = n - 1;
+
+    fprintf(stderr,
+            "FRAME-SUMMARY n=%d mean=%.2f p50=%.2f p95=%.2f max=%.2f "
+            "over=%d/%d budget=%.2fms\n",
+            n, sum / (float)n, sorted[i50], sorted[i95], sorted[n - 1],
+            g_timing_over, n, TIMING_BUDGET_MS);
+
+    g_timing_n = 0;
+    g_timing_over = 0;
+    g_timing_last_summary = now;
+}
+
+static void timing_sample(double now, double build_ms, double flip_ms) {
+    float ms = (float)(build_ms + flip_ms);
+    if (g_timing_n < TIMING_SAMPLES) g_timing_ms[g_timing_n++] = ms;
+    if (ms > TIMING_BUDGET_MS) g_timing_over++;
+    if (g_timing_n >= TIMING_SAMPLES || now - g_timing_last_summary >= 1.0)
+        timing_summary(now);
+}
+
+/*
  * The desktop under the chrome: the wallpaper with every open window on it,
  * in the places they are actually drawn. This is what a frosted surface
  * samples, so the glass over a window shows that window's colour rather than
@@ -1059,6 +1520,12 @@ static unsigned g_scene_key = 0;
 static int g_scene_valid = 0;
 static int g_bd_had_win = 0;
 static int g_bd_rect[4] = {0, 0, 0, 0};
+
+/* The key build_chrome settled on this frame, and whether the backdrop it
+ * built against is current. compose_base reads these instead of asking the
+ * window manager a second time. */
+static unsigned g_frame_scene = 0;
+static int g_frame_scene_ok = 0;
 
 /* Where the window layer lands this frame, clipped to the screen. Returns 0
  * when no window is showing; r is x, y, w, h. */
@@ -1202,8 +1669,7 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
     finndock_set_well(finncontrol_openness());
     finndock_set_clock_well(finnclock_openness());
     finndock_set_launcher_well(finnmenu_openness());
-    finndock_set_apps_well(finnwindow_visible_count() > 0 ? 1.0f
-                           : (finnwindow_count() > 0 ? 0.45f : 0.0f));
+    taskbar_sync();
 
     /*
      * The frosted surfaces blur what is behind them, and what is behind them
@@ -1226,7 +1692,8 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
      * Rebuilding it for the chrome's own redraws was four million pixel reads
      * a frame, which is what made hovering the shell feel heavy.
      */
-    int scene_changed = !g_scene_valid || g_scene_key != scene_key(w, h);
+    unsigned key0 = scene_key(w, h);
+    int scene_changed = !g_scene_valid || g_scene_key != key0;
     if (hide_chrome) {
         finnblur_reset();
         g_scene_valid = 0;
@@ -1244,11 +1711,26 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
     if (win_showing)
         finnwindow_render(w, h, dock_scale, dx, dy, dw, dh, st);
 
-    if (!hide_chrome && scene_changed) {
+    /*
+     * The window can rebuild its own body in place — a keystroke, a list
+     * that scrolled — after the pre-render key was taken. Ask again: the
+     * desktop under the chrome is new this frame even though it was old
+     * when the frame started, and a composition that reused the previous
+     * desktop would show the old body through the new chrome.
+     */
+    unsigned key1 = scene_key(w, h);
+    int backdrop_dirty = !hide_chrome && (scene_changed || key1 != g_scene_key);
+    if (backdrop_dirty) {
         backdrop_update(wall, w, h);
-        g_scene_key = scene_key(w, h);
+        g_scene_key = key1;
         g_scene_valid = 1;
     }
+
+    /* What the desktop under the chrome is, and whether it is current. The
+     * software composition uses this to decide between rebuilding it and
+     * putting the saved pixels back. */
+    g_frame_scene = key1;
+    g_frame_scene_ok = !hide_chrome && g_scene_valid;
 
     finndock_render(w, h, dock_scale, st);
 
@@ -1265,15 +1747,137 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
         finnsetup_render(w, h, scale, st);
 }
 
+/*
+ * The chrome is drawn on top of the desktop, and most frames change nothing
+ * but the chrome: a dock wash, the minute on the clock, a panel hover. Those
+ * frames used to copy the wallpaper over the whole base and blit the window
+ * again just to erase the old chrome. Keep the desktop pixels under each
+ * chrome surface instead; putting them back erases exactly the chrome that
+ * was drawn, and the new chrome goes over the same desk.
+ *
+ * The menu is deliberately absent. Its shadow reaches far outside its layer
+ * (a hundred-pixel blur at reference scale), so a layer-sized block would
+ * not cover what the menu actually painted.
+ */
+enum { CH_OVERLAY, CH_DOCK, CH_CONTROL, CH_CLOCK, CH_COUNT };
+
+static uint32_t *g_ch_px[CH_COUNT];
+static size_t    g_ch_cap[CH_COUNT];
+static int       g_ch_rect[CH_COUNT][4];
+
+/* What the current base was composed against. */
+static int      g_base_valid = 0;
+static unsigned g_base_scene = 0;
+static int      g_base_hide = 0;
+static int      g_base_menu = 0;
+
+/* The screen rect one chrome surface occupies this frame, with the margin a
+ * scaled blit writes past its rect. Returns 0 when the surface is not
+ * showing, which is not the same as a surface of zero size. */
+static int chrome_slot_rect(int slot, int w, int h, int r[4]) {
+    const uint32_t *layer = NULL;
+    float x = 0, y = 0, rw = 0, rh = 0, a = 0;
+
+    if (slot == CH_OVERLAY) {
+        int lx, ly, lw, lh; unsigned rev;
+        layer = finnwindow_overlay_layer(&lx, &ly, &lw, &lh, &rev);
+        if (layer) finnwindow_overlay_transform(&x, &y, &rw, &rh, &a);
+    } else if (slot == CH_DOCK) {
+        int lx, ly, lw, lh; unsigned rev;
+        layer = finndock_layer(&lx, &ly, &lw, &lh, &rev);
+        x = (float)lx; y = (float)ly; rw = (float)lw; rh = (float)lh; a = 1.0f;
+    } else if (slot == CH_CONTROL) {
+        int lx, ly, lw, lh; unsigned rev;
+        layer = finncontrol_layer(&lx, &ly, &lw, &lh, &rev);
+        if (layer) finncontrol_transform(&x, &y, &rw, &rh, &a);
+    } else {
+        int lx, ly, lw, lh; unsigned rev;
+        layer = finnclock_layer(&lx, &ly, &lw, &lh, &rev);
+        if (layer) finnclock_transform(&x, &y, &rw, &rh, &a);
+    }
+
+    if (!layer || a <= 0.004f || rw < 1.0f || rh < 1.0f) return 0;
+
+    int x0 = (int)floorf(x) - 2, y0 = (int)floorf(y) - 2;
+    int x1 = (int)ceilf(x + rw) + 2, y1 = (int)ceilf(y + rh) + 2;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > w) x1 = w;
+    if (y1 > h) y1 = h;
+    if (x1 <= x0 || y1 <= y0) return 0;
+    r[0] = x0; r[1] = y0; r[2] = x1 - x0; r[3] = y1 - y0;
+    return 1;
+}
+
+/* Save the desktop under every chrome surface. Returns 0 if a block could
+ * not be allocated, in which case the next frame rebuilds from the wallpaper
+ * rather than trusting a block that was not saved. */
+static int chrome_capture(uint32_t *base, int w, int h) {
+    int ok = 1;
+    for (int i = 0; i < CH_COUNT; i++) {
+        int r[4];
+        if (!chrome_slot_rect(i, w, h, r)) {
+            g_ch_rect[i][2] = g_ch_rect[i][3] = 0;
+            continue;
+        }
+        size_t need = (size_t)r[2] * (size_t)r[3];
+        if (need > g_ch_cap[i]) {
+            uint32_t *np = realloc(g_ch_px[i], need * 4);
+            if (!np) { ok = 0; continue; }   /* the old block is still there */
+            g_ch_px[i] = np;
+            g_ch_cap[i] = need;
+        }
+        for (int y = 0; y < r[3]; y++)
+            memcpy(g_ch_px[i] + (size_t)y * r[2],
+                   base + (size_t)(r[1] + y) * w + r[0],
+                   (size_t)r[2] * 4);
+        memcpy(g_ch_rect[i], r, sizeof r);
+    }
+    return ok;
+}
+
+/* Put the saved desktop back where chrome was drawn last frame. */
+static void chrome_restore(uint32_t *base, int w) {
+    for (int i = 0; i < CH_COUNT; i++) {
+        int rw = g_ch_rect[i][2], rh = g_ch_rect[i][3];
+        if (!g_ch_px[i] || rw <= 0 || rh <= 0) continue;
+        for (int y = 0; y < rh; y++)
+            memcpy(base + (size_t)(g_ch_rect[i][1] + y) * w + g_ch_rect[i][0],
+                   g_ch_px[i] + (size_t)y * rw, (size_t)rw * 4);
+    }
+}
+
 static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
-                         float scale, const finn_state *st) {
+                         float scale, const finn_state *st, float theme_t) {
     build_chrome(w, h, scale, st, wall);
-    memcpy(base, wall, (size_t)w * h * 4);
 
     int hide_chrome = finnsetup_is_open() || finnsetup_visible();
-    if (!hide_chrome) {
-        if (finnwindow_visible())
+    int menu_vis = finnmenu_visible();
+
+    /*
+     * A full compose is required when the desktop itself may have moved
+     * (the scene key), when setup owns the screen, when the menu is up (its
+     * shadow is not in a block), and while the appearance is dissolving —
+     * the whole frame is the new theme then, not a patch of it.
+     */
+    int full = !g_base_valid || hide_chrome || g_base_hide != hide_chrome ||
+               !g_frame_scene_ok || g_base_scene != g_frame_scene ||
+               g_base_menu != menu_vis || menu_vis || theme_t < 0.999f;
+
+    int captured = 1;
+    if (full) {
+        memcpy(base, wall, (size_t)w * h * 4);
+        if (!hide_chrome && finnwindow_visible())
             finnwindow_blit_scaled(base, w, h);
+    } else {
+        chrome_restore(base, w);
+    }
+
+    if (!hide_chrome) {
+        /* The window is down and the chrome is not: this is the desk the
+         * next chrome-only frame restores. */
+        captured = chrome_capture(base, w, h);
+
         if (finnwindow_visible())
             finnwindow_overlay_blit_scaled(base, w, h);
 
@@ -1301,6 +1905,11 @@ static void compose_base(uint32_t *base, const uint32_t *wall, int w, int h,
     }
     if (finnsetup_visible())
         finnsetup_blit_scaled(base, w, h);
+
+    g_base_scene = g_frame_scene;
+    g_base_hide = hide_chrome;
+    g_base_menu = menu_vis;
+    g_base_valid = captured && g_frame_scene_ok && !hide_chrome;
 }
 
 /* ---------------- accelerated path ----------------
@@ -1606,8 +2215,7 @@ static const char *ctl_why(const char *reply) {
  * knows what was pressed — so the request goes to the control plane and the
  * answer comes back as a notification, while its window opens on screen.
  */
-static void menu_launch(int index) {
-    const finn_app *a = finn_apps_at(index);
+static void launch_app(const finn_app *a) {
     if (!a) return;
 
     if (!a->installed) {
@@ -1633,6 +2241,28 @@ static void menu_launch(int index) {
         finn_notify_post(a->name, ctl_why(reply));
 }
 
+static void menu_launch(int index) {
+    launch_app(finn_apps_at(index));
+}
+
+/* A taskbar pin was toggled from the menu or by a right-click on the tile.
+ * The pin is a local preference, so the compositor writes it itself; the
+ * notification says what changed, because the button that was pressed is
+ * about to be covered by the menu when the notification appears. */
+static void taskbar_toggle_pin(const char *app_id) {
+    if (!app_id || !*app_id) return;
+    int now = 0;
+    if (finntaskbar_toggle(app_id, &now) != 0) {
+        finn_notify_post("Taskbar", "Could not save the pin");
+        return;
+    }
+    taskbar_pins_reload();
+    finnmenu_pins_changed();
+    const finn_app *a = finn_apps_find(app_id);
+    finn_notify_post(a ? a->name : "Taskbar",
+                     now ? "Pinned to taskbar" : "Unpinned from taskbar");
+}
+
 /* The power row. The control plane does the work; the shell only says what
  * was asked for. */
 static void menu_power(const char *action) {
@@ -1643,6 +2273,41 @@ static void menu_power(const char *action) {
                          strcmp(action, "restart") == 0 ? "Restarting" : "Shutting down");
     else
         finn_notify_post("FinnOS", ctl_why(reply));
+}
+
+/*
+ * A unified search result was chosen. The menu only says what it is; the
+ * shell does the three things it knows how to do: start an app through the
+ * control plane, open Settings at a page, or change the machine.
+ */
+static void menu_activate(const finnmenu_result *r, const finn_state *st) {
+    if (!r) return;
+
+    if (r->kind == FINNMENU_RESULT_APP) {
+        menu_launch(r->index);
+        return;
+    }
+
+    if (r->kind == FINNMENU_RESULT_SETTINGS) {
+        finn_settings_page_info info;
+        if (finnsettingsapp_page_info(r->index, &info) == 0) {
+            finnsettingsapp_set_page(info.id);
+            finnwindow_open("settings");
+        }
+        return;
+    }
+
+    if (r->kind != FINNMENU_RESULT_ACTION) return;
+
+    if (r->index == FINNMENU_ACTION_RESTART) menu_power("restart");
+    else if (r->index == FINNMENU_ACTION_SHUTDOWN) menu_power("shutdown");
+    else if (r->index == FINNMENU_ACTION_APPEARANCE) {
+        int want = !(st && st->dark);
+        if (finn_state_set_dark(want) == 0)
+            finn_notify_post("Appearance", want ? "Dark" : "Light");
+        else
+            finn_notify_post("Appearance", "Could not save the change");
+    }
 }
 
 /*
@@ -1663,12 +2328,28 @@ static int setup_finish(void) {
  * followed, so Super+arrow can act without the menu opening first. */
 static int g_meta_chord = 0;
 
-/* Returns 1 when the chrome changed. Keys are handled here, in the
- * compositor, because there is no client surface protocol to deliver them
- * to; what a key does is the shell's decision (finnkbd.h). */
-static int key_action(const finn_key_event *e, const finn_state *st) {
-    (void)st;
+static void wayland_forward_key(finn_wayland_ctx *ctx,
+                                const finn_key_event *event) {
+    if (!ctx || !ctx->server || event->repeat || finnmenu_is_open() ||
+        finncontrol_is_open() || finnclock_is_open() || finnsetup_is_open())
+        return;
+    int id = finnwindow_external_focused();
+    FinnWaylandSurface *surface = wayland_surface_for_id(ctx, id);
+    if (!surface) return;
+    if (ctx->keyboard_window != id) {
+        finn_wayland_keyboard_focus(ctx->server, surface);
+        ctx->keyboard_window = id;
+    }
+    (void)finn_wayland_keyboard_key(ctx->server, (uint32_t)event->code,
+        event->pressed ? WL_KEYBOARD_KEY_STATE_PRESSED
+                       : WL_KEYBOARD_KEY_STATE_RELEASED,
+        wayland_time_msec());
+}
 
+/* Returns 1 when the chrome changed. Shell chords are intercepted first;
+ * unhandled keys go to the focused external Wayland toplevel. */
+static int key_action(const finn_key_event *e, const finn_state *st,
+                      finn_wayland_ctx *wayland) {
     /* Meta is a modifier first and the menu key second. Opening the menu on
      * the way down would put it in front of the window the chord is about
      * to move. */
@@ -1682,7 +2363,10 @@ static int key_action(const finn_key_event *e, const finn_state *st) {
         return 1;
     }
 
-    if (!e->pressed) return 0;
+    if (!e->pressed) {
+        wayland_forward_key(wayland, e);
+        return 0;
+    }
 
     /* The console chord is checked before anything else: it must work from a
      * setup screen, a menu and a frozen-looking session alike. While another
@@ -1724,6 +2408,20 @@ static int key_action(const finn_key_event *e, const finn_state *st) {
         return 1;
     }
 
+    /* The menu floats above the windows, so it reads the keyboard before
+     * they do. Text typed with it open is a search, not a keystroke for the
+     * window behind it. */
+    if (finnmenu_is_open()) {
+        finnmenu_result act;
+        if (finnmenu_key(e, &act)) {
+            if (act.kind != FINNMENU_RESULT_NONE) {
+                menu_activate(&act, st);
+                finnmenu_set_open(0);
+            }
+            return 1;
+        }
+    }
+
     if (finnwindow_key(e)) return 1;
     if (e->repeat) return 0;
 
@@ -1763,14 +2461,55 @@ static int key_action(const finn_key_event *e, const finn_state *st) {
         return 1;
     }
 
+    wayland_forward_key(wayland, e);
     return 0;
 }
 
 /* Returns 1 when the chrome itself changed and the layer must be rebuilt. */
-static int shell_input(finn_pointer *p, const finn_state *st) {
+static int shell_input(finn_pointer *p, const finn_state *st,
+                       finn_wayland_ctx *wayland) {
     int now = p->buttons & FINN_BTN_LEFT;
     int was = g_prev_buttons & FINN_BTN_LEFT;
+    int now_r = p->buttons & FINN_BTN_RIGHT;
+    int was_r = g_prev_buttons & FINN_BTN_RIGHT;
+    uint32_t event_time = wayland_time_msec();
     g_prev_buttons = p->buttons;
+
+    if (!now_r && was_r && wayland &&
+        (wayland->pointer_buttons & FINN_BTN_RIGHT))
+        wayland_send_button(wayland, BTN_RIGHT,
+                            WL_POINTER_BUTTON_STATE_RELEASED,
+                            FINN_BTN_RIGHT, p->x, p->y, event_time);
+
+    /*
+     * A right-click on a taskbar tile pins or unpins it. This is the shortcut
+     * for the same preference the menu's preview shows; neither is a machine
+     * change, so neither goes through the control plane.
+     */
+    if (now_r && !was_r) {
+        if (!finnsetup_is_open() && !finnmenu_is_open() &&
+            !finncontrol_is_open() && !finnclock_is_open() &&
+            finndock_hit(p->x, p->y) == FINNDOCK_HIT_TASK) {
+            int ti = finndock_task_at(p->x, p->y);
+            if (ti >= 0 && ti < g_n_task_apps && g_task_apps[ti].id[0] != '@') {
+                taskbar_toggle_pin(g_task_apps[ti].id);
+                return 1;
+            }
+        }
+        if (!finnsetup_is_open() && !finnmenu_is_open() &&
+            !finncontrol_is_open() && !finnclock_is_open() &&
+            finndock_hit(p->x, p->y) == FINNDOCK_HIT_NONE) {
+            int id = 0;
+            if (finnwindow_external_hit(p->x, p->y, &id, NULL, NULL)) {
+                finnwindow_press(FINNWINDOW_HIT_BODY, id, p->x, p->y);
+                wayland_send_button(wayland, BTN_RIGHT,
+                                    WL_POINTER_BUTTON_STATE_PRESSED,
+                                    FINN_BTN_RIGHT, p->x, p->y, event_time);
+                return 1;
+            }
+        }
+        return 0;
+    }
 
     if (now && !was) {
         float v01 = -1.0f;
@@ -1806,12 +2545,24 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
          * already follows.
          */
         if (finnmenu_is_open()) {
-            int app_index = -1;
-            int what = finnmenu_hit(p->x, p->y, &app_index);
-            if (what == FINNMENU_APP) {
-                finnmenu_press(FINNMENU_APP);
-                menu_launch(app_index);
+            finnmenu_result r;
+            int what = finnmenu_hit(p->x, p->y, &r);
+            if (what == FINNMENU_RESULT) {
+                finnmenu_press(FINNMENU_RESULT);
+                menu_activate(&r, st);
                 finnmenu_set_open(0);
+                return 1;
+            }
+            if (what == FINNMENU_PIN) {
+                const finn_app *a = finn_apps_at(r.index);
+                if (a && r.kind == FINNMENU_RESULT_APP) {
+                    finnmenu_press(FINNMENU_PIN);
+                    taskbar_toggle_pin(a->id);
+                }
+                return 1;      /* the menu stays open to show the new state */
+            }
+            if (what == FINNMENU_SEARCH) {
+                finnmenu_focus_search();
                 return 1;
             }
             if (what == FINNMENU_RESTART || what == FINNMENU_SHUTDOWN) {
@@ -1823,6 +2574,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             if (what != FINNMENU_NONE) {
                 /* the menu's own surface: the click is swallowed by it */
                 finnmenu_press(FINNMENU_PANEL);
+                finnmenu_blur_search();
                 return 0;
             }
             finnmenu_set_open(0);
@@ -1869,9 +2621,33 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             return 0;                       /* swallowed by the panel */
 
         int hit = finndock_hit(p->x, p->y);
-        /* The clock is a control but not a status tile: it takes no wash. */
-        finndock_press(hit == FINNDOCK_HIT_CLOCK ? FINNDOCK_HIT_NONE : hit);
+        /* The clock is a control but not a status tile: it takes no wash.
+         * A taskbar tile takes the wash on itself, not on the whole pill. */
+        if (hit == FINNDOCK_HIT_TASK)
+            finndock_press_task(finndock_task_at(p->x, p->y));
+        else
+            finndock_press(hit == FINNDOCK_HIT_CLOCK ? FINNDOCK_HIT_NONE : hit);
 
+        if (hit == FINNDOCK_HIT_TASK) {
+            int ti = finndock_task_at(p->x, p->y);
+            finncontrol_set_open(0);
+            finnclock_set_open(0);
+            finnmenu_set_open(0);
+            if (ti >= 0 && ti < g_n_task_apps) {
+                const finndock_app *t = &g_task_apps[ti];
+                if (t->windows > 0) {
+                    /* A tile with windows restores or folds its group. A
+                     * tile that is only pinned is a launcher. */
+                    if (t->id[0] == '@')
+                        finnwindow_taskbar_activate(NULL, atoi(t->id + 1));
+                    else
+                        finnwindow_taskbar_activate(t->id, 0);
+                } else {
+                    launch_app(finn_apps_find(t->id));
+                }
+            }
+            return 1;
+        }
         if (hit == FINNDOCK_HIT_CLOCK) {
             int open = !finnclock_is_open();
             finnmenu_set_open(0);
@@ -1897,6 +2673,7 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             finncontrol_set_open(0);
             finnclock_set_open(0);
             finnmenu_set_open(1);
+            finnmenu_focus_search();
             return 1;
         }
         if (hit == FINNDOCK_HIT_WINDOWS) {
@@ -1904,13 +2681,6 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
             finnclock_set_open(0);
             finnmenu_set_open(0);
             finnwindow_cycle_focus(1);
-            return 1;
-        }
-        if (hit == FINNDOCK_HIT_APPS) {
-            finncontrol_set_open(0);
-            finnclock_set_open(0);
-            finnmenu_set_open(0);
-            finnwindow_taskbar_toggle();
             return 1;
         }
         if (finnclock_is_open())   { finnclock_set_open(0);   return 1; }
@@ -1921,6 +2691,12 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         int whit = finnwindow_hit(p->x, p->y, &wid);
         if (whit != FINNWINDOW_HIT_NONE) {
             finnwindow_press(whit, wid, p->x, p->y);
+            int client_id = 0;
+            if (whit == FINNWINDOW_HIT_BODY &&
+                finnwindow_external_hit(p->x, p->y, &client_id, NULL, NULL))
+                wayland_send_button(wayland, BTN_LEFT,
+                                    WL_POINTER_BUTTON_STATE_PRESSED,
+                                    FINN_BTN_LEFT, p->x, p->y, event_time);
             if (whit >= FINNWINDOW_HIT_EXPAND && whit <= FINNWINDOW_HIT_CLOSE) {
                 g_press_part = whit;
                 g_press_win = wid;
@@ -1963,6 +2739,10 @@ static int shell_input(finn_pointer *p, const finn_state *st) {
         finnmenu_press(FINNMENU_NONE);
         finnsetup_press(FINNSETUP_NONE);
         finnwindow_release(p->x, p->y);
+        if (wayland && (wayland->pointer_buttons & FINN_BTN_LEFT))
+            wayland_send_button(wayland, BTN_LEFT,
+                                WL_POINTER_BUTTON_STATE_RELEASED,
+                                FINN_BTN_LEFT, p->x, p->y, event_time);
         return changed;
     }
 
@@ -2016,6 +2796,24 @@ static int boot_flip(uint32_t fbid, finngpu *gpu) {
     int landed = display_flip(fbid);
     if (gpu && landed == 0) finngpu_release(gpu);
     return landed;
+}
+
+static int ensure_user_runtime_dir(uid_t uid, gid_t gid,
+                                  char *path, size_t path_cap) {
+    int n = snprintf(path, path_cap, "/run/user/%u", (unsigned)uid);
+    if (n < 0 || (size_t)n >= path_cap) { errno = ENAMETOOLONG; return -1; }
+    int created = mkdir(path, 0700) == 0;
+    if (!created && errno != EEXIST) return -1;
+    if (created && (chown(path, uid, gid) != 0 || chmod(path, 0700) != 0))
+        return -1;
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+    if (!S_ISDIR(st.st_mode) || st.st_uid != uid) {
+        errno = EPERM;
+        return -1;
+    }
+    if ((st.st_mode & 0777) != 0700 && chmod(path, 0700) != 0) return -1;
+    return 0;
 }
 
 int main(int argc, char **argv) {
@@ -2244,7 +3042,7 @@ int main(int argc, char **argv) {
      * happened is this session beginning, so that is what it opens with. */
     finn_notify_post("FinnOS", "Session started");
 
-    compose_base(base, wall, w, h, scale, &st);
+    compose_base(base, wall, w, h, scale, &st, 1.0f);
 
     /*
      * Warm both panels before the loop starts. Rasterising a panel is the most
@@ -2274,6 +3072,52 @@ int main(int argc, char **argv) {
         .ptr = &ptr, .kbd = &kbd, .w = w, .h = h, .base = base, .scale = scale,
         .capture_fd = -1, .gpu = gpu != NULL
     };
+
+    finn_wayland_ctx wayland;
+    memset(&wayland, 0, sizeof wayland);
+    wayland.control = &cx;
+    wayland.default_width = (int)(w * 0.56f);
+    wayland.default_height = (int)(h * 0.56f);
+    if (wayland.default_width < 360) wayland.default_width = 360;
+    if (wayland.default_height < 240) wayland.default_height = 240;
+    if (wayland.default_width > 1280) wayland.default_width = 1280;
+    if (wayland.default_height > 800) wayland.default_height = 800;
+    struct passwd *finn_user = getpwnam("finn");
+    char runtime_dir[PATH_MAX], wayland_socket[PATH_MAX];
+    if (!finn_user) {
+        fprintf(stderr, "finn-comp: Wayland unavailable: user 'finn' not found\n");
+    } else if (ensure_user_runtime_dir(finn_user->pw_uid, finn_user->pw_gid,
+                                       runtime_dir, sizeof runtime_dir) != 0) {
+        fprintf(stderr, "finn-comp: Wayland runtime directory unavailable: %s\n",
+                strerror(errno));
+    } else if (snprintf(wayland_socket, sizeof wayland_socket,
+                        "%s/wayland-0", runtime_dir) >=
+               (int)sizeof wayland_socket) {
+        fprintf(stderr, "finn-comp: Wayland socket path is too long\n");
+    } else {
+        FinnWaylandCallbacks callbacks = {
+            .surface_created = wayland_surface_created,
+            .surface_destroyed = wayland_surface_destroyed,
+            .title_changed = wayland_title_changed,
+            .surface_committed = wayland_surface_committed
+        };
+        FinnWaylandConfig config = {
+            .socket_path = wayland_socket,
+            .output_width = w,
+            .output_height = h,
+            .output_refresh_millihz = 60000,
+            .callbacks = callbacks,
+            .userdata = &wayland
+        };
+        wayland.server = finn_wayland_create(&config);
+        if (wayland.server)
+            fprintf(stderr, "finn-comp: Wayland display on %s\n", wayland_socket);
+        else
+            fprintf(stderr, "finn-comp: Wayland unavailable: %s\n",
+                    strerror(errno));
+    }
+    finnwindow_set_external_close_handler(wayland_window_close_request,
+                                          &wayland);
 
     /* The static surfaces go up once. Only the chrome is ever re-uploaded,
      * and only when its own revision says the pixels moved. */
@@ -2404,7 +3248,7 @@ int main(int argc, char **argv) {
     int exit_code = 0;
 
     while (!g_stop) {
-        struct pollfd pf[FINN_PTR_MAX + FINN_KBD_MAX + 2 + MAX_CLIENTS];
+        struct pollfd pf[FINN_PTR_MAX + FINN_KBD_MAX + 3 + MAX_CLIENTS];
         int nf = 0, ictl = -1, cslot[MAX_CLIENTS];
         int pslot[FINN_PTR_MAX], kslot[FINN_KBD_MAX + 1];
 
@@ -2428,6 +3272,14 @@ int main(int argc, char **argv) {
             kslot[i] = nf++;
         }
         if (ctl >= 0)    { pf[nf].fd = ctl;    pf[nf].events = POLLIN; ictl = nf++; }
+        if (wayland.server) {
+            int wayland_fd = finn_wayland_fd(wayland.server);
+            if (wayland_fd >= 0) {
+                pf[nf].fd = wayland_fd;
+                pf[nf].events = POLLIN;
+                nf++;
+            }
+        }
         for (int i = 0; i < MAX_CLIENTS; i++) {
             cslot[i] = -1;
             if (clients[i] >= 0) { pf[nf].fd = clients[i]; pf[nf].events = POLLIN; cslot[i] = nf++; }
@@ -2439,8 +3291,10 @@ int main(int argc, char **argv) {
         int busy = finndock_running() || finncontrol_running() || finnclock_running()
                    || finnmenu_running() || finnwindow_running() || finnsetup_running()
                    || finn_anim_running(&theme_fade)
-                   || cx.capture_fd >= 0;
+                   || cx.capture_fd >= 0 || cx.dirty;
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
+
+        (void)wayland_dispatch_now(&wayland);
 
         int moved = 0, key_changed = 0;
         if (pr > 0) {
@@ -2520,7 +3374,7 @@ int main(int argc, char **argv) {
             finn_key_event evs[64];
             int ne = finn_kbd_poll(&kbd, evs, 64);
             for (int k = 0; k < ne; k++)
-                key_changed |= key_action(&evs[k], &st);
+                key_changed |= key_action(&evs[k], &st, &wayland);
         }
 
         if (vt_sync(fd, &ptr, &kbd)) cx.dirty = 1;
@@ -2545,7 +3399,9 @@ int main(int argc, char **argv) {
          * tracks advance by frame time instead. */
         float adt = dt > 0.034f ? 0.034f : dt;
 
-        int shell_changed = shell_input(&ptr, &st) | key_changed;
+        int shell_changed = shell_input(&ptr, &st, &wayland) | key_changed;
+        wayland_sync_focus(&wayland);
+        wayland_sync_pointer(&wayland, ptr.x, ptr.y, wayland_time_msec());
 
         /* A notch of the wheel belongs to the window under the pointer, and
          * only when no floating surface is in front of it. The menu, the
@@ -2554,13 +3410,27 @@ int main(int argc, char **argv) {
         int wheel = finn_pointer_take_wheel(&ptr);
         if (wheel && !finnmenu_is_open() && !finncontrol_is_open() &&
             !finnclock_is_open() && !finnsetup_is_open()) {
-            shell_changed |= finnwindow_scroll(ptr.x, ptr.y, wheel);
+            int client_id = 0, sx = 0, sy = 0;
+            int over_client = wayland.server &&
+                (wayland.pointer_window ||
+                 finnwindow_external_hit(ptr.x, ptr.y, &client_id, &sx, &sy));
+            if (over_client) {
+                if (!wayland.pointer_window)
+                    wayland_sync_pointer(&wayland, ptr.x, ptr.y,
+                                         wayland_time_msec());
+                finn_wayland_pointer_axis(wayland.server,
+                    WL_POINTER_AXIS_VERTICAL_SCROLL, -(double)wheel * 15.0,
+                    -wheel, wayland_time_msec());
+            } else {
+                shell_changed |= finnwindow_scroll(ptr.x, ptr.y, wheel);
+            }
         }
 
         if (cx.click_release > 0 && --cx.click_release == 0) {
             ptr.buttons &= ~cx.click_pending;
-            shell_input(&ptr, &st);
+            shell_input(&ptr, &st, &wayland);
         }
+        (void)wayland_dispatch_now(&wayland);
 
         if (ptr.dirty) { ptr.dirty = 0; moved = 1; }
 
@@ -2690,16 +3560,21 @@ int main(int argc, char **argv) {
             double _t1 = finn_now();
             int landed = fbid ? display_flip(fbid) : -1;
             double _t2 = finn_now();
-            if (access("/tmp/finn-timing", F_OK) == 0)
-                fprintf(stderr, "FRAME build=%.2f flip=%.2f dock=%u win=%u gen=%u\n",
+            if (timing_on(_t2)) {
+                fprintf(stderr,
+                        "FRAME build=%.2f flip=%.2f dock=%u win=%u gen=%u mode=gpu\n",
                         (_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0,
                         gx.dock_rev, gx.win_rev, finnblur_generation());
+                timing_sample(_t2, (_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0);
+            }
 
             /* Only a frame that landed may release the buffer it replaced;
              * releasing one the display is still showing is how a recoverable
              * hiccup becomes a frozen screen. */
             if (landed == 0) {
                 finngpu_release(gpu);
+                wayland_frame_done_all(&wayland, wayland_time_msec());
+                (void)wayland_dispatch_now(&wayland);
                 if (shot && shot_ok) {
                     ppm_write(cx.capture_fd, base, w, h, cx.capture_step);
                     cx.capture_fd = -1;
@@ -2714,12 +3589,14 @@ int main(int argc, char **argv) {
                 cx.capture_fd = -1;
             }
         } else {
+            double _t0 = finn_now();
+            float tf = finn_anim_v(&theme_fade);
             if (schanged || shell_changed || anim || clock_tick)
-                compose_base(base, wall, w, h, scale, &st);
+                compose_base(base, wall, w, h, scale, &st, tf);
+            double _t1 = finn_now();
 
             int next = cur ^ 1;
 
-            float tf = finn_anim_v(&theme_fade);
             if (base_prev && tf < 0.999f) {
                 uint32_t m = (uint32_t)(tf * 256.0f + 0.5f);
                 if (m > 256u) m = 256u;
@@ -2729,7 +3606,18 @@ int main(int argc, char **argv) {
             }
             finn_pointer_draw(&ptr, fbs[next].map, w, h);
 
-            if (display_flip(fbs[next].id) == 0) cur = next;
+            if (display_flip(fbs[next].id) == 0) {
+                cur = next;
+                wayland_frame_done_all(&wayland, wayland_time_msec());
+                (void)wayland_dispatch_now(&wayland);
+            }
+            double _t2 = finn_now();
+            if (timing_on(_t2)) {
+                fprintf(stderr, "FRAME build=%.2f flip=%.2f gen=%u mode=cpu\n",
+                        (_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0,
+                        finnblur_generation());
+                timing_sample(_t2, (_t1 - _t0) * 1000.0, (_t2 - _t1) * 1000.0);
+            }
         }
 
         if (display_lost()) {
@@ -2744,6 +3632,11 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < MAX_CLIENTS; i++) if (clients[i] >= 0) close(clients[i]);
     if (ctl >= 0) { close(ctl); unlink(FINN_COMP_SOCK); }
+    if (wayland.server) {
+        finn_wayland_destroy(wayland.server);
+        wayland.server = NULL;
+    }
+    finnwindow_set_external_close_handler(NULL, NULL);
     finn_pointer_close(&ptr);
     finn_kbd_close(&kbd);
     finncontrol_free();
@@ -2770,5 +3663,6 @@ int main(int argc, char **argv) {
     free(base);
     free(base_prev);
     free(wall);
+    for (int i = 0; i < CH_COUNT; i++) free(g_ch_px[i]);
     return exit_code;
 }

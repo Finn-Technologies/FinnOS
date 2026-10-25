@@ -15,32 +15,30 @@
 
 /* ---------------- tokens ----------------
  * The panel and its tiles are glass, not paint: each is the blurred wallpaper
- * brought toward bone by a fixed weight. The two weights are FINN_GLASS_PANEL
- * (0.70) and FINN_GLASS_TILE (0.50). finn_frost_rrect mixes toward the tint over
- * whatever the layer already carries, so the tile's second pass compounds to the
- * lighter inset the reference shows, and the pair re-grades together when Appearance flips.
+ * brought toward bone by a shared pass weight. FINN_GLASS_PANEL is 0.65; the
+ * second pass is 0.5714286, producing the 0.85 effective tile density in
+ * ui/_tokens.fui. finn_frost_rrect applies both passes over the live backdrop.
  */
 
 #define CC_KNOB_INK  0xFF1A1D24u
 
 /* ---------------- metrics, authored for a 1080p canvas ----------------
  *
- * Every number here is the Figma measurement in 1280x832 units multiplied
- * by 1.298077 (1080 / 832). The panel is sized by its contents: the old
- * 500-unit height left a third of the panel as empty glass below the
- * sliders, which is not a Control Center, it is a hole.
+ * Measurements from Figma Page 1 / Desktop - Control Center / Home at
+ * 1280x832, converted to the compositor's 1080p reference with 1.298077
+ * (1080 / 832). The 405x500 frame's lower blank region is intentional space
+ * for widgets; the status footer is anchored to its bottom.
  *
- *   panel 405 wide, height follows the last row
- *   Wi-Fi tile 188x76 at 10,10; Bluetooth tile 188x76 at 207,10
- *   Appearance tile 385x60 at 10,94
- *   Brightness slider 385x35 r=100 at 10,162
- *   Volume slider 385x35 r=100 at 10,205
- *   Footer 385x40 at 10,250
+ *   panel 405x500 at (721,260), radius 8
+ *   Wi-Fi tile 188x40 at (10,10); Bluetooth tile 188x40 at (207,10)
+ *   Brightness slider 335x35 at (10,60); appearance tile 40x35 at (355,60)
+ *   Volume slider 385x35 at (10,105)
+ *   Footer 385x40 at (10,450)
  */
 #define REF          1.298077f
 
 #define CC_W        (405.0f * REF)
-#define CC_H        (200.0f * REF)
+#define CC_H        (500.0f * REF)
 #define CC_PAD      (10.0f * REF)
 #define CC_R_PANEL  (8.0f * REF)
 #define CC_R_TILE   (4.14f * REF)
@@ -68,7 +66,7 @@
 #define STATUS_TEXT_X   (42.0f * REF)
 
 #define FOOTER_X        (10.0f * REF)
-#define FOOTER_Y        (150.0f * REF)
+#define FOOTER_Y        (450.0f * REF)
 #define FOOTER_W        (385.0f * REF)
 #define FOOTER_H        (40.0f * REF)
 #define FOOTER_R        (4.14f * REF)

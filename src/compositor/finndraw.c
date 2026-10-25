@@ -25,8 +25,8 @@ void finn_theme_set(int dark) {
 
     if (!dark) {
         FINN_BONE    = 0xFFFFFFFFu;   /* white glass */
-        FINN_TILE    = 0xD9FFFFFFu;   /* 85% white */
-        FINN_TILE_ON = 0xFFFFFFFFu;
+        FINN_TILE    = 0xD9FFFFFFu;   /* white tint at 85% */
+        FINN_TILE_ON = 0xFFD3E6FFu;   /* #D3E6FF */
         FINN_HAIR    = 0x1A000000u;
         FINN_INK     = 0xFF000000u;   /* #000000 pure black */
         FINN_MUTE    = 0xFF969696u;   /* #969696 */
@@ -45,7 +45,7 @@ void finn_theme_set(int dark) {
         FINN_INK     = 0xFFF4F0E8u;
         FINN_MUTE    = 0xFF8B9099u;
         FINN_DIM     = 0xFFA9A59Eu;
-        FINN_ACCENT  = 0xFF7AB8FFu;
+        FINN_ACCENT  = 0xFF006FFFu;   /* #006FFF */
         FINN_TRACK   = 0xFF3B4048u;
         FINN_KNOB    = 0xFFEDE9E1u;
         FINN_ON      = 0xFF0A84FFu;   /* #0A84FF */
@@ -115,6 +115,48 @@ void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
     }
 }
 
+void finn_shadow_rrect(uint32_t *b, int w, int h, float x, float y,
+                       float rw, float rh, float r, float blur,
+                       float offset_x, float offset_y, float opacity) {
+    if (!b || w <= 0 || h <= 0 || rw <= 0.0f || rh <= 0.0f ||
+        blur <= 0.0f || opacity <= 0.0f)
+        return;
+    if (opacity > 1.0f) opacity = 1.0f;
+    if (r < 0.0f) r = 0.0f;
+    if (r > rw * 0.5f) r = rw * 0.5f;
+    if (r > rh * 0.5f) r = rh * 0.5f;
+
+    /* Figma's blur radius is represented as a Gaussian with sigma=blur/2.
+     * Three sigma contains the visible shadow; clipping there avoids work on
+     * pixels that would round to zero in the 8-bit alpha buffer. */
+    float sigma = blur * 0.5f;
+    float extent = sigma * 3.0f;
+    float sx = x + offset_x, sy = y + offset_y;
+    int x0 = (int)floorf(sx - extent - 1.0f);
+    int x1 = (int)ceilf(sx + rw + extent + 1.0f);
+    int y0 = (int)floorf(sy - extent - 1.0f);
+    int y1 = (int)ceilf(sy + rh + extent + 1.0f);
+    float cx = sx + rw * 0.5f, cy = sy + rh * 0.5f;
+    float hw = rw * 0.5f, hh = rh * 0.5f;
+    const float inv_sqrt_two_sigma = 0.70710678118f / sigma;
+
+    for (int yy = y0; yy <= y1; yy++) {
+        if (yy < 0 || yy >= h) continue;
+        for (int xx = x0; xx <= x1; xx++) {
+            if (xx < 0 || xx >= w) continue;
+            float distance = sdf_rrect(xx + 0.5f, yy + 0.5f,
+                                       cx, cy, hw, hh, r);
+            if (distance >= extent) continue;
+            float blurred = distance <= 0.0f ? 1.0f :
+                0.5f * erfcf(distance * inv_sqrt_two_sigma);
+            if (blurred <= 0.0f) continue;
+            size_t index = (size_t)yy * (size_t)w + (size_t)xx;
+            b[index] = finn_over(b[index], 0xFF000000u,
+                                 opacity * blurred);
+        }
+    }
+}
+
 void finn_fill_bar(uint32_t *b, int w, int h, float x, float y,
                    float rw, float rh, float r, uint32_t c) {
     if (rw <= 0.0f || rh <= 0.0f) return;
@@ -154,9 +196,17 @@ void finn_stroke_rrect(uint32_t *b, int w, int h, float x, float y,
     }
 }
 
-void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
-                      float x, float y, float rw, float rh, float r,
-                      uint32_t tint, float alpha) {
+/*
+ * The one frost raster. `live_only` is the difference between a surface that
+ * sits over other surfaces in the same layer and one that sits over a fresh
+ * area: a window body overlaps the window below it, and that pixel is already
+ * opaque in the layer, but glass must still show the *blurred* window below
+ * rather than its sharp pixels. Panels and cards, on the other hand, want the
+ * layer's own pixels so a second sheet of glass compounds over the first.
+ */
+static void frost_rrect_core(uint32_t *b, int w, int h, int ox, int oy,
+                             float x, float y, float rw, float rh, float r,
+                             uint32_t tint, float alpha, int live_only) {
     if (rw <= 0.0f || rh <= 0.0f) return;
 
     /*
@@ -222,7 +272,7 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
             size_t idx = (size_t)yy * w + xx;
             uint32_t d = b[idx];
             int over_glass = (d >> 24) != 0;
-            uint32_t base = over_glass ? d : finnblur_at(ox + xx, oy + yy);
+            uint32_t base = (over_glass && !live_only) ? d : finnblur_at(ox + xx, oy + yy);
 
             /*
              * A dark material darkens what it covers before it tints it. A
@@ -263,6 +313,18 @@ void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
     }
 }
 
+void finn_frost_rrect(uint32_t *b, int w, int h, int ox, int oy,
+                      float x, float y, float rw, float rh, float r,
+                      uint32_t tint, float alpha) {
+    frost_rrect_core(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, 0);
+}
+
+void finn_frost_rrect_live(uint32_t *b, int w, int h, int ox, int oy,
+                           float x, float y, float rw, float rh, float r,
+                           uint32_t tint, float alpha) {
+    frost_rrect_core(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, 1);
+}
+
 void finn_frost_plate_free(finn_frost_plate *p) {
     if (!p) return;
     free(p->px);
@@ -275,11 +337,14 @@ void finn_frost_plate_free(finn_frost_plate *p) {
  * frost is the most expensive thing a window does, and a window that redraws
  * its own contents asks for the same frost it asked for a keystroke ago.
  */
-void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
-                            int ox, int oy,
-                            float x, float y, float rw, float rh, float r,
-                            uint32_t tint, float alpha) {
-    if (!p) { finn_frost_rrect(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha); return; }
+static void frost_rrect_plate_core(finn_frost_plate *p, uint32_t *b, int w, int h,
+                                   int ox, int oy,
+                                   float x, float y, float rw, float rh, float r,
+                                   uint32_t tint, float alpha, int live_only) {
+    if (!p) {
+        frost_rrect_core(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, live_only);
+        return;
+    }
 
     /* the same conservative bounds finn_frost_rrect writes */
     int px0 = (int)floorf(x - 1), px1 = (int)ceilf(x + rw + 1);
@@ -298,7 +363,8 @@ void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
               p->ox == ox && p->oy == oy &&
               p->x == x && p->y == y && p->rw == rw && p->rh == rh && p->r == r &&
               p->tint == tint && p->alpha == alpha &&
-              p->gen == gen && p->dark == dark && p->ready == ready;
+              p->gen == gen && p->dark == dark && p->ready == ready &&
+              p->live == live_only;
 
     if (hit) {
         for (int row = 0; row < ph; row++)
@@ -307,7 +373,7 @@ void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
         return;
     }
 
-    finn_frost_rrect(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha);
+    frost_rrect_core(b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, live_only);
 
     if (!p->px || p->w != pw || p->h != ph) {
         free(p->px);
@@ -323,23 +389,90 @@ void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
         p->ox = ox; p->oy = oy;
         p->x = x; p->y = y; p->rw = rw; p->rh = rh; p->r = r;
         p->tint = tint; p->alpha = alpha;
-        p->gen = gen; p->dark = dark; p->ready = ready;
+        p->gen = gen; p->dark = dark; p->ready = ready; p->live = live_only;
         p->valid = 1;
     }
 }
 
+void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
+                            int ox, int oy,
+                            float x, float y, float rw, float rh, float r,
+                            uint32_t tint, float alpha) {
+    frost_rrect_plate_core(p, b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, 0);
+}
+
+void finn_frost_rrect_plate_live(finn_frost_plate *p, uint32_t *b, int w, int h,
+                                 int ox, int oy,
+                                 float x, float y, float rw, float rh, float r,
+                                 uint32_t tint, float alpha) {
+    frost_rrect_plate_core(p, b, w, h, ox, oy, x, y, rw, rh, r, tint, alpha, 1);
+}
+
 void finn_blit(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh,
                int dx, int dy) {
-    for (int y = 0; y < sh; y++) {
-        int ty = dy + y;
-        if (ty < 0 || ty >= dh) continue;
-        for (int x = 0; x < sw; x++) {
-            int tx = dx + x;
-            if (tx < 0 || tx >= dw) continue;
-            uint32_t c = src[(size_t)y * sw + x];
+    /* Clip once. A window blit is often larger than what is left of the
+     * frame after a snap, and the per-pixel test was paid by every pixel
+     * that was going to be drawn anyway. */
+    int x0 = dx, x1 = dx + sw;
+    int y0 = dy, y1 = dy + sh;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > dw) x1 = dw;
+    if (y1 > dh) y1 = dh;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int ty = y0; ty < y1; ty++) {
+        const uint32_t *srow = src + (size_t)(ty - dy) * sw + (x0 - dx);
+        uint32_t *drow = dst + (size_t)ty * dw + x0;
+        for (int tx = x0; tx < x1; tx++, srow++, drow++) {
+            uint32_t c = *srow;
             if (!(c >> 24)) continue;
-            dst[(size_t)ty * dw + tx] = finn_over(dst[(size_t)ty * dw + tx], c, 1.0f);
+            /* A source that is already opaque over-composites to itself;
+             * finn_over would walk the general formula to say so. */
+            *drow = (c >> 24) == 0xFFu ? c : finn_over(*drow, c, 1.0f);
         }
+    }
+}
+
+void finn_blit_opaque_rounded_bottom(uint32_t *dst, int dw, int dh,
+                                     const uint32_t *src, int sw, int sh,
+                                     int dx, int dy, int radius) {
+    if (!dst || !src || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    if (radius < 0) radius = 0;
+    if (radius > sw / 2) radius = sw / 2;
+    if (radius > sh / 2) radius = sh / 2;
+
+    /* Clip in source coordinates using wide intermediates: a window may be
+     * partly off-screen, and adding its origin to a client size must not wrap. */
+    int64_t sx0 = dx < 0 ? -(int64_t)dx : 0;
+    int64_t sy0 = dy < 0 ? -(int64_t)dy : 0;
+    int64_t sx1 = (int64_t)dw - dx;
+    int64_t sy1 = (int64_t)dh - dy;
+    if (sx1 > sw) sx1 = sw;
+    if (sy1 > sh) sy1 = sh;
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    if (sx0 >= sx1 || sy0 >= sy1) return;
+
+    for (int64_t sy = sy0; sy < sy1; sy++) {
+        int first = 0, last = sw;
+        if (radius > 0 && sy >= sh - radius) {
+            int64_t cy = sy - (sh - radius - 1);
+            int64_t r2 = (int64_t)radius * radius;
+            while (first < radius) {
+                int64_t cx = radius - first;
+                if (cx * cx + cy * cy <= r2) break;
+                first++;
+            }
+            last = sw - first;
+        }
+
+        int64_t copy0 = sx0 > first ? sx0 : first;
+        int64_t copy1 = sx1 < last ? sx1 : last;
+        if (copy0 >= copy1) continue;
+        uint32_t *drow = dst + (size_t)(dy + sy) * dw + (size_t)(dx + copy0);
+        const uint32_t *srow = src + (size_t)sy * sw + (size_t)copy0;
+        memcpy(drow, srow, (size_t)(copy1 - copy0) * sizeof *dst);
     }
 }
 
@@ -369,6 +502,54 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
 
     float sx = (float)sw / rw, sy = (float)sh / rh;
     float lastu = (float)(sw - 1), lastv = (float)(sh - 1);
+
+    /*
+     * The settled case: the surface is exactly its source, placed on a
+     * whole pixel. Every sample lands on one texel with zero fraction, so
+     * the four-tap interpolation, the weights and the dissolve machinery
+     * all reduce to a copy. The one-pixel margin on each side still
+     * samples the clamped edge texel, as the general path does, because
+     * those pixels are part of what the scaled blit draws.
+     */
+    int ix = (int)x, iy = (int)y;
+    if (g_blit_dust <= 0.001f && rw == (float)sw && rh == (float)sh &&
+        x == (float)ix && y == (float)iy) {
+        for (int py = y0; py < y1; py++) {
+            int v0 = py - iy;
+            if (v0 < 0) v0 = 0;
+            if (v0 > sh - 1) v0 = sh - 1;
+            const uint32_t *srow = src + (size_t)v0 * sw;
+            uint32_t *drow = dst + (size_t)py * dw;
+
+            for (int px = x0; px < x1; px++) {
+                int u0 = px - ix;
+                if (u0 < 0) u0 = 0;
+                if (u0 > sw - 1) u0 = sw - 1;
+                uint32_t t = srow[u0];
+                float a00 = (float)((t >> 24) & 0xFFu);
+                float A = a00;
+                if (A <= 0.5f) continue;
+
+                /* Same operations, same order as the general path with
+                 * fx = fy = 0: multiply by the alpha, then divide it back
+                 * out. Doing it this way keeps the rounding identical. */
+                float R = (float)(t & 0xFFu) * a00;
+                float G = (float)((t >> 8) & 0xFFu) * a00;
+                float B = (float)((t >> 16) & 0xFFu) * a00;
+                float inv = 1.0f / A;
+                R *= inv; G *= inv; B *= inv;
+                float sa = A * (1.0f / 255.0f) * alpha;
+
+                uint32_t dp = drow[px];
+                float ia = 1.0f - sa;
+                uint32_t r8 = (uint32_t)(clampf255(R * sa + (float)(dp & 0xFFu) * ia) + 0.5f);
+                uint32_t g8 = (uint32_t)(clampf255(G * sa + (float)((dp >> 8) & 0xFFu) * ia) + 0.5f);
+                uint32_t b8 = (uint32_t)(clampf255(B * sa + (float)((dp >> 16) & 0xFFu) * ia) + 0.5f);
+                drow[px] = 0xFF000000u | (b8 << 16) | (g8 << 8) | r8;
+            }
+        }
+        return;
+    }
 
     for (int py = y0; py < y1; py++) {
         /* sampling at pixel centres makes the identity transform exact */

@@ -57,12 +57,17 @@ extern uint32_t FINN_FILL;     /* filled portion of a slider bar    */
 extern uint32_t FINN_GLASS;
 
 /*
- * Every frosted panel (Control Center, Start Menu, clock page, windows) and
- * inset tile in the shell shares these two weights so surfaces do not drift
- * apart in visual density.
+ * Shared material passes from ui/_tokens.fui. `glass_tile` there is the
+ * effective density after both passes; `glass_tile_pass` is the second pass
+ * applied here: 0.65 + (1 - 0.65) * 0.5714286 ~= 0.85.
  */
-#define FINN_GLASS_PANEL 0.60f
-#define FINN_GLASS_TILE  0.90f
+#define FINN_GLASS_PANEL 0.65f
+#define FINN_GLASS_TILE  0.5714286f
+
+/* Figma's floating Window and Home effects, in design units. */
+#define FINN_SHADOW_BLUR 100.0f
+#define FINN_SHADOW_OFFSET_Y 4.0f
+#define FINN_SHADOW_ALPHA 0.03f
 
 void finn_theme_set(int dark);
 int  finn_theme_dark(void);
@@ -79,6 +84,12 @@ uint32_t finn_over(uint32_t dst, uint32_t src, float a);
  * radius and the edges are anti-aliased rather than thresholded. */
 void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
                      float rw, float rh, float r, uint32_t c);
+
+/* A blurred black shadow under a rounded surface. `blur` is Figma's blur
+ * radius in compositor pixels; `opacity` is the source alpha. */
+void finn_shadow_rrect(uint32_t *b, int w, int h, float x, float y,
+                       float rw, float rh, float r, float blur,
+                       float offset_x, float offset_y, float opacity);
 
 /*
  * A rounded-rect outline of `thickness`, anti-aliased by the same distance
@@ -135,19 +146,40 @@ typedef struct {
     uint32_t tint;
     float alpha;
     unsigned gen;
-    int dark, ready, valid;
+    int dark, ready, live, valid;
 } finn_frost_plate;
 
 void finn_frost_plate_free(finn_frost_plate *p);
 
+/*
+ * The plate forms: the plain one compounds over whatever the layer already
+ * carries; the live one always samples the blurred backdrop. A window body
+ * uses the live form, because the layer under it may already hold the window
+ * below and glass must blur that window rather than copy its sharp pixels.
+ */
 void finn_frost_rrect_plate(finn_frost_plate *p, uint32_t *b, int w, int h,
                             int ox, int oy,
                             float x, float y, float rw, float rh, float r,
                             uint32_t tint, float alpha);
+void finn_frost_rrect_plate_live(finn_frost_plate *p, uint32_t *b, int w, int h,
+                                 int ox, int oy,
+                                 float x, float y, float rw, float rh, float r,
+                                 uint32_t tint, float alpha);
+
+void finn_frost_rrect_live(uint32_t *b, int w, int h, int ox, int oy,
+                           float x, float y, float rw, float rh, float r,
+                           uint32_t tint, float alpha);
 
 /* Blend src over dst at (dx,dy), skipping fully transparent source pixels. */
 void finn_blit(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw, int sh,
                int dx, int dy);
+
+/* Copy an opaque, 1:1 client surface with the same rounded bottom corners as
+ * the window frame. Full interior rows use memcpy; only the corner arcs need
+ * per-pixel clipping. Source alpha bytes must already be 0xff. */
+void finn_blit_opaque_rounded_bottom(uint32_t *dst, int dw, int dh,
+                                     const uint32_t *src, int sw, int sh,
+                                     int dx, int dy, int radius);
 
 /* Blend src over dst at (dx,dy), scaled to fit (rw,rh) and multiplied by a
  * global alpha. Bilinear, and sampled in premultiplied space: the source is

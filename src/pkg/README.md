@@ -36,6 +36,75 @@ id is used as a directory name or as a line in the install list, so `..`,
 `list` prints the catalogue's apps that are marked installed; nothing
 outside the catalogue is ever listed.
 
+## Flatpak and Wine command-line status
+
+Flatpak package management is separate from the FinnOS-native registry:
+
+```sh
+finnpkg flatpak search calculator
+finnpkg flatpak list
+finnpkg flatpak install org.gnome.Calculator
+finnpkg flatpak run org.gnome.Calculator
+finnpkg flatpak remove org.gnome.Calculator
+```
+
+Flatpak package operations use the system installation. `search` requests
+application, name, description and remote columns, so the source of each
+result is preserved. `install <app-id> [remote]` defaults to Flathub for the
+CLI; the Store passes the remote from the selected search result. Remote names
+are validated, non-Flathub remotes must already be configured system-wide, and
+Flathub is added only from the official signed repository or refused if its
+configured URL is unexpected. App IDs are validated as reverse-DNS identifiers
+and passed as separate process arguments, not shell text. Removing a Flatpak
+does not delete its per-user data.
+
+Wine support is x86_64-only and gives each app a private prefix:
+
+```sh
+finnpkg wine install paint "$HOME/Downloads/Paint-Setup.exe"
+finnpkg wine set paint "$HOME/.local/share/finn/wine/paint/prefix/drive_c/Program Files/Paint/Paint.exe"
+finnpkg wine list
+finnpkg wine run paint
+```
+
+`install` registers the installer, creates a private per-app prefix under the
+user's Finn data directory, and starts it through the audited `finnd` launch
+path. Installers run asynchronously; after setup, the user must locate the
+installed `.exe` and use `set` to point the registration at it. FinnOS does not
+auto-discover application paths. `register` remains available for an existing
+or portable `.exe`; Wine initializes a new prefix on first launch. `list`
+shows the CLI registrations; control-plane clients use `finnctl wine.list`,
+which returns validated, private registration IDs as newline-separated binary
+payload data, bounded to 64 KiB. `run` sends only the app id to
+`finnctl wine.run`; finnd verifies the registration and launches Wine as Finn
+in a transient systemd unit with `WINEPREFIX` set to that app's prefix. The
+executable and prefix are passed as separate arguments/environment values,
+not shell text. The aarch64 build refuses these operations and no ARM Wine is
+promised. Real Wine GUI execution has not yet been validated on FinnOS.
+
+`finnpkg flatpak run <app-id>` validates the reverse-DNS id and delegates to
+the audited `finnd flatpak.run` verb; it never launches the app directly or
+trusts a caller-provided display. The daemon verifies the system installation
+before starting the app in FinnOS's Wayland session.
+
+`finnd` exposes system Flatpak operations through the audited control socket:
+`flatpak.list` and `flatpak.search` return the package manager's text, while
+`flatpak.install <app-id> [remote]` and `flatpak.remove <app-id>` queue systemd
+jobs so downloads do not block the control plane. `flatpak.job <id>` reports
+the job state. `flatpak.run <app-id>` verifies installation and starts the app
+as Finn with the Wayland session environment.
+
+Finn Store lists installed Flatpak apps, searches configured remotes, passes a
+result's remote through to the install job, and offers Open for installed
+Library entries. The in-process host supports only xdg-shell `wl_shm`
+toplevels; popups, subsurfaces, dmabuf, touch, clipboard, drag-and-drop and
+other protocols remain unsupported. On an ARM Linux test VM, the current
+control path launched an installed GNOME Calculator into a standalone test
+server; its 410×666 surface rendered, and pointer plus keyboard events changed
+the displayed expression. This was not a booted FinnOS desktop or a Store
+search/install/launch walkthrough, so full desktop compatibility is still
+unverified.
+
 ## Installing from the catalogue
 
 `finnpkg install <id>` is for an app whose files the image already has.

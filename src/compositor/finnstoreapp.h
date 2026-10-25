@@ -9,24 +9,48 @@
 /*
  * finnstoreapp — the Finn Store view inside finn-comp.
  *
- * The catalogue is the OS's, the install list is finnpkg's, and this view is
- * a window onto both: it never invents an app, never claims one is installed
- * that the package manager has not marked, and never offers an install for a
- * catalogue entry whose launcher is not on the machine.
+ * The Store is five pages under the Settings chrome: Home, Native Apps,
+ * Linux Apps, Windows Apps and Library. Each page is one source, and the
+ * source is named in the navigation rather than hidden behind a filter, so
+ * a package never appears without the place it came from.
  *
- * Installing and removing go through the control plane (`app.install` /
- * `app.remove`), which is the only writer of the machine's package state.
- * The view then re-reads the registry so what is drawn afterwards is the
- * package manager's answer, not a guess made here.
+ * The rules the view keeps:
+ *
+ *   - The native catalogue is the OS registry. An app the registry does not
+ *     know is not offered, and an entry whose launcher is missing is shown
+ *     as unavailable with the reason, never as a button that would fail.
+ *
+ *   - Installed is the package manager's answer. Native state comes from
+ *     finnpkg's install list, Flatpak state from flatpak.list, and Windows
+ *     state from wine.list. Nothing is called installed because an install
+ *     job exited.
+ *
+ *   - Every package change and every launch goes through finnd. This view
+ *     never edits package state or starts a process itself.
+ *
+ * Linux Apps uses flatpak.list/search/install/remove/run. Windows Apps
+ * searches winget through finnd and installs through the audited job path;
+ * the installer itself is never run by the compositor. Library combines the
+ * three installed sets and launches each through the verb that owns it.
+ *
+ * Network and package work runs off the compositor thread. The Store draws
+ * what the backends said and says why when they said nothing.
  */
 
 enum {
     FINNSTORE_HIT_NONE = 0,
     FINNSTORE_HIT_BODY,
     FINNSTORE_HIT_FILTER,
-    FINNSTORE_HIT_ROW,          /* out_sub = catalogue index */
-    FINNSTORE_HIT_ROW_ACTION,   /* narrow layout: the row's own button */
-    FINNSTORE_HIT_ACTION        /* wide layout: the detail pane button */
+    FINNSTORE_HIT_FILTER_CLEAR,
+    FINNSTORE_HIT_NAV,          /* out_sub = page */
+    FINNSTORE_HIT_CARD,         /* out_sub = item; opens detail on Home/Native */
+    FINNSTORE_HIT_CARD_ACTION,  /* out_sub = item; primary action */
+    FINNSTORE_HIT_CARD_REMOVE,  /* out_sub = item; second press confirms */
+    FINNSTORE_HIT_SEE_ALL,      /* out_sub = page */
+    FINNSTORE_HIT_REFRESH,      /* re-read the page's source */
+    FINNSTORE_HIT_BACK,
+    FINNSTORE_HIT_DETAIL_ACTION,
+    FINNSTORE_HIT_DETAIL_REMOVE
 };
 
 int  finnstoreapp_init(const char *icon_dir, const char *font_dir,
@@ -46,7 +70,7 @@ int  finnstoreapp_scroll(int clicks, float scale);
 
 uint32_t finnstoreapp_build_key(float scale);
 
-/* The id of the selected app, or "" when the catalogue is empty. */
+/* The id of the selected app, or "" when the page is empty. */
 const char *finnstoreapp_selection(void);
 /* The last action's answer, or "" if nothing has been attempted. */
 const char *finnstoreapp_status(void);

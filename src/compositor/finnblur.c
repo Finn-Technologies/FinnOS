@@ -51,46 +51,85 @@ static inline uint32_t pack(int r, int g, int b) {
 
 static inline int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 
-/* Horizontal box pass, edges clamped. Alpha is already 0xFF everywhere, so it
+/*
+ * Horizontal box pass, edges clamped. Alpha is already 0xFF everywhere, so it
  * is re-stamped rather than averaged — carrying it through would only cost
- * time and let rounding nibble at it. */
+ * time and let rounding nibble at it.
+ *
+ * The window slides: five taps at x and five at x+1 share four of their
+ * indices, so subtract the one that left and add the one that arrived.
+ * Clamping at the edges is the same index rule on both sides, so the
+ * running sum is exactly the sum the nested loop would have produced.
+ */
 static void box_h(const uint32_t *in, uint32_t *out, int w, int h) {
+    int n = 2 * BLUR_R + 1;
     for (int y = 0; y < h; y++) {
         const uint32_t *row = in + (size_t)y * w;
         uint32_t *o = out + (size_t)y * w;
+
+        int rs = 0, gs = 0, bs = 0;
+        for (int k = -BLUR_R; k <= BLUR_R; k++) {
+            int xx = k < 0 ? 0 : (k >= w ? w - 1 : k);
+            uint32_t c = row[xx];
+            rs += (int)(c & 0xFFu);
+            gs += (int)((c >> 8) & 0xFFu);
+            bs += (int)((c >> 16) & 0xFFu);
+        }
+
         for (int x = 0; x < w; x++) {
-            int rs = 0, gs = 0, bs = 0, n = 0;
-            for (int k = -BLUR_R; k <= BLUR_R; k++) {
-                int xx = x + k;
-                if (xx < 0) xx = 0;
-                if (xx >= w) xx = w - 1;
-                uint32_t c = row[xx];
-                rs += (int)(c & 0xFFu);
-                gs += (int)((c >> 8) & 0xFFu);
-                bs += (int)((c >> 16) & 0xFFu);
-                n++;
-            }
             o[x] = pack(rs / n, gs / n, bs / n);
+            if (x + 1 >= w) break;
+
+            int xo = x - BLUR_R;
+            if (xo < 0) xo = 0;
+            int xi = x + BLUR_R + 1;
+            if (xi >= w) xi = w - 1;
+
+            uint32_t c = row[xo];
+            rs -= (int)(c & 0xFFu);
+            gs -= (int)((c >> 8) & 0xFFu);
+            bs -= (int)((c >> 16) & 0xFFu);
+
+            c = row[xi];
+            rs += (int)(c & 0xFFu);
+            gs += (int)((c >> 8) & 0xFFu);
+            bs += (int)((c >> 16) & 0xFFu);
         }
     }
 }
 
-/* Vertical box pass, edges clamped. */
+/* Vertical box pass, edges clamped. Same sliding window, one column at a
+ * time; the seed repeats the top cell the way the clamped loop did. */
 static void box_v(const uint32_t *in, uint32_t *out, int w, int h) {
+    int n = 2 * BLUR_R + 1;
     for (int x = 0; x < w; x++) {
+        int rs = 0, gs = 0, bs = 0;
+        for (int k = -BLUR_R; k <= BLUR_R; k++) {
+            int yy = k < 0 ? 0 : (k >= h ? h - 1 : k);
+            uint32_t c = in[(size_t)yy * w + x];
+            rs += (int)(c & 0xFFu);
+            gs += (int)((c >> 8) & 0xFFu);
+            bs += (int)((c >> 16) & 0xFFu);
+        }
+
         for (int y = 0; y < h; y++) {
-            int rs = 0, gs = 0, bs = 0, n = 0;
-            for (int k = -BLUR_R; k <= BLUR_R; k++) {
-                int yy = y + k;
-                if (yy < 0) yy = 0;
-                if (yy >= h) yy = h - 1;
-                uint32_t c = in[(size_t)yy * w + x];
-                rs += (int)(c & 0xFFu);
-                gs += (int)((c >> 8) & 0xFFu);
-                bs += (int)((c >> 16) & 0xFFu);
-                n++;
-            }
             out[(size_t)y * w + x] = pack(rs / n, gs / n, bs / n);
+            if (y + 1 >= h) break;
+
+            int yo = y - BLUR_R;
+            if (yo < 0) yo = 0;
+            int yi = y + BLUR_R + 1;
+            if (yi >= h) yi = h - 1;
+
+            uint32_t c = in[(size_t)yo * w + x];
+            rs -= (int)(c & 0xFFu);
+            gs -= (int)((c >> 8) & 0xFFu);
+            bs -= (int)((c >> 16) & 0xFFu);
+
+            c = in[(size_t)yi * w + x];
+            rs += (int)(c & 0xFFu);
+            gs += (int)((c >> 8) & 0xFFu);
+            bs += (int)((c >> 16) & 0xFFu);
         }
     }
 }
@@ -122,7 +161,10 @@ static void downsample_rect(const uint32_t *src, int w, int h,
         for (int sx = csx0; sx <= csx1; sx++) {
             int x0 = sx * FINNBLUR_SCALE;
             int x1 = x0 + FINNBLUR_SCALE; if (x1 > w) x1 = w;
-            int rs = 0, gs = 0, bs = 0, n = 0;
+            int rs = 0, gs = 0, bs = 0;
+            /* The tap count is the block's area; the last block on an edge
+             * is short, so count it once here instead of once per pixel. */
+            int n = (y1 - y0) * (x1 - x0);
             for (int yy = y0; yy < y1; yy++) {
                 const uint32_t *row = src + (size_t)yy * w;
                 for (int xx = x0; xx < x1; xx++) {
@@ -130,7 +172,6 @@ static void downsample_rect(const uint32_t *src, int w, int h,
                     rs += (int)(c & 0xFFu);
                     gs += (int)((c >> 8) & 0xFFu);
                     bs += (int)((c >> 16) & 0xFFu);
-                    n++;
                 }
             }
             if (n < 1) n = 1;
@@ -367,6 +408,14 @@ void finnblur_patch(const uint32_t *layer, int lw, int lh, int lx, int ly,
     }
 
     blur_region(sx0, sy0, sx1, sy1);
+
+    /*
+     * The baked window is now part of the backdrop, so every cached plate
+     * that sampled the old one is stale. Without this the window above would
+     * reuse a frost computed before the window below was baked in — the
+     * sharp-through-glass artefact this module exists to avoid.
+     */
+    bump_generation();
 }
 
 uint32_t finnblur_at(int x, int y) {

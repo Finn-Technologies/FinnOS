@@ -14,8 +14,16 @@
 typedef struct {
     void *lib;      /* FT_Library */
     void *face;     /* FT_Face    */
+    void *glyphs;   /* the per-font glyph cache, owned by finntext.c */
     int   px;
 } finn_font;
+
+/*
+ * The glyph cache is per font, and a font carries its pixel size: the same
+ * face at 12px and 22px is two finn_fonts with two caches, which is exactly
+ * what the shell loads. finn_font_free() is the invalidation point — nothing
+ * else may free the face while a cache still describes its glyphs.
+ */
 
 int  finn_font_load(finn_font *f, const char *path, int px);
 void finn_font_free(finn_font *f);

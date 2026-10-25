@@ -16,12 +16,12 @@ LDLIBS  += $(shell pkg-config --libs $(PKGS))
 CORE     = ../core/libfinncore.a
 
 HDRS     = ../core/finnapps.h ../core/finnconn.h ../core/finnproto.h \
-           ../core/finnsock.h ../core/finnstate.h
+           ../core/finnsock.h ../core/finnstate.h finncompat.h
 
 all: finnd finnctl finn-window
 
-finnd: finnd.c $(CORE) $(HDRS)
-	$(CC) $(CFLAGS) -o $@ finnd.c $(CORE) $(LDLIBS)
+finnd: finnd.c finncompat.c $(CORE) $(HDRS)
+	$(CC) $(CFLAGS) -o $@ finnd.c finncompat.c $(CORE) $(LDLIBS)
 
 finnctl: finnctl.c $(CORE) $(HDRS)
 	$(CC) $(CFLAGS) -o $@ finnctl.c $(CORE) $(LDLIBS)
@@ -39,7 +39,6 @@ install: all
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-settings
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-files
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-store
-	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-browser
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/arc
 
 clean:

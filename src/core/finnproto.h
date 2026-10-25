@@ -30,4 +30,29 @@
 
 #define FINN_MAX_LINE      4096
 
+/* Bounds shared by the audited Flatpak protocol and its compositor client. */
+#define FINN_FLATPAK_ID_MAX      255
+#define FINN_FLATPAK_JOB_ID_MAX   64
+#define FINN_FLATPAK_QUERY_MAX   128
+
+/*
+ * The Windows catalogue and the runtime OTA share the Flatpak job shape:
+ * a validated id, a transient systemd unit, and a word read back from
+ * systemd. The bounds are here because finnd and finnpkg are two ends of
+ * the same names.
+ */
+#define FINN_WINGET_ID_MAX       128
+#define FINN_WINGET_QUERY_MAX    128
+#define FINN_WINGET_JOB_ID_MAX    64
+#define FINN_OTA_JOB_ID_MAX       64
+#define FINN_WINE_VERSION_MAX     64
+
+/* Finn's per-user Wine data root, relative to the account's home. finnd
+ * and finnpkg both name it; the account home is the only variable. */
+#define FINN_WINE_DATA_SUFFIX    "/.local/share/finn/wine"
+
+/* finnpkg writes its own job notes here when the directory is writable;
+ * the authoritative state is still systemd's. */
+#define FINN_WINGET_STATE_DIR    "/run/finn/winget"
+
 #endif

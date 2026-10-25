@@ -1386,9 +1386,11 @@ int fsvg_load(const char *path, fsvg *s) {
 
 void fsvg_free(fsvg *s) {
     if (!s) return;
-    for (int i = 0; i < s->n; i++)
+    for (int i = 0; i < s->n; i++) {
         for (int j = 0; j < s->shapes[i].npolys; j++)
             free(s->shapes[i].polys[j].p);
+        free(s->shapes[i].polys);
+    }
     free(s->shapes);
 
     for (int i = 0; i < s->nclips; i++) {

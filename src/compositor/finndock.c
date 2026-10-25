@@ -21,7 +21,9 @@
  * u = screen_w / 1280, exactly 2.0x on the 2560x1600 VM):
  *
  * 4 floating pills at rest:
- *   1. Taskbar (Apps):    w=42, h=42, r=8 (Settings chip 26x26 at x=8, running bg 34x34 r=4, indicator 4x0)
+ *   1. Taskbar (Apps):    content-sized, h=42, r=8. The exported Figma frame
+ *                         measures 115 wide with three 26px items, 10px gaps
+ *                         and 8.5px outer insets; each tile is vertically centered.
  *   2. Navigation:        w=116, h=42, r=8 (search x=10, home x=47, windows x=84)
  *   3. Time & Weather:    w=139, h=42, r=8 (clock 16px at x=10, real weather if present).
  *                         Without a weather source the pill is the clock's own
@@ -38,10 +40,15 @@
 #define DOCK_GAP      15.0f
 #define DOCK_BOTTOM   15.0f
 
-#define PILL1_W       42.0f
 #define PILL2_W       116.0f
 #define PILL3_W       139.0f
 #define PILL4_W       116.0f
+
+#define TILE_W        26.0f
+#define TILE_STEP     36.0f
+#define TILE_OUTER_INSET 8.5f
+#define TILE_TOP_INSET 8.0f
+#define TILE_RADIUS   4.0f
 
 #define DOCK_GAP_SUNK 7.5f
 
@@ -50,11 +57,21 @@
 static float g_dock_u = 2.0f;
 
 /* ---------------- assets ---------------- */
-static fsvg g_ic_settings_app;
 static fsvg g_ic_search, g_ic_home, g_ic_windows;
 static fsvg g_ic_sun_weather;
 static fsvg g_ic_vol, g_ic_wifi, g_ic_bat;
 static int  g_ready = 0;
+static char g_icon_dir[512];
+
+/* One icon per taskbar tile, loaded from the tile's own icon file. */
+static fsvg g_tile_ic[FINNDOCK_APPS_MAX];
+static char g_tile_icon_name[FINNDOCK_APPS_MAX][48];
+
+/* The taskbar list the compositor last gave us, and a hash of it so a render
+ * can tell whether anything it draws has changed. */
+static finndock_app g_tasks[FINNDOCK_APPS_MAX];
+static int          g_n_tasks = 0;
+static uint32_t     g_task_hash = 0;
 
 /* typography */
 static finn_font g_font;       /* 16px clock */
@@ -158,10 +175,10 @@ static int read_weather(char *temp, size_t temp_sz, char *cond, size_t cond_sz) 
 
 static finn_anim g_a_press;
 static int      g_pressed = FINNDOCK_HIT_NONE;
+static int      g_pressed_task = -1;
 
 static float    g_well = 0.0f;
 static float    g_well_clock = 0.0f;
-static float    g_well_apps  = 0.0f;
 static float    g_well_launcher = 0.0f;
 
 void finndock_set_well(float amount) {
@@ -174,12 +191,6 @@ void finndock_set_clock_well(float amount) {
     if (amount < 0.0f) amount = 0.0f;
     if (amount > 1.0f) amount = 1.0f;
     g_well_clock = amount;
-}
-
-void finndock_set_apps_well(float amount) {
-    if (amount < 0.0f) amount = 0.0f;
-    if (amount > 1.0f) amount = 1.0f;
-    g_well_apps = amount;
 }
 
 void finndock_set_launcher_well(float amount) {
@@ -203,15 +214,21 @@ void finndock_set_sunk(int sunk) {
 
 void finndock_press(int which) {
     g_pressed = which;
+    if (which != FINNDOCK_HIT_TASK) g_pressed_task = -1;
     if (which == FINNDOCK_HIT_NONE)
         finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     else
         finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
 }
 
-static finn_anim g_a_hover_a;
-static float     g_hover_a = 0.0f;
-static int       g_hover_apps = 0;
+void finndock_press_task(int index) {
+    g_pressed_task = index;
+    finndock_press(FINNDOCK_HIT_TASK);
+}
+
+static finn_anim g_a_task[FINNDOCK_APPS_MAX];
+static float     g_task_hover[FINNDOCK_APPS_MAX];
+static int       g_task_on[FINNDOCK_APPS_MAX];
 
 static finn_anim g_a_hover_s;
 static float     g_hover_s = 0.0f;
@@ -239,14 +256,23 @@ static int g_p3_x = 0, g_p3_w = 0;
 static int g_p4_x = 0, g_p4_w = 0;
 static int g_p_y = 0, g_p_h = 0;
 
+/* The taskbar tiles in screen coordinates, filled by the last render. */
+static int g_tile_x[FINNDOCK_APPS_MAX];
+static int g_tile_w[FINNDOCK_APPS_MAX];
+
 void finndock_hover_at(int px, int py) {
     int hit = finndock_hit(px, py);
+    int ti = (hit == FINNDOCK_HIT_TASK) ? finndock_task_at(px, py) : -1;
 
-    int ona = (hit == FINNDOCK_HIT_APPS);
-    if (ona != g_hover_apps) {
-        g_hover_apps = ona;
-        finn_anim_to(&g_a_hover_a, ona ? 1.0f : 0.0f,
-                     ona ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT, 0.0f, FINN_EASE_OUT);
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++) {
+        int on = (i == ti);
+        /* A tile that is not in the list has nothing to hover. */
+        if (on && i >= g_n_tasks) on = 0;
+        if (on == g_task_on[i]) continue;
+        g_task_on[i] = on;
+        finn_anim_to(&g_a_task[i], on ? 1.0f : 0.0f,
+                     on ? FINN_MOTION_HOVER_IN : FINN_MOTION_HOVER_OUT,
+                     0.0f, FINN_EASE_OUT);
     }
 
     int ons = (hit == FINNDOCK_HIT_SEARCH);
@@ -287,7 +313,11 @@ void finndock_hover_at(int px, int py) {
 
 int finndock_tick(float dt) {
     int moved = finn_anim_tick(&g_a_press, dt);
-    moved |= finn_anim_tick(&g_a_hover_a, dt);
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++) {
+        moved |= finn_anim_tick(&g_a_task[i], dt);
+        float v = finn_anim_v(&g_a_task[i]);
+        if (v != g_task_hover[i]) { g_task_hover[i] = v; moved = 1; }
+    }
     moved |= finn_anim_tick(&g_a_hover_s, dt);
     moved |= finn_anim_tick(&g_a_hover_l, dt);
     moved |= finn_anim_tick(&g_a_hover_w, dt);
@@ -295,7 +325,6 @@ int finndock_tick(float dt) {
     moved |= finn_anim_tick(&g_a_hover_t, dt);
     moved |= finn_anim_tick(&g_a_sink, dt);
 
-    float ha = finn_anim_v(&g_a_hover_a); if (ha != g_hover_a) { g_hover_a = ha; moved = 1; }
     float hs = finn_anim_v(&g_a_hover_s); if (hs != g_hover_s) { g_hover_s = hs; moved = 1; }
     float hl = finn_anim_v(&g_a_hover_l); if (hl != g_hover_l) { g_hover_l = hl; moved = 1; }
     float hw = finn_anim_v(&g_a_hover_w); if (hw != g_hover_w) { g_hover_w = hw; moved = 1; }
@@ -306,11 +335,14 @@ int finndock_tick(float dt) {
 }
 
 int finndock_running(void) {
-    return finn_anim_running(&g_a_press) ||
-           finn_anim_running(&g_a_hover_a) || finn_anim_running(&g_a_hover_s) ||
-           finn_anim_running(&g_a_hover_l) || finn_anim_running(&g_a_hover_w) ||
-           finn_anim_running(&g_a_hover_c) || finn_anim_running(&g_a_hover_t) ||
-           finn_anim_running(&g_a_sink);
+    if (finn_anim_running(&g_a_press) ||
+        finn_anim_running(&g_a_hover_s) || finn_anim_running(&g_a_hover_l) ||
+        finn_anim_running(&g_a_hover_w) || finn_anim_running(&g_a_hover_c) ||
+        finn_anim_running(&g_a_hover_t) || finn_anim_running(&g_a_sink))
+        return 1;
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++)
+        if (finn_anim_running(&g_a_task[i])) return 1;
+    return 0;
 }
 
 /* ---------------- layer & rendering ---------------- */
@@ -342,11 +374,11 @@ static void load_fonts(float u) {
 
 int finndock_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir);
+    snprintf(g_icon_dir, sizeof g_icon_dir, "%s", icon_dir ? icon_dir : "");
     g_font_scale = -1.0f;
 
     char p[512];
     int ok = 1;
-    snprintf(p, sizeof p, "%s/settings-app.svg", icon_dir);     ok &= fsvg_load(p, &g_ic_settings_app) == 0;
 
     snprintf(p, sizeof p, "%s/search-01.svg", icon_dir);        ok &= fsvg_load(p, &g_ic_search) == 0;
     snprintf(p, sizeof p, "%s/home-09.svg", icon_dir);          ok &= fsvg_load(p, &g_ic_home) == 0;
@@ -364,7 +396,6 @@ int finndock_init(const char *icon_dir, const char *font_dir) {
 }
 
 void finndock_free(void) {
-    fsvg_free(&g_ic_settings_app);
     fsvg_free(&g_ic_search);
     fsvg_free(&g_ic_home);
     fsvg_free(&g_ic_windows);
@@ -372,6 +403,12 @@ void finndock_free(void) {
     fsvg_free(&g_ic_vol);
     fsvg_free(&g_ic_wifi);
     fsvg_free(&g_ic_bat);
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++) {
+        fsvg_free(&g_tile_ic[i]);
+        g_tile_icon_name[i][0] = 0;
+    }
+    g_n_tasks = 0;
+    g_task_hash = 0;
 
     finn_font_free(&g_font);
     finn_font_free(&g_f_temp);
@@ -395,6 +432,65 @@ static void draw_wash(uint32_t *layer, int lw, int lh,
     uint32_t a8 = (uint32_t)(wash * 255.0f + 0.5f);
     uint32_t col = (a8 << 24) | (FINN_INK & 0x00FFFFFFu);
     finn_fill_rrect(layer, lw, lh, x, y, w, h, r, col);
+}
+
+static uint32_t task_hash(void) {
+    uint32_t h = 2166136261u;
+    #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX(g_n_tasks);
+    for (int i = 0; i < g_n_tasks; i++) {
+        const finndock_app *a = &g_tasks[i];
+        for (int k = 0; a->id[k]; k++) MIX(a->id[k]);
+        for (int k = 0; a->name[k]; k++) MIX(a->name[k]);
+        for (int k = 0; a->icon[k]; k++) MIX(a->icon[k]);
+        MIX(a->windows + 2); MIX(a->focused + 2);
+        MIX(a->minimized + 2); MIX(a->pinned + 2);
+    }
+    #undef MIX
+    return h ? h : 1u;
+}
+
+/* Load the tile icons the new list asks for. A tile whose icon name did not
+ * change keeps the raster it already has; one that left the list releases
+ * it. */
+static void task_icons_sync(void) {
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++) {
+        const char *want = (i < g_n_tasks) ? g_tasks[i].icon : "";
+        if (!strcmp(want, g_tile_icon_name[i])) continue;
+
+        fsvg_free(&g_tile_ic[i]);
+        g_tile_icon_name[i][0] = 0;
+        if (!want[0] || !g_icon_dir[0]) continue;
+
+        char path[600];
+        snprintf(path, sizeof path, "%s/%s", g_icon_dir, want);
+        if (fsvg_load(path, &g_tile_ic[i]) == 0)
+            snprintf(g_tile_icon_name[i], sizeof g_tile_icon_name[i], "%s", want);
+    }
+}
+
+void finndock_set_apps(const finndock_app *apps, int n) {
+    if (!apps || n < 0) n = 0;
+    if (n > FINNDOCK_APPS_MAX) n = FINNDOCK_APPS_MAX;
+
+    int same = (n == g_n_tasks);
+    for (int i = 0; same && i < n; i++) {
+        if (strcmp(apps[i].id, g_tasks[i].id) ||
+            strcmp(apps[i].name, g_tasks[i].name) ||
+            strcmp(apps[i].icon, g_tasks[i].icon) ||
+            apps[i].windows != g_tasks[i].windows ||
+            apps[i].focused != g_tasks[i].focused ||
+            apps[i].minimized != g_tasks[i].minimized ||
+            apps[i].pinned != g_tasks[i].pinned)
+            same = 0;
+    }
+    if (same) return;
+
+    memset(g_tasks, 0, sizeof g_tasks);
+    for (int i = 0; i < n; i++) g_tasks[i] = apps[i];
+    g_n_tasks = n;
+    task_icons_sync();
+    g_task_hash = task_hash();
 }
 
 void finndock_render(int screen_w, int screen_h, float scale, const finn_state *st) {
@@ -424,7 +520,10 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     char wtemp[16] = {0}, wcond[32] = {0};
     int have_weather = read_weather(wtemp, sizeof wtemp, wcond, sizeof wcond);
 
-    float p1_w = PILL1_W * u;
+    float p1_w = g_n_tasks > 0
+               ? (TILE_OUTER_INSET * 2.0f + TILE_W +
+                  (float)(g_n_tasks - 1) * TILE_STEP) * u
+               : 0.0f;
     float p2_w = PILL2_W * u;
     float p3_w = PILL3_W * u;
     if (!have_weather && g_font.face)
@@ -432,7 +531,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     float p4_w = PILL4_W * u;
 
     float p2_x = ((float)screen_w - p2_w) * 0.5f;
-    float p1_x = p2_x - gap - p1_w;
+    float p1_x = g_n_tasks > 0 ? p2_x - gap - p1_w : p2_x;
     float p3_x = p2_x + p2_w + gap;
     float p4_x = p3_x + p3_w + gap;
     float y0 = (float)screen_h - bottom_m - dh;
@@ -456,6 +555,17 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     /* Pill screen coordinates */
     g_p1_x = (int)lroundf(p1_x);
     g_p1_w = (int)lroundf(p1_w);
+
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++) {
+        if (i < g_n_tasks) {
+            g_tile_x[i] = (int)lroundf(p1_x +
+                (TILE_OUTER_INSET + (float)i * TILE_STEP) * u);
+            g_tile_w[i] = (int)lroundf(TILE_W * u);
+        } else {
+            g_tile_x[i] = 0;
+            g_tile_w[i] = 0;
+        }
+    }
 
     g_p2_x = (int)lroundf(p2_x);
     g_p2_w = (int)lroundf(p2_w);
@@ -481,9 +591,11 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     MIX((int)(sink * 512.0f));
     MIX((int)(g_well * 64.0f));
     MIX((int)(g_well_clock * 64.0f));
-    MIX((int)(g_well_apps * 64.0f));
     MIX((int)(g_well_launcher * 64.0f));
-    MIX((int)(g_hover_a * 64.0f));
+    MIX(g_task_hash);
+    MIX(g_pressed_task + 2);
+    for (int i = 0; i < FINNDOCK_APPS_MAX; i++)
+        MIX((int)(g_task_hover[i] * 64.0f));
     MIX((int)(g_hover_s * 64.0f));
     MIX((int)(g_hover_l * 64.0f));
     MIX((int)(g_hover_w * 64.0f));
@@ -519,8 +631,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                           bar_r, 1.0f, FINN_HAIR);
     }
 
-    /* ---------------- PILL 1: Apps / Taskbar ---------------- */
-    {
+    /* ---------------- PILL 1: Taskbar ---------------- */
+    if (g_n_tasks > 0) {
         float p1_bx = g_p1_x - lx;
         if (frost > 0.004f) {
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
@@ -530,34 +642,61 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                               1.0f, FINN_HAIR);
         }
 
-        /* Running app highlight on Settings when window exists (Figma 14:317) */
-        if (g_well_apps > 0.004f) {
-            float bg_w = 34.0f * u, bg_h = 34.0f * u;
-            float bg_x = p1_bx + 4.0f * u;
-            float bg_y = by + 4.0f * u;
-            uint32_t bg_a = (uint32_t)(g_well_apps * 255.0f + 0.5f);
-            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
-                            (bg_a << 24) | 0x00FFFFFFu);
+        for (int i = 0; i < g_n_tasks; i++) {
+            const finndock_app *t = &g_tasks[i];
+            float tx = (float)(g_tile_x[i] - lx);
+            float ty = by + TILE_TOP_INSET * u;
+            float tw = TILE_W * u;
+            float pressed = (g_pressed == FINNDOCK_HIT_TASK && g_pressed_task == i) ? 1.0f : 0.0f;
 
-            /* Blue underline indicator (Figma 14:350: 4x0 stroke 1.5 round cap) */
-            float ind_w = 4.0f * u, ind_h = 1.5f * u;
-            float ind_x = p1_bx + (p1_w - ind_w) * 0.5f;
-            float ind_y = by + dh - 2.0f * u - ind_h * 0.5f;
-            finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h, ind_h * 0.5f, FINN_ON);
-        }
+            /* The plate under a running app: brightest when the app is the
+             * focused one, quieter when it is merely open, faintest when all
+             * of its windows are folded away. A pinned app that is not open
+             * has no plate — the glass is its resting state. */
+            if (t->windows > 0) {
+                float plate = t->focused ? 0.82f : (t->minimized ? 0.20f : 0.42f);
+                uint32_t a8 = (uint32_t)(plate * 255.0f + 0.5f);
+                finn_fill_rrect(g_layer, lw, lh, tx, ty, tw, tw,
+                                TILE_RADIUS * u, (a8 << 24) | 0x00FFFFFFu);
+            }
 
-        /* Hover / press wash */
-        draw_wash(g_layer, lw, lh, p1_bx + 4.0f * u, by + 4.0f * u, 34.0f * u, 34.0f * u, 4.0f * u,
-                  g_hover_a, g_pressed == FINNDOCK_HIT_APPS, g_well_apps);
+            draw_wash(g_layer, lw, lh, tx, ty, tw, tw, TILE_RADIUS * u,
+                      g_task_hover[i], pressed > 0.5f, 0.0f);
 
-        /* 1 App chip: Settings (26x26 at x=8) */
-        int chip_sz = rs(26.0f, u);
-        float cy = by + 8.0f * u;
+            float icon = 26.0f * u;
+            float ix = tx + (tw - icon) * 0.5f;
+            float iy = ty + (tw - icon) * 0.5f;
+            if (g_tile_ic[i].vw > 0) {
+                finn_icon_blit(&g_tile_ic[i], g_layer, lw, lh,
+                               (int)lroundf(ix), (int)lroundf(iy),
+                               (int)lroundf(icon), 0, 0, 0);
+            } else if (g_f_temp.face) {
+                /* A task whose icon file is missing still gets a recognisable
+                 * tile: the first letter of its name, in the shell's own type.
+                 * The alternative is an empty square that looks broken. */
+                char initial[2] = { t->name[0] ? t->name[0] : '?', 0 };
+                float cap = finn_text_cap_height(&g_f_temp);
+                float iw = finn_text_width(&g_f_temp, initial);
+                finn_text_draw(&g_f_temp, g_layer, lw, lh,
+                               tx + (tw - iw) * 0.5f,
+                               ty + tw * 0.5f + cap * 0.5f,
+                               initial, FINN_INK);
+            }
 
-        if (g_ic_settings_app.vw > 0) {
-            finn_icon_blit(&g_ic_settings_app, g_layer, lw, lh,
-                           (int)lroundf(p1_bx + 8.0f * u), (int)lroundf(cy),
-                           chip_sz, 0, 0, 0);
+            /* A running app carries the blue mark the design gives the
+             * active chip; a folded-away one carries it in mute ink so the
+             * indicator says "open" without pretending it is on screen. The
+             * focused app's mark is wider, which is the one difference that
+             * survives a bright frosted backdrop. */
+            if (t->windows > 0) {
+                float ind_w = (t->focused ? 12.0f : 4.0f) * u;
+                float ind_h = 1.5f * u;
+                float ind_x = tx + (tw - ind_w) * 0.5f;
+                float ind_y = by + dh - 2.0f * u - ind_h * 0.5f;
+                finn_fill_rrect(g_layer, lw, lh, ind_x, ind_y, ind_w, ind_h,
+                                ind_h * 0.5f,
+                                t->minimized ? FINN_MUTE : FINN_ON);
+            }
         }
     }
 
@@ -718,6 +857,19 @@ int finndock_height(float scale) {
     return rs(DOCK_H, g_dock_u > 0.0f ? g_dock_u : 2.0f);
 }
 
+void finndock_app_icon_for(const char *app_id, int *x, int *y) {
+    if (app_id && *app_id) {
+        for (int i = 0; i < g_n_tasks; i++) {
+            if (!strcmp(g_tasks[i].id, app_id)) {
+                if (x) *x = g_tile_x[i] + g_tile_w[i] / 2;
+                if (y) *y = g_p_y + g_p_h / 2;
+                return;
+            }
+        }
+    }
+    finndock_app_icon(x, y);
+}
+
 void finndock_app_icon(int *x, int *y) {
     if (x) *x = g_p1_x + g_p1_w / 2;
     if (y) *y = g_p_y + g_p_h / 2;
@@ -775,11 +927,23 @@ const uint32_t *finndock_layer(int *x, int *y, int *w, int *h, unsigned *rev) {
     return g_visible ? g_layer : NULL;
 }
 
+int finndock_task_at(int px, int py) {
+    if (!g_visible || g_p_h <= 0) return -1;
+    if (py < g_p_y || py >= g_p_y + g_p_h) return -1;
+    for (int i = 0; i < g_n_tasks; i++) {
+        if (g_tile_w[i] > 0 &&
+            px >= g_tile_x[i] && px < g_tile_x[i] + g_tile_w[i])
+            return i;
+    }
+    return -1;
+}
+
 int finndock_hit(int px, int py) {
     if (!g_visible || g_p_h <= 0) return FINNDOCK_HIT_NONE;
     if (py < g_p_y || py >= g_p_y + g_p_h) return FINNDOCK_HIT_NONE;
 
-    if (px >= g_p1_x && px < g_p1_x + g_p1_w) return FINNDOCK_HIT_APPS;
+    if (g_n_tasks > 0 && px >= g_p1_x && px < g_p1_x + g_p1_w)
+        return finndock_task_at(px, py) >= 0 ? FINNDOCK_HIT_TASK : FINNDOCK_HIT_NONE;
     if (px >= g_p2_x && px < g_p2_x + g_p2_w) {
         float rel = (float)(px - g_p2_x) / (float)g_p2_w;
         if (rel < 0.333f) return FINNDOCK_HIT_SEARCH;

@@ -32,6 +32,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -43,6 +44,7 @@
 #include "finnconn.h"
 #include "finnstate.h"
 #include "finnapps.h"
+#include "finncompat.h"
 
 #define LOG_DIR  "/var/log/finn"
 #define LOG_FILE LOG_DIR "/control.log"
@@ -65,6 +67,12 @@ static void on_sig(int s) { (void)s; g_stop = 1; }
 
 static uid_t g_finn_uid = (uid_t)-1;
 static gid_t g_finn_gid = (gid_t)-1;
+static unsigned long g_flatpak_job_sequence = 0;
+static unsigned long g_flatpak_run_sequence = 0;
+static unsigned long g_wine_run_sequence = 0;
+static unsigned long g_winget_job_sequence = 0;
+static unsigned long g_ota_job_sequence = 0;
+static char g_finn_home[PATH_MAX] = "";
 
 static void log_open(void) {
     g_log_fd = open(LOG_FILE, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600);
@@ -222,69 +230,15 @@ static int launch_app(const finn_app *a) {
     char unit[96];
     snprintf(unit, sizeof unit, "finn-app-%s-%d", a->id, (int)getpid());
 
-    char cmd[1400];
-    int n = snprintf(cmd, sizeof cmd,
-        "systemd-run --quiet --collect --unit=%s --service-type=exec"
-        " --uid=%u --gid=%u"
-        " --setenv=HOME=/home/finn --setenv=USER=finn --setenv=LOGNAME=finn"
-        " --setenv=SHELL=/bin/bash"
-        " --setenv=PATH=/usr/local/bin:/usr/bin:/bin"
-        " --property=Restart=no"
-        " %s",
-        unit, (unsigned)g_finn_uid, (unsigned)g_finn_gid, a->command);
-    if (n <= 0 || n >= (int)sizeof cmd) return -1;
-
-    int pipefd[2];
-    if (pipe(pipefd) != 0) return -1;
-
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
-
-    if (pid == 0) {
-        /* the child: systemd-run's own words, so the failure can be said */
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        if (pipefd[1] > STDERR_FILENO) close(pipefd[1]);
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
-        _exit(127);
-    }
-
-    close(pipefd[1]);
-
-    /* systemd-run answers when the unit has started, which is quick. The
-     * read is bounded so a wedged systemd cannot hold the control plane
-     * still. */
-    char msg[512];
-    size_t used = 0;
-    struct timeval tv = { 3, 0 };
-    setsockopt(pipefd[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    while (used + 1 < sizeof msg) {
-        ssize_t got = read(pipefd[0], msg + used, sizeof msg - used - 1);
-        if (got <= 0) break;
-        used += (size_t)got;
-    }
-    msg[used] = 0;
-    close(pipefd[0]);
-
-    int status = 0;
-    for (int i = 0; i < 300; i++) {
-        pid_t done = waitpid(pid, &status, WNOHANG);
-        if (done == pid) break;
-        if (done < 0) { status = -1; break; }
-        usleep(10000);
-    }
-
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        /* say what systemd said, if it said anything */
-        char *why = msg;
-        while (*why == '\n' || *why == ' ') why++;
-        if (*why) {
-            char *nl = strchr(why, '\n');
-            if (nl) *nl = 0;
-            fprintf(stderr, "finnd: %s did not start: %s\n", a->id, why);
-        }
+    /* The catalogue's command is one executable path, not a shell fragment.
+     * Keeping it as one argv element prevents metacharacters in catalogue
+     * data from becoming commands when finnd starts the transient unit. */
+    char why[256] = "";
+    if (finncompat_start_app("/usr/bin/systemd-run", unit, a->command,
+                             (unsigned)g_finn_uid, (unsigned)g_finn_gid,
+                             why, sizeof why) != 0) {
+        fprintf(stderr, "finnd: %s did not start: %s\n", a->id,
+                why[0] ? why : "systemd-run failed");
         return -1;
     }
     return 0;
@@ -416,6 +370,69 @@ static int run_pkg_verb(const char *verb, const char *id, char *msg, size_t cap)
     return 0;
 }
 
+static int send_binary(int fd, const uint8_t *data, size_t len) {
+    char header[64];
+    int n = snprintf(header, sizeof header, "OK BINARY %zu\n", len);
+    if (n <= 0 || (size_t)n >= sizeof header) return -1;
+    if (finn_write_all(fd, header, (size_t)n) != 0) return -1;
+    return len ? finn_write_all(fd, data, len) : 0;
+}
+
+static char *trim_spaces(char *s) {
+    if (!s) return (char *)"";
+    while (*s == ' ' || *s == '\t') s++;
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = '\0';
+    return s;
+}
+
+/* One protocol line from a small key=value payload: the package manager may
+ * print one field per line, but the control protocol answers one line. */
+static void payload_to_line(const uint8_t *data, size_t len,
+                            char *dst, size_t cap) {
+    size_t o = 0;
+    int space = 0;
+    for (size_t i = 0; i < len && o + 1 < cap; i++) {
+        unsigned char c = data[i];
+        if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+            space = o > 0;
+            continue;
+        }
+        if (c < 0x20 || c == 0x7f) continue;
+        if (space && o > 0) dst[o++] = ' ';
+        space = 0;
+        dst[o++] = (char)c;
+    }
+    dst[o] = 0;
+}
+
+static int flatpak_app_installed(const char *id, char *error, size_t error_cap) {
+    uint8_t *output = NULL;
+    size_t len = 0;
+    if (finncompat_flatpak_query("/usr/local/bin/finnpkg", "list", NULL,
+                                 &output, &len, error, error_cap) != 0)
+        return -1;
+
+    size_t pos = 0, id_len = strlen(id);
+    int found = 0;
+    while (pos < len) {
+        size_t end = pos;
+        while (end < len && output[end] != '\n' && output[end] != '\r') end++;
+        size_t start = pos;
+        while (start < end && (output[start] == ' ' || output[start] == '\t')) start++;
+        size_t stop = start;
+        while (stop < end && output[stop] != ' ' && output[stop] != '\t') stop++;
+        if (stop - start == id_len && memcmp(output + start, id, id_len) == 0) {
+            found = 1;
+            break;
+        }
+        pos = end;
+        while (pos < len && (output[pos] == '\n' || output[pos] == '\r')) pos++;
+    }
+    free(output);
+    return found;
+}
+
 /* Returns a short result string for the log. */
 static const char *handle(char *line, int fd) {    /* work on a copy: the verb split must not disturb the request that gets
      * forwarded to the provider */
@@ -532,6 +549,501 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
             snprintf(result, sizeof result, "ERR systemctl failed");
         }
         finn_write_str(fd, reply);
+        return result;
+    }
+
+    /* ---- Flatpak package management ----
+     *
+     * Queries return the package manager's bounded text as a binary-framed
+     * payload, so multi-line search results remain one protocol reply. Long
+     * mutations are queued as systemd services: finnd stays responsive while
+     * Flatpak downloads and applies a transaction. Installed apps are launched
+     * as Finn with a Wayland session and the Flatpak sandbox's Wayland socket.
+     */
+    if (!strcmp(verb, "flatpak.list") || !strcmp(verb, "flatpak.search")) {
+        char *query = trim_spaces(rest);
+        const char *action = !strcmp(verb, "flatpak.list") ? "list" : "search";
+        if (!strcmp(action, "list") && *query) {
+            finn_write_str(fd, "ERR flatpak.list takes no arguments\n");
+            return "ERR flatpak.list arguments";
+        }
+
+        uint8_t *output = NULL;
+        size_t output_len = 0;
+        char why[256] = "";
+        if (finncompat_flatpak_query("/usr/local/bin/finnpkg", action,
+                                     *query ? query : NULL,
+                                     &output, &output_len,
+                                     why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n", why[0] ? why : "Flatpak query failed");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR %s", why[0] ? why : "Flatpak query");
+            return result;
+        }
+        int sent = send_binary(fd, output, output_len);
+        free(output);
+        if (sent != 0) return "ERR Flatpak query reply write";
+        return !strcmp(action, "list") ? "OK flatpak.list" : "OK flatpak.search";
+    }
+
+    if (!strcmp(verb, "flatpak.install") || !strcmp(verb, "flatpak.remove")) {
+        int install = !strcmp(verb, "flatpak.install");
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *remote_arg = install && id ? strtok_r(NULL, " \t", &save) : NULL;
+        char *extra = strtok_r(NULL, " \t", &save);
+        const char *remote = install ? (remote_arg ? remote_arg : "flathub") : NULL;
+        if (!id || extra || !finncompat_flatpak_id_valid(id) ||
+            (install && !finncompat_flatpak_remote_valid(remote))) {
+            finn_write_str(fd, "ERR Flatpak install needs a valid application id and optional remote; remove takes one valid application id\n");
+            return install ? "ERR flatpak.install id remote" : "ERR flatpak.remove id";
+        }
+
+        char job_id[FINN_FLATPAK_JOB_ID_MAX];
+        if (++g_flatpak_job_sequence == 0) ++g_flatpak_job_sequence;
+        if (finncompat_flatpak_job_id_make(job_id, sizeof job_id,
+                                            (unsigned long)getpid(),
+                                            g_flatpak_job_sequence) != 0) {
+            finn_write_str(fd, "ERR could not allocate a Flatpak job id\n");
+            return "ERR Flatpak job id";
+        }
+        char why[256] = "";
+        if (finncompat_flatpak_start("/usr/bin/systemd-run",
+                                     "/usr/local/bin/finnpkg", job_id,
+                                     install ? "install" : "remove", id,
+                                     remote, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n", why[0] ? why : "could not start Flatpak transaction");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR flatpak.%s %.96s",
+                     install ? "install" : "remove", id);
+            return result;
+        }
+        char reply[128];
+        snprintf(reply, sizeof reply, "OK job=%s\n", job_id);
+        finn_write_str(fd, reply);
+        static char result[128];
+        snprintf(result, sizeof result, "OK flatpak.%s job=%s",
+                 install ? "install" : "remove", job_id);
+        return result;
+    }
+
+    if (!strcmp(verb, "flatpak.job")) {
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *extra = id ? strtok_r(NULL, " \t", &save) : NULL;
+        char state[192] = "";
+        char why[256] = "";
+        if (!id || extra || !finncompat_flatpak_job_id_valid(id)) {
+            finn_write_str(fd, "ERR flatpak.job needs one valid job id\n");
+            return "ERR flatpak.job id";
+        }
+        if (finncompat_flatpak_status("/usr/bin/systemctl", id, state,
+                                      sizeof state, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n", why[0] ? why : "could not read Flatpak job status");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR flatpak.job %.120s", id);
+            return result;
+        }
+        char reply[256];
+        snprintf(reply, sizeof reply, "OK job=%s %s\n", id, state);
+        finn_write_str(fd, reply);
+        static char result[192];
+        snprintf(result, sizeof result, "OK flatpak.job %.64s %.96s", id, state);
+        return result;
+    }
+
+    if (!strcmp(verb, "flatpak.run")) {
+        char *id = trim_spaces(rest);
+        if (!finncompat_flatpak_id_valid(id)) {
+            finn_write_str(fd, "ERR flatpak.run needs one valid application id\n");
+            return "ERR flatpak.run id";
+        }
+        char why[256] = "";
+        int installed = flatpak_app_installed(id, why, sizeof why);
+        if (installed < 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n", why[0] ? why : "could not verify Flatpak installation");
+            finn_write_str(fd, reply);
+            return "ERR flatpak.run list";
+        }
+        if (!installed) {
+            finn_write_str(fd, "ERR Flatpak app is not installed\n");
+            return "ERR flatpak.run not installed";
+        }
+        if (++g_flatpak_run_sequence == 0) ++g_flatpak_run_sequence;
+        char unit[128];
+        snprintf(unit, sizeof unit, "finn-flatpak-run-%lu-%lu",
+                 (unsigned long)getpid(), g_flatpak_run_sequence);
+        if (finncompat_flatpak_run("/usr/bin/systemd-run", "/usr/bin/flatpak",
+                                   unit, id, (unsigned)g_finn_uid,
+                                   (unsigned)g_finn_gid, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n", why[0] ? why : "Flatpak app could not start");
+            finn_write_str(fd, reply);
+            return "ERR flatpak.run start";
+        }
+        char reply[192];
+        snprintf(reply, sizeof reply, "OK launched %s\n", id);
+        finn_write_str(fd, reply);
+        return "OK flatpak.run";
+    }
+
+    /*
+     * What Wine is, before anything tries to use it. A backend is named only
+     * when its executable is really there; on ARM an x86_64 Wine is not a
+     * backend unless box64 is in front of it.
+     */
+    if (!strcmp(verb, "wine.status")) {
+        if (*trim_spaces(rest)) {
+            finn_write_str(fd, "ERR wine.status takes no arguments\n");
+            return "ERR wine.status arguments";
+        }
+        finn_wine_runtime rt;
+        char why[256] = "";
+        if (finncompat_wine_status("/usr/bin", g_finn_home, &rt,
+                                   why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not read the Wine runtime");
+            finn_write_str(fd, reply);
+            return "ERR wine.status";
+        }
+        /* One line has to fit in FINN_MAX_LINE. A prefix path longer than
+         * the protocol line is reported as unknown rather than truncated
+         * mid-value, because a truncated path would look like a real one. */
+        const char *prefix = strlen(rt.prefix) < 1024 ? rt.prefix : "unknown";
+        char reply[FINN_MAX_LINE];
+        if (rt.available)
+            snprintf(reply, sizeof reply,
+                     "OK wine.status arch=%s available=1 backend=%s version=%s prefix=%s\n",
+                     rt.arch, rt.backend, rt.version, prefix);
+        else
+            snprintf(reply, sizeof reply,
+                     "OK wine.status arch=%s available=0 backend=%s version=%s prefix=%s reason=%s\n",
+                     rt.arch, rt.backend, rt.version, prefix,
+                     rt.reason[0] ? rt.reason : "no-runtime");
+        finn_write_str(fd, reply);
+        return "OK wine.status";
+    }
+
+    if (!strcmp(verb, "wine.list")) {
+        if (*trim_spaces(rest)) {
+            finn_write_str(fd, "ERR wine.list takes no arguments\n");
+            return "ERR wine.list arguments";
+        }
+        if (g_finn_uid == (uid_t)-1 || !g_finn_home[0]) {
+            finn_write_str(fd, "ERR Finn user is unavailable\n");
+            return "ERR wine.list user";
+        }
+        char wine_root[PATH_MAX], why[256] = "";
+        int root_len = snprintf(wine_root, sizeof wine_root,
+                                "%s" FINN_WINE_DATA_SUFFIX, g_finn_home);
+        uint8_t *output = NULL;
+        size_t output_len = 0;
+        if (root_len <= 0 || (size_t)root_len >= sizeof wine_root ||
+            finncompat_wine_list(wine_root, (unsigned)g_finn_uid,
+                                 &output, &output_len, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not list registered Wine apps");
+            finn_write_str(fd, reply);
+            return "ERR wine.list registrations";
+        }
+        int sent = send_binary(fd, output, output_len);
+        free(output);
+        return sent == 0 ? "OK wine.list" : "ERR wine.list reply write";
+    }
+
+    if (!strcmp(verb, "wine.run")) {
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *extra = id ? strtok_r(NULL, " \t", &save) : NULL;
+        if (!id || extra || !finncompat_wine_id_valid(id)) {
+            finn_write_str(fd, "ERR wine.run takes one valid registered app id\n");
+            return "ERR wine.run id";
+        }
+        if (g_finn_uid == (uid_t)-1 || g_finn_gid == (gid_t)-1 || !g_finn_home[0]) {
+            finn_write_str(fd, "ERR Finn user is unavailable\n");
+            return "ERR wine.run user";
+        }
+
+        char wine_root[PATH_MAX], executable[PATH_MAX], prefix[PATH_MAX];
+        int root_len = snprintf(wine_root, sizeof wine_root,
+                                "%s" FINN_WINE_DATA_SUFFIX, g_finn_home);
+        char why[256] = "";
+        if (root_len <= 0 || (size_t)root_len >= sizeof wine_root ||
+            finncompat_wine_app_read(wine_root, id, (unsigned)g_finn_uid,
+                                     executable, sizeof executable,
+                                     prefix, sizeof prefix,
+                                     why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "Wine app is not registered");
+            finn_write_str(fd, reply);
+            return "ERR wine.run registration";
+        }
+
+        finn_wine_runtime rt;
+        memset(&rt, 0, sizeof rt);
+        if (finncompat_wine_status("/usr/bin", g_finn_home, &rt,
+                                   why, sizeof why) != 0 || !rt.available) {
+            char reply[320];
+            snprintf(reply, sizeof reply,
+                     "ERR Wine runtime is not available (%s)\n",
+                     rt.reason[0] ? rt.reason : "no-runtime");
+            finn_write_str(fd, reply);
+            return "ERR wine.run no runtime";
+        }
+
+        if (++g_wine_run_sequence == 0) ++g_wine_run_sequence;
+        char unit[128];
+        snprintf(unit, sizeof unit, "finn-wine-%s-%lu-%lu", id,
+                 (unsigned long)getpid(), g_wine_run_sequence);
+        if (finncompat_wine_run_wrapped("/usr/bin/systemd-run", rt.binary,
+                                        rt.wrapper, unit, g_finn_home,
+                                        executable, prefix,
+                                        (unsigned)g_finn_uid,
+                                        (unsigned)g_finn_gid,
+                                        why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "Wine app could not start");
+            finn_write_str(fd, reply);
+            return "ERR wine.run start";
+        }
+        char reply[192];
+        snprintf(reply, sizeof reply, "OK launched %s\n", id);
+        finn_write_str(fd, reply);
+        return "OK wine.run";
+    }
+
+    /* ---- Windows catalogue (winget) ----
+     *
+     * The catalogue is remote and the installer is a long download, so the
+     * two reads are bounded finnpkg queries and the install is a tracked
+     * systemd unit. finnd validates the id and the job id before either
+     * reaches a path, a cache directory or a unit name.
+     */
+    if (!strcmp(verb, "winget.search") || !strcmp(verb, "winget.info")) {
+        int search = !strcmp(verb, "winget.search");
+        char *argument = trim_spaces(rest);
+        uint8_t *output = NULL;
+        size_t output_len = 0;
+        char why[256] = "";
+        if (finncompat_winget_query("/usr/local/bin/finnpkg",
+                                    search ? "search" : "info", argument,
+                                    &output, &output_len,
+                                    why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "winget query failed");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR %s %.120s",
+                     search ? "winget.search" : "winget.info", why);
+            return result;
+        }
+        int sent = send_binary(fd, output, output_len);
+        free(output);
+        if (sent != 0)
+            return search ? "ERR winget.search reply write" : "ERR winget.info reply write";
+        return search ? "OK winget.search" : "OK winget.info";
+    }
+
+    if (!strcmp(verb, "winget.install")) {
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *extra = id ? strtok_r(NULL, " \t", &save) : NULL;
+        if (!id || extra || !finncompat_winget_id_valid(id)) {
+            finn_write_str(fd, "ERR winget.install takes one valid package id\n");
+            return "ERR winget.install id";
+        }
+        if (g_finn_uid == (uid_t)-1 || g_finn_gid == (gid_t)-1 || !g_finn_home[0]) {
+            finn_write_str(fd, "ERR Finn user is unavailable\n");
+            return "ERR winget.install user";
+        }
+
+        char job_id[FINN_WINGET_JOB_ID_MAX];
+        if (++g_winget_job_sequence == 0) ++g_winget_job_sequence;
+        if (finncompat_winget_job_id_make(job_id, sizeof job_id,
+                                           (unsigned long)getpid(),
+                                           g_winget_job_sequence) != 0) {
+            finn_write_str(fd, "ERR could not allocate a winget job id\n");
+            return "ERR winget job id";
+        }
+        char why[256] = "";
+        if (finncompat_winget_start("/usr/bin/systemd-run",
+                                     "/usr/local/bin/finnpkg", job_id, id,
+                                     (unsigned)g_finn_uid,
+                                     (unsigned)g_finn_gid, g_finn_home,
+                                     why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not start the winget install");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR winget.install %.96s", id);
+            return result;
+        }
+        char reply[128];
+        snprintf(reply, sizeof reply, "OK winget.install job=%s\n", job_id);
+        finn_write_str(fd, reply);
+        static char result[128];
+        snprintf(result, sizeof result, "OK winget.install job=%s", job_id);
+        return result;
+    }
+
+    if (!strcmp(verb, "winget.job")) {
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *extra = id ? strtok_r(NULL, " \t", &save) : NULL;
+        if (!id || extra || !finncompat_winget_job_id_valid(id)) {
+            finn_write_str(fd, "ERR winget.job takes one valid job id\n");
+            return "ERR winget.job id";
+        }
+        char word[16] = "";
+        char why[256] = "";
+        if (finncompat_job_word("/usr/bin/systemctl", id, word,
+                                sizeof word, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not read the winget job");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR winget.job %.120s", id);
+            return result;
+        }
+        char reply[128];
+        snprintf(reply, sizeof reply, "OK winget.job %s %s\n", id, word);
+        finn_write_str(fd, reply);
+        static char result[128];
+        snprintf(result, sizeof result, "OK winget.job %s %s", id, word);
+        return result;
+    }
+
+    /* ---- runtime OTA ----
+     *
+     * status reads the cache and stays fast; check is the one bounded GitHub
+     * lookup. Applying an update is a root systemd unit, because the control
+     * plane must answer before pacman replaces the package finnd lives in.
+     */
+    if (!strcmp(verb, "ota.status")) {
+        if (*trim_spaces(rest)) {
+            finn_write_str(fd, "ERR ota.status takes no arguments\n");
+            return "ERR ota.status arguments";
+        }
+        uint8_t *output = NULL;
+        size_t output_len = 0;
+        char why[256] = "";
+        if (finncompat_ota_query("/usr/local/bin/finnpkg", "status",
+                                  &output, &output_len,
+                                  why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not read the update status");
+            finn_write_str(fd, reply);
+            return "ERR ota.status";
+        }
+        char line[FINN_MAX_LINE - 32];
+        payload_to_line(output, output_len, line, sizeof line);
+        free(output);
+        char reply[FINN_MAX_LINE];
+        snprintf(reply, sizeof reply, "OK ota.status %s\n",
+                 line[0] ? line : "current=unknown latest=unknown available=-1 state=idle last_check=never");
+        finn_write_str(fd, reply);
+        return "OK ota.status";
+    }
+
+    if (!strcmp(verb, "ota.check")) {
+        if (*trim_spaces(rest)) {
+            finn_write_str(fd, "ERR ota.check takes no arguments\n");
+            return "ERR ota.check arguments";
+        }
+        uint8_t *output = NULL;
+        size_t output_len = 0;
+        char why[256] = "";
+        if (finncompat_ota_query("/usr/local/bin/finnpkg", "check",
+                                  &output, &output_len,
+                                  why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "the update check failed");
+            finn_write_str(fd, reply);
+            return "ERR ota.check";
+        }
+        int sent = send_binary(fd, output, output_len);
+        free(output);
+        return sent == 0 ? "OK ota.check" : "ERR ota.check reply write";
+    }
+
+    if (!strcmp(verb, "ota.download") || !strcmp(verb, "ota.install") ||
+        !strcmp(verb, "ota.rollback")) {
+        const char *action = verb + 4;
+        if (*trim_spaces(rest)) {
+            char reply[96];
+            snprintf(reply, sizeof reply, "ERR ota.%s takes no arguments\n", action);
+            finn_write_str(fd, reply);
+            return "ERR ota action arguments";
+        }
+        char job_id[FINN_OTA_JOB_ID_MAX];
+        if (++g_ota_job_sequence == 0) ++g_ota_job_sequence;
+        if (finncompat_ota_job_id_make(job_id, sizeof job_id,
+                                        (unsigned long)getpid(),
+                                        g_ota_job_sequence) != 0) {
+            finn_write_str(fd, "ERR could not allocate an OTA job id\n");
+            return "ERR ota job id";
+        }
+        char why[256] = "";
+        if (finncompat_ota_start("/usr/bin/systemd-run",
+                                  "/usr/local/bin/finnpkg", job_id, action,
+                                  why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not start the update job");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR ota.%s", action);
+            return result;
+        }
+        char reply[128];
+        snprintf(reply, sizeof reply, "OK ota.%s job=%s\n", action, job_id);
+        finn_write_str(fd, reply);
+        static char result[128];
+        snprintf(result, sizeof result, "OK ota.%s job=%s", action, job_id);
+        return result;
+    }
+
+    if (!strcmp(verb, "ota.job")) {
+        char *save = NULL;
+        char *id = strtok_r(rest, " \t", &save);
+        char *extra = id ? strtok_r(NULL, " \t", &save) : NULL;
+        if (!id || extra || !finncompat_ota_job_id_valid(id)) {
+            finn_write_str(fd, "ERR ota.job takes one valid job id\n");
+            return "ERR ota.job id";
+        }
+        char word[16] = "";
+        char why[256] = "";
+        if (finncompat_job_word("/usr/bin/systemctl", id, word,
+                                sizeof word, why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "could not read the update job");
+            finn_write_str(fd, reply);
+            static char result[160];
+            snprintf(result, sizeof result, "ERR ota.job %.120s", id);
+            return result;
+        }
+        char reply[128];
+        snprintf(reply, sizeof reply, "OK ota.job %s %s\n", id, word);
+        finn_write_str(fd, reply);
+        static char result[128];
+        snprintf(result, sizeof result, "OK ota.job %s %s", id, word);
         return result;
     }
 
@@ -715,7 +1227,28 @@ int main(int argc, char **argv) {
     log_open();
 
     struct passwd *pw = getpwnam("finn");
-    if (pw) { g_finn_uid = pw->pw_uid; g_finn_gid = pw->pw_gid; }
+    if (pw) {
+        g_finn_uid = pw->pw_uid;
+        g_finn_gid = pw->pw_gid;
+        if (pw->pw_dir && pw->pw_dir[0] == '/') {
+            int n = snprintf(g_finn_home, sizeof g_finn_home, "%s", pw->pw_dir);
+            if (n < 0 || (size_t)n >= sizeof g_finn_home) g_finn_home[0] = '\0';
+        }
+    }
+
+    /* The winget installer runs as Finn and leaves one short state line
+     * here. finnd owns the directory, and a job id is validated before it
+     * becomes a file name, so a job cannot point the writer somewhere else. */
+    if (mkdir(FINN_WINGET_STATE_DIR, 0700) != 0 && errno != EEXIST)
+        fprintf(stderr, "finnd: cannot create %s: %s\n",
+                FINN_WINGET_STATE_DIR, strerror(errno));
+    if (g_finn_uid != (uid_t)-1 &&
+        chown(FINN_WINGET_STATE_DIR, g_finn_uid, g_finn_gid) != 0)
+        fprintf(stderr, "finnd: cannot give %s to the finn user: %s\n",
+                FINN_WINGET_STATE_DIR, strerror(errno));
+    if (chmod(FINN_WINGET_STATE_DIR, 0700) != 0)
+        fprintf(stderr, "finnd: cannot protect %s: %s\n",
+                FINN_WINGET_STATE_DIR, strerror(errno));
 
     /* An explicit development escape hatch, and only the value "1": a
      * variable that is merely present must not open the plane to every

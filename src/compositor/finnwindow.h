@@ -115,9 +115,48 @@ void finnwindow_set_dock_clearance(int clearance);
  */
 int  finnwindow_overlaps_band(int y_top);
 
-/* Taskbar button in the dock: restores minimized windows or opens an empty
- * window when none exist. */
-void finnwindow_taskbar_toggle(void);
+/*
+ * What the taskbar needs to know, one entry per open window, in z-order from
+ * the bottom to the focused window. The taskbar groups them by `app_id`; a
+ * window opened with a title but no app has an empty id and is its own tile.
+ */
+typedef struct {
+    int  id;
+    char app_id[32];
+    char title[64];
+    int  minimized;
+    int  focused;
+} finnwindow_brief;
+
+#define FINNWINDOW_BRIEF_MAX FINNWINDOW_MAX
+int  finnwindow_briefs(finnwindow_brief *out, int max);
+
+/* Native Wayland toplevels reuse the shell's stacking and window chrome.
+ * Surface pixels are copied into compositor-owned memory (bounded to 64 Mi
+ * pixels across clients) so a client can reuse its SHM buffer immediately. */
+int  finnwindow_external_open(const char *app_id, const char *title,
+                              int surface_w, int surface_h);
+int  finnwindow_external_title(int id, const char *title);
+int  finnwindow_external_commit(int id, const uint32_t *pixels,
+                                int width, int height, int stride, int opaque);
+int  finnwindow_external_destroy(int id);
+typedef void (*finnwindow_external_close_handler)(int id, void *userdata);
+void finnwindow_set_external_close_handler(finnwindow_external_close_handler handler,
+                                           void *userdata);
+int  finnwindow_external_hit(int px, int py, int *id, int *sx, int *sy);
+int  finnwindow_external_coordinates(int id, int px, int py, int *sx, int *sy);
+int  finnwindow_external_contains(int id);
+int  finnwindow_external_focused(void);
+int  finnwindow_external_get_size(int id, int *width, int *height);
+
+/*
+ * Activate the taskbar group for `app_id`: focus its most recent window, or
+ * minimize the group when it is already the focused window. `window_id` is
+ * the fallback for a window that has no app id (pass 0 for an app group).
+ * Returns 1 when a window was there to act on, 0 when the caller should
+ * launch the app instead.
+ */
+int  finnwindow_taskbar_activate(const char *app_id, int window_id);
 
 /* Queries */
 int  finnwindow_count(void);               /* total open windows (including minimized) */

@@ -23,6 +23,7 @@
 /*
  * Metrics authored for the Figma design system (1280x832 * 1.298077):
  *   Window: 500x300 r=8 (Figma 14:247/14:236)
+ *   Stacked windows: (390,266) then (539,189), a +149/-77 reference-unit cascade
  *   Window Options pill: 72x24 r=4.14 at 10px inset from top/right (Figma 14:237)
  *   3 icons inside Window Options: expand, minus-sign, x, 15.43px (Figma 14:238/240/242)
  *   Empty window label: "Empty window", 12px (Figma 14:245), FINN_INK at 70% opacity
@@ -51,8 +52,8 @@
  * with the glass gone out of it, which is what a sticker looks like next to a
  * window.
  */
-#define WIN_FROST       0.60f
-#define OPT_FROST       0.42f
+#define WIN_FROST       0.70f
+#define OPT_FROST       0.50f
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -79,11 +80,22 @@ typedef struct {
     int  maximized;
     int  minimized;
     int  snapped;       /* FINNWINDOW_SNAP_*; 0 when the window floats free */
+    int  external;
+    int  client_mapped;
+    uint32_t *client_pixels;
+    int  client_w, client_h, client_opaque;
+    unsigned client_rev;
 } finn_win;
 
+#define FINNWINDOW_CLIENT_MAX_PIXELS (16u * 1024u * 1024u)
+static size_t g_client_pixels_used = 0;
 static finn_win g_wins[FINNWINDOW_MAX];
 static int      g_n_wins = 0;
 static int      g_next_id = 1;
+static unsigned g_external_serial = 1;
+static finnwindow_external_close_handler g_external_close_handler = NULL;
+static void *g_external_close_userdata = NULL;
+static int g_external_destroying = 0;
 
 /* The window whose close is still dissolving, or 0. It keeps its place in the
  * array until the track lands — see finnwindow_close. */
@@ -166,6 +178,14 @@ static int g_app_hit = 0;
 static int g_app_sub = 0;
 static finn_state g_last_st;
 
+static void external_surface_free(finn_win *w) {
+    if (!w || !w->client_pixels) return;
+    g_client_pixels_used -= (size_t)w->client_w * (size_t)w->client_h;
+    free(w->client_pixels);
+    w->client_pixels = NULL;
+    w->client_w = w->client_h = w->client_opaque = 0;
+}
+
 static int rs(float v, float s) { return (int)lroundf(v * s); }
 
 static int font_px(float s, float base) {
@@ -217,6 +237,8 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
 static finn_frost_plate g_body_plate[FINNWINDOW_MAX];
 
 void finnwindow_free(void) {
+    for (int i = 0; i < g_n_wins; i++) external_surface_free(&g_wins[i]);
+    g_client_pixels_used = 0;
     finnsettingsapp_free();
     finnfilesapp_free();
     finnstoreapp_free();
@@ -465,6 +487,7 @@ int finnwindow_open(const char *arg) {
     if (g_closing) {
         int ci = find_idx(g_closing);
         if (ci >= 0) {
+            external_surface_free(&g_wins[ci]);
             for (int i = ci; i < g_n_wins - 1; i++)
                 g_wins[i] = g_wins[i + 1];
             g_n_wins--;
@@ -495,11 +518,14 @@ int finnwindow_open(const char *arg) {
     int wh = rs(ref_h * REF, g_scale);
     if (ww < 300) { ww = (int)(ref_w * 1.36f); wh = (int)(ref_h * 1.36f); }
 
-    /* Center exactly as in Figma 12:2 (with slight cascade when multiple windows are open) */
+    /* Center the first window; subsequent windows follow Figma 14:247's
+     * measured stack: (390,266) then (539,189), or +149/-77 design units. */
     int vis = finnwindow_visible_count();
-    int offset = (vis % 4) * rs(24.0f, g_scale);
-    int wx = (g_screen_w - ww) / 2 + offset;
-    int wy = (g_screen_h - wh) / 2 + offset;
+    int cascade = vis % 4;
+    int offset_x = cascade * rs(149.0f * REF, g_scale);
+    int offset_y = cascade * rs(-77.0f * REF, g_scale);
+    int wx = (g_screen_w - ww) / 2 + offset_x;
+    int wy = (g_screen_h - wh) / 2 + offset_y;
 
     finn_win *w = &g_wins[g_n_wins++];
     memset(w, 0, sizeof *w);
@@ -514,6 +540,171 @@ int finnwindow_open(const char *arg) {
     g_built = 0;
     finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
     return w->id;
+}
+
+int finnwindow_external_open(const char *app_id, const char *title,
+                             int surface_w, int surface_h) {
+    char internal_id[32], arg[192], safe_title[64];
+    unsigned serial = g_external_serial++;
+    if (g_external_serial == 0) g_external_serial = 1;
+    snprintf(internal_id, sizeof internal_id, "wl-%u", serial);
+
+    const char *label = (title && *title) ? title :
+                        ((app_id && *app_id) ? app_id : "Wayland app");
+    size_t n = 0;
+    while (label[n] && n + 1 < sizeof safe_title) {
+        unsigned char c = (unsigned char)label[n];
+        safe_title[n] = (c == '\n' || c == '\r') ? ' ' : (char)c;
+        n++;
+    }
+    safe_title[n] = 0;
+    snprintf(arg, sizeof arg, "app=%s title=%s", internal_id, safe_title);
+
+    int id = finnwindow_open(arg);
+    if (id <= 0) return id;
+    int idx = find_idx(id);
+    if (idx < 0) return -1;
+    g_wins[idx].external = 1;
+    if (surface_w > 0 && surface_h > 0) {
+        int title_h = rs(TITLEBAR_H, g_scale);
+        if (finnwindow_resize(id, surface_w, surface_h + title_h) != 0) {
+            finnwindow_close(id);
+            return -1;
+        }
+    }
+    g_built = 0;
+    return id;
+}
+
+int finnwindow_external_title(int id, const char *title) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external || !title) return -1;
+    size_t n = 0;
+    while (title[n] && n + 1 < sizeof g_wins[idx].title) {
+        unsigned char c = (unsigned char)title[n];
+        g_wins[idx].title[n] = (c == '\n' || c == '\r') ? ' ' : (char)c;
+        n++;
+    }
+    g_wins[idx].title[n] = 0;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_external_commit(int id, const uint32_t *pixels,
+                               int width, int height, int stride, int opaque) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external) return -1;
+    if (!pixels && width == 0 && height == 0) {
+        external_surface_free(&g_wins[idx]);
+        g_wins[idx].client_rev++;
+        g_built = 0;
+        return 0;
+    }
+    if (!pixels || width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
+        stride < width * 4)
+        return -1;
+
+    size_t count = (size_t)width * (size_t)height;
+    size_t old_count = (size_t)g_wins[idx].client_w * (size_t)g_wins[idx].client_h;
+    if (count > FINNWINDOW_CLIENT_MAX_PIXELS ||
+        g_client_pixels_used - old_count > FINNWINDOW_CLIENT_MAX_PIXELS - count)
+        return -1;
+    if (count > SIZE_MAX / sizeof(uint32_t)) return -1;
+
+    uint32_t *copy = g_wins[idx].client_pixels;
+    int reuse = copy && g_wins[idx].client_w == width &&
+                g_wins[idx].client_h == height;
+    if (!reuse) {
+        copy = malloc(count * sizeof *copy);
+        if (!copy) return -1;
+    }
+    for (int y = 0; y < height; y++)
+        memcpy(copy + (size_t)y * width,
+               (const unsigned char *)pixels + (size_t)y * (size_t)stride,
+               (size_t)width * sizeof *copy);
+
+    if (!reuse) {
+        external_surface_free(&g_wins[idx]);
+        g_client_pixels_used += count;
+        g_wins[idx].client_pixels = copy;
+        g_wins[idx].client_w = width;
+        g_wins[idx].client_h = height;
+    }
+    g_wins[idx].client_opaque = opaque != 0;
+    if (!g_wins[idx].client_mapped) {
+        int title_h = rs(TITLEBAR_H, g_scale);
+        if (finnwindow_resize(id, width, height + title_h) == 0) {
+            idx = find_idx(id);
+            if (idx >= 0) g_wins[idx].client_mapped = 1;
+        }
+        if (idx < 0) {
+            free(copy);
+            g_client_pixels_used -= count;
+            return -1;
+        }
+    }
+    g_wins[idx].client_rev++;
+    g_built = 0;
+    return 0;
+}
+
+void finnwindow_set_external_close_handler(finnwindow_external_close_handler handler,
+                                           void *userdata) {
+    g_external_close_handler = handler;
+    g_external_close_userdata = userdata;
+}
+
+int finnwindow_external_destroy(int id) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external) return -1;
+    g_external_destroying = 1;
+    int result = finnwindow_close(id);
+    g_external_destroying = 0;
+    return result;
+}
+
+int finnwindow_external_hit(int px, int py, int *id, int *sx, int *sy) {
+    int title_h = rs(TITLEBAR_H, g_scale);
+    for (int i = g_n_wins - 1; i >= 0; i--) {
+        const finn_win *w = &g_wins[i];
+        if (!w->used || w->minimized || !w->external) continue;
+        if (px < w->x || px >= w->x + w->w ||
+            py < w->y + title_h || py >= w->y + w->h)
+            continue;
+        if (id) *id = w->id;
+        if (sx) *sx = px - w->x;
+        if (sy) *sy = py - w->y - title_h;
+        return 1;
+    }
+    return 0;
+}
+
+int finnwindow_external_coordinates(int id, int px, int py, int *sx, int *sy) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external || g_wins[idx].minimized) return 0;
+    if (sx) *sx = px - g_wins[idx].x;
+    if (sy) *sy = py - g_wins[idx].y - rs(TITLEBAR_H, g_scale);
+    return 1;
+}
+
+int finnwindow_external_contains(int id) {
+    int idx = find_idx(id);
+    return idx >= 0 && g_wins[idx].external;
+}
+
+int finnwindow_external_focused(void) {
+    for (int i = g_n_wins - 1; i >= 0; i--)
+        if (g_wins[i].used && !g_wins[i].minimized)
+            return g_wins[i].external ? g_wins[i].id : 0;
+    return 0;
+}
+
+int finnwindow_external_get_size(int id, int *width, int *height) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external) return -1;
+    if (width) *width = g_wins[idx].w;
+    if (height) *height = g_wins[idx].h - rs(TITLEBAR_H, g_scale);
+    return 0;
 }
 
 /*
@@ -532,6 +723,9 @@ int finnwindow_open(const char *arg) {
 int finnwindow_close(int id) {
     int idx = find_idx(id);
     if (idx < 0) return -1;
+    if (g_wins[idx].external && !g_external_destroying &&
+        g_external_close_handler)
+        g_external_close_handler(id, g_external_close_userdata);
 
     if (!g_closing && finnwindow_visible_count() == 1 &&
         finn_anim_v(&g_a_open) > 0.85f) {
@@ -541,6 +735,7 @@ int finnwindow_close(int id) {
         return 0;
     }
 
+    external_surface_free(&g_wins[idx]);
     for (int i = idx; i < g_n_wins - 1; i++)
         g_wins[i] = g_wins[i + 1];
     g_n_wins--;
@@ -597,7 +792,7 @@ int finnwindow_minimize(int id) {
      * window, so the shared rect can carry the move and the scale. */
     if (!w->minimized && finnwindow_visible_count() == 1 && !g_min_active) {
         int ax = 0, ay = 0;
-        finndock_app_icon(&ax, &ay);
+        finndock_app_icon_for(w->app_id, &ax, &ay);
         int tw = rs(26.0f, g_scale), th = tw;
         g_mfx = (float)w->x; g_mfy = (float)w->y;
         g_mfw = (float)w->w; g_mfh = (float)w->h;
@@ -763,29 +958,68 @@ int finnwindow_snap(int id, int edge) {
     return 0;
 }
 
-void finnwindow_taskbar_toggle(void) {
-    if (g_min_active) return;
-    if (g_n_wins == 0) {
-        finnwindow_open("window");
-        return;
+int finnwindow_briefs(finnwindow_brief *out, int max) {
+    if (!out || max <= 0) return 0;
+
+    /* The focused window is the topmost one that is actually on screen, not
+     * simply the last array slot: minimizing the top window leaves it in
+     * place, and the window below it is what the user is now looking at. */
+    int top_visible = -1;
+    for (int i = g_n_wins - 1; i >= 0; i--) {
+        if (g_wins[i].used && !g_wins[i].minimized) { top_visible = i; break; }
     }
-    /* If any window is visible, minimize the top visible window; otherwise restore all */
-    if (finnwindow_visible_count() > 0) {
-        for (int i = g_n_wins - 1; i >= 0; i--) {
-            if (g_wins[i].used && !g_wins[i].minimized) {
-                g_wins[i].minimized = 1;
-                break;
-            }
+
+    int n = 0;
+    for (int i = 0; i < g_n_wins && n < max; i++) {
+        const finn_win *w = &g_wins[i];
+        if (!w->used) continue;
+        finnwindow_brief *b = &out[n++];
+        memset(b, 0, sizeof *b);
+        b->id = w->id;
+        snprintf(b->app_id, sizeof b->app_id, "%s", w->app_id);
+        snprintf(b->title, sizeof b->title, "%s", w->title);
+        b->minimized = w->minimized;
+        b->focused = (i == top_visible);
+    }
+    return n;
+}
+
+int finnwindow_taskbar_activate(const char *app_id, int window_id) {
+    int top_visible = -1;
+    for (int i = g_n_wins - 1; i >= 0; i--) {
+        if (g_wins[i].used && !g_wins[i].minimized) { top_visible = i; break; }
+    }
+
+    if (window_id > 0) {
+        int idx = find_idx(window_id);
+        if (idx < 0) return 0;
+        if (idx == top_visible) {
+            finnwindow_minimize(window_id);
+            return 1;
         }
-        g_built = 0;
-        if (finnwindow_visible_count() == 0)
-            finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
-    } else {
-        for (int i = 0; i < g_n_wins; i++)
-            g_wins[i].minimized = 0;
-        g_built = 0;
-        finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
+        return finnwindow_focus(window_id) == 0;
     }
+
+    if (!app_id || !*app_id) return 0;
+
+    int top = -1;
+    for (int i = 0; i < g_n_wins; i++)
+        if (g_wins[i].used && !strcmp(g_wins[i].app_id, app_id)) top = i;
+    if (top < 0) return 0;
+
+    int focused = (top_visible >= 0 &&
+                   !strcmp(g_wins[top_visible].app_id, app_id));
+    if (!focused) return finnwindow_focus(g_wins[top].id) == 0;
+
+    /* The group is the one in front, so the press folds it away. Minimizing
+     * all of its windows is what a grouped taskbar button does; leaving a
+     * second window of the same app behind would make the indicator lie. */
+    for (int i = 0; i < g_n_wins; i++) {
+        if (g_wins[i].used && !g_wins[i].minimized &&
+            !strcmp(g_wins[i].app_id, app_id))
+            finnwindow_minimize(g_wins[i].id);
+    }
+    return 1;
 }
 
 static const char *window_state(const finn_win *w) {
@@ -870,6 +1104,7 @@ int finnwindow_tick(float dt) {
         } else {
             int idx = find_idx(g_closing);
             if (idx >= 0) {
+                external_surface_free(&g_wins[idx]);
                 for (int i = idx; i < g_n_wins - 1; i++)
                     g_wins[i] = g_wins[i + 1];
                 g_n_wins--;
@@ -977,6 +1212,7 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
                 g_app_sub = sub;
                 return FINNWINDOW_HIT_APP_CTRL;
             }
+            return FINNWINDOW_HIT_BODY;
         }
 
         int is_settings = (strcasecmp(w->title, "Settings") == 0 ||
@@ -1277,7 +1513,8 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
     MIX(st->dark + 2);
     MIX(g_n_wins);
     for (int i = 0; i < g_n_wins; i++) {
-        MIX(g_wins[i].id);
+        MIX(g_wins[i].id); MIX(g_wins[i].external);
+        MIX(g_wins[i].client_rev); MIX(g_wins[i].client_w); MIX(g_wins[i].client_h);
         MIX(g_wins[i].x); MIX(g_wins[i].y);
         MIX(g_wins[i].w); MIX(g_wins[i].h);
         MIX(g_wins[i].minimized); MIX(g_wins[i].maximized);
@@ -1295,6 +1532,66 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
     }
     #undef MIX
     return h ? h : 1u;
+}
+
+static void external_surface_draw(const finn_win *win, int wx, int wy,
+                                  int layer_w, int layer_h, float scale) {
+    if (!win->client_pixels || win->client_w <= 0 || win->client_h <= 0) return;
+    int title_h = rs(TITLEBAR_H, scale);
+    int target_w = win->w;
+    int target_h = win->h - title_h;
+    if (target_w <= 0 || target_h <= 0) return;
+
+    int radius = rs(WIN_R, scale);
+    if (radius > target_w / 2) radius = target_w / 2;
+    if (radius > target_h / 2) radius = target_h / 2;
+    if (win->client_opaque && win->client_w == target_w &&
+        win->client_h == target_h) {
+        finn_blit_opaque_rounded_bottom(g_layer, layer_w, layer_h,
+                                        win->client_pixels,
+                                        win->client_w, win->client_h,
+                                        wx, wy + title_h, radius);
+        return;
+    }
+    for (int y = 0; y < target_h; y++) {
+        int ty = wy + title_h + y;
+        if (ty < 0 || ty >= layer_h) continue;
+        int sy = (int)((int64_t)y * win->client_h / target_h);
+        if (sy >= win->client_h) sy = win->client_h - 1;
+        for (int x = 0; x < target_w; x++) {
+            int tx = wx + x;
+            if (tx < 0 || tx >= layer_w) continue;
+            if (radius > 0 && y >= target_h - radius) {
+                int dx = -1;
+                if (x < radius) dx = radius - x;
+                else if (x >= target_w - radius) dx = x - (target_w - radius - 1);
+                if (dx >= 0) {
+                    int dy = y - (target_h - radius - 1);
+                    if ((int64_t)dx * dx + (int64_t)dy * dy >
+                        (int64_t)radius * radius)
+                        continue;
+                }
+            }
+            int sx = (int)((int64_t)x * win->client_w / target_w);
+            if (sx >= win->client_w) sx = win->client_w - 1;
+            uint32_t src = win->client_pixels[(size_t)sy * win->client_w + sx];
+            unsigned a = win->client_opaque ? 255u : (src >> 24);
+            if (a == 0) continue;
+            uint32_t *dst = &g_layer[(size_t)ty * layer_w + tx];
+            unsigned inv = 255u - a;
+            unsigned sr = (src >> 16) & 0xffu;
+            unsigned sg = (src >> 8) & 0xffu;
+            unsigned sb = src & 0xffu;
+            unsigned dr = (*dst >> 16) & 0xffu;
+            unsigned dg = (*dst >> 8) & 0xffu;
+            unsigned db = *dst & 0xffu;
+            unsigned r = sr + (dr * inv + 127u) / 255u;
+            unsigned g = sg + (dg * inv + 127u) / 255u;
+            unsigned b = sb + (db * inv + 127u) / 255u;
+            *dst = 0xff000000u | (r > 255u ? 255u : r) << 16 |
+                   (g > 255u ? 255u : g) << 8 | (b > 255u ? 255u : b);
+        }
+    }
 }
 
 /* The button the pointer is on, if any. A press wins over a hover because it
@@ -1468,10 +1765,16 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
      * it is not a frame, rather than allowed to wrap into a negative one.
      */
     int64_t min_x = screen_w, min_y = screen_h, max_x = 0, max_y = 0;
+    int64_t shadow_pad = (int64_t)ceilf(scale * REF *
+        (1.5f * FINN_SHADOW_BLUR + FINN_SHADOW_OFFSET_Y) + 1.0f);
     for (int i = 0; i < g_n_wins; i++) {
         if (!g_wins[i].used || g_wins[i].minimized) continue;
         int64_t x0 = g_wins[i].x, y0 = g_wins[i].y;
         int64_t x1 = x0 + g_wins[i].w, y1 = y0 + g_wins[i].h;
+        if (!g_wins[i].maximized) {
+            x0 -= shadow_pad; y0 -= shadow_pad;
+            x1 += shadow_pad; y1 += shadow_pad;
+        }
         if (x0 < min_x) min_x = x0;
         if (y0 < min_y) min_y = y0;
         if (x1 > max_x) max_x = x1;
@@ -1560,14 +1863,20 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             int wx = w->x - g_lx0;
             int wy = w->y - g_ly0;
 
-            /* Window frosted glass body (Figma 14:236: r=8, frost 0.70). A
-             * maximized window is the screen above the dock, so it has no
-             * corners to round: a rounded corner there would leave a sliver of
-             * wallpaper between the window and the dock's bar. */
+            /* The reference window casts a 3% black shadow at (0,4) with
+             * blur 100, then the body frosts the desktop at 0.70. A maximized
+             * window meets the screen and dock, so neither its corners nor
+             * its floating shadow are drawn. */
             float body_r = w->maximized ? 0.0f : s * WIN_R;
-            finn_frost_rrect_plate(&g_body_plate[i], g_layer, lw, lh, g_lx0, g_ly0,
-                                   (float)wx, (float)wy, (float)w->w, (float)w->h,
-                                   body_r, FINN_GLASS, WIN_FROST);
+            if (!w->maximized)
+                finn_shadow_rrect(g_layer, lw, lh, (float)wx, (float)wy,
+                                  (float)w->w, (float)w->h, body_r,
+                                  s * REF * FINN_SHADOW_BLUR, 0.0f,
+                                  s * REF * FINN_SHADOW_OFFSET_Y,
+                                  FINN_SHADOW_ALPHA);
+            finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh, g_lx0, g_ly0,
+                                        (float)wx, (float)wy, (float)w->w, (float)w->h,
+                                        body_r, FINN_GLASS, WIN_FROST);
             finn_stroke_rrect(g_layer, lw, lh, (float)wx, (float)wy,
                               (float)w->w, (float)w->h, body_r, 1.0f, FINN_HAIR);
 
@@ -1611,6 +1920,12 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                 finnstoreapp_render(g_layer, lw, lh, g_lx0, g_ly0,
                                     w->x, w->y, w->w, w->h,
                                     s, st, focused);
+            } else if (w->external) {
+                external_surface_draw(w, wx, wy, lw, lh, s);
+                uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u;
+                finn_text_draw(&g_f_title, g_layer, lw, lh,
+                               (float)wx + rs(14.0f, s),
+                               (float)wy + rs(31.0f, s), w->title, col);
             } else {
                 /* Centered window label (Figma 14:245: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
                 const char *label = (!w->title[0] ||

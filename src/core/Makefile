@@ -17,11 +17,11 @@ LDLIBS  += $(shell pkg-config --libs $(PKGS)) -lm
 
 LIB      = libfinncore.a
 
-SRCS     = finnapps.c finnaudio.c finnconn.c finnsettings.c finnstate.c finnsock.c
+SRCS     = finnapps.c finnaudio.c finnconn.c finnsettings.c finnstate.c finnsock.c finntaskbar.c finnfbin.c
 OBJS     = $(SRCS:.c=.o)
 
 HDRS     = finnapps.h finnaudio.h finnconn.h finnproto.h finnsettings.h \
-           finnstate.h finnsock.h
+           finnstate.h finnsock.h finntaskbar.h finnfbin.h
 
 all: $(LIB)
 

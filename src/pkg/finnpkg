@@ -7,7 +7,20 @@
 #   finnpkg install <id>         install an app from the catalogue
 #   finnpkg install <file.finn>  install a package file
 #   finnpkg remove <id>          uninstall it
-#   finnpkg update                check the system for updates
+#   finnpkg update status|check  runtime OTA status and GitHub release check
+#   finnpkg update download|install|rollback  fetch, apply or restore the runtime package
+#   finnpkg flatpak init         configure the official system Flathub remote
+#   finnpkg flatpak install <id> [remote]  install from a configured remote
+#   finnpkg flatpak <action>      manage Flatpak packages when installed
+#   finnpkg wine status          what Windows runtime this machine really has
+#   finnpkg wine install <id> <setup.exe>  install into a private prefix
+#   finnpkg wine set <id> <program.exe>    select the installed program
+#   finnpkg wine register <id> <app.exe>   register an existing app
+#   finnpkg wine list                       list registered Windows apps
+#   finnpkg wine run <id>                   launch through the audit path
+#   finnpkg winget search <text>            search the Windows package catalogue
+#   finnpkg winget info <id>                resolve the latest installer for one package
+#   finnpkg winget install <id>             download, verify and run its installer
 #
 # Two files, two owners:
 #
@@ -28,6 +41,29 @@ set -euo pipefail
 CATALOGUE="${FINN_APPS_CATALOGUE:-/usr/share/finn/apps.registry}"
 INSTALLED="${FINN_APPS_INSTALLED:-/var/lib/finnpkg/installed}"
 APPS_DIR="${FINN_APPS_DIR:-/opt/finn-apps}"
+FLATPAK_BIN="${FINNPKG_FLATPAK_BIN:-/usr/bin/flatpak}"
+WINE_ROOT="${FINN_WINE_ROOT:-${HOME:-/home/finn}/.local/share/finn/wine}"
+FINNCTL_BIN="${FINNPKG_FINNCTL_BIN:-/usr/local/bin/finnctl}"
+
+# The Windows catalogue and the runtime OTA are network features, and every
+# path here has one owner: this script. finnd validates and starts a job; it
+# never guesses a cache path or parses a release itself.
+WINGET_API="${FINNPKG_WINGET_API:-https://api.winget.run/v2/packages}"
+WINGET_CONTENTS_API="${FINNPKG_WINGET_CONTENTS_API:-https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests}"
+WINGET_MANIFEST_BASE="${FINNPKG_WINGET_MANIFEST_BASE:-https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests}"
+WINGET_CACHE_TTL="${FINNPKG_WINGET_CACHE_TTL:-600}"
+WINGET_MAX_INSTALLER=$((2 * 1024 * 1024 * 1024))
+WINGET_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+WINGET_STATE_DIR="${FINNPKG_WINGET_STATE_DIR:-/run/finn/winget}"
+
+OTA_REPO="${FINNPKG_OTA_REPO:-Finn-Technologies/FinnOS}"
+OTA_RELEASE_API="${FINNPKG_OTA_RELEASE_API:-https://api.github.com/repos/$OTA_REPO/releases/latest}"
+OTA_PACKAGE="finnos-runtime"
+OTA_MAX_BYTES=$((2 * 1024 * 1024 * 1024))
+
+WORK_DIR=""
+JOB_ACTIVE=0
+JOB_FAIL_HOOK=""
 
 # One definition of an app id. It is used as a directory name under
 # $APPS_DIR and as a line in the install list, so it may not contain `/`,
@@ -72,6 +108,194 @@ require_inside() {
 need_root() {
     [ -w "$INSTALLED" ] || [ "$(id -u)" = "0" ] || \
         die "this needs root: it writes $INSTALLED"
+}
+
+# ---------------------------------------------------------------- plumbing
+#
+# A package manager that speaks to the network has to be boring about it:
+# one scratch directory, one place that removes it, one place that records a
+# failed job, and no shell string built from a remote answer.
+
+one_line() {
+    local v="${1:-}"
+    v="${v//$'\t'/ }"
+    v="${v//$'\r'/ }"
+    v="${v//$'\n'/ }"
+    printf '%s' "$v"
+}
+
+# Notes and errors travel in key=value lines, so an '=' inside one would
+# look like another field.
+clean_text() {
+    local v
+    v="$(one_line "${1:-}")"
+    v="${v//=/ }"
+    printf '%s' "$v"
+}
+
+clip_text() {
+    local v n="${2:-500}"
+    v="$(clean_text "${1:-}")"
+    printf '%s' "${v:0:$n}"
+}
+
+file_size() {
+    if stat -c %s "$1" >/dev/null 2>&1; then
+        stat -c %s "$1"
+    else
+        stat -f %z "$1"
+    fi
+}
+
+file_mtime() {
+    if stat -c %Y "$1" >/dev/null 2>&1; then
+        stat -c %Y "$1"
+    else
+        stat -f %m "$1"
+    fi
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        die "no SHA-256 tool is installed (coreutils or perl)"
+    fi
+}
+
+sha256_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+    else
+        die "no SHA-256 tool is installed (coreutils or perl)"
+    fi
+}
+
+need_tool() {
+    command -v "$1" >/dev/null 2>&1 || die "${2:-$1 is not installed}"
+}
+
+need_network_tools() {
+    need_tool curl "curl is not installed; the catalogue cannot be reached"
+    need_tool jq "jq is not installed; the catalogue cannot be read"
+}
+
+work_dir() {
+    if [ -z "$WORK_DIR" ]; then
+        WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/finnpkg.XXXXXX")" || \
+            die "could not create a scratch directory"
+    fi
+    printf '%s\n' "$WORK_DIR"
+}
+
+# One exit path for a long operation: a job that dies leaves a failed state
+# rather than a stale "downloading" or "installing", and scratch files go.
+on_exit() {
+    if [ "$JOB_ACTIVE" = 1 ]; then
+        case "$JOB_FAIL_HOOK" in
+            winget) winget_state failed ;;
+            ota) ota_state_set failed ;;
+        esac
+    fi
+    if [ -n "$WORK_DIR" ]; then
+        rm -rf "$WORK_DIR"
+    fi
+}
+trap on_exit EXIT
+
+# HTTPS only, with a size bound and no shell in the middle. `--` ends the
+# options so a URL can never become one.
+curl_fetch() {
+    local url="$1" out="$2" max="$3"
+    shift 3
+    need_tool curl "curl is not installed"
+    curl --fail-with-body --silent --show-error --location \
+        --proto '=https' --tlsv1.2 \
+        --connect-timeout 10 --max-time 90 --max-filesize "$max" \
+        --output "$out" "$@" -- "$url"
+}
+
+user_cache_root() {
+    if [ -n "${XDG_CACHE_HOME:-}" ]; then
+        printf '%s' "$XDG_CACHE_HOME"
+    elif [ -n "${HOME:-}" ]; then
+        printf '%s/.cache' "$HOME"
+    else
+        printf '%s' "${TMPDIR:-/tmp}/finnpkg-$UID"
+    fi
+}
+
+user_state_root() {
+    if [ -n "${XDG_STATE_HOME:-}" ]; then
+        printf '%s' "$XDG_STATE_HOME"
+    elif [ -n "${HOME:-}" ]; then
+        printf '%s/.local/state' "$HOME"
+    else
+        printf '%s' "${TMPDIR:-/tmp}/finnpkg-state-$UID"
+    fi
+}
+
+winget_cache_root() {
+    if [ -n "${FINNPKG_WINGET_CACHE:-}" ]; then
+        printf '%s' "$FINNPKG_WINGET_CACHE"
+    elif [ "$(id -u)" = 0 ]; then
+        printf '/var/cache/finnpkg/winget'
+    else
+        printf '%s/finnpkg/winget' "$(user_cache_root)"
+    fi
+}
+
+ota_cache_root() {
+    if [ -n "${FINNPKG_OTA_CACHE:-}" ]; then
+        printf '%s' "$FINNPKG_OTA_CACHE"
+    elif [ "$(id -u)" = 0 ]; then
+        printf '/var/cache/finnpkg/ota'
+    else
+        printf '%s/finnpkg/ota' "$(user_cache_root)"
+    fi
+}
+
+ota_state_root() {
+    if [ -n "${FINNPKG_OTA_STATE:-}" ]; then
+        printf '%s' "$FINNPKG_OTA_STATE"
+    elif [ "$(id -u)" = 0 ]; then
+        printf '/var/lib/finnpkg/ota'
+    else
+        printf '%s/finnpkg/ota' "$(user_state_root)"
+    fi
+}
+
+cache_fresh() {
+    local file="$1" ttl="${2:-$WINGET_CACHE_TTL}" age
+    [ -f "$file" ] || return 1
+    age=$(( $(date +%s) - $(file_mtime "$file") ))
+    [ "$age" -ge 0 ] && [ "$age" -lt "$ttl" ]
+}
+
+# Write key=value state atomically: a reader either sees the old file or
+# the new one, never half of a release check.
+write_kv_file() {
+    local file="$1"
+    shift
+    local dir tmp line
+    dir="$(dirname "$file")"
+    mkdir -p "$dir" || die "could not create $dir"
+    tmp="$file.$$"
+    : > "$tmp" || die "could not write $file"
+    for line in "$@"; do
+        printf '%s\n' "$line" >> "$tmp" || die "could not write $file"
+    done
+    mv -f "$tmp" "$file" || { rm -f "$tmp"; die "could not write $file"; }
+}
+
+kv_get() {
+    local file="$1" key="$2"
+    [ -f "$file" ] || return 1
+    awk -v k="$key" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$file"
 }
 
 # The catalogue is pipe separated:
@@ -386,18 +610,1265 @@ cmd_remove() {
     echo "removed $id"
 }
 
+# Flatpak package operations are separate from the native catalogue. Refs use
+# reverse-DNS ids, while Wine registrations refer to user-supplied executables
+# and keep their prefixes outside both package registries.
+FLATPAK_ID_PATTERN='^[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*)+$'
+FLATPAK_REMOTE_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+FLATPAK_REMOTE_URL='https://dl.flathub.org/repo/'
+
+require_flatpak_remote_name() {
+    local remote="${1:-}"
+    [ -n "$remote" ] && [ "${#remote}" -le 64 ] && [[ "$remote" =~ $FLATPAK_REMOTE_PATTERN ]] || \
+        die "'$remote' is not a valid Flatpak remote name"
+}
+
+require_system_flatpak_remote() {
+    local remote="$1" remotes
+    remotes="$("$FLATPAK_BIN" remotes --system --columns=name 2>/dev/null || true)"
+    printf '%s\n' "$remotes" | awk -v expected="$remote" '$1 == expected { found = 1 } END { exit !found }' || \
+        die "Flatpak remote '$remote' is not configured in the system installation"
+}
+
+require_flatpak_id() {
+    local id="${1:-}"
+    [ -n "$id" ] || die "a Flatpak application id is needed"
+    [ "${#id}" -le 255 ] && [[ "$id" =~ $FLATPAK_ID_PATTERN ]] || \
+        die "'$id' is not a Flatpak application id"
+}
+
+need_flatpak() {
+    [ -x "$FLATPAK_BIN" ] || die "Flatpak is not installed ($FLATPAK_BIN)"
+}
+
+ensure_flathub_remote() {
+    local remotes remote_url
+    remotes="$("$FLATPAK_BIN" remotes --system --columns=name,url 2>/dev/null || true)"
+    remote_url="$(printf '%s\n' "$remotes" | awk '$1 == "flathub" { print $2; exit }')"
+    if [ -z "$remote_url" ]; then
+        "$FLATPAK_BIN" remote-add --system --if-not-exists --from \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo || \
+            die "could not add the official Flathub remote"
+        return
+    fi
+    case "$remote_url" in
+        "$FLATPAK_REMOTE_URL"|"${FLATPAK_REMOTE_URL%/}") ;;
+        *) die "the flathub remote points somewhere unexpected; refusing to install from it" ;;
+    esac
+}
+
+cmd_flatpak() {
+    local verb="${1:-}"
+    [ -n "$verb" ] || die "flatpak needs list, search, install, remove or run"
+    shift
+    need_flatpak
+    case "$verb" in
+        init)
+            [ "$#" -eq 0 ] || die "flatpak init takes no arguments"
+            ensure_flathub_remote
+            echo "configured system Flathub remote"
+            ;;
+        list)
+            [ "$#" -eq 0 ] || die "flatpak list takes no arguments"
+            "$FLATPAK_BIN" list --system --app --columns=application,name
+            ;;
+        search)
+            local query="${1:-}"
+            [ -n "$query" ] && [ "$#" -eq 1 ] || die "flatpak search needs one search term"
+            "$FLATPAK_BIN" search --system --columns=application,name,description,remotes "$query"
+            ;;
+        install)
+            local id="${1:-}" remote="${2:-flathub}"
+            [ "$#" -ge 1 ] && [ "$#" -le 2 ] || \
+                die "flatpak install takes an application id and optional remote"
+            require_flatpak_id "$id"
+            require_flatpak_remote_name "$remote"
+            if [ "$remote" = "flathub" ]; then
+                ensure_flathub_remote
+            else
+                require_system_flatpak_remote "$remote"
+            fi
+            "$FLATPAK_BIN" install --system --assumeyes "$remote" "$id" || \
+                die "Flatpak could not install '$id' from '$remote'"
+            echo "installed Flatpak $id"
+            ;;
+        remove)
+            local id="${1:-}"
+            [ "$#" -eq 1 ] || die "flatpak remove takes one application id"
+            require_flatpak_id "$id"
+            "$FLATPAK_BIN" uninstall --system --assumeyes "$id" || \
+                die "Flatpak could not remove '$id'"
+            echo "removed Flatpak $id (user data was kept)"
+            ;;
+        run)
+            local id="${1:-}"
+            [ "$#" -eq 1 ] || die "flatpak run takes one application id"
+            require_flatpak_id "$id"
+            [ -x "$FINNCTL_BIN" ] || die "finnctl is not installed; Flatpak apps must be launched through finnd"
+            "$FINNCTL_BIN" flatpak.run "$id"
+            ;;
+        *) die "unknown flatpak action '$verb' (try 'finnpkg flatpak help')" ;;
+    esac
+}
+
+# The one honest answer to "can this machine run a Windows program?". It
+# looks at the same absolute paths finnd does, never at $PATH: a fake `wine`
+# early in PATH is not a runtime, and on ARM an x86_64 Wine without box64 is
+# a file, not a backend.
+WINE_ARCH=""
+WINE_BACKEND="none"
+WINE_BINARY=""
+WINE_WRAPPER=""
+WINE_AVAILABLE=0
+WINE_REASON="no-runtime"
+WINE_VERSION="unknown"
+
+wine_detect() {
+    local arch binary="" backend="none" wrapper="" available=0
+    local reason="no-runtime" version="unknown" candidate
+    arch="$(uname -m 2>/dev/null || printf 'unknown')"
+    case "$arch" in
+        amd64) arch=x86_64 ;;
+        arm64) arch=aarch64 ;;
+    esac
+
+    if [ "$arch" != "x86_64" ] && [ "$arch" != "aarch64" ]; then
+        reason="unsupported-arch"
+    else
+        local hangover="" staging="" wine="" box64="" proton=""
+        [ -x /usr/bin/hangover ] && hangover=/usr/bin/hangover
+        [ -x /usr/bin/wine-staging ] && staging=/usr/bin/wine-staging
+        [ -x /usr/bin/wine ] && wine=/usr/bin/wine
+        [ -x /usr/bin/box64 ] && box64=/usr/bin/box64
+        for candidate in \
+            /usr/share/steam/compatibilitytools.d/*/files/bin/wine \
+            /usr/local/share/steam/compatibilitytools.d/*/files/bin/wine \
+            /usr/share/steam/steamapps/common/Proton*/files/bin/wine \
+            /usr/local/share/steam/steamapps/common/Proton*/files/bin/wine \
+            "${HOME:-/nonexistent}"/.steam/steam/compatibilitytools.d/*/files/bin/wine \
+            "${HOME:-/nonexistent}"/.local/share/Steam/compatibilitytools.d/*/files/bin/wine \
+            "${HOME:-/nonexistent}"/.steam/steam/steamapps/common/Proton*/files/bin/wine \
+            "${HOME:-/nonexistent}"/.local/share/Steam/steamapps/common/Proton*/files/bin/wine; do
+            if [ -x "$candidate" ]; then
+                proton="$candidate"
+                break
+            fi
+        done
+
+        if [ -n "$hangover" ]; then
+            backend=hangover; binary="$hangover"; available=1
+        elif [ -n "$staging" ]; then
+            backend=wine-staging; binary="$staging"; available=1
+        elif [ -n "$wine" ]; then
+            if [ "$arch" = "aarch64" ] && [ -n "$box64" ]; then
+                backend=box64; binary="$wine"; wrapper="$box64"; available=1
+            elif [ "$arch" = "aarch64" ]; then
+                backend=wine; binary="$wine"; available=0; reason=needs-box64
+            else
+                backend=wine; binary="$wine"; available=1
+            fi
+        elif [ -n "$proton" ]; then
+            backend=proton; binary="$proton"; available=1
+        elif [ -n "$box64" ]; then
+            backend=box64; available=0; reason=no-wine
+        fi
+    fi
+
+    if [ "$available" = 1 ]; then
+        local out=""
+        if command -v timeout >/dev/null 2>&1; then
+            out="$(timeout 3 ${wrapper:+"$wrapper"} "$binary" --version 2>/dev/null || true)"
+        else
+            out="$("$binary" --version 2>/dev/null || true)"
+        fi
+        out="${out%%$'\n'*}"
+        out="${out%% *}"
+        out="${out#wine-}"
+        [ -n "$out" ] && version="$out"
+    fi
+
+    WINE_ARCH="$arch"
+    WINE_BACKEND="$backend"
+    WINE_BINARY="$binary"
+    WINE_WRAPPER="$wrapper"
+    WINE_AVAILABLE="$available"
+    WINE_REASON="$reason"
+    WINE_VERSION="$version"
+}
+
+wine_status_line() {
+    wine_detect
+    printf 'arch=%s available=%s backend=%s version=%s prefix=%s' \
+        "$WINE_ARCH" "$WINE_AVAILABLE" "$WINE_BACKEND" "$WINE_VERSION" "$WINE_ROOT"
+    if [ "$WINE_AVAILABLE" != 1 ]; then
+        printf ' reason=%s' "${WINE_REASON:-no-runtime}"
+    fi
+    printf '\n'
+}
+
+# Registration and listing are data operations and stay available on
+# x86_64 even when Wine is not installed: finnd is the authority on whether
+# a launch can happen. On ARM, a usable backend is the price of entry.
+wine_require_platform() {
+    wine_detect
+    [ "$WINE_ARCH" = "x86_64" ] && return 0
+    [ "$WINE_AVAILABLE" = 1 ] && return 0
+    die "Wine apps are available only on x86_64; this build has no usable Windows runtime for $WINE_ARCH (${WINE_REASON:-no-runtime})"
+}
+
+wine_require_runtime() {
+    wine_detect
+    [ "$WINE_AVAILABLE" = 1 ] || \
+        die "Wine is not available on this machine (${WINE_REASON:-no-runtime}); the installer cannot run"
+}
+
+wine_require_id() {
+    local id="${1:-}"
+    [ -n "$id" ] && valid_id "$id" || \
+        die "Wine app id must be lowercase letters, digits and '-', starting with a letter, 32 characters at most"
+}
+
+wine_require_executable() {
+    local exe="${1:-}" suffix="${1##*.}"
+    [ -n "$exe" ] && [[ "$exe" = /* ]] && [ "${#exe}" -lt 4096 ] || \
+        die "Wine executable path must be an absolute .exe file path"
+    [[ "$exe" != *[[:cntrl:]]* ]] || die "Wine app path contains a control character"
+    case "$suffix" in
+        [Ee][Xx][Ee]) ;;
+        *) die "Wine executable path must name an existing .exe file" ;;
+    esac
+    [ -f "$exe" ] && [ -r "$exe" ] || die "Wine executable is not a readable regular file: $exe"
+}
+
+wine_root_check() {
+    [[ "$WINE_ROOT" = /* ]] && [[ "$WINE_ROOT" != *[[:cntrl:]]* ]] || \
+        die "Wine data root must be an absolute path without control characters"
+    [ ! -L "$WINE_ROOT" ] || die "Wine data root may not be a symbolic link"
+}
+
+wine_registered_executable() {
+    local id="$1" app_dir="$WINE_ROOT/$1" metadata="$WINE_ROOT/$1/executable"
+    local prefix="$WINE_ROOT/$1/prefix" stored lines
+    [ ! -L "$app_dir" ] && [ -d "$app_dir" ] || die "Wine app '$id' is not registered"
+    [ ! -L "$metadata" ] && [ -f "$metadata" ] || die "Wine app '$id' is not registered"
+    [ ! -L "$prefix" ] && [ -d "$prefix" ] || die "Wine app '$id' has no managed prefix"
+    lines="$(wc -l < "$metadata")"
+    [ "$lines" -eq 1 ] || die "Wine app '$id' has invalid registration metadata"
+    IFS= read -r stored < "$metadata" || die "Wine app '$id' has invalid registration metadata"
+    wine_require_executable "$stored"
+    printf '%s\n' "$stored"
+}
+
+cmd_wine() {
+    local verb="${1:-}"
+    [ -n "$verb" ] || die "wine needs status, install, set, register, list or run"
+    shift
+    case "$verb" in
+        status)
+            [ "$#" -eq 0 ] || die "wine status takes no arguments"
+            wine_status_line
+            ;;
+        register)
+            wine_require_platform
+            [ "$#" -eq 2 ] || die "wine register takes an app id and an existing absolute .exe path"
+            local id="$1" exe="$2" app_dir metadata tmp
+            wine_require_id "$id"
+            wine_require_executable "$exe"
+            wine_root_check
+            umask 077
+            mkdir -p -m 700 "$WINE_ROOT" || die "could not create the Wine data root"
+            chmod 700 "$WINE_ROOT" || die "could not protect the Wine data root"
+            app_dir="$WINE_ROOT/$id"
+            metadata="$app_dir/executable"
+            [ ! -L "$app_dir" ] || die "Wine app directory may not be a symbolic link"
+            if [ -e "$app_dir" ]; then
+                [ -d "$app_dir" ] || die "Wine app path is not a directory"
+                chmod 700 "$app_dir" || die "could not protect the Wine app directory"
+                [ ! -L "$app_dir/prefix" ] || die "Wine prefix may not be a symbolic link"
+                if [ -f "$metadata" ] && [ ! -L "$metadata" ]; then
+                    local existing
+                    existing="$(wine_registered_executable "$id")"
+                    [ "$existing" = "$exe" ] || die "Wine app '$id' is already registered to another executable"
+                    chmod 700 "$app_dir/prefix" || die "could not protect the Wine prefix"
+                    chmod 600 "$metadata" || die "could not protect Wine app metadata"
+                    echo "registered $id"
+                    return
+                fi
+                [ ! -e "$metadata" ] || die "Wine app metadata is not a regular file"
+            else
+                mkdir -m 700 "$app_dir" || die "could not create Wine app registration"
+            fi
+            [ -d "$app_dir/prefix" ] || mkdir -m 700 "$app_dir/prefix" || die "could not create the Wine prefix"
+            chmod 700 "$app_dir/prefix" || die "could not protect the Wine prefix"
+            tmp="$(mktemp "$app_dir/.executable.XXXXXX")" || die "could not create Wine app metadata"
+            if ! printf '%s\n' "$exe" > "$tmp" || ! mv -f "$tmp" "$metadata"; then
+                rm -f "$tmp"
+                die "could not save Wine app registration"
+            fi
+            echo "registered $id"
+            ;;
+        list)
+            wine_require_platform
+            [ "$#" -eq 0 ] || die "wine list takes no arguments"
+            wine_root_check
+            local app_dir id metadata prefix
+            for app_dir in "$WINE_ROOT"/*; do
+                [ -d "$app_dir" ] && [ ! -L "$app_dir" ] || continue
+                id="${app_dir##*/}"
+                valid_id "$id" || continue
+                metadata="$app_dir/executable"
+                prefix="$app_dir/prefix"
+                [ -f "$metadata" ] && [ ! -L "$metadata" ] && [ -d "$prefix" ] && [ ! -L "$prefix" ] || continue
+                printf '%s\n' "$id"
+            done
+            ;;
+        run)
+            wine_require_platform
+            [ "$#" -eq 1 ] || die "wine run takes one registered app id"
+            local id="$1"
+            wine_require_id "$id"
+            wine_root_check
+            wine_registered_executable "$id" >/dev/null
+            [ -x "$FINNCTL_BIN" ] || die "finnctl is not installed; Wine apps must be launched through finnd"
+            "$FINNCTL_BIN" wine.run "$id"
+            ;;
+        install)
+            wine_require_platform
+            [ "$#" -eq 2 ] || die "wine install takes an app id and an existing absolute .exe installer path"
+            local id="$1" exe="$2"
+            wine_require_id "$id"
+            wine_require_executable "$exe"
+            wine_root_check
+            [ -x "$FINNCTL_BIN" ] || die "finnctl is not installed; Wine apps must be launched through finnd"
+            cmd_wine register "$id" "$exe"
+            cmd_wine run "$id"
+            echo "Started Windows installer '$id' in its private Wine prefix."
+            echo "After setup, select the installed program with: finnpkg wine set $id /absolute/path/program.exe"
+            ;;
+        set)
+            wine_require_platform
+            [ "$#" -eq 2 ] || die "wine set takes a registered app id and an existing absolute .exe path"
+            local id="$1" exe="$2" app_dir metadata tmp
+            wine_require_id "$id"
+            wine_root_check
+            wine_registered_executable "$id" >/dev/null
+            wine_require_executable "$exe"
+            app_dir="$WINE_ROOT/$id"
+            metadata="$app_dir/executable"
+            tmp="$(mktemp "$app_dir/.executable.XXXXXX")" || die "could not create Wine app metadata"
+            if ! printf '%s\n' "$exe" > "$tmp" || ! mv -f "$tmp" "$metadata"; then
+                rm -f "$tmp"
+                die "could not update Wine app registration"
+            fi
+            echo "updated $id"
+            ;;
+        *) die "unknown wine action '$verb' (try 'finnpkg wine help')" ;;
+    esac
+}
+
+# ------------------------------------------------------------ Windows apps
+#
+# winget.run is a third-party index and its data can be stale. It is used for
+# discovery only: the version, installer URL and hash always come from the
+# official microsoft/winget-pkgs manifests, which is the same repository
+# winget itself reads. A search row therefore says installer_type=unknown.
+
+WINGET_VERSION_PATTERN='^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$'
+
+require_winget_id() {
+    local id="${1:-}"
+    [ -n "$id" ] && [ "${#id}" -le 128 ] && [[ "$id" =~ $WINGET_ID_PATTERN ]] || \
+        die "'$id' is not a winget package id: letters, digits, '.', '_' and '-', 128 characters at most"
+}
+
+info_field() {
+    local file="$1" key="$2"
+    awk -F'\t' -v k="$key" '$1 == k { sub(/^[^\t]*\t/, ""); print; exit }' "$file"
+}
+
+winget_state() {
+    local word="$1" job="${FINN_WINGET_JOB:-}"
+    case "$word" in running|complete|failed) ;; *) return 0 ;; esac
+    [ -n "$job" ] && [ "${#job}" -le 64 ] || return 0
+    [[ "$job" =~ ^finn-winget-[0-9]+-[0-9]+$ ]] || return 0
+    [ -d "$WINGET_STATE_DIR" ] || return 0
+    printf '%s\n' "$word" > "$WINGET_STATE_DIR/$job.state" 2>/dev/null || true
+}
+
+winget_search() {
+    local query="${1:-}"
+    [ -n "$query" ] || die "winget search needs something to search for"
+    [ "${#query}" -le 128 ] || die "winget search is limited to 128 bytes"
+    [[ "$query" != *[[:cntrl:]]* ]] || die "winget search contains a control character"
+    need_network_tools
+
+    local root dir key file tmp
+    root="$(winget_cache_root)"
+    dir="$root/search"
+    mkdir -p "$dir" || die "could not create the winget search cache"
+    key="$(sha256_text "$query")"
+    file="$dir/$key.tsv"
+    if cache_fresh "$file"; then
+        cat "$file"
+        return 0
+    fi
+
+    tmp="$(work_dir)/winget-search.json"
+    if ! curl_fetch "$WINGET_API" "$tmp" 4194304 --get \
+         --data-urlencode "query=$query" --data-urlencode "take=20"; then
+        die "the winget catalogue did not answer"
+    fi
+    jq -e '(.Packages? | type) == "array"' "$tmp" >/dev/null 2>&1 || \
+        die "the winget catalogue did not return a package list"
+
+    jq -r '.Packages[]? | [.Id, (.Latest.Name // ""), (.Versions[0] // ""), (.Latest.Publisher // ""), "unknown"] | @tsv' \
+        "$tmp" > "$file.$$" || die "could not read the winget catalogue"
+    mv -f "$file.$$" "$file" || { rm -f "$file.$$"; die "could not save the winget search cache"; }
+    cat "$file"
+}
+
+# A top-level scalar from a winget locale or version manifest. Winget uses
+# `Description: >-` for prose, so a block scalar is joined to one line.
+winget_yaml_value() {
+    local file="$1" key="$2"
+    awk -v key="$key" '
+        function clean(v) {
+            sub(/\r$/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+            return v
+        }
+        {
+            line = $0
+            if (index(line, key ":") == 1) {
+                v = clean(substr(line, length(key) + 2))
+                if (v == ">" || v == ">-" || v == "|" || v == "|-" || v == ">+" || v == "|+") {
+                    block = 1
+                    next
+                }
+                print v
+                exit
+            }
+            if (block) {
+                if (line ~ /^[^[:space:]]/) exit
+                v = clean(line)
+                if (v != "") out = (out == "" ? v : out " " v)
+            }
+        }
+        END { if (block && out != "") print out }
+    ' "$file"
+}
+
+# The installer manifest is a small YAML list. Only the keys that decide
+# what can be run are read: architecture, URL, hash, type and silent switch.
+# Nested lists (AppsAndFeaturesEntries) are ignored because they do not name
+# an installer.
+winget_installer_rows() {
+    awk '
+        function clean(v) {
+            sub(/\r$/, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+            return v
+        }
+        function keyval(line, key,    v) {
+            v = line
+            sub(/^[[:space:]]*-[[:space:]]*/, "", v)
+            sub("^" key ":[[:space:]]*", "", v)
+            return clean(v)
+        }
+        function flush() {
+            if (arch != "" || url != "" || sha != "" || type != "")
+                printf "%s\034%s\034%s\034%s\034%s\n", arch, type, url, sha, silent
+            arch = ""; type = ""; url = ""; sha = ""; silent = ""
+        }
+        {
+            line = $0
+            sub(/\r$/, "", line)
+            if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) next
+            match(line, /^[[:space:]]*/)
+            indent = RLENGTH
+            body = line
+            sub(/^[[:space:]]*/, "", body)
+            item = (body ~ /^- /)
+            key = body
+            sub(/^- /, "", key)
+            name = key
+            sub(/:.*/, "", name)
+
+            # A switch block is indented under its key, whether that key is
+            # top-level or belongs to one installer entry.
+            if (sw_indent >= 0 && indent > sw_indent) {
+                if (name == "Silent" || name == "SilentWithProgress") {
+                    v = keyval(key, name)
+                    if (sw_target == "top") {
+                        if (name == "Silent" || top_silent == "") top_silent = v
+                    } else {
+                        if (name == "Silent" || silent == "") silent = v
+                    }
+                    next
+                }
+            }
+            if (sw_indent >= 0 && indent <= sw_indent) sw_indent = -1
+
+            # `Installers:` may be a block sequence at the same indent as
+            # the key, which is valid YAML and what winget publishes.
+            if (in_installers) {
+                if (item && name ~ /^(Architecture|InstallerLocale|InstallerType|InstallerUrl|InstallerSha256|Scope|InstallerSwitches)$/) {
+                    flush()
+                    sw_indent = -1
+                }
+                if (name == "Architecture") { arch = keyval(key, "Architecture"); next }
+                if (name == "InstallerType") { type = keyval(key, "InstallerType"); next }
+                if (name == "InstallerUrl") { url = keyval(key, "InstallerUrl"); next }
+                if (name == "InstallerSha256") { sha = keyval(key, "InstallerSha256"); next }
+                if (name == "InstallerSwitches") {
+                    sw_indent = indent
+                    sw_target = "entry"
+                    next
+                }
+                next
+            }
+
+            if (indent == 0) {
+                if (name == "InstallerType") { top_type = keyval(key, "InstallerType"); next }
+                if (name == "InstallerUrl") { top_url = keyval(key, "InstallerUrl"); next }
+                if (name == "InstallerSha256") { top_sha = keyval(key, "InstallerSha256"); next }
+                if (name == "InstallerSwitches") { sw_indent = indent; sw_target = "top"; next }
+                if (name == "Installers") { in_installers = 1; next }
+                sw_indent = -1
+                next
+            }
+        }
+        END {
+            flush()
+            printf "TOP\034%s\034%s\034%s\034%s\n", top_type, top_silent, top_url, top_sha
+        }
+    ' "$1"
+}
+
+# x64 first, x86 second. A manifest with a single top-level installer is
+# reported as neutral rather than guessed to be x64.
+winget_pick_installer() {
+    local yaml="$1" rows top
+    local top_type="" top_silent="" top_url="" top_sha=""
+    local arch row r_arch r_type r_url r_sha r_silent
+    rows="$(winget_installer_rows "$yaml")" || die "could not read the installer manifest"
+    top="$(printf '%s\n' "$rows" | awk -F'\034' '$1 == "TOP" { print; exit }')"
+    IFS=$'\034' read -r _ top_type top_silent top_url top_sha <<< "$top"
+
+    for arch in x64 x86; do
+        row="$(printf '%s\n' "$rows" | awk -F'\034' -v a="$arch" '$1 == a { print; exit }')"
+        [ -n "$row" ] || continue
+        IFS=$'\034' read -r r_arch r_type r_url r_sha r_silent <<< "$row"
+        [ -n "$r_type" ] || r_type="$top_type"
+        [ -n "$r_silent" ] || r_silent="$top_silent"
+        printf '%s\034%s\034%s\034%s\034%s\n' \
+            "$r_arch" "$r_type" "$r_url" "$r_sha" "$r_silent"
+        return 0
+    done
+
+    if [ -n "$top_url" ] && [ -n "$top_sha" ]; then
+        printf 'neutral\034%s\034%s\034%s\034%s\n' \
+            "$top_type" "$top_url" "$top_sha" "$top_silent"
+        return 0
+    fi
+    return 1
+}
+
+# Resolve one package against the official manifests and emit a TSV of
+# key/value rows. `force` skips the ten-minute cache for an install, where a
+# stale URL would be worse than one extra request.
+winget_resolve_info() {
+    local id="$1" force="${2:-0}"
+    require_winget_id "$id"
+    need_network_tools
+
+    local root dir file
+    root="$(winget_cache_root)"
+    dir="$root/info"
+    mkdir -p "$dir" || die "could not create the winget info cache"
+    file="$dir/$id.tsv"
+    if [ "$force" != 1 ] && cache_fresh "$file"; then
+        cat "$file"
+        return 0
+    fi
+
+    local work contents version versions yaml locale locale_yaml
+    local first path msg
+    work="$(work_dir)"
+    contents="$work/contents.json"
+    first="$(printf '%s' "${id:0:1}" | tr '[:upper:]' '[:lower:]')"
+    # A package id's dots are manifest path separators. `tr` keeps this
+    # portable; a replacement expansion with an escaped slash is not.
+    path="$first/$(printf '%s' "$id" | tr '.' '/')"
+
+    if ! curl_fetch "$WINGET_CONTENTS_API/$path" "$contents" 4194304 \
+         -H 'Accept: application/vnd.github+json'; then
+        msg="$(jq -r '.message // empty' "$contents" 2>/dev/null || true)"
+        die "no winget manifest was found for '$id'${msg:+ ($msg)}"
+    fi
+    jq -e 'type == "array"' "$contents" >/dev/null 2>&1 || \
+        die "the winget manifest repository did not return a version list for '$id'"
+
+    # The package directory also contains sibling packages such as
+    # Mozilla.Firefox.zh-CN; only a version-like name can be the version.
+    versions="$(jq -r '.[]? | select(.type == "dir") | .name' "$contents" | grep -E '^[vV]?[0-9]' || true)"
+    if [ -z "$versions" ]; then
+        versions="$(jq -r '.[]? | select(.type == "dir") | .name' "$contents")"
+    fi
+    [ -n "$versions" ] || die "no winget manifest was found for '$id'"
+    version="$(printf '%s\n' "$versions" | sort -V | tail -n 1)"
+    [[ "$version" =~ $WINGET_VERSION_PATTERN ]] || \
+        die "the winget manifest version '$version' is not a version"
+
+    yaml="$work/installer.yaml"
+    if ! curl_fetch "$WINGET_MANIFEST_BASE/$path/$version/$id.installer.yaml" \
+         "$yaml" 2097152; then
+        die "the winget installer manifest for '$id' $version could not be read"
+    fi
+
+    local picked i_arch i_type i_url i_sha i_silent
+    picked="$(winget_pick_installer "$yaml")" || \
+        die "'$id' $version has no x64 or x86 installer"
+    IFS=$'\034' read -r i_arch i_type i_url i_sha i_silent <<< "$picked"
+    i_type="$(printf '%s' "$i_type" | tr '[:upper:]' '[:lower:]')"
+    case "$i_type" in
+        "")
+            die "the installer type for '$id' $version is not declared" ;;
+        msix|msixbundle|appx|appxbundle)
+            die "'$id' $version is a packaged $i_type application; it cannot be installed under Wine" ;;
+        nullsoft|inno|wix|msi|burn|exe|nsis|squirrel)
+            ;;
+        *)
+            die "the installer type '$i_type' for '$id' $version is not supported under Wine" ;;
+    esac
+    case "$i_url" in
+        https://?*) ;;
+        *) die "the installer URL for '$id' $version is not https" ;;
+    esac
+    [[ "$i_url" != *[[:space:][:cntrl:]]* ]] || \
+        die "the installer URL for '$id' $version contains whitespace"
+    [[ "$i_sha" =~ ^[0-9A-Fa-f]{64}$ ]] || \
+        die "the installer for '$id' $version has no valid SHA-256"
+    i_sha="$(printf '%s' "$i_sha" | tr 'A-F' 'a-f')"
+
+    local name="$id" publisher="unknown" description="" homepage=""
+    local default_locale="" locale_file=""
+    if curl_fetch "$WINGET_MANIFEST_BASE/$path/$version/$id.yaml" \
+         "$work/version.yaml" 1048576; then
+        default_locale="$(winget_yaml_value "$work/version.yaml" DefaultLocale)"
+    fi
+    if [ -n "$default_locale" ] && [[ "$default_locale" =~ ^[A-Za-z0-9-]{2,32}$ ]]; then
+        locale_file="$work/locale.yaml"
+        if curl_fetch "$WINGET_MANIFEST_BASE/$path/$version/$id.locale.$default_locale.yaml" \
+             "$locale_file" 2097152; then
+            name="$(winget_yaml_value "$locale_file" PackageName)"
+            publisher="$(winget_yaml_value "$locale_file" Publisher)"
+            homepage="$(winget_yaml_value "$locale_file" PackageUrl)"
+            description="$(winget_yaml_value "$locale_file" ShortDescription)"
+            if [ -z "$description" ]; then
+                description="$(winget_yaml_value "$locale_file" Description)"
+            fi
+        fi
+    fi
+    [ -n "$name" ] || name="$id"
+    [ -n "$publisher" ] || publisher="unknown"
+
+    local out="$work/info.tsv"
+    {
+        printf 'id\t%s\n' "$(one_line "$id")"
+        printf 'name\t%s\n' "$(one_line "$name")"
+        printf 'version\t%s\n' "$(one_line "$version")"
+        printf 'publisher\t%s\n' "$(one_line "$publisher")"
+        printf 'description\t%s\n' "$(clip_text "$description" 1000)"
+        printf 'homepage\t%s\n' "$(one_line "$homepage")"
+        printf 'installer_type\t%s\n' "$i_type"
+        printf 'installer_url\t%s\n' "$i_url"
+        printf 'installer_sha256\t%s\n' "$i_sha"
+        printf 'installer_arch\t%s\n' "$i_arch"
+        printf 'size\tunknown\n'
+        printf 'silent\t%s\n' "$(one_line "$i_silent")"
+    } > "$out" || die "could not build the winget info"
+    mv -f "$out" "$file" || die "could not save the winget info cache"
+    cat "$file"
+}
+
+cmd_winget_info() {
+    local id="${1:-}"
+    [ "$#" -eq 1 ] || die "winget info takes one package id"
+    require_winget_id "$id"
+    local data
+    data="$(winget_resolve_info "$id" 0)" || exit 1
+    printf '%s\n' "$data" | awk -F'\t' '
+        $1 == "id" || $1 == "name" || $1 == "version" || $1 == "publisher" ||
+        $1 == "description" || $1 == "homepage" || $1 == "installer_type" ||
+        $1 == "installer_url" || $1 == "installer_sha256" ||
+        $1 == "installer_arch" || $1 == "size" { print }
+    '
+}
+
+cmd_winget_install() {
+    local id="${1:-}"
+    [ "$#" -eq 1 ] || die "winget install takes one package id"
+    require_winget_id "$id"
+    need_network_tools
+    wine_require_runtime
+    wine_root_check
+
+    local work info_file
+    work="$(work_dir)"
+    info_file="$work/install-info.tsv"
+    winget_resolve_info "$id" 1 > "$info_file" || die "could not resolve '$id'"
+
+    local version i_type url sha arch silent
+    version="$(info_field "$info_file" version)"
+    i_type="$(info_field "$info_file" installer_type)"
+    url="$(info_field "$info_file" installer_url)"
+    sha="$(info_field "$info_file" installer_sha256)"
+    arch="$(info_field "$info_file" installer_arch)"
+    silent="$(info_field "$info_file" silent)"
+
+    [[ "$version" =~ $WINGET_VERSION_PATTERN ]] || die "'$id' has no valid version"
+    case "$i_type" in
+        msix|msixbundle|appx|appxbundle)
+            die "'$id' $version is a packaged $i_type application; it cannot be installed under Wine" ;;
+        nullsoft|inno|wix|msi|burn|exe|nsis|squirrel) ;;
+        *) die "the installer type '$i_type' for '$id' is not supported under Wine" ;;
+    esac
+    case "$url" in
+        https://?*) ;;
+        *) die "'$id' $version has no https installer URL" ;;
+    esac
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "'$id' $version has no valid SHA-256"
+
+    local base cache file part size got
+    base="${url%%\?*}"
+    base="${base%%#*}"
+    base="${base##*/}"
+    case "$base" in
+        ""|.|..|*[[:space:][:cntrl:]]*)
+            die "the installer file name for '$id' is not usable" ;;
+        *.exe|*.EXE|*.msi|*.MSI) ;;
+        *) die "the installer for '$id' is not a .exe or .msi" ;;
+    esac
+
+    cache="$(winget_cache_root)/$id/$version"
+    (umask 077; mkdir -p "$cache") || die "could not create the installer cache"
+    file="$cache/$base"
+
+    JOB_FAIL_HOOK=winget
+    JOB_ACTIVE=1
+    winget_state running
+
+    if [ -f "$file" ] && [ "$(sha256_file "$file")" = "$sha" ]; then
+        :
+    else
+        part="$file.part"
+        rm -f "$part"
+        if ! curl_fetch "$url" "$part" "$WINGET_MAX_INSTALLER"; then
+            rm -f "$part"
+            die "the installer for '$id' $version could not be downloaded"
+        fi
+        size="$(file_size "$part")"
+        if [ "$size" -gt "$WINGET_MAX_INSTALLER" ]; then
+            rm -f "$part"
+            die "the installer for '$id' is larger than 2 GiB"
+        fi
+        got="$(sha256_file "$part")"
+        if [ "$got" != "$sha" ]; then
+            rm -f "$part"
+            die "the installer for '$id' $version failed its SHA-256 check"
+        fi
+        mv -f "$part" "$file" || die "could not save the installer for '$id'"
+    fi
+
+    umask 077
+    mkdir -p "$WINE_ROOT" || die "could not create the Wine data root"
+    chmod 700 "$WINE_ROOT" || die "could not protect the Wine data root"
+    [ ! -L "$WINE_ROOT/$id" ] || die "the Wine app directory may not be a symbolic link"
+    local prefix="$WINE_ROOT/$id/prefix"
+    mkdir -p "$prefix" || die "could not create the private Wine prefix"
+    chmod 700 "$prefix" || die "could not protect the private Wine prefix"
+
+    local -a cmd=()
+    [ -n "$WINE_WRAPPER" ] && cmd+=("$WINE_WRAPPER")
+    cmd+=("$WINE_BINARY")
+    case "$i_type:$base" in
+        msi:*|*:*.msi|*:*.MSI) cmd+=(msiexec /i "$file") ;;
+        *) cmd+=("$file") ;;
+    esac
+    if [ -n "$silent" ]; then
+        local -a silent_args=()
+        read -r -a silent_args <<< "$silent"
+        cmd+=("${silent_args[@]}")
+    fi
+
+    # Wine needs a display for a visible installer. XWayland is not part of
+    # this image, so a real X socket is used only when one exists; otherwise
+    # the environment is left alone and a visible installer may fail, which
+    # is reported rather than hidden.
+    if [ -z "${DISPLAY:-}" ] && [ -S /tmp/.X11-unix/X0 ]; then
+        export DISPLAY=:0
+    fi
+
+    if ! ( export WINEPREFIX="$prefix"; "${cmd[@]}" ); then
+        die "the installer for '$id' $version exited unsuccessfully"
+    fi
+
+    JOB_ACTIVE=0
+    winget_state complete
+    printf 'installer exited for %s %s\n' "$id" "$version"
+    printf 'the app is not registered until it appears in: finnpkg wine list\n'
+}
+
+cmd_winget() {
+    local verb="${1:-}"
+    [ -n "$verb" ] || die "winget needs search, info or install"
+    shift
+    case "$verb" in
+        search)
+            [ "$#" -eq 1 ] || die "winget search takes one search term"
+            winget_search "$1"
+            ;;
+        info)
+            cmd_winget_info "$@"
+            ;;
+        install)
+            cmd_winget_install "$@"
+            ;;
+        *)
+            die "unknown winget action '$verb' (try 'finnpkg help')"
+            ;;
+    esac
+}
+# ------------------------------------------------------------------- OTA
+#
+# The runtime package is the one package this path owns. Arch base packages
+# are not updated here, and the UI says so; the release artifact and its
+# checksum are the whole contract with GitHub.
+
+ota_arch() {
+    local arch="${FINN_OTA_ARCH:-$(uname -m)}"
+    case "$arch" in
+        amd64) arch=x86_64 ;;
+        arm64) arch=aarch64 ;;
+    esac
+    printf '%s\n' "$arch"
+}
+
+ota_version_valid() {
+    [[ "${1:-}" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]
+}
+
+ota_current_version() {
+    local v=""
+    if command -v pacman >/dev/null 2>&1; then
+        v="$(pacman -Q "$OTA_PACKAGE" 2>/dev/null | awk 'NR == 1 { print $2 }')"
+    fi
+    if [ -z "$v" ] && [ -r /usr/share/finn/version ]; then
+        v="$(head -n 1 /usr/share/finn/version 2>/dev/null | tr -d '[:space:]')"
+    fi
+    case "$v" in
+        ""|*[!0-9A-Za-z._+-]*) printf 'unknown\n' ;;
+        *) printf '%s\n' "$v" ;;
+    esac
+}
+
+ota_state_set() {
+    local word="$1" dir tmp
+    case "$word" in
+        idle|downloading|downloaded|installing|complete|rolling-back|failed) ;;
+        *) return 1 ;;
+    esac
+    dir="$(ota_state_root)"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    tmp="$dir/.state.$$"
+    if printf 'state=%s\n' "$word" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$dir/state" 2>/dev/null || rm -f "$tmp"
+    fi
+}
+
+ota_write_check() {
+    local current="$1" latest="$2" available="$3" url="$4" sha="$5"
+    local notes="$6" error="$7" checked="$8"
+    write_kv_file "$(ota_state_root)/check" \
+        "current=$(one_line "$current")" \
+        "latest=$(one_line "$latest")" \
+        "available=$(one_line "$available")" \
+        "url=$(one_line "$url")" \
+        "sha256=$(one_line "$sha")" \
+        "notes=$(clean_text "$notes")" \
+        "error=$(clean_text "$error")" \
+        "checked=$(one_line "$checked")"
+}
+
+ota_emit_check() {
+    local current="$1" latest="$2" available="$3" url="$4" sha="$5"
+    local notes="$6" error="$7"
+    ota_write_check "$current" "$latest" "$available" "$url" "$sha" \
+        "$notes" "$error" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'current=%s\nlatest=%s\navailable=%s\nurl=%s\nsha256=%s\nnotes=%s\nerror=%s\n' \
+        "$(one_line "$current")" "$(one_line "$latest")" \
+        "$(one_line "$available")" "$(one_line "$url")" \
+        "$(one_line "$sha")" "$(clean_text "$notes")" "$(clean_text "$error")"
+}
+
+# A check that could not resolve a release is still a successful check: the
+# answer is "there is nothing to install", with the reason in error=.
+ota_fail_check() {
+    local current latest error
+    current="$(ota_current_version)"
+    latest="${1:-unknown}"
+    error="$(clean_text "${2:-the update check failed}")"
+    ota_emit_check "$current" "$latest" -1 "" "" "" "$error"
+    exit 0
+}
+
+ota_need_root() {
+    [ "$(id -u)" = 0 ] || \
+        die "this needs root: the runtime package is installed system-wide"
+}
+
+ota_previous_package() {
+    local version="$1" arch="$2" name candidate
+    name="$OTA_PACKAGE-$version-$arch.pkg.tar.zst"
+    for candidate in "$(ota_cache_root)/$version/$name" "/var/cache/pacman/pkg/$name"; do
+        if [ -f "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# A restart that waits two seconds gives this job time to write its state
+# and the control plane time to send the reply before its own unit changes.
+ota_schedule_restart() {
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        echo "finnpkg: installed, but systemd-run is missing; restart finn-comp and finnd" >&2
+        return 0
+    fi
+    if ! systemd-run --quiet --collect --on-active=2 \
+         --unit="finn-ota-restart-$$" /usr/bin/systemctl restart finn-comp finnd; then
+        echo "finnpkg: installed, but the restart could not be scheduled; restart finn-comp and finnd" >&2
+    fi
+}
+
+cmd_update_status() {
+    local state_dir check current latest available state last
+    local downloaded rollback previous notes error dl_version dl_file prev_pkg
+    state_dir="$(ota_state_root)"
+    check="$state_dir/check"
+    current="$(ota_current_version)"
+
+    latest="$(kv_get "$check" latest || true)"
+    [ -n "$latest" ] || latest="unknown"
+    available="$(kv_get "$check" available || true)"
+    case "$available" in
+        -1|0|1) ;;
+        *) available=-1 ;;
+    esac
+    state="$(kv_get "$state_dir/state" state || true)"
+    case "$state" in
+        downloading|downloaded|installing|complete|rolling-back|failed) ;;
+        *) state=idle ;;
+    esac
+    last="$(kv_get "$check" checked || true)"
+    [ -n "$last" ] || last="never"
+
+    downloaded=0
+    dl_version="$(kv_get "$state_dir/download" version || true)"
+    dl_file="$(kv_get "$state_dir/download" file || true)"
+    if [ -n "$dl_version" ] && [ "$dl_version" = "$latest" ] && \
+       [ -n "$dl_file" ] && [ -f "$dl_file" ]; then
+        downloaded=1
+    fi
+
+    rollback=0
+    previous=""
+    prev_pkg="$(kv_get "$state_dir/previous" package || true)"
+    if [ -n "$prev_pkg" ] && [ -f "$prev_pkg" ] && \
+       [ "$(kv_get "$state_dir/previous" sha256 || true)" != "" ]; then
+        rollback=1
+        previous="$(kv_get "$state_dir/previous" version || true)"
+    fi
+
+    notes="$(kv_get "$check" notes || true)"
+    error="$(kv_get "$check" error || true)"
+    printf 'current=%s latest=%s available=%s state=%s last_check=%s downloaded=%s rollback=%s previous=%s notes=%s error=%s\n' \
+        "$(one_line "$current")" "$(one_line "$latest")" \
+        "$(one_line "$available")" "$(one_line "$state")" \
+        "$(one_line "$last")" "$downloaded" "$rollback" \
+        "$(one_line "$previous")" "$(clean_text "$notes")" "$(clean_text "$error")"
+}
+
+cmd_update_check() {
+    need_network_tools
+    local work json tag latest body arch artifact url sha_asset sha_file
+    local digest named current notes msg
+    work="$(work_dir)"
+    json="$work/release.json"
+    current="$(ota_current_version)"
+    arch="$(ota_arch)"
+
+    if ! curl_fetch "$OTA_RELEASE_API" "$json" 2097152 \
+         -H 'Accept: application/vnd.github+json' \
+         -H 'X-GitHub-Api-Version: 2022-11-28'; then
+        msg="$(jq -r '.message // empty' "$json" 2>/dev/null || true)"
+        [ -n "$msg" ] || msg="the release feed did not answer"
+        ota_fail_check unknown "$msg"
+    fi
+
+    tag="$(jq -r '.tag_name // empty' "$json" 2>/dev/null || true)"
+    [ -n "$tag" ] || ota_fail_check unknown "the release feed has no release"
+    latest="${tag#v}"
+    latest="${latest#V}"
+    ota_version_valid "$latest" || \
+        ota_fail_check unknown "the release tag '$tag' is not a version"
+
+    body="$(jq -r '.body // ""' "$json" 2>/dev/null || true)"
+    artifact="$OTA_PACKAGE-$latest-$arch.pkg.tar.zst"
+    url="$(jq -r --arg n "$artifact" '.assets[]? | select(.name == $n) | .browser_download_url // empty' "$json" | head -n 1)"
+    sha_asset="$(jq -r --arg n "$artifact.sha256" '.assets[]? | select(.name == $n) | .browser_download_url // empty' "$json" | head -n 1)"
+    if [ -z "$url" ] || [ -z "$sha_asset" ]; then
+        ota_fail_check "$latest" "release $latest has no $artifact and $artifact.sha256 for $arch"
+    fi
+    case "$url" in
+        https://?*) ;;
+        *) ota_fail_check "$latest" "the release asset URL is not https" ;;
+    esac
+    case "$sha_asset" in
+        https://?*) ;;
+        *) ota_fail_check "$latest" "the release checksum URL is not https" ;;
+    esac
+    case "$url" in
+        *"/$artifact"|*"/$artifact?"*) ;;
+        *) ota_fail_check "$latest" "the release asset URL is not $artifact" ;;
+    esac
+    case "$sha_asset" in
+        *"/$artifact.sha256"|*"/$artifact.sha256?"*) ;;
+        *) ota_fail_check "$latest" "the release checksum URL is not $artifact.sha256" ;;
+    esac
+    [[ "$url$sha_asset" != *[[:space:][:cntrl:]]* ]] || \
+        ota_fail_check "$latest" "the release asset URL contains whitespace"
+
+    sha_file="$work/asset.sha256"
+    if ! curl_fetch "$sha_asset" "$sha_file" 4096; then
+        ota_fail_check "$latest" "the release checksum could not be downloaded"
+    fi
+    digest="$(awk 'NR == 1 { print $1 }' "$sha_file")"
+    named="$(awk 'NR == 1 { print $2 }' "$sha_file")"
+    if ! [[ "$digest" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+        digest="$(awk 'NR == 1 { print $NF }' "$sha_file")"
+    fi
+    [[ "$digest" =~ ^[0-9A-Fa-f]{64}$ ]] || \
+        ota_fail_check "$latest" "the release checksum is not a SHA-256"
+    digest="$(printf '%s' "$digest" | tr 'A-F' 'a-f')"
+    named="${named#\*}"
+    if [ -n "$named" ] && [ "$(basename "$named")" != "$artifact" ]; then
+        ota_fail_check "$latest" "the release checksum names a different file"
+    fi
+
+    notes="$(clip_text "$body" 500)"
+    if [ "$current" = "unknown" ]; then
+        ota_emit_check "$current" "$latest" -1 "$url" "$digest" "$notes" \
+            "the installed runtime version is unknown"
+    elif [ "$current" = "$latest" ]; then
+        ota_emit_check "$current" "$latest" 0 "$url" "$digest" "$notes" ""
+    else
+        ota_emit_check "$current" "$latest" 1 "$url" "$digest" "$notes" ""
+    fi
+}
+
+cmd_update_download() {
+    ota_need_root
+    need_network_tools
+    local state_dir check latest available url sha arch artifact
+    local dir file part size got base
+    state_dir="$(ota_state_root)"
+    check="$state_dir/check"
+    latest="$(kv_get "$check" latest || true)"
+    available="$(kv_get "$check" available || true)"
+    url="$(kv_get "$check" url || true)"
+    sha="$(kv_get "$check" sha256 || true)"
+
+    [ "$available" = 1 ] || \
+        die "there is no checked update to download; run 'finnpkg update check' first"
+    ota_version_valid "$latest" || die "the checked update has no valid version"
+    case "$url" in
+        https://?*) ;;
+        *) die "the checked update has no https installer URL" ;;
+    esac
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || die "the checked update has no valid SHA-256"
+
+    arch="$(ota_arch)"
+    artifact="$OTA_PACKAGE-$latest-$arch.pkg.tar.zst"
+    base="${url%%\?*}"
+    base="${base%%#*}"
+    base="${base##*/}"
+    [ "$base" = "$artifact" ] || die "the checked URL is not $artifact"
+
+    dir="$(ota_cache_root)/$latest"
+    mkdir -p "$dir" || die "could not create the runtime cache"
+    file="$dir/$artifact"
+
+    JOB_FAIL_HOOK=ota
+    JOB_ACTIVE=1
+    ota_state_set downloading
+
+    if [ -f "$file" ] && [ "$(sha256_file "$file")" = "$sha" ]; then
+        :
+    else
+        part="$file.part"
+        rm -f "$part"
+        if ! curl_fetch "$url" "$part" "$OTA_MAX_BYTES"; then
+            rm -f "$part"
+            die "the runtime package could not be downloaded"
+        fi
+        size="$(file_size "$part")"
+        if [ "$size" -gt "$OTA_MAX_BYTES" ]; then
+            rm -f "$part"
+            die "the runtime package is larger than 2 GiB"
+        fi
+        got="$(sha256_file "$part")"
+        if [ "$got" != "$sha" ]; then
+            rm -f "$part"
+            die "the runtime package failed its SHA-256 check"
+        fi
+        mv -f "$part" "$file" || die "could not save the runtime package"
+    fi
+
+    write_kv_file "$state_dir/download" \
+        "version=$latest" "file=$file" "sha256=$sha" "url=$url"
+    JOB_ACTIVE=0
+    ota_state_set downloaded
+    printf 'downloaded %s to %s\n' "$latest" "$file"
+}
+
+cmd_update_install() {
+    ota_need_root
+    need_tool pacman "pacman is not installed"
+    local state_dir version file sha arch current prev_pkg prev_sha
+    state_dir="$(ota_state_root)"
+    version="$(kv_get "$state_dir/download" version || true)"
+    file="$(kv_get "$state_dir/download" file || true)"
+    sha="$(kv_get "$state_dir/download" sha256 || true)"
+
+    [ -n "$version" ] && [ -n "$file" ] || \
+        die "no runtime package is downloaded; run 'finnpkg update download' first"
+    ota_version_valid "$version" || die "the downloaded runtime package has no valid version"
+    [ -f "$file" ] && [ ! -L "$file" ] || \
+        die "the downloaded runtime package is missing: $file"
+    case "$file" in
+        "$(ota_cache_root)"/*) ;;
+        *) die "the downloaded runtime package is outside the OTA cache" ;;
+    esac
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || \
+        die "the downloaded runtime package has no recorded SHA-256"
+    [ "$(sha256_file "$file")" = "$sha" ] || \
+        die "the downloaded runtime package failed its SHA-256 check"
+
+    arch="$(ota_arch)"
+    current="$(ota_current_version)"
+    JOB_FAIL_HOOK=ota
+    JOB_ACTIVE=1
+    ota_state_set installing
+
+    if [ "$current" != "unknown" ] && [ "$current" != "$version" ]; then
+        prev_pkg="$(ota_previous_package "$current" "$arch" || true)"
+        prev_sha=""
+        if [ -n "$prev_pkg" ]; then
+            prev_sha="$(sha256_file "$prev_pkg")"
+        fi
+        write_kv_file "$state_dir/previous" \
+            "version=$current" "package=$prev_pkg" "sha256=$prev_sha"
+    fi
+
+    pacman -U --noconfirm --overwrite '*' "$file" || \
+        die "pacman could not install $OTA_PACKAGE $version"
+    JOB_ACTIVE=0
+    ota_state_set complete
+    ota_schedule_restart
+    printf 'installed %s %s\n' "$OTA_PACKAGE" "$version"
+    printf 'the previous runtime is kept for rollback only when its package is cached\n'
+}
+
+cmd_update_rollback() {
+    ota_need_root
+    need_tool pacman "pacman is not installed"
+    local state_dir version file sha
+    state_dir="$(ota_state_root)"
+    version="$(kv_get "$state_dir/previous" version || true)"
+    file="$(kv_get "$state_dir/previous" package || true)"
+    sha="$(kv_get "$state_dir/previous" sha256 || true)"
+
+    [ -n "$version" ] && [ -n "$file" ] && [ -n "$sha" ] || \
+        die "no previous runtime package is recorded; rollback is not available"
+    ota_version_valid "$version" || die "the previous runtime version is not valid"
+    [ -f "$file" ] && [ ! -L "$file" ] || \
+        die "the previous runtime package is no longer cached; rollback is not available"
+    case "$file" in
+        "$(ota_cache_root)"/*|/var/cache/pacman/pkg/*) ;;
+        *) die "the previous runtime package is outside a package cache" ;;
+    esac
+    [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || \
+        die "the previous runtime package has no recorded SHA-256; rollback is not available"
+    [ "$(sha256_file "$file")" = "$sha" ] || \
+        die "the previous runtime package failed its SHA-256 check"
+
+    JOB_FAIL_HOOK=ota
+    JOB_ACTIVE=1
+    ota_state_set rolling-back
+
+    pacman -U --noconfirm --overwrite '*' "$file" || \
+        die "pacman could not restore $OTA_PACKAGE $version"
+    JOB_ACTIVE=0
+    ota_state_set complete
+    ota_schedule_restart
+    printf 'rolled back to %s %s\n' "$OTA_PACKAGE" "$version"
+}
+
 cmd_update() {
-    # The OTA frontend is a stub: the A/B slots are a design, not a
-    # feature. It never fetches a model, and it never runs a network call
-    # on its own.
-    echo "finnpkg: system updates are not available in this build"
-    echo "finnpkg: no AI is installed, and none is fetched"
+    local verb="${1:-}"
+    case "$verb" in
+        "")
+            echo "finnpkg: system updates are not available as a background service; the runtime OTA runs only when asked"
+            echo "finnpkg: use 'finnpkg update status|check|download|install|rollback'"
+            echo "finnpkg: no AI is installed, and none is fetched"
+            ;;
+        status)
+            [ "$#" -eq 1 ] || die "update status takes no arguments"
+            cmd_update_status
+            ;;
+        check)
+            [ "$#" -eq 1 ] || die "update check takes no arguments"
+            cmd_update_check
+            ;;
+        download)
+            [ "$#" -eq 1 ] || die "update download takes no arguments"
+            cmd_update_download
+            ;;
+        install)
+            [ "$#" -eq 1 ] || die "update install takes no arguments"
+            cmd_update_install
+            ;;
+        rollback)
+            [ "$#" -eq 1 ] || die "update rollback takes no arguments"
+            cmd_update_rollback
+            ;;
+        *)
+            die "unknown update action '$verb' (try 'finnpkg update status')"
+            ;;
+    esac
 }
 
 case "${1:-}" in
     list)    shift; cmd_list "$@" ;;
     search)  shift; cmd_search "$@" ;;
     info)    shift; cmd_info "$@" ;;
+    flatpak) shift; cmd_flatpak "$@" ;;
+    wine)    shift; cmd_wine "$@" ;;
     install) shift; cmd_install "$@" ;;
     remove)  shift; cmd_remove "$@" ;;
     update)  shift; cmd_update "$@" ;;
