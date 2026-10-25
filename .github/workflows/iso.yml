@@ -152,7 +152,12 @@ jobs:
                    etc/systemd/system/finnd.service \
                    usr/lib/tmpfiles.d/finn.conf \
                    usr/local/bin/finn-install; do
-            cmp "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f"
+            if ! cmp "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f"; then
+              echo "drift in $f: live root vs tree" >&2
+              ls -la "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f" >&2
+              diff -u "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f" | head -20 >&2 || true
+              exit 1
+            fi
           done
           test "$(cat /tmp/live/etc/hostname)" = finnos
       - name: the menus say FinnOS
