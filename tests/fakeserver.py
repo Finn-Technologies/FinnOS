@@ -169,7 +169,7 @@ def default_handler(request, server):
                 name = part.split("=", 1)[1]
             elif "=" not in part:
                 name = part
-        if name in ("wifi", "bluetooth", "display", "sound", "power", "about"):
+        if name in ("wifi", "bluetooth", "display", "sound", "power", "about", "update"):
             server.settings_page = name
             return "OK"
         return "ERR no such page"

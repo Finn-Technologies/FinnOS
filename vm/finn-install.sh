@@ -23,7 +23,7 @@
 # server, which is how the old workflow worked.
 set -euo pipefail
 
-HOST=http://192.168.44.1:8765
+HOST="${FINN_HOST_URL:-http://192.168.44.1:8765}"
 ISO_MNT=/finnos-iso
 LOG=/tmp/finn-install.log
 SRC=""

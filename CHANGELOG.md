@@ -31,6 +31,12 @@ and the changes to it are worth reading.
 - The compositor's shared palette now follows the checked-in light/dark tokens, including the active tile and dark accent values.
 - Frosted panel and tile passes now match the theme's 0.65 panel weight and 0.85 effective tile density; a regression test checks both the values and the compounding math.
 - Figma's Window and Home effects are now measured and rendered: a black 3% shadow at (0, 4), blur 100, plus the 15-unit backdrop blur. Home's material now matches its measured 65% fill instead of 84%; the shadow remains scoped to those surfaces, not treated as a global elevation token.
+### Multi-catalog App Store registry
+
+- **Flatpak and Windows catalogue entries.** The registry carries entries
+  whose `source` is `flatpak` or `winget`, including x86_64 and ARM64
+  Flatpak entries; the Store's Linux and Windows pages render them, with
+  live install state from the control plane.
 
 ### Finn Store, and a package manager with one owner
 
@@ -80,6 +86,16 @@ and the changes to it are worth reading.
   test verifies shell metacharacters remain inert, while preserving the
   transient, user-owned systemd unit.
 
+
+### Finn Store, Microsoft-Store-style redesign
+
+- **Nav rail, Home, Apps and Library.** The Store now opens on a navigation
+  rail with Home, Apps and Library destinations, matching the shape a
+  person already knows from the Microsoft Store, while keeping FinnOS
+  material, type and colour.
+- **Detail page and icons.** Selecting a catalogue entry opens a full
+  product page; app icons are loaded from the shared icon set so the
+  Store shows the same glyphs as the Start Menu.
 
 ### Finn Files, reading the machine as the person at it
 

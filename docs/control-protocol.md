@@ -346,6 +346,15 @@ only — there is no locale or keymap consumer yet.
 client                     finnd                      finn-comp
   |  state.get                |                           |
   |-------------------------->|  (answered here)          |
+### System update
+
+| Verb | Reply | What it does |
+|---|---|---|
+| `ota.status` | `OK ota.status ...` | Runtime OTA state from finnpkg, never blocks |
+| `ota.check` | release lookup reply | One bounded GitHub release lookup |
+| `ota.download`, `ota.install`, `ota.rollback` | `OK ota.<action> job=<id>` | Queue a systemd OTA job |
+| `ota.job <id>` | job state | Poll a queued OTA job |
+
   |  OK battery=87 ...        |                           |
   |<--------------------------|                           |
   |  screen.capture           |                           |

@@ -108,6 +108,13 @@ service the user turns on, with weights fetched on demand through
 `finnpkg`, and it will talk to the system only through the control plane —
 the same door every other client uses.
 
+
+### Multi-catalog scaffolding (Store)
+
+The Store now carries Flatpak and Windows tabs in addition to Home, Apps and
+Library. Each reads catalogue entries filtered by a new  field
+( / ); a registry without that field yields "No packages".
+
 ## Later
 
 - **The other targets.** Mobile, MobileXL and TV are specified in

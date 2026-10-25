@@ -5,17 +5,19 @@
 # is on this machine. That belongs to the package manager, which keeps its
 # own list in /var/lib/finnpkg/installed.
 #
-# Format: id | Name | icon | command | note
+# Format: id | Name | icon | command | note | source
 #
 #   id       the name the rest of the system uses
 #   Name     what the user sees
 #   icon     an SVG in /usr/share/finn/icons
 #   command  what to run when the app is launched
 #   note     free text, shown as the app's detail line
-#
-# The first-party apps are the ones NAMING.md reserves the family name for.
-# The names are the brand and a plain English noun: Finn Window.
+#   source   catalogue origin: (empty) native, flatpak, winget
 
 settings | Settings | settings-app.svg | /usr/local/bin/finn-settings | Settings
 files | Finn Files | files.svg | /usr/local/bin/finn-files | File manager
 store | Finn Store | store.svg | /usr/local/bin/finn-store | Applications
+browser | Finn Browser | browser.svg | /usr/local/bin/finn-browser | Web pages as text
+flatpak-gimp-x86_64 | GIMP | app-grid.svg |  | Image editor (Flatpak, x86_64) | flatpak
+flatpak-inkscape-arm64 | Inkscape | app-grid.svg |  | Vector editor (Flatpak, ARM64) | flatpak
+winget-notepadpp | Notepad++ | app-grid.svg |  | Text editor (Wine/winget) | winget

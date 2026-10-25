@@ -37,6 +37,7 @@ typedef struct {
     char icon[32];
     char command[128];
     char note[64];
+    char source[16];
     int  installed;      /* 1 when the package manager has it on this machine */
 } finn_app;
 

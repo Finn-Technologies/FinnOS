@@ -89,6 +89,12 @@ UBSan. The compositor itself is still tested by looking at it — there is
 no client surface to assert a frame against, so a visual change needs a
 capture.
 
+## Real hardware
+
+For running on an x86_64 PC instead of the VM — a Dell OptiPlex in
+particular — see `docs/dell-optiplex.md`. The same ISO and installer are
+used; the only differences are Secure Boot (off) and the disk name.
+
 ## Style
 
 The C is written in the house style of the existing sources, and those

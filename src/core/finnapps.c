@@ -70,8 +70,8 @@ int finn_apps_load(const char *catalogue, const char *installed) {
         char *p = trim(line);
         if (!*p || *p == '#') continue;
 
-        char *fld[5];
-        int n = split(p, fld, 5);
+        char *fld[6];
+        int n = split(p, fld, 6);
         if (n < 3) continue;                     /* id, name and icon at least */
         if (!*fld[0]) continue;
 
@@ -82,6 +82,7 @@ int finn_apps_load(const char *catalogue, const char *installed) {
         copy_field(a->icon, sizeof a->icon, n > 2 ? fld[2] : "");
         copy_field(a->command, sizeof a->command, n > 3 ? fld[3] : "");
         copy_field(a->note, sizeof a->note, n > 4 ? fld[4] : "");
+        copy_field(a->source, sizeof a->source, n > 5 ? fld[5] : "");
         a->installed = 0;
     }
     fclose(f);
