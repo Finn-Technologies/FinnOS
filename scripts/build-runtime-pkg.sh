@@ -62,6 +62,13 @@ tar -C "$ROOT" -cf - \
     --exclude='src/tools/dockprev' \
     . | tar -C "$BUILD" -xf -
 
+# makepkg builds from its srcdir, not from the directory the PKGBUILD sits
+# in, so the tree goes in as a tarball and is extracted there. A PKGBUILD
+# with no source array leaves an empty srcdir and the build cds into
+# nothing, which is exactly how the first release job failed.
+tar -C "$WORK" -czf "$WORK/finnos-runtime.tar.gz" finnos-runtime
+mv "$WORK/finnos-runtime.tar.gz" "$BUILD/finnos-runtime.tar.gz"
+
 cat > "$BUILD/PKGBUILD" <<EOF
 pkgname=finnos-runtime
 pkgver=$VERSION
@@ -70,6 +77,8 @@ pkgdesc="The FinnOS shell, control plane and package manager"
 arch=('$ARCH')
 url="https://github.com/Finn-Technologies/FinnOS"
 license=('MIT')
+source=('finnos-runtime.tar.gz')
+sha256sums=('SKIP')
 depends=('glibc' 'freetype2' 'fontconfig' 'libwebp' 'libdrm' 'libinput'
          'mesa' 'libglvnd' 'wayland' 'libxkbcommon' 'alsa-lib'
          'curl' 'jq' 'zstd')

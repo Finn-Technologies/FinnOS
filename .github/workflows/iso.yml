@@ -63,18 +63,20 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             xorriso squashfs-tools mtools qemu-system-x86 ovmf
       - name: build the ISO natively in Arch
-        # A GitHub runner is not an Arch machine, so mkarchiso runs in a
-        # privileged Arch container: the profile, the package list, the
-        # live root and the boot menus all come from base/ in this tree.
-        # No base image is downloaded; the disc is FinnOS throughout.
+        # A GitHub runner is not an Arch machine, so the build runs in a
+        # privileged Arch container. base/mkfinniso is the one way to write
+        # the disc: it stages the profile (syslinux, efiboot, ISO-only
+        # packages) from base/ in this tree and runs mkarchiso itself, so
+        # CI builds exactly what a developer builds. No base image is
+        # downloaded; the disc is FinnOS throughout.
         run: |
           mkdir -p out
           docker run --privileged --rm \
             -v "$PWD:/build" -w /build archlinux:latest \
             bash -c 'pacman-key --init && pacman-key --populate && \
               pacman -Sy --noconfirm archiso && \
-              mkarchiso -v -w /tmp/archiso -o /build/out /build/base'
-          mv out/finnos-*.iso finnos.iso
+              ./base/mkfinniso /build/out/finnos.iso'
+          mv out/finnos.iso finnos.iso
       - name: the disc is bootable
         run: |
           xorriso -indev finnos.iso -report_el_torito plain

@@ -265,6 +265,35 @@ EOF
   grep -qE '^g[[:space:]]+finn([[:space:]]|$)' "$sysusers" 2>/dev/null ||
     problem "the live sysusers rule does not create group finn"
 
+  say "checking that the staged profile is one mkarchiso accepts"
+  # mkarchiso reads syslinux/ and efiboot/ from the profile directory, not
+  # from boot/, and it refuses a profile without them. stage_boot_menus
+  # arranges that copy at build time; this checks the arrangement here, so
+  # a renamed menu directory fails the tree check instead of the release
+  # build. The staging is repeated rather than factored out because this
+  # function runs before the build half of the file is defined.
+  local staged_boot
+  staged_boot="$(mktemp -d)"
+  mkdir -p "$staged_boot/grub" "$staged_boot/efiboot/loader/entries"
+  cp -a "$HERE/boot/grub/." "$staged_boot/grub/" 2>/dev/null ||
+    problem "boot/grub cannot be staged"
+  cp -a "$HERE/boot/loader/loader.conf" "$staged_boot/efiboot/loader/loader.conf" 2>/dev/null ||
+    problem "boot/loader/loader.conf cannot be staged"
+  cp -a "$HERE/boot/loader/entries/." "$staged_boot/efiboot/loader/entries/" 2>/dev/null ||
+    problem "boot/loader/entries cannot be staged"
+  [ -f "$staged_boot/efiboot/loader/loader.conf" ] ||
+    problem "the staged profile has no efiboot/loader/loader.conf"
+  [ -f "$staged_boot/efiboot/loader/entries/01-finnos-install.conf" ] ||
+    problem "the staged profile has no efiboot/loader/entries install entry"
+  if [ "$ARCH" = 'x86_64' ]; then
+    mkdir -p "$staged_boot/syslinux"
+    cp -a "$HERE/boot/syslinux/." "$staged_boot/syslinux/" 2>/dev/null ||
+      problem "boot/syslinux cannot be staged for the BIOS profile"
+    [ -f "$staged_boot/syslinux/syslinux.cfg" ] ||
+      problem "the staged x86_64 profile has no syslinux/syslinux.cfg"
+  fi
+  rm -rf "$staged_boot"
+
   say "checking the held-out files"
   [ -x "$HERE/../vm/finn-install.sh" ] || problem "vm/finn-install.sh is not executable"
   [ -f "$HERE/../vm/finn-chroot.sh" ] || problem "vm/finn-chroot.sh is missing"
