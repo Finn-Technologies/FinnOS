@@ -33,6 +33,32 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/tools/dockprev' \
     . | ssh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 
+echo "==> preparing dependencies"
+
+ssh "$HOST" "
+  if ! id -u finn >/dev/null 2>&1; then
+    sudo useradd -m -G wheel,input,video,seat,render -s /bin/bash finn
+    sudo passwd -l finn
+    echo 'finn ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/finn > /dev/null
+    sudo chmod 0440 /etc/sudoers.d/finn
+  fi
+"
+
+# Install needed dependencies (at least for Arch Linux ARM rootfs tarballs)
+# This seems to only be necessary for ALARM, as standard Arch does not provide
+# these "minimal rootfs tarballs" to begin with, but as the --needed flag is
+# being used, there's no harm in leaving this universal just in case.
+ssh "$HOST" "sudo pacman -S --needed --noconfirm base-devel pkgconf libdrm libwebp freetype2 alsa-lib mesa wayland wayland-protocols libxkbcommon"
+
+# Install over systemd units and tmpfiles
+ssh "$HOST" "cd $REMOTE && \
+             sudo cp base/finnd.service /etc/systemd/system/ && \
+             sudo cp base/finn-comp.service /etc/systemd/system/ && \
+             sudo cp base/finn-failure.service /etc/systemd/system/ && \
+             sudo cp base/finn-tmpfiles.conf /etc/tmpfiles.d/finn.conf && \
+             sudo systemd-tmpfiles --create && \
+             sudo systemctl daemon-reload"
+
 echo "==> building"
 ssh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
 
