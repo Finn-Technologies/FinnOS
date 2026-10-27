@@ -1,6 +1,7 @@
 """Base-image compatibility packaging stays wired to the package manager."""
 
 import os
+import re
 import unittest
 
 
@@ -144,6 +145,40 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn("if [ -x /usr/bin/flatpak ]; then", script)
         self.assertIn("/usr/local/bin/finnpkg flatpak init", script)
         self.assertIn("WARN: Flathub could not be configured", script)
+
+    def test_every_writer_of_the_installed_list_names_catalogue_apps(self):
+        """The shell draws a tile as installed only when the package
+        manager's list names an id the catalogue knows. Three install paths
+        write that list, and a path that writes a binary name or a missing
+        app is a list the shell cannot match to anything."""
+        registry = os.path.join(ROOT, "assets", "apps.registry")
+        with open(registry, "r", encoding="utf-8") as handle:
+            catalogue = {
+                line.split("|", 1)[0].strip()
+                for line in handle
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+        expected = {"settings", "files", "store"}
+        self.assertTrue(expected.issubset(catalogue))
+
+        writers = (
+            os.path.join(ROOT, "base", "setup.sh"),
+            os.path.join(ROOT, "vm", "finn-chroot.sh"),
+            os.path.join(ROOT, "base", "pkgbuilds", "finn-filesystem", "PKGBUILD"),
+        )
+        for path in writers:
+            with self.subTest(path=path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    script = handle.read()
+                match = re.search(
+                    r"printf '([^']*)' > [^\n]*/var/lib/finnpkg/installed",
+                    script,
+                )
+                self.assertIsNotNone(match, path)
+                installed = set(match.group(1).split("\\n"))
+                installed.discard("")
+                self.assertEqual(installed, expected, path)
+                self.assertTrue(installed.issubset(catalogue), path)
 
 
 if __name__ == "__main__":

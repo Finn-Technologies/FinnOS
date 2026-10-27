@@ -5,6 +5,11 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The installed app list matches the catalogue
+
+- An installed machine marks Settings, Files and Store as installed: the
+  three catalogue entries whose launchers the image actually ships.
+
 ### The ISO is FinnOS, built from this tree
 
 - There is no downloaded base image and no remaster path. `vm/build-iso.sh`
