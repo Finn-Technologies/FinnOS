@@ -44,7 +44,7 @@ qemu-system-x86_64 \
     -machine q35 -m 2048 -smp 2 \
     -cdrom "$ISO" \
     -kernel "$WORK/vmlinuz" -initrd "$WORK/initramfs.img" \
-    -append "archisobasedir=finn archisolabel=FINNOS archisodevice=/dev/sr0 console=ttyS0" \
+    -append "archisobasedir=finn archisolabel=FINNOS archisodevice=/dev/sr0 console=ttyS0 systemd.firstboot=off" \
     -display none -serial "file:$LOG" -monitor none -no-reboot \
     & QEMU=$!
 

@@ -13,6 +13,9 @@ and the changes to it are worth reading.
 - The installer mirrors its own output through a FIFO instead of a process
   substitution, so it still starts on a live root that does not carry
   `/dev/fd`; the console it was started from keeps its copy.
+- The disc turns systemd's first-boot wizard off. The live root carries an
+  uninitialized machine-id, and the wizard used to take `tty1` and ask for a
+  timezone instead of letting the installer start.
 - Booting **Install FinnOS** without a disk now lists the disks and asks
   for one, then asks again before writing. It no longer exits with usage
   on the disc's own default entry.

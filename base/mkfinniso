@@ -131,6 +131,11 @@ check_tree() {
     # /finn/boot/<arch>/, written out or through a variable the menu sets.
     grep -qE '/finn/boot/(x86_64|aarch64)|\$finn_basedir' "$menu" ||
       problem "$(basename "$menu") does not load a kernel from /finn/boot"
+    # The live root carries systemd's "uninitialized" machine-id, so systemd
+    # reads the first boot as unconfigured and puts its wizard on tty1 before
+    # the autologin can start the installer. Every menu turns that off.
+    grep -q 'systemd.firstboot=off' "$menu" ||
+      problem "$(basename "$menu") does not turn the first-boot wizard off"
   done
 
   # The disc installs FinnOS. It is built from another distribution's
