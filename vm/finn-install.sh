@@ -33,14 +33,42 @@ ASSUME_YES=0
 
 # A machine with no screen - a CI runner, a server, an install driven over a
 # serial cable - has no tty1 to read. When the kernel was told to use a serial
-# console, the same log goes there as well, so the install can be watched and
-# a test can see the installer start without a display. The condition is the
+# console, the log goes there as well, so the install can be watched and a
+# test can see the installer start without a display. The condition is the
 # kernel command line rather than the device node, because a machine can have
 # a COM port with nothing attached to it.
+#
+# The mirror is a FIFO and tee, not a process substitution: a live root
+# without /dev/fd would fail the substitution and exit before the first line.
+# tee still writes to its own stdout, so the console the installer was started
+# from keeps its copy; the serial device is an extra output, not a replacement.
+SERIAL=0
 if grep -qw 'console=ttyS0' /proc/cmdline 2>/dev/null && [ -w /dev/ttyS0 ]; then
-    exec > >(tee "$LOG" /dev/ttyS0) 2>&1
+    SERIAL=1
+fi
+LOG_DIR=""
+LOG_TEE=""
+: >"$LOG"
+# fd 3 holds the FIFO open for both ends, so the writer below cannot block
+# waiting for a reader that has not opened the pipe yet. tee closes its copy
+# of 3 and reads to EOF when the installer closes its own.
+if LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/finn-install.XXXXXX")" &&
+   mkfifo -m 600 "$LOG_DIR/log" &&
+   exec 3<>"$LOG_DIR/log"; then
+    if [ "$SERIAL" = 1 ]; then
+        tee "$LOG" /dev/ttyS0 <"$LOG_DIR/log" 3>&- &
+    else
+        tee "$LOG" <"$LOG_DIR/log" 3>&- &
+    fi
+    LOG_TEE=$!
+    exec >&3 2>&1
 else
-    exec > >(tee "$LOG") 2>&1
+    # The log still has the installer's words; only the mirror is missing.
+    # The warning goes to the console that was there before the redirection.
+    exec 3>&2
+    exec >>"$LOG" 2>&1
+    echo "warning: the installer log cannot be mirrored to this console" >&3
+    exec 3>&-
 fi
 
 # The log is posted to the host that serves the disc, when there is one. It
@@ -54,8 +82,8 @@ post() {
 }
 
 # The completion line is posted on its own rather than read back out of the
-# log: tee writes the log asynchronously, and a CI runner watching for the
-# end of an unattended install must not race it.
+# log: the log may still be growing, and a CI runner watching for the end of
+# an unattended install must not race it.
 post_line() {
     curl -s --connect-timeout 2 --max-time 5 \
          --data-binary "$1" "$HOST/log" -o /dev/null 2>/dev/null || true
@@ -64,13 +92,32 @@ post_line() {
 STEP="arguments"
 die() { echo "error: $*" >&2; exit 1; }
 
+# Closing the log is what lets tee see EOF and write the last line; waiting
+# for it is what lets the failure POST read a complete log. This runs on
+# every exit, including the abort where nothing was written.
+stop_log() {
+    exec 1>&- 2>&- 3>&-
+    if [ -n "$LOG_TEE" ]; then
+        wait "$LOG_TEE" 2>/dev/null || true
+        LOG_TEE=""
+    fi
+    if [ -n "$LOG_DIR" ]; then
+        rm -rf "$LOG_DIR"
+        LOG_DIR=""
+    fi
+}
+
 # Every exit says what it was doing. An install that stops half way leaves a
 # machine somebody has to finish by hand, so the last line of the log names
-# the step and not only the command that returned non-zero.
+# the step and not only the command that returned non-zero. The log is closed
+# before it is posted, because tee writes it asynchronously.
 failed() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "FINN_INSTALL_FAILED: step \"$STEP\" exited $rc"
+    fi
+    stop_log
+    if [ "$rc" -ne 0 ]; then
         post
     fi
 }
@@ -146,6 +193,7 @@ if [ -z "$DISK_ARG" ]; then
             trap - EXIT
             echo
             echo "no disk named; nothing was written" >&2
+            stop_log
             exit 2
         fi
         [ -n "$DISK_ARG" ] || continue
