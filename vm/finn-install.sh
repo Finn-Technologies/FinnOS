@@ -401,8 +401,11 @@ post
 
 # 4. the mounts, checked by source rather than assumed from the exit code.
 step "[4/8] MOUNT"
-mkdir -p /mnt/boot
 mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
+# /mnt/boot is made on the new root, after the root is mounted: a directory
+# made before it would be covered by the root mount and the ESP would have
+# nowhere to go.
+mkdir -p /mnt/boot
 mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
 [ "$(findmnt -no SOURCE -T /mnt)" = "$ROOT" ] || die "$ROOT is not what is mounted at /mnt"
 [ "$(findmnt -no SOURCE -T /mnt/boot)" = "$ESP" ] || die "$ESP is not what is mounted at /mnt/boot"

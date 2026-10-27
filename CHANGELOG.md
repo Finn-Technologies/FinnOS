@@ -22,6 +22,8 @@ and the changes to it are worth reading.
 - The disk layout names the BIOS boot partition by its GPT type GUID. The
   short `B` alias is a DOS type, and `sfdisk` refused to add the partition,
   so the install stopped at the disk step.
+- The installer mounts the new root before creating `/mnt/boot`, so the
+  ESP mount point is on the new root instead of being covered by it.
 
 ### The installed app list matches the catalogue
 
