@@ -189,6 +189,37 @@ class BaseImageTest(unittest.TestCase):
         self.assertNotIn("< <(", script)
         self.assertNotIn("> >(", script)
 
+    def test_live_medium_populates_the_keyring_before_the_installer(self):
+        """The live root is read-only and has no keyring of its own. The
+        installer's first step is a signed pacman sync, so the medium has to
+        put a writable keyring in place and populate it before the tty1
+        autologin can start finn-install."""
+        units = os.path.join(ROOT, "base", "airootfs", "etc", "systemd", "system")
+        with open(os.path.join(units, "etc-pacman.d-gnupg.mount"), "r",
+                  encoding="utf-8") as handle:
+            mount = handle.read()
+        self.assertIn("Where=/etc/pacman.d/gnupg", mount)
+        self.assertIn("Type=tmpfs", mount)
+
+        with open(os.path.join(units, "pacman-init.service"), "r",
+                  encoding="utf-8") as handle:
+            init = handle.read()
+        self.assertIn("Requires=etc-pacman.d-gnupg.mount", init)
+        self.assertIn("Before=getty@tty1.service", init)
+        self.assertIn("ExecStart=/usr/bin/pacman-key --init", init)
+        self.assertIn("ExecStart=/usr/bin/pacman-key --populate", init)
+
+        link = os.path.join(
+            units, "multi-user.target.wants", "pacman-init.service")
+        self.assertTrue(os.path.islink(link), link)
+
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertNotIn("SigLevel = Never", script)
+        self.assertIn("pacman-key --init", script)
+        self.assertIn("pacman-key --populate", script)
+
     def test_installer_asks_findmnt_for_one_target_at_a_time(self):
         """findmnt accepts one target. A second is a usage error that
         returns 1 without a message, and set -e stops the install there."""
