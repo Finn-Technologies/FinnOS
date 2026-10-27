@@ -81,9 +81,8 @@ post() {
          -X POST --data-binary @"$LOG" "$HOST/log" -o /dev/null 2>/dev/null || true
 }
 
-# The completion line is posted on its own rather than read back out of the
-# log: the log may still be growing, and a CI runner watching for the end of
-# an unattended install must not race it.
+# A line a CI runner must not race is posted on its own rather than read
+# back out of the log: tee writes the log asynchronously.
 post_line() {
     curl -s --connect-timeout 2 --max-time 5 \
          --data-binary "$1" "$HOST/log" -o /dev/null 2>/dev/null || true
@@ -572,6 +571,9 @@ else
     HARDWARE="aarch64: firmware, mesa, audio, bluetooth"
 fi
 echo "HARDWARE=$HARDWARE"
+# The test that watches an unattended install looks for this line; the log
+# post above the boot entry can still be behind tee when it arrives.
+post_line "HARDWARE=$HARDWARE"
 
 bootentry=""
 if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "root=UUID=$ROOTUUID" /mnt/boot/grub/grub.cfg; then
