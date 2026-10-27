@@ -201,6 +201,31 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt\n", script)
         self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot", script)
 
+    def test_the_catalogue_has_no_first_party_app_without_a_view(self):
+        """A native entry is an app the shell draws. An entry whose view and
+        launcher do not exist can only be shown as unavailable, so it does
+        not belong in the catalogue; Flatpak and winget entries are remote
+        and may have no command of their own."""
+        registry = os.path.join(ROOT, "assets", "apps.registry")
+        native = set()
+        with open(registry, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                fields = [field.strip() for field in line.split("|")]
+                self.assertGreaterEqual(len(fields), 5, line)
+                app_id, _, icon, command = fields[:4]
+                self.assertTrue(
+                    os.path.isfile(os.path.join(ROOT, "assets", "icons", "apps", icon)),
+                    line,
+                )
+                source = fields[5] if len(fields) > 5 else ""
+                if source:
+                    continue
+                self.assertTrue(command, line)
+                native.add(app_id)
+        self.assertEqual(native, {"settings", "files", "store"})
+
 
 if __name__ == "__main__":
     unittest.main()

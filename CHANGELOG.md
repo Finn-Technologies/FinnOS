@@ -73,6 +73,10 @@ and the changes to it are worth reading.
   whose `source` is `flatpak` or `winget`, including x86_64 and ARM64
   Flatpak entries; the Store's Linux and Windows pages render them, with
   live install state from the control plane.
+- **No browser placeholder.** The registry no longer lists Finn Browser:
+  there is no browser view and no `finn-browser` launcher, so the entry
+  could only ever be shown as unavailable. It joins the catalogue when its
+  view is real.
 
 ### Finn Store, and a package manager with one owner
 
