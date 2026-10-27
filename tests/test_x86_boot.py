@@ -248,12 +248,19 @@ def stop_capture(server, thread):
     thread.join(2)
 
 
-def wait_for(server, needle, timeout, process=None):
+def wait_for(server, needle, timeout, process=None, stop=()):
+    """Wait for a needle in the captured posts.
+
+    A marker in stop means the run has already failed; returning as soon as
+    one appears keeps a failed install from waiting out the whole timeout.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         for body in list(server.posts):
             if needle in body:
                 return True
+            if any(marker in body for marker in stop):
+                return False
         if process is not None and process.poll() is not None:
             return False
         time.sleep(1)
@@ -470,7 +477,8 @@ class QemuFullInstallTest(unittest.TestCase):
             process, serial, command = launch(ISO, work, extra=extra)
             self.assertIsNotNone(process, " ".join(command or []))
             complete = wait_for(
-                server, "FINN_INSTALL_COMPLETE", timeout, process
+                server, "FINN_INSTALL_COMPLETE", timeout, process,
+                stop=("FINN_INSTALL_FAILED",),
             )
             posts = "\n---\n".join(server.posts[-10:])
             self.assertTrue(
