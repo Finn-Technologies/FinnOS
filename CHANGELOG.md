@@ -35,6 +35,13 @@ and the changes to it are worth reading.
   `src/compositor/icons`, so it fell back to fetching a stale list from
   the host and stopped at the payload step on a machine with no host
   server.
+- The live root mounts `/etc/pacman.d/gnupg` on a tmpfs and populates the
+  keyring at boot, before the `tty1` autologin starts the installer. The
+  squashfs is read-only and carries no keyring, so the installer's first
+  signed `pacman -Sy` used to fail.
+- The installer no longer answers a broken keyring by writing
+  `SigLevel = Never`. It initializes an empty keyring when it can, and
+  stops with a message instead of installing unverified packages.
 
 ### The installed app list matches the catalogue
 

@@ -1,0 +1,23 @@
+# The install medium starts finn-install automatically from tty1, and the
+# installer's first step syncs a signed package database. That cannot work
+# against the empty keyring of a fresh live root, so this unit initializes
+# and populates the keyring first.
+#
+# The ordering is the part archiso's releng profile does not need: nothing
+# there starts by itself. Here the autologin shell would race pacman-init,
+# and the installer would report a broken keyring on a perfectly good disc.
+[Unit]
+Description=Initializes Pacman keyring
+Requires=etc-pacman.d-gnupg.mount
+After=etc-pacman.d-gnupg.mount time-sync.target
+BindsTo=etc-pacman.d-gnupg.mount
+Before=getty@tty1.service archlinux-keyring-wkd-sync.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pacman-key --init
+ExecStart=/usr/bin/pacman-key --populate
+
+[Install]
+WantedBy=multi-user.target

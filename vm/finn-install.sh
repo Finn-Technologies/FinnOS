@@ -267,10 +267,24 @@ EOF
         die "[multilib] is not in /etc/pacman.conf; the x86_64 package list needs it for Wine"
     echo "multilib: [multilib] enabled"
 fi
+# The live root's keyring is a tmpfs populated by pacman-init.service. If
+# that unit did not run - an older disc, an installer started by hand - the
+# keyring is empty and a signed pacman sync fails. Initializing it here is
+# the recovery; disabling signature checking is not. An install whose
+# packages were not verified is not an install this script will perform.
+if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
+    echo "the live keyring is empty; initializing it"
+    if ! pacman-key --init 2>&1 | tail -5; then
+        die "the live keyring could not be initialized; refusing to install without signature checking"
+    fi
+    if ! pacman-key --populate 2>&1 | tail -5; then
+        die "the live keyring could not be populated; refusing to install without signature checking"
+    fi
+fi
+[ -s /etc/pacman.d/gnupg/pubring.gpg ] ||
+    die "the live keyring is not initialized; refusing to install without signature checking"
 if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
-    sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
-    pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5 ||
-        die "the installer's own tools did not install"
+    die "the installer's own tools did not install; the live keyring or a mirror is broken"
 fi
 command -v pacstrap >/dev/null || die "pacstrap is not on this live system"
 command -v mkfs.vfat >/dev/null || die "mkfs.vfat is not on this live system"
