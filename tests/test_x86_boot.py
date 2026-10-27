@@ -463,7 +463,8 @@ class QemuFullInstallTest(unittest.TestCase):
                 "-initrd", initramfs,
                 "-append", (
                     "archisobasedir=finn archisodevice=/dev/sr0 "
-                    "console=ttyS0 finn.install finn.disk=/dev/vda finn.yes"
+                    "console=ttyS0 systemd.firstboot=off "
+                    "finn.install finn.disk=/dev/vda finn.yes"
                 ),
             ]
             process, serial, command = launch(ISO, work, extra=extra)
