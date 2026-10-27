@@ -251,9 +251,10 @@ jobs:
     name: install to a disk (opt-in)
     # The boot-to-installer check above runs on every build. This one is
     # opt-in because it pacstraps a base system and builds the compositor;
-    # it verifies the installer's own final checks on the disk. Rebooting
-    # the installed disk is the manual check, and a QEMU GPU is not the
-    # OptiPlex's GPU, so it is not claimed here.
+    # it verifies the installer's own final checks on the disk, then boots
+    # that disk with the ISO detached and waits for the installed system's
+    # serial login prompt. The desktop itself is still the manual OptiPlex
+    # check: a QEMU GPU is not the OptiPlex's GPU.
     needs: iso
     if: github.event_name == 'workflow_dispatch' && inputs.full_install
     runs-on: ubuntu-latest

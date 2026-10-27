@@ -275,6 +275,18 @@ def serial_text(path):
         return ""
 
 
+def wait_for_serial(path, needle, timeout, process=None):
+    """Wait for a line the installed machine prints on its own console."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if needle in serial_text(path):
+            return True
+        if process is not None and process.poll() is not None:
+            return False
+        time.sleep(1)
+    return False
+
+
 def wait_for_installer(server, serial, timeout, process=None):
     """Wait for either proof that finn-install started.
 
@@ -323,15 +335,15 @@ def qemu_network():
     ]
 
 
-def launch(iso, work, extra=(), uefi=False):
+def launch(iso, work, extra=(), uefi=False, boot="d", cdrom=True):
     serial = os.path.join(work, "serial.log")
     command = [
         QEMU,
         "-machine", "q35",
         "-m", "2048",
         "-smp", "2",
-        "-cdrom", iso,
-        "-boot", "order=d",
+        *(["-cdrom", iso] if cdrom else []),
+        "-boot", "order=" + boot,
         *qemu_network(),
         "-display", "none",
         "-serial", "file:" + serial,
@@ -438,8 +450,10 @@ class QemuFullInstallTest(unittest.TestCase):
     This is opt-in because it downloads a base system and builds the
     compositor. It verifies the installer's own final checks (the binaries,
     the enabled units, the boot entry and the hardware packages on the
-    disk). It does not reboot the installed disk: that is the manual check
-    in docs/architecture.md, and a QEMU GPU is not the OptiPlex's GPU.
+    disk), then detaches the ISO and boots the disk it wrote. The installer
+    ran with a serial console, so the installed GRUB entry keeps ttyS0 and
+    the login prompt is visible there. A QEMU GPU is still not the
+    OptiPlex's GPU; the desktop itself remains the manual check.
     """
 
     def test_installer_completes_on_a_disk(self):
@@ -491,6 +505,35 @@ class QemuFullInstallTest(unittest.TestCase):
             self.assertIn("FINN_CHROOT_COMPLETE", posts)
             self.assertIn("HARDWARE=", posts)
             self.assertNotIn("FINN_INSTALL_FAILED", posts)
+
+            # The install wrote a disk; booting it is the other half of the
+            # claim. The ISO is detached so a disk that does not boot cannot
+            # quietly fall back to the live medium and look successful. The
+            # installer was driven over ttyS0, so the installed GRUB entry
+            # carries that console and the login prompt is the proof.
+            stop(process)
+            process = None
+            try:
+                os.unlink(serial)
+            except OSError:
+                pass
+            reboot_timeout = int(
+                os.environ.get("FINNOS_REBOOT_TIMEOUT", "600"))
+            process, serial, command = launch(
+                ISO, work,
+                extra=["-drive", "file=" + disk + ",if=virtio,format=raw"],
+                boot="c", cdrom=False,
+            )
+            self.assertIsNotNone(process, " ".join(command or []))
+            booted = wait_for_serial(
+                serial, "finnos login:", reboot_timeout, process)
+            self.assertTrue(
+                booted,
+                "the installed disk did not reach a login prompt within {}s\n"
+                "command: {}\nserial:\n{}".format(
+                    reboot_timeout, " ".join(command or []), tail(serial, 80)
+                ),
+            )
         finally:
             stop(process)
             stop_capture(server, thread)

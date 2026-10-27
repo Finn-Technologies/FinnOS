@@ -544,6 +544,10 @@ chmod +x /mnt/root/finn-chroot.sh
 export ROOTUUID
 export FINN_DISK="$DISK"
 export FINN_PASSWORD="${FINN_PASSWORD:-}"
+# A machine installed over a serial console keeps that console. The live
+# medium knows because it was told; the chroot has no kernel command line
+# to read, so the answer is handed to it.
+export FINN_SERIAL="$SERIAL"
 arch-chroot /mnt /root/finn-chroot.sh ||
     die "the machine could not be configured; see the chroot log above"
 post
