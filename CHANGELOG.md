@@ -5,6 +5,15 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The install medium boots with a console and asks for its disk
+
+- The install entries put the kernel on `tty0` and mirror the console to
+  `ttyS0`, so a serial log shows the boot and the installer instead of a
+  blank screen.
+- Booting **Install FinnOS** without a disk now lists the disks and asks
+  for one, then asks again before writing. It no longer exits with usage
+  on the disc's own default entry.
+
 ### The installed app list matches the catalogue
 
 - An installed machine marks Settings, Files and Store as installed: the

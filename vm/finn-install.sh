@@ -133,14 +133,28 @@ for word in $(cat /proc/cmdline 2>/dev/null || true); do
 done
 
 if [ -z "$DISK_ARG" ]; then
-    # Not an install that failed, so no FINN_INSTALL_FAILED line: nothing
-    # was attempted and nothing was written.
-    trap - EXIT
-    usage >&2
-    echo >&2
-    echo "Disks on this machine:" >&2
-    lsblk -dno NAME,SIZE,TYPE,MODEL 2>/dev/null | sed 's#^#  /dev/#' >&2 || true
-    exit 2
+    # The default boot entry has no disk to name, so the installer asks for
+    # one. It is still never guessed: the answer is typed at the console and
+    # then typed again at the confirmation below. An EOF or Ctrl-C is not a
+    # failed install, because nothing was attempted and nothing was written.
+    echo "No disk was named. Disks on this machine:"
+    lsblk -dno NAME,SIZE,TYPE,MODEL 2>/dev/null | sed 's#^#  /dev/#' || true
+    echo
+    while :; do
+        printf 'Disk to install onto (e.g. /dev/sda), or Ctrl-C to abort:\n'
+        if ! read -r DISK_ARG; then
+            trap - EXIT
+            echo
+            echo "no disk named; nothing was written" >&2
+            exit 2
+        fi
+        [ -n "$DISK_ARG" ] || continue
+        if [ ! -b "$DISK_ARG" ]; then
+            echo "not a block device: $DISK_ARG" >&2
+            continue
+        fi
+        break
+    done
 fi
 
 # 0. the payload.
