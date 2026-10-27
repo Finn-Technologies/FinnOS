@@ -1,8 +1,8 @@
 #!/bin/bash
 # Boot the FinnOS ISO under QEMU and wait for the live environment to
-# reach a login prompt. This is the check that the disc actually boots:
-# a green build that writes an unbootable image is the failure mode this
-# script exists to catch.
+# reach userspace. This is the check that the disc actually boots: a green
+# build that writes an unbootable image is the failure mode this script
+# exists to catch.
 #
 #   vm/test-boot.sh [finnos.iso] [seconds]
 #
@@ -44,16 +44,21 @@ qemu-system-x86_64 \
     -machine q35 -m 2048 -smp 2 \
     -cdrom "$ISO" \
     -kernel "$WORK/vmlinuz" -initrd "$WORK/initramfs.img" \
-    -append "archisobasedir=finn archisolabel=FINNOS archisodevice=/dev/sr0 console=ttyS0" \
+    -append "archisobasedir=finn archisolabel=FINNOS archisodevice=/dev/sr0 console=ttyS0 systemd.firstboot=off" \
     -display none -serial "file:$LOG" -monitor none -no-reboot \
     & QEMU=$!
 
 ok=0
 for _ in $(seq 1 "$WAIT"); do
-  # The live root's issue is FinnOS's, so its name on the console is what
-  # says the guest got as far as userspace. A plain "login:" is accepted
-  # too, for a live environment that has no autologin.
-  if grep -qE 'login:|FinnOS' "$LOG" 2>/dev/null; then ok=1; break; fi
+  # The kernel was told to use ttyS0, so systemd's own progress lines are
+  # on the serial log. Reaching multi-user is what says userspace came up;
+  # this live root has no getty on ttyS0, so waiting for "login:" would
+  # wait forever on a boot that worked. The issue name and a login prompt
+  # are still accepted for an image that does put a getty on the port.
+  if grep -qE 'Reached target .*Multi-User System|Startup finished in|login:|FinnOS' "$LOG" 2>/dev/null; then
+    ok=1
+    break
+  fi
   kill -0 "$QEMU" 2>/dev/null || break
   sleep 1
 done
@@ -63,7 +68,7 @@ wait "$QEMU" 2>/dev/null || true
 if [ "$ok" != 1 ]; then
   echo "---- the last of the guest console ----" >&2
   tail -40 "$LOG" >&2 || true
-  echo "error: the ISO did not reach a login prompt" >&2
+  echo "error: the ISO did not reach userspace" >&2
   exit 1
 fi
 

@@ -15,16 +15,19 @@ CFLAGS  += -I../compositor -I../core
 DRAW     = ../compositor/finntext.c ../compositor/finndraw.c \
            ../compositor/finnblur.c ../compositor/finnanim.c
 
-FREETYPE = $(shell pkg-config --cflags freetype2) $(shell pkg-config --libs freetype2)
+FREETYPE_CFLAGS = $(shell pkg-config --cflags freetype2)
+FREETYPE_LIBS   = $(shell pkg-config --libs freetype2)
 
 all: vgtest dockprev
 
 vgtest: vgtest.c ../compositor/finnvg.c ../compositor/finnvg.h
 	$(CC) $(CFLAGS) -o $@ vgtest.c -lm
 
+# The libraries follow the sources that need them: with --as-needed, a
+# linker drops a library that appears before its first undefined symbol.
 dockprev: dockprev.c ../compositor/finndock.c $(DRAW) ../compositor/finnvg.c
-	$(CC) $(CFLAGS) $(FREETYPE) -o $@ \
-	    dockprev.c ../compositor/finndock.c $(DRAW) ../compositor/finnvg.c -lm
+	$(CC) $(CFLAGS) $(FREETYPE_CFLAGS) -o $@ \
+	    dockprev.c ../compositor/finndock.c $(DRAW) ../compositor/finnvg.c -lm $(FREETYPE_LIBS)
 
 clean:
 	rm -f vgtest dockprev

@@ -5,6 +5,42 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The install medium boots with a console and asks for its disk
+
+- The install entries put the kernel on `tty0` and mirror the console to
+  `ttyS0`, so a serial log shows the boot and the installer instead of a
+  blank screen.
+- The installer mirrors its own output through a FIFO instead of a process
+  substitution, so it still starts on a live root that does not carry
+  `/dev/fd`; the console it was started from keeps its copy.
+- The disc turns systemd's first-boot wizard off. The live root carries an
+  uninitialized machine-id, and the wizard used to take `tty1` and ask for a
+  timezone instead of letting the installer start.
+- Booting **Install FinnOS** without a disk now lists the disks and asks
+  for one, then asks again before writing. It no longer exits with usage
+  on the disc's own default entry.
+- The disk layout names the BIOS boot partition by its GPT type GUID. The
+  short `B` alias is a DOS type, and `sfdisk` refused to add the partition,
+  so the install stopped at the disk step.
+- The installer mounts the new root before creating `/mnt/boot`, so the
+  ESP mount point is on the new root instead of being covered by it.
+- The mount step lists `/mnt` and `/mnt/boot` with one `findmnt` call each.
+  `findmnt` takes a single target, and passing both made the step exit
+  without a message before the base system was installed.
+- The disk checks no longer use process substitutions. A live root without
+  `/dev/fd` leaves such a loop with no input, so a partition already
+  mounted or in use as swap was not refused.
+- The chroot installs the icons from `assets/icons/shell` and
+  `assets/icons/apps`, where the tree keeps them. It looked in
+  `src/compositor/icons`, so it fell back to fetching a stale list from
+  the host and stopped at the payload step on a machine with no host
+  server.
+
+### The installed app list matches the catalogue
+
+- An installed machine marks Settings, Files and Store as installed: the
+  three catalogue entries whose launchers the image actually ships.
+
 ### The ISO is FinnOS, built from this tree
 
 - There is no downloaded base image and no remaster path. `vm/build-iso.sh`

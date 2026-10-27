@@ -196,8 +196,15 @@ jobs:
             | grep -E 'title +Install FinnOS'
           mtype -i "$efi" ::/loader/entries/01-finnos-install.conf \
             | grep -E 'finn\.install'
-          for f in $(mdir -i "$efi" -b ::/loader/entries); do
-            if mtype -i "$efi" "::/loader/entries/$f" | grep -q 'Arch Linux'; then
+          entries="$(mdir -i "$efi" -b ::/loader/entries)"
+          test -n "$entries"
+          for f in $entries; do
+            case "$f" in *.conf) ;; *) continue ;; esac
+            if ! content="$(mtype -i "$efi" "$f")"; then
+              echo "cannot read the EFI menu entry: $f" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$content" | grep -q 'Arch Linux'; then
               echo "the EFI menu still names Arch Linux: $f" >&2
               exit 1
             fi

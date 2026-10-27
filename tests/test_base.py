@@ -1,6 +1,7 @@
 """Base-image compatibility packaging stays wired to the package manager."""
 
 import os
+import re
 import unittest
 
 
@@ -144,6 +145,61 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn("if [ -x /usr/bin/flatpak ]; then", script)
         self.assertIn("/usr/local/bin/finnpkg flatpak init", script)
         self.assertIn("WARN: Flathub could not be configured", script)
+
+    def test_every_writer_of_the_installed_list_names_catalogue_apps(self):
+        """The shell draws a tile as installed only when the package
+        manager's list names an id the catalogue knows. Three install paths
+        write that list, and a path that writes a binary name or a missing
+        app is a list the shell cannot match to anything."""
+        registry = os.path.join(ROOT, "assets", "apps.registry")
+        with open(registry, "r", encoding="utf-8") as handle:
+            catalogue = {
+                line.split("|", 1)[0].strip()
+                for line in handle
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+        expected = {"settings", "files", "store"}
+        self.assertTrue(expected.issubset(catalogue))
+
+        writers = (
+            os.path.join(ROOT, "base", "setup.sh"),
+            os.path.join(ROOT, "vm", "finn-chroot.sh"),
+            os.path.join(ROOT, "base", "pkgbuilds", "finn-filesystem", "PKGBUILD"),
+        )
+        for path in writers:
+            with self.subTest(path=path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    script = handle.read()
+                match = re.search(
+                    r"printf '([^']*)' > [^\n]*/var/lib/finnpkg/installed",
+                    script,
+                )
+                self.assertIsNotNone(match, path)
+                installed = set(match.group(1).split("\\n"))
+                installed.discard("")
+                self.assertEqual(installed, expected, path)
+                self.assertTrue(installed.issubset(catalogue), path)
+
+    def test_installer_does_not_need_dev_fd(self):
+        """The live root may not carry /dev/fd, and a process substitution
+        that cannot open one is a loop that silently does nothing."""
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertNotIn("< <(", script)
+        self.assertNotIn("> >(", script)
+
+    def test_installer_asks_findmnt_for_one_target_at_a_time(self):
+        """findmnt accepts one target. A second is a usage error that
+        returns 1 without a message, and set -e stops the install there."""
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertNotIn(
+            "findmnt -o TARGET,SOURCE,FSTYPE /mnt /mnt/boot", script
+        )
+        self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt\n", script)
+        self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot", script)
 
 
 if __name__ == "__main__":
