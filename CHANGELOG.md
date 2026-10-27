@@ -41,6 +41,13 @@ and the changes to it are worth reading.
 - An installed machine marks Settings, Files and Store as installed: the
   three catalogue entries whose launchers the image actually ships.
 
+### Host-side tools follow the icon layout
+
+- `vgtest` takes `assets/icons` and resolves both `shell/` and `apps/`, so
+  the sheet covers the catalogue's icons and no longer looks for
+  `settings-app.svg` under `shell/`. `docs/development.md` names the same
+  path.
+
 ### The ISO is FinnOS, built from this tree
 
 - There is no downloaded base image and no remaster path. `vm/build-iso.sh`
