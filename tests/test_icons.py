@@ -59,6 +59,31 @@ class ShellIconsTest(unittest.TestCase):
             chroot = handle.read()
         self.assertNotIn("src/compositor/icons", chroot)
 
+    def test_vgtest_sheet_names_icons_that_exist(self):
+        """vgtest is the host-side view of the icon set. A name it cannot
+        resolve is an empty cell on the sheet, and the app icons moved out
+        of assets/icons/shell."""
+        with open(os.path.join(ROOT, "src", "tools", "vgtest.c"), "r",
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        arrays = re.findall(
+            r"static const char \*const (shell|app)_icons\[\] = \{(.*?)\};",
+            source,
+            re.S,
+        )
+        self.assertEqual({name for name, _ in arrays}, {"shell", "app"})
+        shipped = set(os.listdir(SHELL_ICONS)) | set(os.listdir(APPS_ICONS))
+        for _, body in arrays:
+            for name in re.findall(r'"([^"]+)"', body):
+                self.assertIn(name + ".svg", shipped, name)
+
+    def test_development_docs_name_the_icon_root(self):
+        with open(os.path.join(ROOT, "docs", "development.md"), "r",
+                  encoding="utf-8") as handle:
+            docs = handle.read()
+        self.assertNotIn("src/compositor/icons", docs)
+        self.assertIn("src/tools/vgtest assets/icons", docs)
+
     def test_chroot_fallback_icons_name_files_that_exist(self):
         """The host-server flow has no tree to glob, so it lists the names.
         A name that moved is an icon the installed shell cannot draw."""

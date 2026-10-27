@@ -6,8 +6,12 @@
  * The icons are drawn by their ink, at the size the shell draws them, over
  * the same bone the dock sits on.
  *
+ * The directory may be the icon root, which holds shell/ and apps/, or a
+ * single directory of SVGs. The shell and the catalogue keep their icons
+ * apart; the installed system puts both in one directory.
+ *
  *   make -C src/tools vgtest
- *   ./vgtest ../../assets/icons/shell sheet.ppm
+ *   ./vgtest ../../assets/icons sheet.ppm
  */
 #include "finnvg.c"
 
@@ -15,9 +19,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include <unistd.h>
 
 #define CELL 96      /* the cell an icon is drawn in, in 1080p units */
 #define PAD    8
+
+/* Find an icon by name under the root: flat first, then the two source
+ * directories. This keeps the documented invocation working whether the
+ * caller names assets/icons or assets/icons/shell. */
+static int icon_path(char *path, size_t len, const char *dir,
+                     const char *name) {
+    static const char *const subdirs[] = { "", "shell", "apps" };
+    for (size_t i = 0; i < sizeof subdirs / sizeof subdirs[0]; i++) {
+        if (subdirs[i][0])
+            snprintf(path, len, "%s/%s/%s.svg", dir, subdirs[i], name);
+        else
+            snprintf(path, len, "%s/%s.svg", dir, name);
+        if (access(path, R_OK) == 0)
+            return 0;
+    }
+    return -1;
+}
 
 /* Draw one icon at `S` times the shell's own size. */
 static void draw_one(uint32_t *buf, int W, const char *path, int S,
@@ -52,20 +74,27 @@ static void draw_one(uint32_t *buf, int W, const char *path, int S,
 }
 
 int main(int argc, char **argv) {
-    const char *dir = (argc > 1) ? argv[1] : "../../assets/icons/shell";
+    const char *dir = (argc > 1) ? argv[1] : "../../assets/icons";
     const char *out = (argc > 2) ? argv[2] : "sheet.ppm";
     int S = (argc > 3) ? atoi(argv[3]) : 2;
     if (S < 1) S = 1;
 
-    /* the icon set, in the order they appear in the shell */
-    static const char *files[] = {
+    /* the shell's own glyphs, in the order they appear in the shell */
+    static const char *const shell_icons[] = {
         "boot-mark", "search-01", "home-09", "view-open-windows",
-        "settings-app", "volume-02", "wifi-02", "battery",
+        "volume-02", "wifi-02", "battery",
         "bluetooth", "sun-01", "sun-03", "edit-01", "settings-02",
         "power", "refresh", "avatar", "chevron-right",
         "expand", "minus-sign", "x", "cursor"
     };
-    const int N = (int)(sizeof files / sizeof files[0]);
+    /* the catalogue's app icons, one per tile the Store can draw */
+    static const char *const app_icons[] = {
+        "app-grid", "browser", "chevron-left", "files", "library",
+        "settings-app", "store", "windows"
+    };
+    const int NS = (int)(sizeof shell_icons / sizeof shell_icons[0]);
+    const int NA = (int)(sizeof app_icons / sizeof app_icons[0]);
+    const int N = NS + NA;
 
     int pad = PAD * S;
     int cw = CELL * S + pad;
@@ -78,13 +107,18 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < (size_t)W * H; i++) buf[i] = 0xFFF6F1E7u;
 
     for (int i = 0; i < N; i++) {
+        const char *name = (i < NS) ? shell_icons[i] : app_icons[i - NS];
         char path[512];
-        snprintf(path, sizeof path, "%s/%s.svg", dir, files[i]);
+        if (icon_path(path, sizeof path, dir, name) != 0) {
+            fprintf(stderr, "vgtest: no icon named %s under %s\n", name, dir);
+            free(buf);
+            return 1;
+        }
         draw_one(buf, W, path, S, pad + i * cw, pad);
     }
 
     FILE *f = fopen(out, "wb");
-    if (!f) { fprintf(stderr, "vgtest: cannot write %s\n", out); return 1; }
+    if (!f) { fprintf(stderr, "vgtest: cannot write %s\n", out); free(buf); return 1; }
     fprintf(f, "P6\n%d %d\n255\n", W, H);
     for (size_t i = 0; i < (size_t)W * H; i++) {
         uint8_t px[3] = { (uint8_t)((buf[i] >> 16) & 0xFF),
