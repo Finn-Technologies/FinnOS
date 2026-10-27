@@ -90,8 +90,10 @@ echo "LANG=en_US.UTF-8" > /etc/locale.conf
 # well, and not only on the medium it was installed from.
 get /etc/hostname base/airootfs/etc/hostname
 get /etc/os-release base/airootfs/etc/os-release
-get /etc/issue base/airootfs/etc/issue
-get /etc/motd base/airootfs/etc/motd
+# The live medium's issue and motd describe the medium; the machine gets
+# the installed pair, which does not tell the user to run the installer.
+get /etc/issue base/installed/etc/issue
+get /etc/motd base/installed/etc/motd
 get /etc/pacman.conf base/pacman.conf
 if [ "$(uname -m)" = 'x86_64' ]; then
     MULTILIB_CONF="$(mktemp)"

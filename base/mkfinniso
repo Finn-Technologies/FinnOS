@@ -146,7 +146,8 @@ check_tree() {
   local f arch_names
   arch_names="$(mktemp "${TMPDIR:-/tmp}/mkfinniso-arch.XXXXXX")"
   grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" "$HERE/airootfs/etc/issue" \
-       "$HERE/airootfs/etc/motd" >"$arch_names" 2>/dev/null || true
+       "$HERE/airootfs/etc/motd" "$HERE/installed/etc/issue" \
+       "$HERE/installed/etc/motd" >"$arch_names" 2>/dev/null || true
   while IFS= read -r f; do
     problem "$f names Arch"
   done <"$arch_names"

@@ -48,6 +48,13 @@ and the changes to it are worth reading.
 - An installed machine marks Settings, Files and Store as installed: the
   three catalogue entries whose launchers the image actually ships.
 
+### The installed machine does not call itself a live medium
+
+- The login issue and motd on an installed system now come from
+  `base/installed`, not the install medium's `base/airootfs`. The old
+  files told the user to run `finn-install` on the machine they had just
+  installed.
+
 ### Host-side tools follow the icon layout
 
 - `vgtest` takes `assets/icons` and resolves both `shell/` and `apps/`, so

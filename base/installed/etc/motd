@@ -1,0 +1,9 @@
+FinnOS.
+
+One display server, one control plane, and no AI in the image.
+
+  finnctl --help        the control plane's client
+  finnpkg list          what is installed
+  systemctl status finn-comp
+
+The desktop is on tty1. Ctrl+Alt+F2 is a console if it does not start.
