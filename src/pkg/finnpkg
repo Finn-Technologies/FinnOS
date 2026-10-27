@@ -554,8 +554,10 @@ install_package() {
 
     # Check what actually landed, not only what the archive claimed: a name
     # may still resolve through a directory that is not what it appears.
-    local real_src entry real
+    local real_src entry real entries
     real_src="$(cd "$src" && pwd -P)"
+    entries="$(work_dir)/package-files"
+    find "$src" -mindepth 1 -print >"$entries"
     while IFS= read -r entry; do
         if [ -L "$entry" ]; then
             die "'$file' contains a symlink: ${entry#"$src"/}"
@@ -565,7 +567,7 @@ install_package() {
             "$real_src"/*) ;;
             *) die "'$file' would write outside its directory: $real" ;;
         esac
-    done < <(find "$src" -mindepth 1 -print)
+    done <"$entries"
 
     [ -f "$src/manifest.toml" ] || die "'$file' has no manifest.toml"
 

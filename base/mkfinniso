@@ -138,11 +138,14 @@ check_tree() {
   # console. The documentation is a different thing: base/README.md says
   # what the base is, because a reader deserves to know.
   say "checking that the console does not name another distribution"
-  local f
+  local f arch_names
+  arch_names="$(mktemp "${TMPDIR:-/tmp}/mkfinniso-arch.XXXXXX")"
+  grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" "$HERE/airootfs/etc/issue" \
+       "$HERE/airootfs/etc/motd" >"$arch_names" 2>/dev/null || true
   while IFS= read -r f; do
     problem "$f names Arch"
-  done < <(grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" "$HERE/airootfs/etc/issue" \
-             "$HERE/airootfs/etc/motd" 2>/dev/null || true)
+  done <"$arch_names"
+  rm -f "$arch_names"
 
   say "checking the package list"
   if [ "$ARCH" = 'x86_64' ]; then
@@ -238,12 +241,17 @@ EOF
   fi
   # The other half of the same rule: the package list must not name what the
   # guard rail refuses, or the list does not resolve.
+  local w ignored
+  ignored="$(mktemp "${TMPDIR:-/tmp}/mkfinniso-ignored.XXXXXX")"
+  sed -n 's/^IgnorePkg[[:space:]]*=[[:space:]]*//p' "$HERE/pacman.conf" |
+    tr ' ' '\n' >"$ignored"
   while read -r w; do
     [ -n "$w" ] || continue
     if grep -qE "^[[:space:]]*$w([[:space:]]|$)" "$PKGS"; then
       problem "$PKGS names $w, which pacman.conf refuses"
     fi
-  done < <(sed -n 's/^IgnorePkg[[:space:]]*=[[:space:]]*//p' "$HERE/pacman.conf" | tr ' ' '\n')
+  done <"$ignored"
+  rm -f "$ignored"
 
   say "checking the units against the ones setup.sh installs"
   # Two copies of one file: the one the disc carries and the one a machine
@@ -345,10 +353,13 @@ stage_sources() {
   # some archive tools) leaves the installer flat, and then the install
   # entry boots a disc whose installer cannot run. A file that starts with
   # a shebang is meant to be run.
-  local f
+  local f files
+  files="$(mktemp "${TMPDIR:-/tmp}/mkfinniso-files.XXXXXX")"
+  find "$dest" -type f -print0 >"$files"
   while IFS= read -r -d '' f; do
     if [ "$(head -c 2 "$f" 2>/dev/null)" = '#!' ]; then chmod 755 "$f"; fi
-  done < <(find "$dest" -type f -print0)
+  done <"$files"
+  rm -f "$files"
 }
 
 # The boot menus live under boot/ so that the three of them sit together;
