@@ -242,6 +242,24 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn("get /etc/issue base/installed/etc/issue", chroot)
         self.assertIn("get /etc/motd base/installed/etc/motd", chroot)
 
+    def test_a_serial_install_keeps_its_serial_console(self):
+        """The live medium can see console=ttyS0; the chroot cannot. An
+        install driven over serial must hand that answer to the installed
+        machine, or the boot after the install is invisible."""
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertIn('export FINN_SERIAL="$SERIAL"', script)
+
+        chroot = os.path.join(ROOT, "vm", "finn-chroot.sh")
+        with open(chroot, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertIn('if [ "${FINN_SERIAL:-0}" = 1 ]; then', script)
+        self.assertIn("console=ttyS0,115200 console=tty0", script)
+        self.assertIn("systemctl enable serial-getty@ttyS0.service", script)
+        self.assertIn("loglevel=3$serial_args", script)
+        self.assertIn("loglevel=3%s", script)
+
     def test_installer_asks_findmnt_for_one_target_at_a_time(self):
         """findmnt accepts one target. A second is a usage error that
         returns 1 without a message, and set -e stops the install there."""

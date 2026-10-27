@@ -275,12 +275,26 @@ ls -la /boot/
 # root= is not written here: grub-mkconfig derives it from the filesystem it
 # can see, and the check at the end refuses a menu that does not name the
 # UUID the installer measured.
+#
+# An install driven over a serial console keeps that console on the machine
+# it wrote. Dropping it would leave the person who installed the machine
+# with no way to see the boot that follows. An install from a screen gets
+# no serial console: this is the installer's answer, not a default.
+serial_args=""
+if [ "${FINN_SERIAL:-0}" = 1 ]; then
+    serial_args=" console=ttyS0,115200 console=tty0"
+    systemctl enable serial-getty@ttyS0.service 2>/dev/null ||
+        echo "WARN: serial-getty@ttyS0 could not be enabled"
+    echo "SERIAL=console"
+else
+    echo "SERIAL=none"
+fi
 mkdir -p /etc/default
-cat > /etc/default/grub <<'EOF'
+cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_DISTRIBUTOR="FinnOS"
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3$serial_args"
 GRUB_DISABLE_OS_PROBER=true
 EOF
 
@@ -296,8 +310,8 @@ else
     if bootctl --esp-path=/boot install 2>&1 | tail -5; then
         mkdir -p /boot/loader/entries
         printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
-        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3\n' \
-            "$ROOTUUID" > /boot/loader/entries/finnos.conf
+        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3%s\n' \
+            "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
         efi=1
         echo "BOOTLOADER=systemd-boot"
     fi
