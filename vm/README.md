@@ -47,8 +47,17 @@ copies both wallpapers to `/usr/share/finn/wallpaper/` and restarts
 draws, so the wallpapers are copied here rather than left from an older
 deploy.
 
-To put the base itself on the machine - the package set, the units, the
-icons, the branding - run `sudo base/setup.sh` on it, which is what an
+On a bare Arch Linux ARM rootfs there is no `finn` user and no sudo.
+Connect as root and the script also initializes the pacman keyring,
+installs the build dependencies, creates `finn` and installs and enables
+the units:
+
+```sh
+FINN_HOST=root@<guest-ip> vm/deploy.sh
+```
+
+To put the rest of the base on the machine - the package set, the icons
+and the branding - run `sudo base/setup.sh` on it, which is what an
 install does.
 
 To drive the shell from a script:
