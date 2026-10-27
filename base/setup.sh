@@ -159,11 +159,13 @@ fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback acti
 ls /usr/share/finn/icons/ | wc -l
 
 # 9. the branding. os-release is what tools read to know what this machine
-#    is; issue and motd are what a person reads at the console.
+#    is; issue and motd are what a person reads at the console. The issue
+#    and motd under airootfs are the install medium's, and say so; a machine
+#    installed from that medium gets the installed pair instead.
 [ -f /etc/os-release.finn-backup ] || cp /etc/os-release /etc/os-release.finn-backup 2>/dev/null || true
 install -m644 "$HERE/airootfs/etc/os-release" /etc/os-release
-install -m644 "$HERE/airootfs/etc/issue" /etc/issue
-install -m644 "$HERE/airootfs/etc/motd" /etc/motd
+install -m644 "$HERE/installed/etc/issue" /etc/issue
+install -m644 "$HERE/installed/etc/motd" /etc/motd
 
 # The hostname is the machine's, not the image's: a fleet of machines all
 # called finnos is a fleet nobody can tell apart. It is set only when it

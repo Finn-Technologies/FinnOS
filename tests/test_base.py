@@ -220,6 +220,28 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn("pacman-key --init", script)
         self.assertIn("pacman-key --populate", script)
 
+    def test_installed_branding_is_not_the_live_medium(self):
+        """The live root's issue and motd tell the reader to run the
+        installer. An installed machine must not say that at its login
+        console, so the two paths install different files."""
+        def read(*parts):
+            with open(os.path.join(ROOT, *parts), "r", encoding="utf-8") as handle:
+                return handle.read()
+
+        self.assertIn("live medium", read("base", "airootfs", "etc", "issue"))
+        for name in ("issue", "motd"):
+            installed = read("base", "installed", "etc", name)
+            self.assertIn("FinnOS", installed)
+            self.assertNotIn("live medium", installed)
+            self.assertNotIn("finn-install", installed)
+
+        setup = read("base", "setup.sh")
+        self.assertIn('"$HERE/installed/etc/issue" /etc/issue', setup)
+        self.assertIn('"$HERE/installed/etc/motd" /etc/motd', setup)
+        chroot = read("vm", "finn-chroot.sh")
+        self.assertIn("get /etc/issue base/installed/etc/issue", chroot)
+        self.assertIn("get /etc/motd base/installed/etc/motd", chroot)
+
     def test_installer_asks_findmnt_for_one_target_at_a_time(self):
         """findmnt accepts one target. A second is a usage error that
         returns 1 without a message, and set -e stops the install there."""
