@@ -906,19 +906,14 @@ data_device_manager_get_device(struct wl_client *client,
                                    server, NULL);
 }
 
-static void
-data_device_manager_release_request(struct wl_client *client,
-                                      struct wl_resource *resource)
-{
-    (void)client;
-    wl_resource_destroy(resource);
-}
-
+/* bind_data_device_manager caps the resource at version 3, so the
+ * version-4 release request can never be sent. Naming it here would also
+ * require a Wayland header that has it, and the oldest header this builds
+ * against does not. */
 static const struct wl_data_device_manager_interface
     data_device_manager_implementation = {
         .create_data_source = data_device_manager_create_source,
         .get_data_device = data_device_manager_get_device,
-        .release = data_device_manager_release_request,
     };
 
 static void
