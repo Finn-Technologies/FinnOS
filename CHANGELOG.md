@@ -19,6 +19,9 @@ and the changes to it are worth reading.
 - Booting **Install FinnOS** without a disk now lists the disks and asks
   for one, then asks again before writing. It no longer exits with usage
   on the disc's own default entry.
+- The disk layout names the BIOS boot partition by its GPT type GUID. The
+  short `B` alias is a DOS type, and `sfdisk` refused to add the partition,
+  so the install stopped at the disk step.
 
 ### The installed app list matches the catalogue
 

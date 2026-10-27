@@ -372,8 +372,10 @@ wipefs -a "$DISK" || die "wipefs failed on $DISK"
 # boot partition, and the root. The BIOS boot partition is where GRUB puts
 # its boot code on a GPT disk; without it a machine that starts with a BIOS
 # has an install it cannot reach, and the firmware is not always willing
-# to boot an EFI disk on its own.
-printf 'label: gpt\n,512M,U\n,+1M,B\n,,L\n' | sfdisk --wipe=always "$DISK" ||
+# to boot an EFI disk on its own. Its type is named by GUID: the short "B"
+# alias is a DOS type, and sfdisk refuses to add a GPT partition with it.
+printf 'label: gpt\n,512M,U\n,+1M,21686148-6449-6E6F-744E-656564454649\n,,L\n' |
+    sfdisk --wipe=always "$DISK" ||
     die "sfdisk did not write a partition table on $DISK"
 sfdisk -d "$DISK" >/dev/null || die "no partition table on $DISK"
 
