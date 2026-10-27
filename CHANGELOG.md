@@ -5,6 +5,13 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The deploy script can prepare a bare rootfs
+
+- `vm/deploy.sh` initializes the pacman keyring and sync database, installs
+  the build dependencies, creates `finn`, and installs and enables the
+  units. A fresh Arch Linux ARM rootfs no longer needs those steps by hand
+  before the first deploy.
+
 ### The install medium boots with a console and asks for its disk
 
 - The install entries put the kernel on `tty0` and mirror the console to

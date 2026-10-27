@@ -15,6 +15,10 @@ make deploy -- --no-restart # build and install, leave it running
 `~/finnos`, installs it to `/usr/local/bin`, and restarts the two services.
 The VM has no `rsync`, which is why it is a tar stream.
 
+It also prepares a bare Arch Linux ARM rootfs: connect as root with
+`FINN_HOST=root@<address>` and it initializes the pacman keyring, installs
+the build dependencies, creates `finn` and installs and enables the units.
+
 The VM's address is in `vm/README.md`. Override it with `FINN_HOST`:
 
 ```sh
