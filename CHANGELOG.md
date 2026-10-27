@@ -24,6 +24,12 @@ and the changes to it are worth reading.
   so the install stopped at the disk step.
 - The installer mounts the new root before creating `/mnt/boot`, so the
   ESP mount point is on the new root instead of being covered by it.
+- The mount step lists `/mnt` and `/mnt/boot` with one `findmnt` call each.
+  `findmnt` takes a single target, and passing both made the step exit
+  without a message before the base system was installed.
+- The disk checks no longer use process substitutions. A live root without
+  `/dev/fd` leaves such a loop with no input, so a partition already
+  mounted or in use as swap was not refused.
 
 ### The installed app list matches the catalogue
 

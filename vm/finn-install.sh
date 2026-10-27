@@ -331,6 +331,8 @@ done
 # out from under them. Swap does not appear in the mount table, so it is read
 # from swapon separately.
 swaps="$(swapon --show=NAME --noheadings 2>/dev/null || true)"
+# A here-string, not a process substitution: the live root may not carry
+# /dev/fd, and a failed substitution would skip the check without a word.
 while read -r name type; do
     [ -n "$name" ] || continue
     if [ "/dev/$name" = "$DISK" ]; then continue; fi
@@ -339,7 +341,7 @@ while read -r name type; do
     case " $(echo $swaps) " in
         *" /dev/$name "*) die "/dev/$name on $DISK is in use as swap; swapoff it first" ;;
     esac
-done < <(lsblk -lno NAME,TYPE "$DISK" | tail -n +2)
+done <<< "$(lsblk -lno NAME,TYPE "$DISK" | tail -n +2)"
 
 echo
 echo "This will erase every partition on $DISK and install FinnOS:"
@@ -365,7 +367,7 @@ fi
 while read -r name; do
     [ -b "/dev/$name" ] || continue
     wipefs -a "/dev/$name" || die "wipefs failed on /dev/$name"
-done < <(lsblk -lno NAME "$DISK" | tail -n +2)
+done <<< "$(lsblk -lno NAME "$DISK" | tail -n +2)"
 wipefs -a "$DISK" || die "wipefs failed on $DISK"
 
 # Three partitions: an EFI system partition for /boot, a one-megabyte BIOS
@@ -409,7 +411,10 @@ mkdir -p /mnt/boot
 mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
 [ "$(findmnt -no SOURCE -T /mnt)" = "$ROOT" ] || die "$ROOT is not what is mounted at /mnt"
 [ "$(findmnt -no SOURCE -T /mnt/boot)" = "$ESP" ] || die "$ESP is not what is mounted at /mnt/boot"
-findmnt -o TARGET,SOURCE,FSTYPE /mnt /mnt/boot
+# findmnt takes one target. Asking for both at once is a usage error that
+# returns 1 without a message, and set -e would stop the install here.
+findmnt -o TARGET,SOURCE,FSTYPE /mnt
+findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
 post
 
 # 5. the base system.

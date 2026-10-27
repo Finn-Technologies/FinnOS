@@ -180,6 +180,27 @@ class BaseImageTest(unittest.TestCase):
                 self.assertEqual(installed, expected, path)
                 self.assertTrue(installed.issubset(catalogue), path)
 
+    def test_installer_does_not_need_dev_fd(self):
+        """The live root may not carry /dev/fd, and a process substitution
+        that cannot open one is a loop that silently does nothing."""
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertNotIn("< <(", script)
+        self.assertNotIn("> >(", script)
+
+    def test_installer_asks_findmnt_for_one_target_at_a_time(self):
+        """findmnt accepts one target. A second is a usage error that
+        returns 1 without a message, and set -e stops the install there."""
+        installer = os.path.join(ROOT, "vm", "finn-install.sh")
+        with open(installer, "r", encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertNotIn(
+            "findmnt -o TARGET,SOURCE,FSTYPE /mnt /mnt/boot", script
+        )
+        self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt\n", script)
+        self.assertIn("findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot", script)
+
 
 if __name__ == "__main__":
     unittest.main()
