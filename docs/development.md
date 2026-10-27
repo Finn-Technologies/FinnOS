@@ -54,7 +54,7 @@ Two programs in `src/tools` render the real drawing code without a VM:
 ```sh
 make -C src/tools
 src/tools/dockprev out.ppm 1080 2 87 0 3 40    # the dock
-src/tools/vgtest src/compositor/icons sheet.ppm 2   # the icon set
+src/tools/vgtest assets/icons sheet.ppm 2           # the icon set
 ```
 
 They are the fast loop: change a number, run the tool, look at the image.

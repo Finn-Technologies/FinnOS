@@ -30,7 +30,7 @@ package() {
   install -d "$pkgdir/usr/share/finn/wallpaper"
   install -d "$pkgdir/usr/share/finn/icons"
   install -d "$pkgdir/var/lib/finnpkg"
-  printf 'settings\nfiles\narc\nwindow\n' > "$pkgdir/var/lib/finnpkg/installed"
+  printf 'settings\nfiles\nstore\n' > "$pkgdir/var/lib/finnpkg/installed"
 
   # /run/finn: the IPC namespace, created by tmpfiles rather than by a
   # unit's RuntimeDirectory, so that restarting one service does not

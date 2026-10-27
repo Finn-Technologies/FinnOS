@@ -90,8 +90,10 @@ echo "LANG=en_US.UTF-8" > /etc/locale.conf
 # well, and not only on the medium it was installed from.
 get /etc/hostname base/airootfs/etc/hostname
 get /etc/os-release base/airootfs/etc/os-release
-get /etc/issue base/airootfs/etc/issue
-get /etc/motd base/airootfs/etc/motd
+# The live medium's issue and motd describe the medium; the machine gets
+# the installed pair, which does not tell the user to run the installer.
+get /etc/issue base/installed/etc/issue
+get /etc/motd base/installed/etc/motd
 get /etc/pacman.conf base/pacman.conf
 if [ "$(uname -m)" = 'x86_64' ]; then
     MULTILIB_CONF="$(mktemp)"
@@ -156,22 +158,26 @@ mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/l
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-echo window > /var/lib/finnpkg/installed
+printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
 # Every icon, when the payload is the tree. A list of names is a second
 # place to forget one, and an icon the shell cannot find is a tile drawn
 # as an empty square. The list below is only for the host-server flow,
 # where the tree is not on the disc: it is written out to match what is
 # there today, and the tree copy is the one that is complete.
-if compgen -G "$SRC/src/compositor/icons/*.svg" >/dev/null 2>&1; then
-    for f in "$SRC"/src/compositor/icons/*.svg; do
+if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
+    for f in "$SRC"/assets/icons/shell/*.svg "$SRC"/assets/icons/apps/*.svg; do
         install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
     done
 else
-    for icon in accessibility battery battery_bolt bluetooth chevron_down chevron_right \
-                code cursor edit ethernet files language moon notes settings start_button \
-                store studio sun sync terminal vault volume wifi window_close \
-                window_expand window_minimize; do
-        get "/usr/share/finn/icons/$icon.svg" "src/compositor/icons/$icon.svg"
+    for icon in avatar battery bluetooth boot-mark chevron-right cursor \
+                display edit-01 expand home-09 info internet minus-sign moon \
+                paint-brush power refresh search-01 settings-02 sun-01 \
+                sun-03 view-open-windows volume-02 wifi-02 x; do
+        get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
+    done
+    for icon in app-grid browser chevron-left files library settings-app \
+                store windows; do
+        get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
     done
 fi
 get /usr/local/bin/finnpkg src/pkg/finnpkg
@@ -269,12 +275,26 @@ ls -la /boot/
 # root= is not written here: grub-mkconfig derives it from the filesystem it
 # can see, and the check at the end refuses a menu that does not name the
 # UUID the installer measured.
+#
+# An install driven over a serial console keeps that console on the machine
+# it wrote. Dropping it would leave the person who installed the machine
+# with no way to see the boot that follows. An install from a screen gets
+# no serial console: this is the installer's answer, not a default.
+serial_args=""
+if [ "${FINN_SERIAL:-0}" = 1 ]; then
+    serial_args=" console=ttyS0,115200 console=tty0"
+    systemctl enable serial-getty@ttyS0.service 2>/dev/null ||
+        echo "WARN: serial-getty@ttyS0 could not be enabled"
+    echo "SERIAL=console"
+else
+    echo "SERIAL=none"
+fi
 mkdir -p /etc/default
-cat > /etc/default/grub <<'EOF'
+cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_DISTRIBUTOR="FinnOS"
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3$serial_args"
 GRUB_DISABLE_OS_PROBER=true
 EOF
 
@@ -290,8 +310,8 @@ else
     if bootctl --esp-path=/boot install 2>&1 | tail -5; then
         mkdir -p /boot/loader/entries
         printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
-        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3\n' \
-            "$ROOTUUID" > /boot/loader/entries/finnos.conf
+        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3%s\n' \
+            "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
         efi=1
         echo "BOOTLOADER=systemd-boot"
     fi

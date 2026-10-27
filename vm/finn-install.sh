@@ -33,14 +33,42 @@ ASSUME_YES=0
 
 # A machine with no screen - a CI runner, a server, an install driven over a
 # serial cable - has no tty1 to read. When the kernel was told to use a serial
-# console, the same log goes there as well, so the install can be watched and
-# a test can see the installer start without a display. The condition is the
+# console, the log goes there as well, so the install can be watched and a
+# test can see the installer start without a display. The condition is the
 # kernel command line rather than the device node, because a machine can have
 # a COM port with nothing attached to it.
+#
+# The mirror is a FIFO and tee, not a process substitution: a live root
+# without /dev/fd would fail the substitution and exit before the first line.
+# tee still writes to its own stdout, so the console the installer was started
+# from keeps its copy; the serial device is an extra output, not a replacement.
+SERIAL=0
 if grep -qw 'console=ttyS0' /proc/cmdline 2>/dev/null && [ -w /dev/ttyS0 ]; then
-    exec > >(tee "$LOG" /dev/ttyS0) 2>&1
+    SERIAL=1
+fi
+LOG_DIR=""
+LOG_TEE=""
+: >"$LOG"
+# fd 3 holds the FIFO open for both ends, so the writer below cannot block
+# waiting for a reader that has not opened the pipe yet. tee closes its copy
+# of 3 and reads to EOF when the installer closes its own.
+if LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/finn-install.XXXXXX")" &&
+   mkfifo -m 600 "$LOG_DIR/log" &&
+   exec 3<>"$LOG_DIR/log"; then
+    if [ "$SERIAL" = 1 ]; then
+        tee "$LOG" /dev/ttyS0 <"$LOG_DIR/log" 3>&- &
+    else
+        tee "$LOG" <"$LOG_DIR/log" 3>&- &
+    fi
+    LOG_TEE=$!
+    exec >&3 2>&1
 else
-    exec > >(tee "$LOG") 2>&1
+    # The log still has the installer's words; only the mirror is missing.
+    # The warning goes to the console that was there before the redirection.
+    exec 3>&2
+    exec >>"$LOG" 2>&1
+    echo "warning: the installer log cannot be mirrored to this console" >&3
+    exec 3>&-
 fi
 
 # The log is posted to the host that serves the disc, when there is one. It
@@ -53,9 +81,8 @@ post() {
          -X POST --data-binary @"$LOG" "$HOST/log" -o /dev/null 2>/dev/null || true
 }
 
-# The completion line is posted on its own rather than read back out of the
-# log: tee writes the log asynchronously, and a CI runner watching for the
-# end of an unattended install must not race it.
+# A line a CI runner must not race is posted on its own rather than read
+# back out of the log: tee writes the log asynchronously.
 post_line() {
     curl -s --connect-timeout 2 --max-time 5 \
          --data-binary "$1" "$HOST/log" -o /dev/null 2>/dev/null || true
@@ -64,13 +91,32 @@ post_line() {
 STEP="arguments"
 die() { echo "error: $*" >&2; exit 1; }
 
+# Closing the log is what lets tee see EOF and write the last line; waiting
+# for it is what lets the failure POST read a complete log. This runs on
+# every exit, including the abort where nothing was written.
+stop_log() {
+    exec 1>&- 2>&- 3>&-
+    if [ -n "$LOG_TEE" ]; then
+        wait "$LOG_TEE" 2>/dev/null || true
+        LOG_TEE=""
+    fi
+    if [ -n "$LOG_DIR" ]; then
+        rm -rf "$LOG_DIR"
+        LOG_DIR=""
+    fi
+}
+
 # Every exit says what it was doing. An install that stops half way leaves a
 # machine somebody has to finish by hand, so the last line of the log names
-# the step and not only the command that returned non-zero.
+# the step and not only the command that returned non-zero. The log is closed
+# before it is posted, because tee writes it asynchronously.
 failed() {
     local rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "FINN_INSTALL_FAILED: step \"$STEP\" exited $rc"
+    fi
+    stop_log
+    if [ "$rc" -ne 0 ]; then
         post
     fi
 }
@@ -133,14 +179,29 @@ for word in $(cat /proc/cmdline 2>/dev/null || true); do
 done
 
 if [ -z "$DISK_ARG" ]; then
-    # Not an install that failed, so no FINN_INSTALL_FAILED line: nothing
-    # was attempted and nothing was written.
-    trap - EXIT
-    usage >&2
-    echo >&2
-    echo "Disks on this machine:" >&2
-    lsblk -dno NAME,SIZE,TYPE,MODEL 2>/dev/null | sed 's#^#  /dev/#' >&2 || true
-    exit 2
+    # The default boot entry has no disk to name, so the installer asks for
+    # one. It is still never guessed: the answer is typed at the console and
+    # then typed again at the confirmation below. An EOF or Ctrl-C is not a
+    # failed install, because nothing was attempted and nothing was written.
+    echo "No disk was named. Disks on this machine:"
+    lsblk -dno NAME,SIZE,TYPE,MODEL 2>/dev/null | sed 's#^#  /dev/#' || true
+    echo
+    while :; do
+        printf 'Disk to install onto (e.g. /dev/sda), or Ctrl-C to abort:\n'
+        if ! read -r DISK_ARG; then
+            trap - EXIT
+            echo
+            echo "no disk named; nothing was written" >&2
+            stop_log
+            exit 2
+        fi
+        [ -n "$DISK_ARG" ] || continue
+        if [ ! -b "$DISK_ARG" ]; then
+            echo "not a block device: $DISK_ARG" >&2
+            continue
+        fi
+        break
+    done
 fi
 
 # 0. the payload.
@@ -206,10 +267,24 @@ EOF
         die "[multilib] is not in /etc/pacman.conf; the x86_64 package list needs it for Wine"
     echo "multilib: [multilib] enabled"
 fi
+# The live root's keyring is a tmpfs populated by pacman-init.service. If
+# that unit did not run - an older disc, an installer started by hand - the
+# keyring is empty and a signed pacman sync fails. Initializing it here is
+# the recovery; disabling signature checking is not. An install whose
+# packages were not verified is not an install this script will perform.
+if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
+    echo "the live keyring is empty; initializing it"
+    if ! pacman-key --init 2>&1 | tail -5; then
+        die "the live keyring could not be initialized; refusing to install without signature checking"
+    fi
+    if ! pacman-key --populate 2>&1 | tail -5; then
+        die "the live keyring could not be populated; refusing to install without signature checking"
+    fi
+fi
+[ -s /etc/pacman.d/gnupg/pubring.gpg ] ||
+    die "the live keyring is not initialized; refusing to install without signature checking"
 if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
-    sed -i 's/^SigLevel.*/SigLevel = Never/' /etc/pacman.conf
-    pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5 ||
-        die "the installer's own tools did not install"
+    die "the installer's own tools did not install; the live keyring or a mirror is broken"
 fi
 command -v pacstrap >/dev/null || die "pacstrap is not on this live system"
 command -v mkfs.vfat >/dev/null || die "mkfs.vfat is not on this live system"
@@ -269,6 +344,8 @@ done
 # out from under them. Swap does not appear in the mount table, so it is read
 # from swapon separately.
 swaps="$(swapon --show=NAME --noheadings 2>/dev/null || true)"
+# A here-string, not a process substitution: the live root may not carry
+# /dev/fd, and a failed substitution would skip the check without a word.
 while read -r name type; do
     [ -n "$name" ] || continue
     if [ "/dev/$name" = "$DISK" ]; then continue; fi
@@ -277,7 +354,7 @@ while read -r name type; do
     case " $(echo $swaps) " in
         *" /dev/$name "*) die "/dev/$name on $DISK is in use as swap; swapoff it first" ;;
     esac
-done < <(lsblk -lno NAME,TYPE "$DISK" | tail -n +2)
+done <<< "$(lsblk -lno NAME,TYPE "$DISK" | tail -n +2)"
 
 echo
 echo "This will erase every partition on $DISK and install FinnOS:"
@@ -303,15 +380,17 @@ fi
 while read -r name; do
     [ -b "/dev/$name" ] || continue
     wipefs -a "/dev/$name" || die "wipefs failed on /dev/$name"
-done < <(lsblk -lno NAME "$DISK" | tail -n +2)
+done <<< "$(lsblk -lno NAME "$DISK" | tail -n +2)"
 wipefs -a "$DISK" || die "wipefs failed on $DISK"
 
 # Three partitions: an EFI system partition for /boot, a one-megabyte BIOS
 # boot partition, and the root. The BIOS boot partition is where GRUB puts
 # its boot code on a GPT disk; without it a machine that starts with a BIOS
 # has an install it cannot reach, and the firmware is not always willing
-# to boot an EFI disk on its own.
-printf 'label: gpt\n,512M,U\n,+1M,B\n,,L\n' | sfdisk --wipe=always "$DISK" ||
+# to boot an EFI disk on its own. Its type is named by GUID: the short "B"
+# alias is a DOS type, and sfdisk refuses to add a GPT partition with it.
+printf 'label: gpt\n,512M,U\n,+1M,21686148-6449-6E6F-744E-656564454649\n,,L\n' |
+    sfdisk --wipe=always "$DISK" ||
     die "sfdisk did not write a partition table on $DISK"
 sfdisk -d "$DISK" >/dev/null || die "no partition table on $DISK"
 
@@ -337,12 +416,18 @@ post
 
 # 4. the mounts, checked by source rather than assumed from the exit code.
 step "[4/8] MOUNT"
-mkdir -p /mnt/boot
 mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
+# /mnt/boot is made on the new root, after the root is mounted: a directory
+# made before it would be covered by the root mount and the ESP would have
+# nowhere to go.
+mkdir -p /mnt/boot
 mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
 [ "$(findmnt -no SOURCE -T /mnt)" = "$ROOT" ] || die "$ROOT is not what is mounted at /mnt"
 [ "$(findmnt -no SOURCE -T /mnt/boot)" = "$ESP" ] || die "$ESP is not what is mounted at /mnt/boot"
-findmnt -o TARGET,SOURCE,FSTYPE /mnt /mnt/boot
+# findmnt takes one target. Asking for both at once is a usage error that
+# returns 1 without a message, and set -e would stop the install here.
+findmnt -o TARGET,SOURCE,FSTYPE /mnt
+findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
 post
 
 # 5. the base system.
@@ -459,6 +544,10 @@ chmod +x /mnt/root/finn-chroot.sh
 export ROOTUUID
 export FINN_DISK="$DISK"
 export FINN_PASSWORD="${FINN_PASSWORD:-}"
+# A machine installed over a serial console keeps that console. The live
+# medium knows because it was told; the chroot has no kernel command line
+# to read, so the answer is handed to it.
+export FINN_SERIAL="$SERIAL"
 arch-chroot /mnt /root/finn-chroot.sh ||
     die "the machine could not be configured; see the chroot log above"
 post
@@ -500,6 +589,9 @@ else
     HARDWARE="aarch64: firmware, mesa, audio, bluetooth"
 fi
 echo "HARDWARE=$HARDWARE"
+# The test that watches an unattended install looks for this line; the log
+# post above the boot entry can still be behind tee when it arrives.
+post_line "HARDWARE=$HARDWARE"
 
 bootentry=""
 if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "root=UUID=$ROOTUUID" /mnt/boot/grub/grub.cfg; then

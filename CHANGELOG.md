@@ -5,6 +5,73 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The install medium boots with a console and asks for its disk
+
+- The install entries put the kernel on `tty0` and mirror the console to
+  `ttyS0`, so a serial log shows the boot and the installer instead of a
+  blank screen.
+- The installer mirrors its own output through a FIFO instead of a process
+  substitution, so it still starts on a live root that does not carry
+  `/dev/fd`; the console it was started from keeps its copy.
+- The disc turns systemd's first-boot wizard off. The live root carries an
+  uninitialized machine-id, and the wizard used to take `tty1` and ask for a
+  timezone instead of letting the installer start.
+- Booting **Install FinnOS** without a disk now lists the disks and asks
+  for one, then asks again before writing. It no longer exits with usage
+  on the disc's own default entry.
+- The disk layout names the BIOS boot partition by its GPT type GUID. The
+  short `B` alias is a DOS type, and `sfdisk` refused to add the partition,
+  so the install stopped at the disk step.
+- The installer mounts the new root before creating `/mnt/boot`, so the
+  ESP mount point is on the new root instead of being covered by it.
+- The mount step lists `/mnt` and `/mnt/boot` with one `findmnt` call each.
+  `findmnt` takes a single target, and passing both made the step exit
+  without a message before the base system was installed.
+- The disk checks no longer use process substitutions. A live root without
+  `/dev/fd` leaves such a loop with no input, so a partition already
+  mounted or in use as swap was not refused.
+- The chroot installs the icons from `assets/icons/shell` and
+  `assets/icons/apps`, where the tree keeps them. It looked in
+  `src/compositor/icons`, so it fell back to fetching a stale list from
+  the host and stopped at the payload step on a machine with no host
+  server.
+- The live root mounts `/etc/pacman.d/gnupg` on a tmpfs and populates the
+  keyring at boot, before the `tty1` autologin starts the installer. The
+  squashfs is read-only and carries no keyring, so the installer's first
+  signed `pacman -Sy` used to fail.
+- The installer no longer answers a broken keyring by writing
+  `SigLevel = Never`. It initializes an empty keyring when it can, and
+  stops with a message instead of installing unverified packages.
+
+### The installed app list matches the catalogue
+
+- An installed machine marks Settings, Files and Store as installed: the
+  three catalogue entries whose launchers the image actually ships.
+
+### The installed machine does not call itself a live medium
+
+- The login issue and motd on an installed system now come from
+  `base/installed`, not the install medium's `base/airootfs`. The old
+  files told the user to run `finn-install` on the machine they had just
+  installed.
+
+### The installed disk is booted, not just written
+
+- An install driven over a serial console keeps that console: the installed
+  GRUB and systemd-boot entries carry `console=ttyS0`, and the serial getty
+  is enabled. An install from a screen gets no serial console.
+- The opt-in full-install CI job now detaches the ISO, boots the disk the
+  installer wrote, and waits for the installed system's login prompt. A
+  disk that installs but does not boot fails the run instead of passing on
+  the installer's own checks.
+
+### Host-side tools follow the icon layout
+
+- `vgtest` takes `assets/icons` and resolves both `shell/` and `apps/`, so
+  the sheet covers the catalogue's icons and no longer looks for
+  `settings-app.svg` under `shell/`. `docs/development.md` names the same
+  path.
+
 ### The ISO is FinnOS, built from this tree
 
 - There is no downloaded base image and no remaster path. `vm/build-iso.sh`
@@ -37,6 +104,10 @@ and the changes to it are worth reading.
   whose `source` is `flatpak` or `winget`, including x86_64 and ARM64
   Flatpak entries; the Store's Linux and Windows pages render them, with
   live install state from the control plane.
+- **No browser placeholder.** The registry no longer lists Finn Browser:
+  there is no browser view and no `finn-browser` launcher, so the entry
+  could only ever be shown as unavailable. It joins the catalogue when its
+  view is real.
 
 ### Finn Store, and a package manager with one owner
 

@@ -248,12 +248,61 @@ def stop_capture(server, thread):
     thread.join(2)
 
 
-def wait_for(server, needle, timeout, process=None):
+def wait_for(server, needle, timeout, process=None, stop=()):
+    """Wait for a needle in the captured posts.
+
+    A marker in stop means the run has already failed; returning as soon as
+    one appears keeps a failed install from waiting out the whole timeout.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         for body in list(server.posts):
             if needle in body:
                 return True
+            if any(marker in body for marker in stop):
+                return False
+        if process is not None and process.poll() is not None:
+            return False
+        time.sleep(1)
+    return False
+
+
+def serial_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def wait_for_serial(path, needle, timeout, process=None):
+    """Wait for a line the installed machine prints on its own console."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if needle in serial_text(path):
+            return True
+        if process is not None and process.poll() is not None:
+            return False
+        time.sleep(1)
+    return False
+
+
+def wait_for_installer(server, serial, timeout, process=None):
+    """Wait for either proof that finn-install started.
+
+    An install entry that names a disk posts its log, and the first post
+    that says the payload was found is the whole chain. The default entry
+    names no disk, so the installer asks for one; that question is on the
+    serial console, and seeing it is the same proof without requiring a
+    post that a no-disk install never makes.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for body in list(server.posts):
+            if "payload found in the live root" in body:
+                return True
+        if "Disk to install onto" in serial_text(serial):
+            return True
         if process is not None and process.poll() is not None:
             return False
         time.sleep(1)
@@ -286,15 +335,15 @@ def qemu_network():
     ]
 
 
-def launch(iso, work, extra=(), uefi=False):
+def launch(iso, work, extra=(), uefi=False, boot="d", cdrom=True):
     serial = os.path.join(work, "serial.log")
     command = [
         QEMU,
         "-machine", "q35",
         "-m", "2048",
         "-smp", "2",
-        "-cdrom", iso,
-        "-boot", "order=d",
+        *(["-cdrom", iso] if cdrom else []),
+        "-boot", "order=" + boot,
         *qemu_network(),
         "-display", "none",
         "-serial", "file:" + serial,
@@ -347,11 +396,12 @@ def tail(path, lines=40):
 class QemuBootTest(unittest.TestCase):
     """Boot the real ISO through firmware and wait for the installer.
 
-    The installer posts its log to 192.168.44.1:8765 at every step; the
-    first post that says the payload was found in the live root proves the
-    whole chain ran: firmware, boot loader, kernel, initramfs, live root,
-    autologin and finn-install. Under UEFI it also proves the menu inside
-    the appended FAT partition is the FinnOS one.
+    The default install entry names no disk, so finn-install asks for one.
+    That question reaching the serial console proves the whole chain ran:
+    firmware, boot loader, kernel, initramfs, live root, autologin and
+    finn-install. An entry that does name a disk is also accepted when its
+    log says the payload was found in the live root. Under UEFI the run
+    also proves the menu inside the appended FAT partition is FinnOS's.
     """
 
     def boot(self, uefi):
@@ -364,9 +414,7 @@ class QemuBootTest(unittest.TestCase):
         try:
             process, serial, command = launch(ISO, work, uefi=uefi)
             self.assertIsNotNone(process, " ".join(command or []))
-            found = wait_for(
-                server, "payload found in the live root", timeout, process
-            )
+            found = wait_for_installer(server, serial, timeout, process)
             if not found:
                 self.fail(
                     "the guest did not reach the installer within {}s\n"
@@ -376,7 +424,7 @@ class QemuBootTest(unittest.TestCase):
                         timeout,
                         " ".join(command),
                         "\n---\n".join(server.posts[-5:]) or "(none)",
-                        tail(serial),
+                        tail(serial, 120),
                     )
                 )
         finally:
@@ -402,8 +450,10 @@ class QemuFullInstallTest(unittest.TestCase):
     This is opt-in because it downloads a base system and builds the
     compositor. It verifies the installer's own final checks (the binaries,
     the enabled units, the boot entry and the hardware packages on the
-    disk). It does not reboot the installed disk: that is the manual check
-    in docs/architecture.md, and a QEMU GPU is not the OptiPlex's GPU.
+    disk), then detaches the ISO and boots the disk it wrote. The installer
+    ran with a serial console, so the installed GRUB entry keeps ttyS0 and
+    the login prompt is visible there. A QEMU GPU is still not the
+    OptiPlex's GPU; the desktop itself remains the manual check.
     """
 
     def test_installer_completes_on_a_disk(self):
@@ -418,8 +468,8 @@ class QemuFullInstallTest(unittest.TestCase):
             kernel = os.path.join(work, "vmlinuz-linux")
             initramfs = os.path.join(work, "initramfs-linux.img")
             for source, destination in (
-                ("/arch/boot/x86_64/vmlinuz-linux", kernel),
-                ("/arch/boot/x86_64/initramfs-linux.img", initramfs),
+                ("/finn/boot/x86_64/vmlinuz-linux", kernel),
+                ("/finn/boot/x86_64/initramfs-linux.img", initramfs),
             ):
                 subprocess.run(
                     [XORRISO, "-osirrox", "on", "-indev", ISO,
@@ -433,14 +483,16 @@ class QemuFullInstallTest(unittest.TestCase):
                 "-kernel", kernel,
                 "-initrd", initramfs,
                 "-append", (
-                    "archisobasedir=arch archisodevice=/dev/sr0 "
-                    "console=ttyS0 finn.install finn.disk=/dev/vda finn.yes"
+                    "archisobasedir=finn archisodevice=/dev/sr0 "
+                    "console=ttyS0 systemd.firstboot=off "
+                    "finn.install finn.disk=/dev/vda finn.yes"
                 ),
             ]
             process, serial, command = launch(ISO, work, extra=extra)
             self.assertIsNotNone(process, " ".join(command or []))
             complete = wait_for(
-                server, "FINN_INSTALL_COMPLETE", timeout, process
+                server, "FINN_INSTALL_COMPLETE", timeout, process,
+                stop=("FINN_INSTALL_FAILED",),
             )
             posts = "\n---\n".join(server.posts[-10:])
             self.assertTrue(
@@ -453,6 +505,35 @@ class QemuFullInstallTest(unittest.TestCase):
             self.assertIn("FINN_CHROOT_COMPLETE", posts)
             self.assertIn("HARDWARE=", posts)
             self.assertNotIn("FINN_INSTALL_FAILED", posts)
+
+            # The install wrote a disk; booting it is the other half of the
+            # claim. The ISO is detached so a disk that does not boot cannot
+            # quietly fall back to the live medium and look successful. The
+            # installer was driven over ttyS0, so the installed GRUB entry
+            # carries that console and the login prompt is the proof.
+            stop(process)
+            process = None
+            try:
+                os.unlink(serial)
+            except OSError:
+                pass
+            reboot_timeout = int(
+                os.environ.get("FINNOS_REBOOT_TIMEOUT", "600"))
+            process, serial, command = launch(
+                ISO, work,
+                extra=["-drive", "file=" + disk + ",if=virtio,format=raw"],
+                boot="c", cdrom=False,
+            )
+            self.assertIsNotNone(process, " ".join(command or []))
+            booted = wait_for_serial(
+                serial, "finnos login:", reboot_timeout, process)
+            self.assertTrue(
+                booted,
+                "the installed disk did not reach a login prompt within {}s\n"
+                "command: {}\nserial:\n{}".format(
+                    reboot_timeout, " ".join(command or []), tail(serial, 80)
+                ),
+            )
         finally:
             stop(process)
             stop_capture(server, thread)

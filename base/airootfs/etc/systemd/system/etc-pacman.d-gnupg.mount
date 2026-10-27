@@ -1,0 +1,13 @@
+# The live root is a read-only squashfs, and pacman-key writes its keyring
+# under /etc/pacman.d/gnupg. The installer's first step is a signed pacman
+# sync, so the keyring has to be writable. A tmpfs is the same answer
+# archiso's releng profile uses: the keyring is populated at boot and thrown
+# away at shutdown, and it never grows the copy-on-write overlay.
+[Unit]
+Description=Temporary /etc/pacman.d/gnupg directory
+
+[Mount]
+What=tmpfs
+Where=/etc/pacman.d/gnupg
+Type=tmpfs
+Options=mode=0755,noswap

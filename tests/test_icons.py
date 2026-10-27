@@ -47,6 +47,7 @@ class ShellIconsTest(unittest.TestCase):
         for path in (
             os.path.join(ROOT, "base", "setup.sh"),
             os.path.join(ROOT, "Makefile"),
+            os.path.join(ROOT, "vm", "finn-chroot.sh"),
         ):
             with open(path, "r", encoding="utf-8") as handle:
                 text = handle.read()
@@ -54,6 +55,51 @@ class ShellIconsTest(unittest.TestCase):
         with open(os.path.join(ROOT, "base", "setup.sh"), "r", encoding="utf-8") as handle:
             setup = handle.read()
         self.assertNotIn("src/compositor/icons", setup)
+        with open(os.path.join(ROOT, "vm", "finn-chroot.sh"), "r", encoding="utf-8") as handle:
+            chroot = handle.read()
+        self.assertNotIn("src/compositor/icons", chroot)
+
+    def test_vgtest_sheet_names_icons_that_exist(self):
+        """vgtest is the host-side view of the icon set. A name it cannot
+        resolve is an empty cell on the sheet, and the app icons moved out
+        of assets/icons/shell."""
+        with open(os.path.join(ROOT, "src", "tools", "vgtest.c"), "r",
+                  encoding="utf-8") as handle:
+            source = handle.read()
+        arrays = re.findall(
+            r"static const char \*const (shell|app)_icons\[\] = \{(.*?)\};",
+            source,
+            re.S,
+        )
+        self.assertEqual({name for name, _ in arrays}, {"shell", "app"})
+        shipped = set(os.listdir(SHELL_ICONS)) | set(os.listdir(APPS_ICONS))
+        for _, body in arrays:
+            for name in re.findall(r'"([^"]+)"', body):
+                self.assertIn(name + ".svg", shipped, name)
+
+    def test_development_docs_name_the_icon_root(self):
+        with open(os.path.join(ROOT, "docs", "development.md"), "r",
+                  encoding="utf-8") as handle:
+            docs = handle.read()
+        self.assertNotIn("src/compositor/icons", docs)
+        self.assertIn("src/tools/vgtest assets/icons", docs)
+
+    def test_chroot_fallback_icons_name_files_that_exist(self):
+        """The host-server flow has no tree to glob, so it lists the names.
+        A name that moved is an icon the installed shell cannot draw."""
+        with open(os.path.join(ROOT, "vm", "finn-chroot.sh"), "r", encoding="utf-8") as handle:
+            script = handle.read()
+        blocks = re.findall(
+            r"for icon in (.*?); do\s*\n\s*"
+            r"get \"[^\"]*/\$icon\.svg\" \"assets/icons/(shell|apps)/\$icon\.svg\"",
+            script,
+            re.S,
+        )
+        self.assertEqual({directory for _, directory in blocks}, {"shell", "apps"})
+        for names, directory in blocks:
+            for name in names.replace("\\", " ").split():
+                path = os.path.join(ROOT, "assets", "icons", directory, name + ".svg")
+                self.assertTrue(os.path.isfile(path), path)
 
 
 if __name__ == "__main__":

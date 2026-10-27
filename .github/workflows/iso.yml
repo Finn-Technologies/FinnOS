@@ -196,8 +196,15 @@ jobs:
             | grep -E 'title +Install FinnOS'
           mtype -i "$efi" ::/loader/entries/01-finnos-install.conf \
             | grep -E 'finn\.install'
-          for f in $(mdir -i "$efi" -b ::/loader/entries); do
-            if mtype -i "$efi" "::/loader/entries/$f" | grep -q 'Arch Linux'; then
+          entries="$(mdir -i "$efi" -b ::/loader/entries)"
+          test -n "$entries"
+          for f in $entries; do
+            case "$f" in *.conf) ;; *) continue ;; esac
+            if ! content="$(mtype -i "$efi" "$f")"; then
+              echo "cannot read the EFI menu entry: $f" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$content" | grep -q 'Arch Linux'; then
               echo "the EFI menu still names Arch Linux: $f" >&2
               exit 1
             fi
@@ -244,9 +251,10 @@ jobs:
     name: install to a disk (opt-in)
     # The boot-to-installer check above runs on every build. This one is
     # opt-in because it pacstraps a base system and builds the compositor;
-    # it verifies the installer's own final checks on the disk. Rebooting
-    # the installed disk is the manual check, and a QEMU GPU is not the
-    # OptiPlex's GPU, so it is not claimed here.
+    # it verifies the installer's own final checks on the disk, then boots
+    # that disk with the ISO detached and waits for the installed system's
+    # serial login prompt. The desktop itself is still the manual OptiPlex
+    # check: a QEMU GPU is not the OptiPlex's GPU.
     needs: iso
     if: github.event_name == 'workflow_dispatch' && inputs.full_install
     runs-on: ubuntu-latest
