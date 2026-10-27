@@ -30,6 +30,11 @@ and the changes to it are worth reading.
 - The disk checks no longer use process substitutions. A live root without
   `/dev/fd` leaves such a loop with no input, so a partition already
   mounted or in use as swap was not refused.
+- The chroot installs the icons from `assets/icons/shell` and
+  `assets/icons/apps`, where the tree keeps them. It looked in
+  `src/compositor/icons`, so it fell back to fetching a stale list from
+  the host and stopped at the payload step on a machine with no host
+  server.
 
 ### The installed app list matches the catalogue
 

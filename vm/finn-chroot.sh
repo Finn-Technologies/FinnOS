@@ -162,16 +162,20 @@ printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
 # as an empty square. The list below is only for the host-server flow,
 # where the tree is not on the disc: it is written out to match what is
 # there today, and the tree copy is the one that is complete.
-if compgen -G "$SRC/src/compositor/icons/*.svg" >/dev/null 2>&1; then
-    for f in "$SRC"/src/compositor/icons/*.svg; do
+if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
+    for f in "$SRC"/assets/icons/shell/*.svg "$SRC"/assets/icons/apps/*.svg; do
         install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
     done
 else
-    for icon in accessibility battery battery_bolt bluetooth chevron_down chevron_right \
-                code cursor edit ethernet files language moon notes settings start_button \
-                store studio sun sync terminal vault volume wifi window_close \
-                window_expand window_minimize; do
-        get "/usr/share/finn/icons/$icon.svg" "src/compositor/icons/$icon.svg"
+    for icon in avatar battery bluetooth boot-mark chevron-right cursor \
+                display edit-01 expand home-09 info internet minus-sign moon \
+                paint-brush power refresh search-01 settings-02 sun-01 \
+                sun-03 view-open-windows volume-02 wifi-02 x; do
+        get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
+    done
+    for icon in app-grid browser chevron-left files library settings-app \
+                store windows; do
+        get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
     done
 fi
 get /usr/local/bin/finnpkg src/pkg/finnpkg
