@@ -55,6 +55,16 @@ and the changes to it are worth reading.
   files told the user to run `finn-install` on the machine they had just
   installed.
 
+### The installed disk is booted, not just written
+
+- An install driven over a serial console keeps that console: the installed
+  GRUB and systemd-boot entries carry `console=ttyS0`, and the serial getty
+  is enabled. An install from a screen gets no serial console.
+- The opt-in full-install CI job now detaches the ISO, boots the disk the
+  installer wrote, and waits for the installed system's login prompt. A
+  disk that installs but does not boot fails the run instead of passing on
+  the installer's own checks.
+
 ### Host-side tools follow the icon layout
 
 - `vgtest` takes `assets/icons` and resolves both `shell/` and `apps/`, so
