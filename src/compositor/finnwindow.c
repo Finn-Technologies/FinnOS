@@ -21,7 +21,7 @@
 #include <time.h>
 
 /*
- * Metrics authored for the Figma design system (1280x832 * 1.298077):
+ * Metrics authored in design units on the 1280x832 Figma canvas:
  *   Window: 500x300 r=8 (Figma 14:247/14:236)
  *   Stacked windows: (390,266) then (539,189), a +149/-77 reference-unit cascade
  *   Window Options pill: 72x24 r=4.14 at 10px inset from top/right (Figma 14:237)
@@ -29,7 +29,7 @@
  *   Empty window label: "Empty window", 12px (Figma 14:245), FINN_INK at 70% opacity
  *   Settings window: 900x500 centered at (190, 166) in 1280x832 (Figma 14:330)
  */
-#define REF             1.298077f
+#define REF             1.0f
 #define WIN_DEF_W       (500.0f * REF)   /* reference 500 */
 #define WIN_DEF_H       (300.0f * REF)   /* reference 300 */
 #define WIN_R           (8.0f * REF)     /* reference 8   */
@@ -42,18 +42,26 @@
 #define OPT_ICON_PX     (15.43f * REF)   /* reference 15.43: the icon's box */
 
 /*
- * Figma gives a window 0.70 of the frost and its options pill 0.50.
- *
- * Neither is the shell's shared weight, and the difference is not an accident
- * of the file: a window floats over whatever happens to be behind it rather
- * than over a room the shell has already dimmed, so its body carries a little
- * more tint than a panel does. The pill is then a *lift* off that body, not an
- * inset in it — at the tile weight the pill composited to a near-white chip
- * with the glass gone out of it, which is what a sticker looks like next to a
- * window.
+ * The Figma window is a 70% white sheet (#FFFFFFB2) over a 15-unit backdrop
+ * blur, with a 15% black shadow at (0,4), blur 250. Its options pill is
+ * #F9F9F9, a solid step down from the sheet rather than a second frost. The
+ * body frosts rather than paints, because the frame's own sidebar shows the
+ * wallpaper's light through it; the Settings content area then paints its own
+ * opaque paper on top. The shadow is deliberately much wider than the panel's
+ * 3% one: a window floats above the desktop, a launcher sits on it.
  */
-#define WIN_FROST       0.70f
-#define OPT_FROST       0.50f
+#define WIN_BODY_ALPHA   0.70f
+/*
+ * The dark sheet is the same glass, laid heavier. At the light sheet's 0.70
+ * the backdrop still carries too much of the wallpaper's daylight for white
+ * text to sit on; at 1.0 the sheet stops being glass at all and the sidebar
+ * goes flat. 0.84 keeps a visible wash of the picture underneath while
+ * holding the body below the ink.
+ */
+#define WIN_BODY_ALPHA_DARK 0.84f
+#define WIN_SHADOW_BLUR  250.0f
+#define WIN_SHADOW_ALPHA 0.15f
+#define WIN_OPTION_LIGHT 0xFFF9F9F9u
 
 #define TITLEBAR_H       48.0f   /* drag region height */
 
@@ -510,7 +518,7 @@ int finnwindow_open(const char *arg) {
      */
     int is_settings = (strcasecmp(app_id, "settings") == 0 || strcasecmp(title, "Settings") == 0);
     float ref_w = WIN_DEF_W, ref_h = WIN_DEF_H;
-    if (is_settings)                                  { ref_w = 860.0f; ref_h = 480.0f; }
+    if (is_settings)                                  { ref_w = 900.0f; ref_h = 500.0f; }
     else if (strcasecmp(app_id, "files") == 0)        { ref_w = 900.0f; ref_h = 540.0f; }
     else if (strcasecmp(app_id, "store") == 0)        { ref_w = 900.0f; ref_h = 560.0f; }
     else if (strcasecmp(app_id, "browser") == 0)      { ref_w = 900.0f; ref_h = 600.0f; }
@@ -1766,7 +1774,7 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
      */
     int64_t min_x = screen_w, min_y = screen_h, max_x = 0, max_y = 0;
     int64_t shadow_pad = (int64_t)ceilf(scale * REF *
-        (1.5f * FINN_SHADOW_BLUR + FINN_SHADOW_OFFSET_Y) + 1.0f);
+        (1.5f * WIN_SHADOW_BLUR + FINN_SHADOW_OFFSET_Y) + 1.0f);
     for (int i = 0; i < g_n_wins; i++) {
         if (!g_wins[i].used || g_wins[i].minimized) continue;
         int64_t x0 = g_wins[i].x, y0 = g_wins[i].y;
@@ -1871,38 +1879,16 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
             if (!w->maximized)
                 finn_shadow_rrect(g_layer, lw, lh, (float)wx, (float)wy,
                                   (float)w->w, (float)w->h, body_r,
-                                  s * REF * FINN_SHADOW_BLUR, 0.0f,
+                                  s * REF * WIN_SHADOW_BLUR, 0.0f,
                                   s * REF * FINN_SHADOW_OFFSET_Y,
-                                  FINN_SHADOW_ALPHA);
-            finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh, g_lx0, g_ly0,
-                                        (float)wx, (float)wy, (float)w->w, (float)w->h,
-                                        body_r, FINN_GLASS, WIN_FROST);
-            finn_stroke_rrect(g_layer, lw, lh, (float)wx, (float)wy,
-                              (float)w->w, (float)w->h, body_r, 1.0f, FINN_HAIR);
-
-            /* Top-right Window Options pill (Figma 14:237: 72x24 r=4.14,
-             * inset 10, frost 0.50) */
-            int ox_abs, oy_abs, ow, oh;
-            opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
-            int ox = ox_abs - g_lx0;
-            int oy = oy_abs - g_ly0;
-
-            finn_frost_rrect(g_layer, lw, lh, g_lx0, g_ly0,
-                             (float)ox, (float)oy, (float)ow, (float)oh,
-                             s * OPT_R, FINN_GLASS, OPT_FROST);
-            finn_stroke_rrect(g_layer, lw, lh, (float)ox, (float)oy,
-                              (float)ow, (float)oh, s * OPT_R, 1.0f, FINN_HAIR);
-
-            /* Icon centres inside the 72x24 pill (Figma 14:238/240/242:
-             * 15.43px boxes at 12, 36 and 60 from the pill's left edge) */
-            int cy_opt = oy + oh / 2;
-            int cx_exp = ox + rs(OPT_SLOT_CX, s);
-            int cx_min = ox + ow / 2;
-            int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
-
-            opt_icon_blit(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt, s);
-            opt_icon_blit(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt, s);
-            opt_icon_blit(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt, s);
+                                  WIN_SHADOW_ALPHA);
+            finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh,
+                                        g_lx0, g_ly0, (float)wx, (float)wy,
+                                        (float)w->w, (float)w->h, body_r,
+                                        FINN_GLASS,
+                                        finn_theme_dark() ? WIN_BODY_ALPHA_DARK
+                                                          : WIN_BODY_ALPHA);
+            /* A maximized window meets the screen; its sheet is square. */
 
             if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
                 int focused = (i == g_n_wins - 1);
@@ -1941,6 +1927,34 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                                (float)wy + (float)w->h * 0.5f + cap * 0.5f,
                                label, col);
             }
+
+            /*
+             * The window options pill is drawn after the app, not before it:
+             * the app's paper is opaque and covers the whole window, and a
+             * pill painted underneath it simply disappears. In the reference
+             * the pill floats over the content's top-right corner.
+             *
+             * Figma 14:237: 72x24 r=4.14, inset 10, solid #F9F9F9.
+             */
+            int ox_abs, oy_abs, ow, oh;
+            opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
+            int ox = ox_abs - g_lx0;
+            int oy = oy_abs - g_ly0;
+
+            finn_fill_rrect(g_layer, lw, lh, (float)ox, (float)oy,
+                            (float)ow, (float)oh, s * OPT_R,
+                            finn_theme_dark() ? FINN_TILE : WIN_OPTION_LIGHT);
+
+            /* Icon centres inside the 72x24 pill (Figma 14:238/240/242:
+             * 15.43px boxes at 12, 36 and 60 from the pill's left edge) */
+            int cy_opt = oy + oh / 2;
+            int cx_exp = ox + rs(OPT_SLOT_CX, s);
+            int cx_min = ox + ow / 2;
+            int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
+
+            opt_icon_blit(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt, s);
+            opt_icon_blit(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt, s);
+            opt_icon_blit(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt, s);
 
             /*
              * The window is drawn, so it is now part of what is behind the

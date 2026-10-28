@@ -9,9 +9,9 @@
  *
  * A system surface, not a window: it floats above the wallpaper like the
  * dock does, anchored to the tray pill that opens it. The arrangement follows
- * the reference: a connectivity pair, the brightness and volume bars whose
- * glyph circles touch, then the remaining real controls — Appearance, Wired
- * and Power — in the same frosted tile language.
+ * the reference: a connectivity pair, the brightness bar with the appearance
+ * button beside it, the volume bar, then the status footer with the battery
+ * reading and the two buttons that lead out — Personalization and Settings.
  *
  * Every control is bound to finnstate, so a tile is only lit when the
  * machine can actually do what the tile claims: a machine with no wireless
@@ -24,7 +24,8 @@ enum {
     FINNCONTROL_PANEL,        /* inside the panel, but not on a control */
     FINNCONTROL_WIFI,
     FINNCONTROL_BLUETOOTH,
-    FINNCONTROL_APPEARANCE,   /* footer edit/appearance button */
+    FINNCONTROL_APPEARANCE,   /* the light/dark button beside brightness */
+    FINNCONTROL_PERSONALIZE,  /* footer edit button: Settings > Personalization */
     FINNCONTROL_SETTINGS,     /* footer settings gear button */
     FINNCONTROL_BRIGHTNESS,
     FINNCONTROL_VOLUME

@@ -245,6 +245,62 @@ static int launch_app(const finn_app *a) {
 }
 
 /*
+ * The Home panel's Recent activity is a report, so it may only show launches
+ * that actually happened. finnd is the only program that starts an app, which
+ * makes it the only place that can write this truthfully. The file is a small
+ * newest-first list; a relaunch moves its app to the front instead of adding
+ * a duplicate row. It is state, not a log: the audit log already has every
+ * call, and this one exists to be read by the shell.
+ */
+static void recent_record(const char *id) {
+    if (!id || !id[0]) return;
+
+    char kept[FINN_RECENT_MAX][64];
+    long stamp[FINN_RECENT_MAX];
+    int n = 0;
+
+    FILE *f = fopen(FINN_RECENT_FILE, "r");
+    if (f) {
+        char line[128];
+        while (n < FINN_RECENT_MAX && fgets(line, sizeof line, f)) {
+            char *tab = strchr(line, '\t');
+            if (!tab) continue;
+            *tab = '\0';
+            char *end = NULL;
+            long when = strtol(line, &end, 10);
+            if (!end || *end || when <= 0) continue;
+            char *nl = strchr(tab + 1, '\n');
+            if (nl) *nl = '\0';
+            if (!tab[1] || strchr(tab + 1, '\t')) continue;
+            if (!strcmp(tab + 1, id)) continue;
+            snprintf(kept[n], sizeof kept[n], "%s", tab + 1);
+            stamp[n] = when;
+            n++;
+        }
+        fclose(f);
+    }
+
+    char tmp[sizeof FINN_RECENT_FILE + 8];
+    snprintf(tmp, sizeof tmp, "%s.XXXXXX", FINN_RECENT_FILE);
+    int fd = mkstemp(tmp);
+    if (fd < 0) return;
+    FILE *out = fdopen(fd, "w");
+    if (!out) { close(fd); unlink(tmp); return; }
+
+    fprintf(out, "%ld\t%s\n", (long)time(NULL), id);
+    for (int i = 0; i < n; i++) fprintf(out, "%ld\t%s\n", stamp[i], kept[i]);
+    if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+        fclose(out);
+        unlink(tmp);
+        return;
+    }
+    fclose(out);
+    chmod(tmp, 0644);
+    if (rename(tmp, FINN_RECENT_FILE) != 0) unlink(tmp);
+}
+
+
+/*
  * Run one systemctl verb and wait for it: the caller's answer is the
  * command's exit status, so it has to be the command that was waited on.
  * Returns the exit status, or -1 when fork or wait failed.
@@ -1092,6 +1148,7 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
             finn_write_str(fd, "ERR could not start\n");
             return "ERR spawn failed";
         }
+        recent_record(a->id);
         char b[128];
         snprintf(b, sizeof b, "OK launched %s\n", a->id);
         finn_write_str(fd, b);

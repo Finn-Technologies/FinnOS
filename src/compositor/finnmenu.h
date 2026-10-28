@@ -8,15 +8,18 @@
 /*
  * finnmenu — the FinnOS Start Menu.
  *
- * The surface that opens from the dock's launcher button: the system's
- * catalogue of apps, laid out as a grid, in the same glass and the same type
- * as the Control Center and the clock page. It is a surface and not a window,
- * so it lives in the compositor's frame loop with the rest of the shell.
+ * The surface that opens from the dock's launcher button: Home, the pinned
+ * summary with recent activity; All Apps, the full catalogue; and Search,
+ * entered by typing or from the dock's search button. All three share the
+ * same glass, type and row geometry as the Control Center and the clock page.
+ * It is a surface and not a window, so it lives in the compositor's frame
+ * loop with the rest of the shell.
  *
- * What is on it is what the machine knows. The grid comes from the
- * application registry (finnapps), and an app the package manager has not
- * installed is drawn as what it is — present in the catalogue, absent from the
- * machine — rather than as a live tile that does nothing when it is pressed.
+ * What is on it is what the machine knows. The catalogue comes from the
+ * application registry (finnapps), recent activity from the launches finnd
+ * recorded, and an app the package manager has not installed is drawn as what
+ * it is — present in the catalogue, absent from the machine — rather than as a
+ * live tile that does nothing when it is pressed.
  *
  * The menu never launches anything itself: it reports what was pressed and
  * the compositor asks the control plane to act on it. The control plane is
@@ -28,6 +31,8 @@ enum {
     FINNMENU_PANEL,        /* inside the menu, but not on a control */
     FINNMENU_RESULT,       /* a row in the unified result list */
     FINNMENU_SEARCH,       /* the search field */
+    FINNMENU_VIEW_ALL,     /* Home's View all pill: switch to All Apps */
+    FINNMENU_BACK,         /* All Apps/Search's back button: return Home */
     FINNMENU_PIN,          /* pin/unpin the previewed app on the taskbar */
     FINNMENU_RESTART,
     FINNMENU_SHUTDOWN
@@ -66,6 +71,14 @@ void finnmenu_free(void);
 /* The logical state: whether the menu accepts input. */
 void finnmenu_set_open(int open);
 int  finnmenu_is_open(void);
+
+/*
+ * Switch views without closing the surface. View all is a navigation inside
+ * the menu, not a second request to open it; the compositor calls these from
+ * the hit it already has.
+ */
+void finnmenu_show_home(void);
+void finnmenu_show_all(void);
 
 /* The visual state, which lags the logical one by the length of a close. */
 int  finnmenu_visible(void);

@@ -28,6 +28,12 @@
 #define FINN_COMP_SOCK     "/run/finn/comp.sock"
 #define FINN_STATE_DIR     "/run/finn/state"
 
+/* The Home panel's recent-activity list. finnd is the only program that
+ * starts an app, so it is the only writer; the shell reads it to report what
+ * actually happened rather than inventing a history. */
+#define FINN_RECENT_FILE   FINN_STATE_DIR "/recent"
+#define FINN_RECENT_MAX    12
+
 #define FINN_MAX_LINE      4096
 
 /* Bounds shared by the audited Flatpak protocol and its compositor client. */

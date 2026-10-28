@@ -69,6 +69,17 @@ extern uint32_t FINN_GLASS;
 #define FINN_SHADOW_OFFSET_Y 4.0f
 #define FINN_SHADOW_ALPHA 0.03f
 
+/* The design canvas. Every surface in the shell is authored against this
+ * 1280x832 frame, so one factor — the smaller of the two axis ratios — maps a
+ * design unit onto the scanout. Deriving it from the height alone (the old
+ * 1080/832 constant) made a 16:10 panel draw a wider dock than the design and
+ * a 1280-wide panel draw one larger than the screen could hold; deriving it
+ * from the width alone made a short panel overflow. The canonical scale is
+ * 1.298 on 1080p and 1.923 on the 2560x1600 development VM. */
+#define FINN_DESIGN_W 1280.0f
+#define FINN_DESIGN_H 832.0f
+float finn_ui_scale(int screen_w, int screen_h);
+
 void finn_theme_set(int dark);
 int  finn_theme_dark(void);
 
@@ -84,6 +95,12 @@ uint32_t finn_over(uint32_t dst, uint32_t src, float a);
  * radius and the edges are anti-aliased rather than thresholded. */
 void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
                      float rw, float rh, float r, uint32_t c);
+
+/* The same fill, interpolating a straight vertical gradient from `top` at the
+ * rect's top edge to `bottom` at its bottom edge. The hero panels carry one. */
+void finn_fill_rrect_grad(uint32_t *b, int w, int h, float x, float y,
+                          float rw, float rh, float r, uint32_t top,
+                          uint32_t bottom);
 
 /* A blurred black shadow under a rounded surface. `blur` is Figma's blur
  * radius in compositor pixels; `opacity` is the source alpha. */

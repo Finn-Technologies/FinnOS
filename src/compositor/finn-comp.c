@@ -86,15 +86,13 @@
 /*
  * One visual weight for the chrome.
  *
- * The reference dock is drawn slightly smaller and its panels slightly larger
- * than a straight reading of the measurements gives, so a tray glyph and a
- * panel disc land at the same optical size instead of the dock looking heavy
- * against the panels it anchors. `scale` stays the honest density of the
- * screen; these are composition, and live here because they are a relationship
- * between two surfaces rather than a property of either.
+ * Every surface takes the same canonical density. The dock used to be drawn
+ * at 0.97 and the panels at 0.96 of it so the tray glyph and a panel disc
+ * looked alike; that is composition compensating for three different scale
+ * formulas, and it made the dock's width and height disagree with the design.
+ * One factor now maps design units onto the scanout, and each surface is
+ * authored at the Figma measurement.
  */
-#define DOCK_SCALE   0.97f
-#define PANEL_SCALE  0.96f
 
 /*
  * The scrim behind the Start Menu. The desktop does not go away when the
@@ -1657,9 +1655,8 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
      * decided it should move, or the answer would flip back on the next
      * frame.
      */
-    float dock_scale = scale * DOCK_SCALE;
-    finnwindow_set_dock_clearance(finndock_height(dock_scale));
-    finndock_set_sunk(finnwindow_overlaps_band(finndock_rest_top(h, dock_scale)));
+    finnwindow_set_dock_clearance(finndock_height(scale));
+    finndock_set_sunk(finnwindow_overlaps_band(finndock_rest_top(h, scale)));
 
     /*
      * The tray's well belongs to the Control Center, not to the dock: it is
@@ -1709,7 +1706,7 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
     finndock_geometry(&dx, &dy, &dw, &dh);
 
     if (win_showing)
-        finnwindow_render(w, h, dock_scale, dx, dy, dw, dh, st);
+        finnwindow_render(w, h, scale, dx, dy, dw, dh, st);
 
     /*
      * The window can rebuild its own body in place — a keystroke, a list
@@ -1732,16 +1729,16 @@ static void build_chrome(int w, int h, float scale, const finn_state *st,
     g_frame_scene = key1;
     g_frame_scene_ok = !hide_chrome && g_scene_valid;
 
-    finndock_render(w, h, dock_scale, st);
+    finndock_render(w, h, scale, st);
 
     if (finncontrol_visible())
-        finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
+        finncontrol_render(w, h, scale, dx, dy, dw, dh, st);
 
     if (finnclock_visible())
-        finnclock_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
+        finnclock_render(w, h, scale, dx, dy, dw, dh, st);
 
     if (finnmenu_visible())
-        finnmenu_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, st);
+        finnmenu_render(w, h, scale, dx, dy, dw, dh, st);
 
     if (finnsetup_is_open() || finnsetup_visible())
         finnsetup_render(w, h, scale, st);
@@ -2158,6 +2155,11 @@ static int cc_activate(int act, float v01, const finn_state *st) {
     case FINNCONTROL_APPEARANCE:
         finn_state_set_dark(!st->dark);
         return 1;
+    case FINNCONTROL_PERSONALIZE:
+        finncontrol_set_open(0);
+        finnsettingsapp_set_page("personalization");
+        finnwindow_open("settings");
+        return 1;
     case FINNCONTROL_SETTINGS:
         finncontrol_set_open(0);
         finnwindow_open("app=settings");
@@ -2211,9 +2213,84 @@ static const char *ctl_why(const char *reply) {
 }
 
 /*
+ * Launches are answered asynchronously.
+ *
+ * finnd starts an app through a transient systemd unit, and that call takes
+ * as long as the machine's service manager takes — tens of milliseconds on a
+ * quiet system, hundreds when it is busy. Waiting for the reply on the
+ * compositor's event loop held the frame that was about to show the new
+ * window, so a launch read as a freeze. The request is written to the socket
+ * and the reply is collected here instead, on a later pass of the loop; the
+ * window is already open, and the notification still reports what finnd
+ * actually said rather than assuming success.
+ */
+#define LAUNCH_PENDING 8
+#define LAUNCH_WAIT    2.0
+
+typedef struct {
+    int    fd;
+    int    used;
+    char   app[64];
+    char   line[256];
+    int    len;
+    double deadline;
+} launch_pending;
+
+static launch_pending g_launch[LAUNCH_PENDING];
+
+static void launch_finish(int i, const char *reply) {
+    launch_pending *q = &g_launch[i];
+    if (q->fd >= 0) close(q->fd);
+    if (reply && *reply) {
+        if (strncmp(reply, "OK", 2) == 0)
+            finn_notify_post(q->app, "Started");
+        else
+            finn_notify_post(q->app, ctl_why(reply));
+    } else {
+        finn_notify_post(q->app, "No answer from the control plane");
+    }
+    q->fd = -1;
+    q->used = 0;
+}
+
+static void launch_poll(void) {
+    for (int i = 0; i < LAUNCH_PENDING; i++) {
+        launch_pending *q = &g_launch[i];
+        if (!q->used) continue;
+
+        char buf[64];
+        ssize_t n = recv(q->fd, buf, sizeof buf, MSG_DONTWAIT);
+        if (n > 0) {
+            if (q->len + (int)n > (int)sizeof q->line - 1)
+                n = (ssize_t)(sizeof q->line - 1 - (size_t)q->len);
+            memcpy(q->line + q->len, buf, (size_t)n);
+            q->len += (int)n;
+            q->line[q->len] = '\0';
+            char *nl = strchr(q->line, '\n');
+            if (nl) {
+                *nl = '\0';
+                launch_finish(i, q->line);
+                continue;
+            }
+        } else if (n == 0) {
+            launch_finish(i, q->len ? q->line : NULL);
+            continue;
+        } else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            launch_finish(i, NULL);
+            continue;
+        }
+
+        if (finn_now() >= q->deadline) launch_finish(i, NULL);
+    }
+}
+
+
+/*
  * An app was pressed. The menu does not know how to start anything — it only
  * knows what was pressed — so the request goes to the control plane and the
- * answer comes back as a notification, while its window opens on screen.
+ * answer comes back as a notification, while its window opens on screen. The
+ * request itself is queued and read on a later loop pass (launch_poll), so a
+ * slow service manager cannot hold the frame that reveals the window.
  */
 static void launch_app(const finn_app *a) {
     if (!a) return;
@@ -2233,13 +2310,40 @@ static void launch_app(const finn_app *a) {
         return;
     }
 
-    char req[160], reply[256];
-    snprintf(req, sizeof req, "app.launch %s", a->id);
-    if (ctl_ask(req, reply, sizeof reply) == 0 && strncmp(reply, "OK", 2) == 0)
-        finn_notify_post(a->name, "Started");
-    else
-        finn_notify_post(a->name, ctl_why(reply));
+    int slot = -1;
+    for (int i = 0; i < LAUNCH_PENDING; i++)
+        if (!g_launch[i].used) { slot = i; break; }
+    if (slot < 0) {
+        finn_notify_post(a->name, "Too many launches in flight");
+        return;
+    }
+
+    char req[192];
+    snprintf(req, sizeof req, "app.launch %s\n", a->id);
+
+    int fd = finn_connect(FINN_CONTROL_SOCK);
+    if (fd < 0) {
+        finn_notify_post(a->name, "Control plane unavailable");
+        return;
+    }
+    int fl = fcntl(fd, F_GETFL, 0);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+
+    if (finn_write_str(fd, req) != 0) {
+        close(fd);
+        finn_notify_post(a->name, "Could not reach the control plane");
+        return;
+    }
+
+    launch_pending *q = &g_launch[slot];
+    q->fd = fd;
+    q->used = 1;
+    q->len = 0;
+    q->line[0] = '\0';
+    snprintf(q->app, sizeof q->app, "%s", a->name);
+    q->deadline = finn_now() + LAUNCH_WAIT;
 }
+
 
 static void menu_launch(int index) {
     launch_app(finn_apps_at(index));
@@ -2565,6 +2669,16 @@ static int shell_input(finn_pointer *p, const finn_state *st,
                 finnmenu_focus_search();
                 return 1;
             }
+            if (what == FINNMENU_VIEW_ALL) {
+                finnmenu_press(FINNMENU_VIEW_ALL);
+                finnmenu_show_all();
+                return 1;
+            }
+            if (what == FINNMENU_BACK) {
+                finnmenu_press(FINNMENU_BACK);
+                finnmenu_show_home();
+                return 1;
+            }
             if (what == FINNMENU_RESTART || what == FINNMENU_SHUTDOWN) {
                 finnmenu_press(what);
                 menu_power(what == FINNMENU_RESTART ? "restart" : "shutdown");
@@ -2601,6 +2715,7 @@ static int shell_input(finn_pointer *p, const finn_state *st,
         case FINNCONTROL_WIFI:
         case FINNCONTROL_BLUETOOTH:
         case FINNCONTROL_APPEARANCE:
+        case FINNCONTROL_PERSONALIZE:
         case FINNCONTROL_SETTINGS:
             finncontrol_press(act);
             break;
@@ -2889,7 +3004,7 @@ int main(int argc, char **argv) {
     g_mode = mode;
 
     int w = mode.hdisplay, h = mode.vdisplay;
-    float scale = fmaxf(0.85f, fminf((float)h / 1080.0f, 2.0f));
+    float scale = finn_ui_scale(w, h);
     fprintf(stderr, "finn-comp: %dx%d @%dHz  scale %.2f  (%d modes offered)\n",
             w, h, mode.vrefresh, scale, conn->count_modes);
 
@@ -3055,10 +3170,10 @@ int main(int argc, char **argv) {
     {
         int dx, dy, dw, dh;
         finndock_geometry(&dx, &dy, &dw, &dh);
-        finncontrol_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
-        finnclock_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
-        finnmenu_render(w, h, scale * PANEL_SCALE, dx, dy, dw, dh, &st);
-        finnwindow_render(w, h, scale * DOCK_SCALE, dx, dy, dw, dh, &st);
+        finncontrol_render(w, h, scale, dx, dy, dw, dh, &st);
+        finnclock_render(w, h, scale, dx, dy, dw, dh, &st);
+        finnmenu_render(w, h, scale, dx, dy, dw, dh, &st);
+        finnwindow_render(w, h, scale, dx, dy, dw, dh, &st);
     }
 
     /* the control plane needs somewhere to park explicit state overrides */
@@ -3296,6 +3411,7 @@ int main(int argc, char **argv) {
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
 
         (void)wayland_dispatch_now(&wayland);
+        launch_poll();
 
         int moved = 0, key_changed = 0;
         if (pr > 0) {

@@ -20,8 +20,6 @@
  * multiplies by its own scale and never invents a pixel size.
  */
 
-#define FINN_APP_REF 1.298077f
-
 static inline int finnapp_rs(float v, float s) {
     return (int)lroundf(v * s);
 }

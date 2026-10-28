@@ -67,44 +67,29 @@ static inline int font_px(float s, float base) {
 }
 
 /*
- * One material, three depths. The body glass is the window's own (0.62 in
- * finnwindow.c); the sidebar is that sheet set back by a wash of ink, and a
- * card is the same sheet brought forward by a second frost. The three are
- * deliberately close — a card that turns opaque is a web form, not a panel,
- * and a sidebar that turns white is a different window.
- */
-#define CARD_GLASS   0.72f
-
-/*
  * Sidebar metrics, reference units — the Figma frame's numbers: a 250 sheet,
  * the title at 15,44, a 220x30 search field at 15,70, and 30px rows on a 35px
- * pitch starting at 138, with each group's caption 18 above its first row.
+ * pitch. The frame draws one 10-unit break, between the network rows and the
+ * pair below them; it has no group captions, so none are drawn.
  */
 #define SB_W        250.0f
-#define SB_PAD       16.0f
-#define SB_TITLE_Y   60.0f
-#define SB_SEARCH_Y  88.0f
+#define SB_PAD       15.0f
+#define SB_TITLE_Y   44.0f
+#define SB_SEARCH_Y  70.0f
 #define SB_SEARCH_H  30.0f
-#define SB_FIRST_Y  148.0f
+#define SB_FIRST_Y  115.0f
 #define SB_ROW_H     30.0f
-#define SB_ROW_STEP  33.0f
-#define SB_SECTION_GAP 6.0f
+#define SB_ROW_STEP  35.0f
+#define SB_GROUP_GAP 10.0f
 
-/* Content metrics: the same 16px title on the sidebar's baseline, then cards. */
-#define CARD_R        8.0f
-#define CARD_PAD     18.0f
-#define HEADER_TOP   60.0f
-#define HEADER_SUB   88.0f
-#define CARD_TOP    104.0f
-#define CARD_GAP     12.0f
-
-/*
- * The window keeps its size and the furniture inside it comes down a little.
- * A whole tenth off would read as a different app at a different resolution;
- * three percent reads as the same app, drawn by someone who left the room to
- * breathe. Render and hit-testing both take the scale from here, or a control
- * would move out from under the pointer that found it.
- */
+/* Content metrics: the frame's 20/44 title, then its 70-first-row of cards. */
+#define CARD_R        4.0f
+#define CARD_PAD     16.0f
+#define HEADER_TOP   44.0f
+#define CARD_TOP     70.0f
+#define CARD_GAP     10.0f
+#define CONTENT_PAD_L 20.0f
+#define CONTENT_PAD_R 10.0f
 
 /* Card internals, shared by every page so no page invents its own rhythm. */
 #define ROW_H        34.0f
@@ -114,37 +99,41 @@ static inline int font_px(float s, float base) {
 #define TILE_W      112.0f
 #define TILE_H       66.0f
 
+/* The System Information frame's composition: a 305x160 gradient hero with a
+ * 10 gap to a 305-wide pair of 147.5x75 stat tiles, 9.5 apart and 10 apart
+ * vertically. The hero's exact height is what makes the two rows line up. */
+#define ABOUT_HERO_W  305.0f
+#define ABOUT_HERO_H  160.0f
+#define ABOUT_TILE_H   75.0f
+#define ABOUT_GAP      10.0f
+#define ABOUT_TILE_GAP  9.5f
+
 /* The update page's three cards: four report rows, one action row and a
- * note with its scope line. They use the same 34-unit row and 8/18 radii as
- * every other page, so the page reads as part of Settings rather than as a
- * console bolted onto it. */
+ * note with its scope line. They use the same rows and radii as every other
+ * page, so the page reads as part of Settings rather than as a console
+ * bolted onto it. */
 #define OTA_STATUS_H 178.0f
 #define OTA_ACTIONS_H 74.0f
 #define OTA_NOTES_H   96.0f
 
 /*
- * The frame is 900x500; the window the compositor opens for it is 860x480
- * shell units, which is 1116x623 of the compositor's pixels at scale 1. The
- * app therefore draws at the compositor's scale times that ratio: 900 design
- * units across the window's resting width, and the same physical size when
- * the window is maximised. Deriving the scale from the window's *current*
- * width instead made every surface zoom when the window filled the screen —
- * a maximised window should have more room, not larger text.
+ * The app draws in the frame's own units: the window opens at 900x500 and
+ * the compositor's canonical scale maps one design unit to its pixels. There
+ * is no second ratio here — the old one multiplied the frame by 1.24 and
+ * then laid 900 units into a 900-unit window, which overflowed every card.
  */
-#define WIN_REST_REF    1.24f
 #define CONTENT_MAX    780.0f
 static float ui_scale(float scale) {
-    float s = scale * WIN_REST_REF;
-    return s > 0.0f ? s : 1.0f;
+    return scale > 0.0f ? scale : 1.0f;
 }
 
 /* ---------------- fonts & assets ---------------- */
 
-static finn_font g_f_hero;      /* 22 reference: page title */
-static finn_font g_f_title;     /* 15 reference: card row title */
+static finn_font g_f_hero;      /* 16 reference: page title */
+static finn_font g_f_title;     /* 16 reference: card row title */
 static finn_font g_f_label;     /* 12 reference: body */
 static finn_font g_f_sub;       /* 10 reference: detail */
-static finn_font g_f_micro;     /* 8  reference: section caps */
+static finn_font g_f_micro;     /* 10 reference: caption */
 static float     g_font_scale = -1.0f;
 static char      g_font_dir[512] = "";
 static char      g_icon_dir[512] = "";
@@ -1234,16 +1223,15 @@ static int load_fonts(float s) {
     char regular[600];
     snprintf(regular, sizeof regular, "%s/FixelDisplay-Regular.otf", g_font_dir);
 
-    /* The frame's type, one step up: 17 for the titles, 13 for rows and the
-     * search field, 10.5 for group captions. The frame is drawn at 1280 wide
-     * and this screen renders it at 0.89, so the frame's own 16/12 comes out
-     * a size too quiet to read at the distance the window actually sits. */
+    /* The frame's type, at the frame's sizes: 16 for the two titles and the
+     * brand, 12 for rows, values and the search field, 10 for every quiet
+     * line — card labels, qualifiers and details. */
     int ok = 1;
-    ok &= (finn_font_load(&g_f_hero,  regular, font_px(s, 22.0f)) == 0);
-    ok &= (finn_font_load(&g_f_title, regular, font_px(s, 15.0f)) == 0);
-    ok &= (finn_font_load(&g_f_label, regular, font_px(s, 13.0f)) == 0);
-    ok &= (finn_font_load(&g_f_sub,   regular, font_px(s, 12.0f)) == 0);
-    ok &= (finn_font_load(&g_f_micro, regular, font_px(s, 11.5f)) == 0);
+    ok &= (finn_font_load(&g_f_hero,  regular, font_px(s, 16.0f)) == 0);
+    ok &= (finn_font_load(&g_f_title, regular, font_px(s, 16.0f)) == 0);
+    ok &= (finn_font_load(&g_f_label, regular, font_px(s, 12.0f)) == 0);
+    ok &= (finn_font_load(&g_f_sub,   regular, font_px(s, 10.0f)) == 0);
+    ok &= (finn_font_load(&g_f_micro, regular, font_px(s, 10.0f)) == 0);
 
     if (!ok) {
         fprintf(stderr, "finnsettingsapp: cannot load fonts from %s\n", g_font_dir);
@@ -1379,19 +1367,15 @@ static int page_matches_search(int idx) {
 
 /* ---------------- drawing helpers ---------------- */
 
-/* A card: the window glass brought forward by a second frost, and one
- * hairline so it keeps an edge against a white wallpaper. Every card in the
- * app goes through here, so no page can invent a different paper. */
-static void card_bg(uint32_t *L, int lw, int lh, int lx0, int ly0,
-                    float x, float y, float w, float h, float r,
-                    float alpha, int accent) {
-    finn_frost_rrect(L, lw, lh, lx0, ly0, x, y, w, h, r, FINN_GLASS, alpha);
-    /* A card is raised above the window, so a dark card takes a little light
-     * rather than only more tint. */
-    if (finn_theme_dark())
-        finn_fill_rrect(L, lw, lh, x, y, w, h, r, 0x0AFFFFFFu);
-    finn_stroke_rrect(L, lw, lh, x, y, w, h, r, accent ? 2.0f : 1.0f,
-                      accent ? FINN_ON : FINN_HAIR);
+/* A card: the frame's opaque paper on the content sheet. It carries no
+ * hairline — the colour step from #FFFFFF to #F9F9F9 is the whole edge — and
+ * every card in the app goes through here, so no page invents its own. */
+static void card_bg(uint32_t *L, int lw, int lh,
+                    float x, float y, float w, float h, float r, int accent) {
+    finn_fill_rrect(L, lw, lh, x, y, w, h, r,
+                    finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u);
+    if (accent)
+        finn_stroke_rrect(L, lw, lh, x, y, w, h, r, 2.0f, FINN_ON);
 }
 
 /* A circular icon chip with the accent behind it. */
@@ -1478,42 +1462,30 @@ static void slider_ctrl(uint32_t *L, int lw, int lh, float x, float y,
 /* ---------------- sidebar geometry ---------------- */
 
 typedef struct {
-    int is_header;
     int page_idx;
-    const char *label;
     float y_ref;      /* top of the row, reference units */
 } sidebar_layout_item;
 
 static int get_sidebar_layout(sidebar_layout_item *items, int max_items) {
     int count = 0;
-    const char *last_section = "";
     float cur_y = SB_FIRST_Y;
 
     for (int i = 0; i < PAGE_COUNT && count < max_items; i++) {
         if (!g_pages[i].visible && !g_search_text[0]) continue;
         if (!page_matches_search(i)) continue;
 
-        if (strcmp(g_pages[i].section, last_section) != 0) {
-            last_section = g_pages[i].section;
-            /* Gap after the previous group's last row, then the caption's
-             * own 18 before its first row. */
-            if (count > 0) cur_y += SB_SECTION_GAP + 10.0f;
-
-            /* The caption sits 10 above its first row, so it belongs to the
-             * group below it rather than the row above. */
-            if (count < max_items) {
-                items[count].is_header = 1;
-                items[count].page_idx = -1;
-                items[count].label = last_section;
-                items[count].y_ref = cur_y - 10.0f;
-                count++;
-            }
-        }
+        /*
+         * The frame draws one 10-unit break, between the three network rows
+         * and Personalization. It is the only group break in the list, and it
+         * belongs to the full list rather than to a filtered result set, so a
+         * search compacts the rows instead of leaving a hole.
+         */
+        if (!g_search_text[0] && count > 0 &&
+            strcmp(g_pages[i].section, "PERSONALIZATION") == 0)
+            cur_y += SB_GROUP_GAP;
 
         if (count < max_items) {
-            items[count].is_header = 0;
             items[count].page_idx = i;
-            items[count].label = g_pages[i].title;
             items[count].y_ref = cur_y;
             count++;
         }
@@ -1528,8 +1500,9 @@ static int get_sidebar_layout(sidebar_layout_item *items, int max_items) {
 static void content_box(int wx, int ww, float s, float *cx, float *cw) {
     float sb_w = s * SB_W;
     if (sb_w > (float)ww) sb_w = (float)ww;
-    float pad = s * 32.0f;
-    float avail = (float)ww - sb_w - pad * 2.0f;
+    float pad_l = s * CONTENT_PAD_L;
+    float pad_r = s * CONTENT_PAD_R;
+    float avail = (float)ww - sb_w - pad_l - pad_r;
     if (avail < 80.0f) avail = 80.0f;
 
     /* A maximised window gets a wider column, but only up to a point: a
@@ -1538,7 +1511,7 @@ static void content_box(int wx, int ww, float s, float *cx, float *cw) {
      * the eye still reads it as one page rather than a floating island. */
     float w = s * CONTENT_MAX;
     if (avail < w) w = avail;
-    *cx = (float)wx + sb_w + pad;
+    *cx = (float)wx + sb_w + pad_l;
     *cw = w;
 }
 
@@ -1546,30 +1519,18 @@ static void content_box(int wx, int ww, float s, float *cx, float *cw) {
 
 /*
  * The sidebar is the Figma frame, drawn: 250 reference units of sheet, the
- * 16px title at 15,44, a 30px search field at 15,70, then group captions and
- * 30px rows on a 35px pitch, with an 18px circular accent chip in front of
- * every row. Nothing here is an interpretation of the design; the numbers are
- * the frame's numbers.
+ * 16px title at 15,44, a 30px search field at 15,70, then 30px rows on a 35px
+ * pitch with a 22px circular accent chip in front of every row. Nothing here
+ * is an interpretation of the design; the numbers are the frame's numbers.
  */
 static void render_sidebar(uint32_t *L, int lw, int lh,
                            float sb_x, float sb_y, float sb_w, float sb_h,
-                           float win_r, float s, const finn_state *st) {
+                           float s, const finn_state *st) {
     (void)st;
 
-    /*
-     * The frame's sidebar is opaque white over a 70% window. The shell builds
-     * the same relationship from glass: a denser frost on the body, so the
-     * column still carries the wallpaper's light but never its shape. At 0.92
-     * the sheet is solid enough for a 12px label to sit on without a scrim.
-     */
-    finn_frost_rrect(L, lw, lh, 0, 0, sb_x, sb_y, sb_w, sb_h, win_r,
-                     FINN_GLASS, 0.92f);
-    /* The sheet is round only where the window is round. The frost above
-     * rounds all four corners; this squares off the two at the seam. */
-    finn_frost_rrect(L, lw, lh, 0, 0, sb_x + sb_w - win_r, sb_y, win_r, sb_h,
-                     0.0f, FINN_GLASS, 0.92f);
-
-    /* the seam between the two columns */
+    /* The frame's sidebar is the window's own sheet: it draws no fill, so the
+     * wallpaper's light comes through exactly as it does through the body.
+     * Only the seam marks where the opaque content column begins. */
     finn_fill_rrect(L, lw, lh, sb_x + sb_w - 1.0f, sb_y, 1.0f, sb_h, 0.0f,
                     FINN_HAIR);
 
@@ -1595,13 +1556,14 @@ static void render_sidebar(uint32_t *L, int lw, int lh,
         finn_icon_blit_ink(&g_ic_search, L, lw, lh,
                            (int)lroundf(sf_x + s * 15.0f),
                            (int)lroundf(sf_y + sf_h * 0.5f),
-                           rs(16.0f, s), FINN_DIM, FINN_MUTE, 0);
+                           rs(18.0f, s), FINN_INK, FINN_MUTE, 0);
 
-    float stext_x = sf_x + s * 36.0f;
+    float stext_x = sf_x + s * 34.0f;
     float stext_y = sf_y + sf_h * 0.5f + finn_text_cap_height(&g_f_label) * 0.5f;
     if (g_search_text[0] == '\0') {
         finn_text_draw(&g_f_label, L, lw, lh, stext_x, stext_y,
-                       "Type here to search", FINN_DIM);
+                       "Type here to search",
+                       finn_theme_dark() ? FINN_MUTE : 0xFF555555u);
     } else {
         finn_text_draw(&g_f_label, L, lw, lh, stext_x, stext_y,
                        g_search_text, FINN_INK);
@@ -1613,36 +1575,27 @@ static void render_sidebar(uint32_t *L, int lw, int lh,
                         sf_y + (sf_h - ch) * 0.5f, 1.5f, ch, 0.75f, FINN_ON);
     }
 
-    /* Group captions and rows, on the frame's 35px pitch. */
+    /* Rows, on the frame's 35px pitch: 30px high, 22px chip at 4, label at 34. */
     sidebar_layout_item items[24];
     int n_items = get_sidebar_layout(items, 24);
 
     for (int k = 0; k < n_items; k++) {
         float y = sb_y + s * items[k].y_ref;
-        if (items[k].is_header) {
-            finn_text_draw(&g_f_micro, L, lw, lh, title_x, y + finn_text_cap_height(&g_f_micro),
-                           items[k].label, FINN_MUTE);
-            continue;
-        }
 
         int pidx = items[k].page_idx;
         float rw = sf_w;
         float rh = s * SB_ROW_H;
-        float rr = s * 4.0f;
+        float rr = s * 4.14f;
         int active = (pidx == g_active_page);
 
-        if (active) {
+        if (active)
             finn_fill_rrect(L, lw, lh, title_x, y, rw, rh, rr,
                             finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
-            finn_stroke_rrect(L, lw, lh, title_x, y, rw, rh, rr, 1.0f,
-                              finn_theme_dark() ? 0x2EFFFFFFu : 0xFFE2E2E2u);
-        }
 
-        /* The frame's chip: a 20px circle in the row's own colour, the glyph
-         * white on top. The selected row keeps its colour: in the frame the
-         * Information chip stays grey when selected. */
-        float chip = s * 20.0f;
-        float chip_x = title_x + s * 6.0f;
+        /* The frame's chip: a 22px circle in the row's own colour, the glyph
+         * white on top. The selected row keeps its colour. */
+        float chip = s * 22.0f;
+        float chip_x = title_x + s * 4.0f;
         float chip_y = y + (rh - chip) * 0.5f;
         uint32_t chip_col;
         if (finn_theme_dark()) {
@@ -1658,9 +1611,9 @@ static void render_sidebar(uint32_t *L, int lw, int lh,
             finn_icon_blit_ink(ic, L, lw, lh,
                                (int)lroundf(chip_x + chip * 0.5f),
                                (int)lroundf(chip_y + chip * 0.5f),
-                               rs(13.0f, s), 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+                               rs(18.0f, s), 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
 
-        float tx = chip_x + chip + s * 10.0f;
+        float tx = title_x + s * 34.0f;
         float ty = y + rh * 0.5f + finn_text_cap_height(&g_f_label) * 0.5f;
         finn_text_draw(&g_f_label, L, lw, lh, tx, ty, g_pages[pidx].title, FINN_INK);
     }
@@ -1725,12 +1678,12 @@ static void card_well(uint32_t *L, int lw, int lh, float x, float y, float w,
 }
 
 /* The status card every connectivity page opens with: chip, state, switch. */
-static void card_status(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void card_status(uint32_t *L, int lw, int lh,
                         float x, float y, float w, float s, fsvg *icon,
                         const char *title, const char *sub, int on, int enabled) {
     float h = s * HERO_H;
     float r = s * CARD_R;
-    card_bg(L, lw, lh, lx0, ly0, x, y, w, h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, x, y, w, h, r, 0);
 
     float disc = s * 34.0f;
     icon_disc(L, lw, lh, x + s * CARD_PAD + disc * 0.5f, y + h * 0.5f,
@@ -1746,7 +1699,7 @@ static void card_status(uint32_t *L, int lw, int lh, int lx0, int ly0,
 
 /* ---------------- pages ---------------- */
 
-static void page_wifi(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_wifi(uint32_t *L, int lw, int lh,
                       float cx, float card_y, float cw, float s,
                       const finn_state *st) {
     float r = s * CARD_R;
@@ -1757,13 +1710,13 @@ static void page_wifi(uint32_t *L, int lw, int lh, int lx0, int ly0,
     const char *sub = !ok ? "This machine has no Wi-Fi hardware"
                     : (st->wifi == 0 ? "Turn it on to join a network"
                                      : "No network joined yet");
-    card_status(L, lw, lh, lx0, ly0, cx, card_y, cw, s, &g_ic_wifi,
+    card_status(L, lw, lh, cx, card_y, cw, s, &g_ic_wifi,
                 title, sub, ok && st->wifi > 0, ok);
 
     /* Known networks: the list, or the reason there is no list. */
     float y = card_y + s * HERO_H + s * CARD_GAP;
     float h = s * 110.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, y, cw, h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, y, cw, h, r, 0);
     card_head(L, lw, lh, cx, y, "KNOWN NETWORKS", s);
 
     if (!ok)
@@ -1781,7 +1734,7 @@ static void page_wifi(uint32_t *L, int lw, int lh, int lx0, int ly0,
 
     /* The interface, reported rather than guessed. */
     y += h + s * CARD_GAP;
-    card_bg(L, lw, lh, lx0, ly0, cx, y, cw, s * 110.0f, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, y, cw, s * 110.0f, r, 0);
     card_head(L, lw, lh, cx, y, "INTERFACE", s);
     card_row(L, lw, lh, cx, y + s * ROW_H, cw, "Interface",
              ok ? "wlan0" : "None", s);
@@ -1790,7 +1743,7 @@ static void page_wifi(uint32_t *L, int lw, int lh, int lx0, int ly0,
              !ok ? "Unavailable" : (st->wifi > 0 ? "Ready" : "Off"), s);
 }
 
-static void page_bluetooth(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_bluetooth(uint32_t *L, int lw, int lh,
                            float cx, float card_y, float cw, float s,
                            const finn_state *st) {
     float r = s * CARD_R;
@@ -1801,12 +1754,12 @@ static void page_bluetooth(uint32_t *L, int lw, int lh, int lx0, int ly0,
     const char *sub = !ok ? "This machine has no Bluetooth controller"
                     : (st->bluetooth == 0 ? "Turn it on to pair an accessory"
                                           : "Discoverable as finnos");
-    card_status(L, lw, lh, lx0, ly0, cx, card_y, cw, s, &g_ic_bt,
+    card_status(L, lw, lh, cx, card_y, cw, s, &g_ic_bt,
                 title, sub, ok && st->bluetooth > 0, ok);
 
     float y = card_y + s * HERO_H + s * CARD_GAP;
     float h = s * 110.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, y, cw, h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, y, cw, h, r, 0);
     card_head(L, lw, lh, cx, y, "MY DEVICES", s);
     card_well(L, lw, lh, cx, y + s * 30.0f, cw, s * 70.0f,
               (!ok || st->bluetooth <= 0) ? "No accessories connected."
@@ -1814,7 +1767,7 @@ static void page_bluetooth(uint32_t *L, int lw, int lh, int lx0, int ly0,
               "Pairing is not implemented in this build.", s);
 
     y += h + s * CARD_GAP;
-    card_bg(L, lw, lh, lx0, ly0, cx, y, cw, s * 110.0f, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, y, cw, s * 110.0f, r, 0);
     card_head(L, lw, lh, cx, y, "CONTROLLER", s);
     card_row(L, lw, lh, cx, y + s * ROW_H, cw, "Adapter",
              ok ? "hci0" : "None", s);
@@ -1897,13 +1850,13 @@ static void network_interface_state(const char *name, char *out, size_t cap) {
     fclose(fp);
 }
 
-static void page_network(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_network(uint32_t *L, int lw, int lh,
                          float cx, float card_y, float cw, float s,
                          const finn_state *st) {
     (void)st;
     float r = s * CARD_R;
     float c1_h = s * 202.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, c1_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, card_y, cw, c1_h, r, 0);
     card_head(L, lw, lh, cx, card_y, "NETWORK INTERFACES", s);
 
     DIR *dir = opendir("/sys/class/net");
@@ -1929,21 +1882,21 @@ static void page_network(uint32_t *L, int lw, int lh, int lx0, int ly0,
 
     float c2_y = card_y + c1_h + s * CARD_GAP;
     float c2_h = s * 100.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, c2_y, cw, c2_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c2_y, cw, c2_h, r, 0);
     card_head(L, lw, lh, cx, c2_y, "NETWORK MANAGEMENT", s);
     card_well(L, lw, lh, cx, c2_y + s * 34.0f, cw, s * 54.0f,
               "Link state is read-only",
               "Network configuration is not available in this build.", s);
 }
 
-static void page_display(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_display(uint32_t *L, int lw, int lh,
                          float cx, float card_y, float cw, float s,
                          const finn_state *st) {
     float r = s * CARD_R;
 
     /* Output facts. Everything here is read from the running device. */
     float c1_h = s * 144.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, c1_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, card_y, cw, c1_h, r, 0);
     card_head(L, lw, lh, cx, card_y, "DISPLAY", s);
 
     char res[64], scale_s[64];
@@ -1959,7 +1912,7 @@ static void page_display(uint32_t *L, int lw, int lh, int lx0, int ly0,
     /* Appearance: two previews, side by side. */
     float c2_y = card_y + c1_h + s * CARD_GAP;
     float c2_h = s * 158.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, c2_y, cw, c2_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c2_y, cw, c2_h, r, 0);
     card_head(L, lw, lh, cx, c2_y, "APPEARANCE", s);
 
     float tw = s * TILE_W, th = s * TILE_H;
@@ -1974,13 +1927,13 @@ static void page_display(uint32_t *L, int lw, int lh, int lx0, int ly0,
                    FINN_MUTE);
 }
 
-static void page_sound(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_sound(uint32_t *L, int lw, int lh,
                        float cx, float card_y, float cw, float s,
                        const finn_state *st) {
     float r = s * CARD_R;
     float c1_h = s * 132.0f;
 
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, c1_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, card_y, cw, c1_h, r, 0);
     card_head(L, lw, lh, cx, card_y, "OUTPUT VOLUME", s);
 
     if (st->volume >= 0) {
@@ -2008,7 +1961,7 @@ static void page_sound(uint32_t *L, int lw, int lh, int lx0, int ly0,
 
     float c2_y = card_y + c1_h + s * CARD_GAP;
     float c2_h = s * 110.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, c2_y, cw, c2_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c2_y, cw, c2_h, r, 0);
     card_head(L, lw, lh, cx, c2_y, "AUDIO CONTROLLER", s);
 
     const char *elem = finn_audio_element();
@@ -2018,13 +1971,13 @@ static void page_sound(uint32_t *L, int lw, int lh, int lx0, int ly0,
     card_row(L, lw, lh, cx, c2_y + s * 68.0f, cw, "Driver", "ALSA", s);
 }
 
-static void page_power(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_power(uint32_t *L, int lw, int lh,
                        float cx, float card_y, float cw, float s,
                        const finn_state *st) {
     float r = s * CARD_R;
     float hero_h = s * 92.0f;
 
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, hero_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, card_y, cw, hero_h, r, 0);
 
     float disc = s * 34.0f;
     icon_disc(L, lw, lh, cx + s * CARD_PAD + disc * 0.5f,
@@ -2058,7 +2011,7 @@ static void page_power(uint32_t *L, int lw, int lh, int lx0, int ly0,
 
     float c2_y = card_y + hero_h + s * CARD_GAP;
     float c2_h = s * 148.0f;
-    card_bg(L, lw, lh, lx0, ly0, cx, c2_y, cw, c2_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c2_y, cw, c2_h, r, 0);
     card_head(L, lw, lh, cx, c2_y, "POWER SUPPLY", s);
 
     card_row(L, lw, lh, cx, c2_y + s * ROW_H, cw, "Battery",
@@ -2090,26 +2043,36 @@ static void system_text_fit(char *out, size_t cap, const char *text,
     snprintf(out, cap, "...");
 }
 
-static void system_info_tile(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void system_info_tile(uint32_t *L, int lw, int lh,
                              float x, float y, float w, float h, float s,
                              const char *title, const char *value,
                              const char *detail) {
-    card_bg(L, lw, lh, lx0, ly0, x, y, w, h, s * CARD_R, CARD_GLASS, 0);
-    card_head(L, lw, lh, x, y, title, s);
+    card_bg(L, lw, lh, x, y, w, h, s * CARD_R, 0);
 
-    float text_x = x + s * CARD_PAD;
-    float max_width = w - s * CARD_PAD * 2.0f;
+    /* The frame's stat tile: category at 5,8, qualifier at 5,42, value at
+     * 5,59 — the quiet line above the reading, never the other way round. */
+    float pad = s * 5.0f;
+    float text_x = x + pad;
+    float max_width = w - pad * 2.0f;
     char fitted[160];
-    system_text_fit(fitted, sizeof fitted, value, &g_f_label, max_width);
-    finn_text_draw(&g_f_label, L, lw, lh, text_x,
-                   y + s * 48.0f, fitted, FINN_INK);
+
+    finn_text_draw(&g_f_micro, L, lw, lh, text_x,
+                   y + s * 8.0f + finn_text_cap_height(&g_f_micro),
+                   title, FINN_DIM);
+
     system_text_fit(fitted, sizeof fitted, detail, &g_f_micro, max_width);
     finn_text_draw(&g_f_micro, L, lw, lh, text_x,
-                   y + h - s * 10.0f, fitted, FINN_DIM);
+                   y + s * 42.0f + finn_text_cap_height(&g_f_micro),
+                   fitted, FINN_DIM);
+
+    system_text_fit(fitted, sizeof fitted, value, &g_f_label, max_width);
+    finn_text_draw(&g_f_label, L, lw, lh, text_x,
+                   y + s * 59.0f + finn_text_cap_height(&g_f_label),
+                   fitted, FINN_INK);
 }
 
 static void system_cpu_model(char *out, size_t cap, const char *fallback) {
-    snprintf(out, cap, "%s", fallback && *fallback ? fallback : "Unknown");
+    snprintf(out, cap, "%s", fallback ? fallback : "");
     FILE *fp = fopen("/proc/cpuinfo", "r");
     if (!fp) return;
 
@@ -2134,7 +2097,7 @@ static void system_cpu_model(char *out, size_t cap, const char *fallback) {
     fclose(fp);
 }
 
-static void page_about(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_about(uint32_t *L, int lw, int lh,
                        float cx, float card_y, float cw, float s,
                        const finn_state *st) {
     (void)st;
@@ -2173,54 +2136,73 @@ static void page_about(uint32_t *L, int lw, int lh, int lx0, int ly0,
         }
     }
 
-    char cpu_model[160];
-    system_cpu_model(cpu_model, sizeof cpu_model,
-                     have_uname ? un.machine : "Unknown CPU");
+    char cpu_model[160] = "";
+    system_cpu_model(cpu_model, sizeof cpu_model, "");
     const char *cpu_arch = have_uname && un.machine[0] ? un.machine : "Unknown";
+    const char *cpu_value = cpu_model[0] ? cpu_model : "Not reported";
 
-    /* Figma's System Information composition: FinnOS identity at left, four
-     * compact hardware cards at right. Values are read from the host where
+    /* The frame's composition: identity at left in a mint-washed hero, four
+     * hardware readings at right. Values are read from the host where
      * available; GPU details stay explicitly absent until the compositor
      * exposes renderer telemetry to Settings. */
-    float gap = s * 8.0f;
-    float hero_w = fminf(cw * 0.47f, s * 300.0f);
+    float gap = s * ABOUT_GAP;
+    float tile_gap = s * ABOUT_TILE_GAP;
+    float tile_h = s * ABOUT_TILE_H;
+    float hero_h = s * ABOUT_HERO_H;
+    float hero_w = s * ABOUT_HERO_W;
+
     float right_x = cx + hero_w + gap;
     float right_w = cw - hero_w - gap;
-    if (right_w < s * 100.0f) {
-        hero_w = cw * 0.42f;
-        right_x = cx + hero_w + gap;
-        right_w = cw - hero_w - gap;
-    }
-    float tile_gap = s * 8.0f;
     float tile_w = (right_w - tile_gap) * 0.5f;
-    float tile_h = s * 75.0f;
-    float hero_h = tile_h * 2.0f + tile_gap;
 
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, hero_w, hero_h,
-            s * CARD_R, CARD_GLASS, 0);
-    float icon_px = s * 26.0f;
-    float brand_w = finn_text_width(&g_f_title, "FinnOS One Beta");
-    float group_w = icon_px + s * 10.0f + brand_w;
-    float group_x = cx + (hero_w - group_w) * 0.5f;
-    float baseline = card_y + hero_h * 0.5f +
-                     finn_text_cap_height(&g_f_title) * 0.5f;
+    int stacked = 0;
+    if (right_w < s * 200.0f) {
+        /* Too narrow for the frame's two columns: the hero keeps its height
+         * and the tiles fall below it in the same two-column grid, rather
+         * than shrinking into unreadable slivers. */
+        stacked = 1;
+        hero_w = cw;
+        tile_w = (cw - tile_gap) * 0.5f;
+        right_x = cx;
+    }
+
+    uint32_t hero_top = finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u;
+    uint32_t hero_bottom = finn_theme_dark() ? 0xFF17322Fu : 0xFFE7FFFBu;
+    finn_fill_rrect_grad(L, lw, lh, cx, card_y, hero_w, hero_h,
+                         s * CARD_R, hero_top, hero_bottom);
+
+    /* The frame's mark: 20 units at (70,70) inside the hero, which is its
+     * vertical centre; the brand starts 15 units after the mark. */
+    float icon_px = s * 20.0f;
+    float icon_cx = cx + s * 80.0f;
+    float icon_cy = card_y + s * 80.0f;
     if (g_ic_about.vw > 0)
         finn_icon_blit_ink(&g_ic_about, L, lw, lh,
-                           (int)lroundf(group_x + icon_px * 0.5f),
-                           (int)lroundf(card_y + hero_h * 0.5f),
+                           (int)lroundf(icon_cx), (int)lroundf(icon_cy),
                            (int)lroundf(icon_px), FINN_INK, FINN_INK, 0);
-    finn_text_draw(&g_f_title, L, lw, lh, group_x + icon_px + s * 10.0f,
-                   baseline, "FinnOS One Beta", FINN_INK);
 
-    system_info_tile(L, lw, lh, lx0, ly0, right_x, card_y,
+    float brand_x = cx + s * 105.0f;
+    float brand_base = card_y + s * 80.0f +
+                       finn_text_cap_height(&g_f_title) * 0.5f;
+    const char *brand = "FinnOS";
+    const char *brand_tail = " One Beta";
+    finn_text_draw(&g_f_title, L, lw, lh, brand_x, brand_base, brand, FINN_INK);
+    finn_text_draw(&g_f_title, L, lw, lh,
+                   brand_x + finn_text_width(&g_f_title, brand), brand_base,
+                   brand_tail, finn_theme_dark() ? 0xB3FFFFFFu : 0xA6000000u);
+
+    float tiles_y = stacked ? card_y + hero_h + gap : card_y;
+    float tiles_x = stacked ? cx : right_x;
+    system_info_tile(L, lw, lh, tiles_x, tiles_y,
                      tile_w, tile_h, s, "RAM", ram_value, ram_detail);
-    system_info_tile(L, lw, lh, lx0, ly0, right_x + tile_w + tile_gap,
-                     card_y, tile_w, tile_h, s, "Storage",
+    system_info_tile(L, lw, lh, tiles_x + tile_w + tile_gap, tiles_y,
+                     tile_w, tile_h, s, "Storage",
                      storage_value, storage_detail);
-    system_info_tile(L, lw, lh, lx0, ly0, right_x, card_y + tile_h + tile_gap,
-                     tile_w, tile_h, s, "CPU", cpu_arch, cpu_model);
-    system_info_tile(L, lw, lh, lx0, ly0, right_x + tile_w + tile_gap,
-                     card_y + tile_h + tile_gap, tile_w, tile_h, s, "GPU",
+    system_info_tile(L, lw, lh, tiles_x,
+                     tiles_y + tile_h + gap, tile_w, tile_h, s, "CPU",
+                     cpu_value, cpu_arch);
+    system_info_tile(L, lw, lh, tiles_x + tile_w + tile_gap,
+                     tiles_y + tile_h + gap, tile_w, tile_h, s, "GPU",
                      "Not reported", "No GPU telemetry");
 }
 
@@ -2386,7 +2368,7 @@ static const char *ota_action_label(int id) {
     }
 }
 
-static void page_update(uint32_t *L, int lw, int lh, int lx0, int ly0,
+static void page_update(uint32_t *L, int lw, int lh,
                         float cx, float card_y, float cw, float s,
                         const finn_state *st) {
     (void)st;
@@ -2402,7 +2384,7 @@ static void page_update(uint32_t *L, int lw, int lh, int lx0, int ly0,
     char fitted[OTA_NOTE_MAX + 64];
 
     float c1_h = s * OTA_STATUS_H;
-    card_bg(L, lw, lh, lx0, ly0, cx, card_y, cw, c1_h, r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, card_y, cw, c1_h, r, 0);
     card_head(L, lw, lh, cx, card_y, "UPDATE STATUS", s);
 
     char current[OTA_VER_MAX + 16];
@@ -2450,8 +2432,8 @@ static void page_update(uint32_t *L, int lw, int lh, int lx0, int ly0,
     card_row(L, lw, lh, cx, row + s * ROW_H * 3.0f, cw, "Update state", fitted, s);
 
     float c2_y = card_y + c1_h + s * CARD_GAP;
-    card_bg(L, lw, lh, lx0, ly0, cx, c2_y, cw, s * OTA_ACTIONS_H,
-            r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c2_y, cw, s * OTA_ACTIONS_H,
+            r, 0);
     card_head(L, lw, lh, cx, c2_y, "ACTIONS", s);
 
     int mask = ota_action_mask(&v);
@@ -2480,8 +2462,8 @@ static void page_update(uint32_t *L, int lw, int lh, int lx0, int ly0,
     }
 
     float c3_y = c2_y + s * OTA_ACTIONS_H + s * CARD_GAP;
-    card_bg(L, lw, lh, lx0, ly0, cx, c3_y, cw, s * OTA_NOTES_H,
-            r, CARD_GLASS, 0);
+    card_bg(L, lw, lh, cx, c3_y, cw, s * OTA_NOTES_H,
+            r, 0);
     card_head(L, lw, lh, cx, c3_y, "RELEASE NOTES", s);
 
     char note[OTA_NOTE_MAX + 64];
@@ -2539,7 +2521,18 @@ void finnsettingsapp_render(uint32_t *layer, int lw, int lh,
     float sb_h = (float)wh;
     float win_r = s * 8.0f;
 
-    render_sidebar(layer, lw, lh, sb_x, sb_y, sb_w, sb_h, win_r, s, st);
+    render_sidebar(layer, lw, lh, sb_x, sb_y, sb_w, sb_h, s, st);
+
+    /*
+     * The frame's content column is opaque paper: the sidebar keeps the
+     * window's glass, the content does not. It is square at the seam and
+     * round only where the window itself is round.
+     */
+    float cbx = sb_x + sb_w;
+    float cbw = (float)ww - sb_w;
+    uint32_t paper = finn_theme_dark() ? 0xFF1E2128u : 0xFFFFFFFFu;
+    finn_fill_rrect(layer, lw, lh, cbx, sb_y, cbw, sb_h, win_r, paper);
+    finn_fill_rrect(layer, lw, lh, cbx, sb_y, win_r, sb_h, 0.0f, paper);
 
     /* Content column. */
     float cx, cw;
@@ -2547,37 +2540,24 @@ void finnsettingsapp_render(uint32_t *layer, int lw, int lh,
     cx -= (float)lx0;
     float cy = sb_y;
 
-    const char *header_sub = "";
-    if (g_active_page == 0)      header_sub = "Wireless adapters and connections";
-    else if (g_active_page == 1) header_sub = "Pair and manage accessories";
-    else if (g_active_page == 2) header_sub = "Network interfaces and link status";
-    else if (g_active_page == 3) header_sub = "Theme and display appearance";
-    else if (g_active_page == 4) header_sub = "Resolution, scale and appearance";
-    else if (g_active_page == 5) header_sub = "Output level and mixer";
-    else if (g_active_page == 6) header_sub = "Supply status and battery";
-    else if (g_active_page == PAGE_UPDATE) header_sub = "FinnOS runtime, assets and release notes";
-
     float pt_y = cy + s * HEADER_TOP + finn_text_cap_height(&g_f_hero);
     finn_text_draw(&g_f_hero, layer, lw, lh, cx, pt_y,
                    g_pages[g_active_page].title, FINN_INK);
-    finn_text_draw(&g_f_sub, layer, lw, lh, cx,
-                   cy + s * HEADER_SUB + finn_text_cap_height(&g_f_sub),
-                   header_sub, FINN_DIM);
 
     float card_y = cy + s * CARD_TOP;
 
     switch (g_active_page) {
-    case 0: page_wifi(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 1: page_bluetooth(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 2: page_network(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 3: page_display(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 4: page_display(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 5: page_sound(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
-    case 6: page_power(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
+    case 0: page_wifi(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 1: page_bluetooth(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 2: page_network(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 3: page_display(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 4: page_display(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 5: page_sound(layer, lw, lh, cx, card_y, cw, s, st); break;
+    case 6: page_power(layer, lw, lh, cx, card_y, cw, s, st); break;
     case PAGE_UPDATE:
-        page_update(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st);
+        page_update(layer, lw, lh, cx, card_y, cw, s, st);
         break;
-    default: page_about(layer, lw, lh, lx0, ly0, cx, card_y, cw, s, st); break;
+    default: page_about(layer, lw, lh, cx, card_y, cw, s, st); break;
     }
 }
 
@@ -2607,7 +2587,7 @@ static void appearance_rect(int wx, int wy, int ww, float s, int which,
     float card_y = (float)wy + s * CARD_TOP + s * 144.0f + s * CARD_GAP;
     float tw = s * TILE_W, th = s * TILE_H;
     float tx = cx + s * CARD_PAD + which * (tw + s * 16.0f);
-    float ty = card_y + s * 34.0f;
+    float ty = card_y + s * 38.0f;
     if (bx) *bx = tx;
     if (by) *by = ty;
     if (bw) *bw = tw;
@@ -2667,7 +2647,6 @@ int finnsettingsapp_hit(int wx, int wy, int ww, int wh, int px, int py,
         sidebar_layout_item items[20];
         int n_items = get_sidebar_layout(items, 20);
         for (int k = 0; k < n_items; k++) {
-            if (items[k].is_header) continue;
             float ry = (float)wy + s * items[k].y_ref;
             float rh = s * SB_ROW_H;
             if (in_box(px, py, sf_x, ry, sf_w, rh)) {

@@ -112,9 +112,11 @@ data and plumbing only. The rule the split follows:
 
 The compositor has a software path and an accelerated path, and it picks
 between them by probing rather than by assuming. GBM and EGL are opened, the
-config is matched against the scanout format, and a machine that cannot give
-back a scanout-capable buffer lands on the software path with nothing else
-changed.
+plane list is asked which 32-bit scanout format the CRTC takes, and the EGL
+config is matched against that visual. A buffer is handed to KMS with its
+modifier when the driver supplies one, with linear AddFB2, legacy AddFB and a
+dma-buf import as fallbacks. A machine that cannot give back a scanout-capable
+buffer lands on the software path with nothing else changed.
 
 Both paths compose the same surfaces, in the same order, from the same cached
 layers. The difference is that the software path `memcpy`s the layers into a

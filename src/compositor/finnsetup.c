@@ -21,13 +21,14 @@
 /*
  * Metrics & Design Language:
  *
- *   - Scaled from 1280x832 reference via REF (1.298077 for 1080p).
+ *   - Authored in design units on the 1280x832 canvas; the compositor's
+ *     canonical finn_ui_scale() maps them onto the screen.
  *   - Centered frosted glass card (matching Start Menu: white 65%, blur, r=8).
  *   - Buttons and fields styled like Settings app (r=4.14, white 85% fills).
  *   - Wi-Fi badge blue accent #006EFF (Figma node 14:382: 0, 110, 255).
  *   - Clean wallpaper backdrop without dimming.
  */
-#define REF                 1.298077f
+#define REF                 1.0f
 
 #define SETUP_CARD_W        (480.0f * REF)
 #define SETUP_CARD_H        (356.0f * REF)

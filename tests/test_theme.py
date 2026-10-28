@@ -189,10 +189,14 @@ class ThemeTest(unittest.TestCase):
         glass = {
             name: float(value)
             for name, value in re.findall(
-                r"^#define\s+(WIN_FROST|OPT_FROST)\s+([0-9.]+)f$",
+                r"^#define\s+(WIN_BODY_ALPHA|WIN_BODY_ALPHA_DARK)\s+([0-9.]+)f$",
                 source, re.MULTILINE,
             )
         }
+        option = re.search(r"^#define\s+WIN_OPTION_LIGHT\s+(0x[0-9A-Fa-f]+)u$",
+                           source, re.MULTILINE)
+        self.assertIsNotNone(option)
+        self.assertEqual(int(option.group(1), 16), 0xFFF9F9F9)
         header = os.path.join(root, "src", "compositor", "finndraw.h")
         with open(header, encoding="utf-8") as handle:
             drawing = handle.read()
@@ -203,7 +207,7 @@ class ThemeTest(unittest.TestCase):
                 drawing, re.MULTILINE,
             )
         }
-        self.assertEqual(glass, {"WIN_FROST": 0.70, "OPT_FROST": 0.50})
+        self.assertEqual(glass, {"WIN_BODY_ALPHA": 0.70, "WIN_BODY_ALPHA_DARK": 0.84})
         self.assertEqual(shadow, {
             "FINN_SHADOW_BLUR": 100.0,
             "FINN_SHADOW_OFFSET_Y": 4.0,

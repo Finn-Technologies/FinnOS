@@ -18,6 +18,16 @@ uint32_t FINN_ON, FINN_FILL, FINN_GLASS;
 
 static int g_dark = 0;
 
+float finn_ui_scale(int screen_w, int screen_h) {
+    if (screen_w <= 0 || screen_h <= 0) return 1.0f;
+    float s = fminf((float)screen_w / FINN_DESIGN_W,
+                    (float)screen_h / FINN_DESIGN_H);
+    /* Below 0.85 the shell's 10-11px detail type stops resolving; a panel
+     * that small is better served by the design at its floor than by a
+     * proportionally correct but unreadable copy. */
+    return s < 0.85f ? 0.85f : s;
+}
+
 void finn_theme_set(int dark) {
     dark = dark ? 1 : 0;
     if (dark == g_dark && FINN_BONE) return;
@@ -106,6 +116,45 @@ void finn_fill_rrect(uint32_t *b, int w, int h, float x, float y,
     float cx = x + rw * 0.5f, cy = y + rh * 0.5f, hw = rw * 0.5f, hh = rh * 0.5f;
     for (int yy = y0; yy <= y1; yy++) {
         if (yy < 0 || yy >= h) continue;
+        for (int xx = x0; xx <= x1; xx++) {
+            if (xx < 0 || xx >= w) continue;
+            float a = rrect_cov(xx + 0.5f, yy + 0.5f, cx, cy, hw, hh, r);
+            if (a <= 0.0f) continue;
+            b[(size_t)yy * w + xx] = finn_over(b[(size_t)yy * w + xx], c, a);
+        }
+    }
+}
+
+void finn_fill_rrect_grad(uint32_t *b, int w, int h, float x, float y,
+                          float rw, float rh, float r, uint32_t top,
+                          uint32_t bottom) {
+    if (rw <= 0.0f || rh <= 0.0f) return;
+    if (r > rw * 0.5f) r = rw * 0.5f;
+    if (r > rh * 0.5f) r = rh * 0.5f;
+
+    int x0 = (int)floorf(x - 1), x1 = (int)ceilf(x + rw + 1);
+    int y0 = (int)floorf(y - 1), y1 = (int)ceilf(y + rh + 1);
+    float cx = x + rw * 0.5f, cy = y + rh * 0.5f, hw = rw * 0.5f, hh = rh * 0.5f;
+
+    for (int yy = y0; yy <= y1; yy++) {
+        if (yy < 0 || yy >= h) continue;
+        float t = ((float)yy + 0.5f - y) / rh;
+        if (t < 0.0f) t = 0.0f;
+        if (t > 1.0f) t = 1.0f;
+        int ar = (int)lroundf((float)((top >> 16) & 0xFF) +
+                              ((float)((bottom >> 16) & 0xFF) -
+                               (float)((top >> 16) & 0xFF)) * t);
+        int ag = (int)lroundf((float)((top >> 8) & 0xFF) +
+                              ((float)((bottom >> 8) & 0xFF) -
+                               (float)((top >> 8) & 0xFF)) * t);
+        int ab = (int)lroundf((float)(top & 0xFF) +
+                              ((float)(bottom & 0xFF) -
+                               (float)(top & 0xFF)) * t);
+        int aa = (int)lroundf((float)((top >> 24) & 0xFF) +
+                              ((float)((bottom >> 24) & 0xFF) -
+                               (float)((top >> 24) & 0xFF)) * t);
+        uint32_t c = ((uint32_t)aa << 24) | ((uint32_t)ar << 16) |
+                     ((uint32_t)ag << 8) | (uint32_t)ab;
         for (int xx = x0; xx <= x1; xx++) {
             if (xx < 0 || xx >= w) continue;
             float a = rrect_cov(xx + 0.5f, yy + 0.5f, cx, cy, hw, hh, r);

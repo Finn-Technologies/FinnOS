@@ -89,6 +89,7 @@ static const char *FS_SRC =
 
 struct finngpu {
     int drm_fd, w, h;
+    uint32_t fmt;
 
     struct gbm_device  *gbm;
     struct gbm_surface *surf;
@@ -103,12 +104,44 @@ struct finngpu {
     gpu_texinfo tex_info[FINNGPU_TEX_MAX];
 
     /* The buffer that is on screen, and the one it replaced — which can only
-     * be freed once the flip that replaced it has landed. */
+     * be freed once the flip that replaced it has landed. An imported handle
+     * is remembered beside its framebuffer, because it has to outlive the
+     * framebuffer and be closed by us. */
     struct gbm_bo *cur_bo, *old_bo;
     uint32_t       cur_fb, old_fb;
+    uint32_t       cur_import, old_import;
 
     char renderer[128];
 };
+
+/*
+ * GBM and KMS must agree on the scanout format. XRGB8888 is the one every
+ * primary plane supports, but some drivers only advertise ARGB8888 for a
+ * given CRTC; asking for a format no plane lists is how a machine with a
+ * working GPU ends up on the software path. Ask the planes first, and keep
+ * XRGB as the preference when both are offered.
+ */
+static uint32_t pick_scanout_format(int fd) {
+    int have_argb = 0;
+    drmModePlaneRes *res = drmModeGetPlaneResources(fd);
+    if (res) {
+        for (uint32_t i = 0; i < res->count_planes; i++) {
+            drmModePlane *p = drmModeGetPlane(fd, res->planes[i]);
+            if (!p) continue;
+            for (uint32_t k = 0; k < p->count_formats; k++) {
+                if (p->formats[k] == DRM_FORMAT_XRGB8888) {
+                    drmModeFreePlane(p);
+                    drmModeFreePlaneResources(res);
+                    return DRM_FORMAT_XRGB8888;
+                }
+                if (p->formats[k] == DRM_FORMAT_ARGB8888) have_argb = 1;
+            }
+            drmModeFreePlane(p);
+        }
+        drmModeFreePlaneResources(res);
+    }
+    return have_argb ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_XRGB8888;
+}
 
 static GLuint compile(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
@@ -143,21 +176,28 @@ finngpu *finngpu_open(int drm_fd, int w, int h) {
     }
 
     /*
-     * XRGB8888 matches the DRM framebuffer format the rest of the compositor
-     * already speaks, so a buffer from here is interchangeable with one of the
-     * dumb buffers the software path would have used.
+     * The EGL display is the platform's, and the buffer format is whatever
+     * that platform's window config actually scans out. Some drivers expose
+     * only ARGB8888 on a given CRTC, so the plane list is consulted first and
+     * XRGB stays the preference: it matches the DRM framebuffer the software
+     * path already speaks, and its alpha is ignored rather than sampled.
      */
-    g->surf = gbm_surface_create(g->gbm, w, h, GBM_FORMAT_XRGB8888,
-                                 GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
-    if (!g->surf) {
-        fprintf(stderr, "finngpu: no scanout-capable surface %dx%d\n", w, h);
-        goto fail;
-    }
+    uint32_t want = pick_scanout_format(drm_fd);
 
     PFNEGLGETPLATFORMDISPLAYEXTPROC get_dpy =
         (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
-    g->dpy = get_dpy ? get_dpy(EGL_PLATFORM_GBM_KHR, g->gbm, NULL)
-                     : eglGetDisplay((EGLNativeDisplayType)g->gbm);
+    if (get_dpy)
+        g->dpy = get_dpy(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
+    if (g->dpy == EGL_NO_DISPLAY) {
+        /* EGL 1.5 spells the same entry point without the EXT suffix; a
+         * driver that ships only the core one still gets a display. */
+        PFNEGLGETPLATFORMDISPLAYPROC get_dpy15 =
+            (PFNEGLGETPLATFORMDISPLAYPROC)eglGetProcAddress("eglGetPlatformDisplay");
+        if (get_dpy15)
+            g->dpy = get_dpy15(EGL_PLATFORM_GBM_KHR, g->gbm, NULL);
+    }
+    if (g->dpy == EGL_NO_DISPLAY)
+        g->dpy = eglGetDisplay((EGLNativeDisplayType)g->gbm);
     if (g->dpy == EGL_NO_DISPLAY) {
         fprintf(stderr, "finngpu: no EGL display on the GBM device\n");
         goto fail;
@@ -176,7 +216,6 @@ finngpu *finngpu_open(int drm_fd, int w, int h) {
         EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 0,
         EGL_NONE
     };
     EGLConfig cfgs[64];
@@ -186,13 +225,28 @@ finngpu *finngpu_open(int drm_fd, int w, int h) {
         goto fail;
     }
     EGLConfig cfg = NULL;
+    uint32_t chosen = 0;
     for (EGLint i = 0; i < ncfg; i++) {
         EGLint vid = 0;
-        if (eglGetConfigAttrib(g->dpy, cfgs[i], EGL_NATIVE_VISUAL_ID, &vid) &&
-            (uint32_t)vid == GBM_FORMAT_XRGB8888) { cfg = cfgs[i]; break; }
+        if (!eglGetConfigAttrib(g->dpy, cfgs[i], EGL_NATIVE_VISUAL_ID, &vid))
+            continue;
+        if ((uint32_t)vid == want) { cfg = cfgs[i]; chosen = want; break; }
+        if (!cfg && ((uint32_t)vid == DRM_FORMAT_XRGB8888 ||
+                     (uint32_t)vid == DRM_FORMAT_ARGB8888)) {
+            cfg = cfgs[i];
+            chosen = (uint32_t)vid;
+        }
     }
     if (!cfg) {
-        fprintf(stderr, "finngpu: no EGL config matching XRGB8888 scanout\n");
+        fprintf(stderr, "finngpu: no EGL config for a 32-bit scanout visual\n");
+        goto fail;
+    }
+    g->fmt = chosen;
+
+    g->surf = gbm_surface_create(g->gbm, w, h, g->fmt,
+                                 GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!g->surf) {
+        fprintf(stderr, "finngpu: no scanout-capable surface %dx%d\n", w, h);
         goto fail;
     }
 
@@ -252,7 +306,10 @@ finngpu *finngpu_open(int drm_fd, int w, int h) {
     const char *rend = (const char *)glGetString(GL_RENDERER);
     snprintf(g->renderer, sizeof g->renderer, "%s", rend ? rend : "unknown");
 
-    fprintf(stderr, "finngpu: GBM+EGL %d.%d up — renderer %s\n", emaj, emin, g->renderer);
+    fprintf(stderr, "finngpu: GBM+EGL %d.%d up — %s scanout — renderer %s\n",
+            emaj, emin,
+            g->fmt == DRM_FORMAT_ARGB8888 ? "ARGB8888" : "XRGB8888",
+            g->renderer);
     return g;
 
 fail:
@@ -267,6 +324,17 @@ void finngpu_close(finngpu *g) {
         if (g->ctx   != EGL_NO_CONTEXT) eglDestroyContext(g->dpy, g->ctx);
         if (g->esurf != EGL_NO_SURFACE) eglDestroySurface(g->dpy, g->esurf);
         eglTerminate(g->dpy);
+    }
+    /* Framebuffers hold the BOs alive; drop them before the surface does. */
+    if (g->cur_fb) { drmModeRmFB(g->drm_fd, g->cur_fb); g->cur_fb = 0; }
+    if (g->old_fb) { drmModeRmFB(g->drm_fd, g->old_fb); g->old_fb = 0; }
+    if (g->cur_import) {
+        drmCloseBufferHandle(g->drm_fd, g->cur_import);
+        g->cur_import = 0;
+    }
+    if (g->old_import) {
+        drmCloseBufferHandle(g->drm_fd, g->old_import);
+        g->old_import = 0;
     }
     if (g->surf) gbm_surface_destroy(g->surf);
     if (g->gbm)  gbm_device_destroy(g->gbm);
@@ -460,8 +528,9 @@ void finngpu_paste_raw(finngpu *g, unsigned tex,
     paste(g, tex, dx, dy, dw, dh, alpha, 1, 0.0f);
 }
 
-/* A dma-buf backed BO has no GEM handle of its own, so the framebuffer is
- * built from its file descriptor; the handle path is the fallback. */
+/* A dma-buf backed BO has no GEM handle of its own, so the framebuffer can
+ * also be built from its file descriptor; that is the last resort before the
+ * buffer is declared unusable. */
 /*
  * GBM's own handle for the buffer: valid for as long as the buffer is, and not
  * ours to close.
@@ -473,24 +542,73 @@ void finngpu_paste_raw(finngpu *g, unsigned tex,
  * earlier, and the handle it hands over is the same GEM name the buffer itself
  * holds, so closing it leaves that buffer's own handle dangling. The result
  * was a framebuffer that could not be created and a compositor frozen on its
- * last good frame. One handle, borrowed rather than made, and no dma-buf.
+ * last good frame. One handle, borrowed rather than made, and no dma-buf —
+ * until the borrowed handle is refused, which is what the import path below
+ * exists for on drivers that only speak descriptors.
+ *
+ * `imported` is set when the framebuffer was built from an imported handle;
+ * the caller must keep that handle alive until the framebuffer is removed.
  */
-static uint32_t fb_for_bo(finngpu *g, struct gbm_bo *bo) {
+static uint32_t fb_for_bo(finngpu *g, struct gbm_bo *bo, uint32_t *imported) {
+    *imported = 0;
     uint32_t handle = gbm_bo_get_handle(bo).u32;
-    uint32_t handles[4] = { handle, 0, 0, 0 };
     uint32_t pitches[4] = { gbm_bo_get_stride(bo), 0, 0, 0 };
     uint32_t offsets[4] = { 0, 0, 0, 0 };
     uint32_t fb = 0;
 
-    if (drmModeAddFB2(g->drm_fd, g->w, g->h, DRM_FORMAT_XRGB8888,
-                      handles, pitches, offsets, &fb, 0) != 0) {
-        static int said = 0;
-        if (!said++)
-            fprintf(stderr, "finngpu: no framebuffer for handle %u: %s\n",
-                    handle, strerror(errno));
-        return 0;
+    uint64_t modifier = gbm_bo_get_modifier(bo);
+    uint32_t flags = modifier != DRM_FORMAT_MOD_INVALID ? DRM_MODE_FB_MODIFIERS : 0;
+    uint64_t mods[4] = { modifier, 0, 0, 0 };
+
+    if (handle) {
+        uint32_t handles[4] = { handle, 0, 0, 0 };
+
+        /*
+         * Tiled buffers carry a modifier, and AddFB2 without it can be
+         * refused even though the plane supports the format. Try the
+         * modifier first, then the older form for linear buffers.
+         */
+        if (drmModeAddFB2WithModifiers(g->drm_fd, g->w, g->h, g->fmt,
+                                       handles, pitches, offsets, mods, &fb,
+                                       flags) == 0)
+            return fb;
+        if (drmModeAddFB2(g->drm_fd, g->w, g->h, g->fmt,
+                          handles, pitches, offsets, &fb, 0) == 0)
+            return fb;
+
+        /* Legacy 24/32bpp, the only form very old drivers understand. */
+        if (drmModeAddFB(g->drm_fd, g->w, g->h, 24, 32,
+                         gbm_bo_get_stride(bo), handle, &fb) == 0)
+            return fb;
     }
-    return fb;
+
+    int fd = gbm_bo_get_fd(bo);
+    if (fd >= 0) {
+        uint32_t imp = 0;
+        if (drmPrimeFDToHandle(g->drm_fd, fd, &imp) == 0) {
+            uint32_t handles[4] = { imp, 0, 0, 0 };
+            if (drmModeAddFB2WithModifiers(g->drm_fd, g->w, g->h, g->fmt,
+                                           handles, pitches, offsets, mods,
+                                           &fb, flags) == 0 ||
+                drmModeAddFB2(g->drm_fd, g->w, g->h, g->fmt,
+                              handles, pitches, offsets, &fb, 0) == 0) {
+                *imported = imp;
+                close(fd);
+                return fb;
+            }
+            /* Not ours to keep when no framebuffer took it. */
+            drmCloseBufferHandle(g->drm_fd, imp);
+        }
+        close(fd);
+    }
+
+    static int said = 0;
+    if (!said++)
+        fprintf(stderr, "finngpu: no framebuffer for bo (handle %u, format %s): %s\n",
+                handle,
+                g->fmt == DRM_FORMAT_ARGB8888 ? "ARGB8888" : "XRGB8888",
+                strerror(errno));
+    return 0;
 }
 
 int finngpu_end(finngpu *g, uint32_t *out_fb) {
@@ -503,14 +621,17 @@ int finngpu_end(finngpu *g, uint32_t *out_fb) {
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(g->surf);
     if (!bo) { fprintf(stderr, "finngpu: no front buffer\n"); return 0; }
 
-    uint32_t fb = fb_for_bo(g, bo);
+    uint32_t imp = 0;
+    uint32_t fb = fb_for_bo(g, bo, &imp);
     if (!fb) { gbm_surface_release_buffer(g->surf, bo); return 0; }
 
     /* the buffer that was current becomes the one to drop next round */
     g->old_bo = g->cur_bo;
     g->old_fb = g->cur_fb;
+    g->old_import = g->cur_import;
     g->cur_bo = bo;
     g->cur_fb = fb;
+    g->cur_import = imp;
 
     *out_fb = fb;
     return 1;
@@ -518,5 +639,9 @@ int finngpu_end(finngpu *g, uint32_t *out_fb) {
 
 void finngpu_release(finngpu *g) {
     if (g->old_fb) { drmModeRmFB(g->drm_fd, g->old_fb); g->old_fb = 0; }
+    if (g->old_import) {
+        drmCloseBufferHandle(g->drm_fd, g->old_import);
+        g->old_import = 0;
+    }
     if (g->old_bo) { gbm_surface_release_buffer(g->surf, g->old_bo); g->old_bo = NULL; }
 }

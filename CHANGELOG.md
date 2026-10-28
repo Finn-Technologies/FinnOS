@@ -5,6 +5,63 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The shell is drawn at one scale, from the Figma frames
+
+- `finn_ui_scale()` is now the one density factor for every surface:
+  `min(width / 1280, height / 832)`. The dock, menu, Control Center, boot,
+  setup, window, Finn Files and Finn Store no longer carry private scales, and
+  the design units in the C sources line up with the 1280 × 832 Figma canvas
+  again.
+- The Start Menu is rebuilt around the frames: a split `Apps | Pinned` header,
+  rows 36 high on a 41 pitch, a `View all` action, Recent activity, the
+  account row, and three views — Home, All Apps and Search. The right panel's
+  two grey placeholders are now a clock/date widget and a machine-status
+  widget, because a blank card claimed a capability the design did not have.
+- The Control Center matches `Desktop - Control Center`: the 345 × 35
+  brightness row, the 35-unit appearance circle, the 385 × 35 volume row and
+  the `edit-01` pen in the footer. The pen opens Settings' Personalization
+  page.
+- Settings matches the Settings frame: a 250-unit sidebar with its 220 × 30
+  search field, opaque content paper, `#F9F9F9` cards, and the About hero and
+  statistic tiles. Missing sensor data is reported as "Not reported", never
+  as an invented model name.
+- The window body is the frame's 70% glass; the dark appearance lays the same
+  glass at 84% so it stays glass without losing the ink. Settings, Finn Files
+  and Finn Store keep that sheet on their sidebars instead of laying a second
+  frost, and Settings' pages and the Files listing draw opaque paper on the
+  content column so a wallpaper stripe cannot run through a row of text.
+- Finn Store aligns its rail rhythm, type scale, circular chips and active-row
+  treatment with Settings, translates its canvas by the window's origin in the
+  shared window layer, and restricts the Native Apps view to catalogue entries
+  without a Flatpak or winget `source`. Finn Files highlights only the most
+  specific matching place so `Computer` (`/`) does not stay lit alongside
+  `Home`.
+- The dock's focused tile is the frame's 34 × 34 white well behind the 26 px
+  icon, with the 4 × 1.5 blue indicator. With no weather source, the 139-wide
+  time pill keeps its width and shows the date in the second column.
+- Recent activity is real: `finnd` records a launch only after it starts the
+  app, in `/run/finn/state/recent`, newest first and deduplicated.
+
+### A launch no longer stalls the frame that shows the window
+
+- The compositor used to wait on the control plane's `app.launch` reply on its
+  event loop. `finnd` starts apps through a transient systemd unit, which can
+  take hundreds of milliseconds, so the window appeared only after the unit
+  was up. The request is now written to the socket and its reply is collected
+  on a later loop pass; the window appears first and the notification still
+  reports what `finnd` actually said.
+
+### The GPU path asks the machine what it can scan out
+
+- `finngpu` negotiates XRGB8888 or ARGB8888 against the CRTC's planes instead
+  of assuming XRGB, and picks the EGL config that matches the chosen visual.
+- Framebuffers are built with `drmModeAddFB2WithModifiers` first, so a tiled
+  buffer is accepted on drivers that require its modifier; linear AddFB2,
+  legacy AddFB and a dma-buf import are the fallbacks.
+- The EGL display tries `eglGetPlatformDisplayEXT`, the core EGL 1.5 entry
+  point, and `eglGetDisplay`, so a driver that ships only one of them still
+  gets the accelerated path.
+
 ### The documentation is rewritten around the system that exists
 
 - `README.md`, `CONTRIBUTING.md` and `AGENTS.md` are rewritten as a front

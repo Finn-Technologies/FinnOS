@@ -71,20 +71,26 @@ twice, and it deepens the way glass does.
 The dock uses the same 0.65 panel pass, and the tray's well is a second
 pass at 0.53 over it: 0.65 + (1 − 0.65) × 0.53 ≈ **0.84**.
 
-The window surface has its own Figma-authored weights: **0.70** for the
-window body and **0.50** for the Window Options pill. The pill is a lift over
-the window, not another tile pass; `finnwindow.c` keeps these two values
-separate from the shared panel material.
+The window surface has its own Figma-authored weight: **0.70** for the body,
+over a 15-unit backdrop blur. The Window Options pill is not a second frost;
+it is a solid `#F9F9F9` chip lifted off the sheet. In the dark appearance the
+sheet is laid heavier, at **0.84**: at 0.70 the daylight in the wallpaper is
+still too strong under white ink, and at 1.0 the sheet stops being glass at
+all. The sidebar keeps that sheet; a content column that has to be read —
+Settings' pages, the Files listing — is opaque paper on top of it, not more
+glass.
 
-The **Window** and **Home** surfaces share Figma's subtle effect: a black 3%
-drop shadow at (0, 4) with blur 100, plus a uniform 15-unit background blur.
-Window rendering applies the shadow beneath floating windows and omits it for
-maximized windows; Home paints the same effect beneath its panel, including
-while the panel animates open. Home's fill is 65%, while the Window body is
-70%. The existing 1/8-resolution, three-pass backdrop blur is scaled to the
-Figma 15-unit radius. This is a measured per-surface effect, not a global
-elevation token; other surfaces should only gain shadows when their own Figma
-layer effects are measured.
+The **Window** and **Home** surfaces do not share a shadow. Figma gives the
+window a 15% black shadow at (0, 4) with blur 250, because it floats above the
+desktop; Home takes the shell's quieter 3% shadow at (0, 4) with blur 100.
+Both use the same uniform 15-unit background blur. Window rendering applies
+the shadow beneath floating windows and omits it for maximized windows; Home
+paints its shadow beneath the panel, including while the panel animates open.
+Home's fill is 65%, while the Window body is 70%. The existing
+1/8-resolution, three-pass backdrop blur is scaled to the Figma 15-unit
+radius. This is a measured per-surface effect, not a global elevation token;
+other surfaces should only gain shadows when their own Figma layer effects
+are measured.
 
 ### The glass tint
 
@@ -186,18 +192,27 @@ it survives being scaled.
 
 ### The scale
 
-All sizes are in pixels on the 1080p canvas; the compositor scales them by
-the screen's density. The name is the role, not the size.
+Every surface is authored against the same 1280 × 832 canvas. The compositor
+maps a design unit to the scanout with `finn_ui_scale()`:
+
+```
+scale = min(screen_width / 1280, screen_height / 832)
+```
+
+That is 1.923 on the 2560 × 1600 development VM, 1.298 on 1080p, and exactly
+1.0 on a 1280 × 832 display. A surface never invents its own factor; using
+the width alone made the dock too wide on a 16:10 panel, and the height alone
+made it overflow a short one. The name is the role, not the size.
 
 | Role | Size | Where |
 |---|---|---|
-| `time` | 34 | the clock page's time |
-| `title` | 17 | the Home panel's "Apps" heading and prominent account labels |
-| `clock` | 18 | the tray's clock |
-| `label` | 12 – 12.5 | a control's name, an app's name, "Notifications" |
-| `label_sm` | 11 | a label that could not fit at 12 — the Control Center only |
-| `detail` | 10 | a control's detail line, an app's note |
-| `micro` | 8.5 – 9 | the smallest line: a status tile's detail, a tile's "Not installed" |
+| `time` | 34 | the Start Menu's clock widget |
+| `title` | 16 | a page title, the Start Menu header, a Settings heading |
+| `clock` | 16 | the dock's time |
+| `label` | 14 | a Start Menu app row |
+| `label_sm` | 12 | a Settings row, a Control Center label |
+| `detail` | 10 – 12 | a control's detail line, an app's note, a caption |
+| `micro` | 8.5 – 10 | the smallest line: a status tile's detail, "Not installed" |
 
 Two details worth knowing:
 
@@ -255,26 +270,40 @@ panel is 405 × 500 at (721, 260), radius 8. Child geometry in the panel is:
 |---|---|
 | Wi-Fi tile | 188 × 40 at (10, 10) |
 | Bluetooth tile | 188 × 40 at (207, 10) |
-| Brightness row | 335 × 35 at (10, 60), plus a 40 × 35 appearance tile at (355, 60) |
+| Brightness row | 345 × 35 at (10, 60) |
+| Appearance control | 35 × 35 at (360, 60) |
 | Volume row | 385 × 35 at (10, 105) |
 | Status/footer row | 385 × 40 at (10, 450) |
 
+The brightness row has no lit portion in the reference: the white disc at its
+start carries the sun, and the track behind it is black at 25%. The volume row
+is the same track with the white lit portion marking the level. The
+appearance control is a 35-unit circle, not a rounded square.
+
 The substantial gap below the sliders is intentional space in the Figma
-frame. The panel and bottom footer must keep their 500/450-unit geometry; the
-previous compact layout did not match the design. The source scales these
-measurements by 1080 / 832 for its 1080p reference. The Figma file has no
-separate clock-page frame, so `finnclock.c` still needs its own visual audit.
+frame. The panel and bottom footer keep their 500/450-unit geometry. The
+source scales these measurements with `finn_ui_scale()`, not with a fixed
+1080p factor.
 
 ### The Start Menu (Home)
 
 The Figma `Desktop - Home` canvas is 1280 × 832. Its Home panel is
 800 × 500 at (240, 260), with an 8 px radius. Inside it, the right panel is
 385 × 480 at (405, 10), radius 4.14; the account-options row is 385 × 40 at
-(10, 450), also radius 4.14. The left side is an app list with a View All
-action, not a four-column app grid. These measured local coordinates match
-the authored constants in `finnmenu.c` before render scaling. The effective
-scale and placement still need a screenshot comparison on the target display
-resolutions.
+(10, 450), also radius 4.14. The left column is 375 wide at x=20. Its header
+is at (20, 25); the pinned list starts at y=56, and the recent list at y=225
+under a label at y=194. Rows are 36 high on a 41 pitch: a 26 px icon at
+(5, 5), a 14 px label at x=41, and a 10 px detail line on the same baseline.
+Those are the authored constants in `finnmenu.c`.
+
+The menu has three views, all in that frame's grammar:
+
+- **Home** — pinned apps, recent activity, and two live widgets in the right
+  panel where the frame's grey cards were placeholders.
+- **All Apps** — the full catalogue at the same row rhythm, with a back
+  chevron at the header's left.
+- **Search** — a 375 × 36 field at (20, 56), results below it, and the chosen
+  result's preview in the right panel. Typing never leaves the menu.
 
 ### The dock
 
@@ -433,12 +462,15 @@ notification queue is empty at every start, by design.
 ### The Start Menu (Home)
 
 The Figma Home panel is 800 × 500 at (240, 260) in the 1280 × 832 desktop
-frame. Its left side is an app list headed `Apps`, with a `View all` action;
-the right side is a widget area with two placeholder cards; the bottom-left
-account row carries the avatar/name and restart/power controls. This is not a
-four-column launcher grid. The measured panel, right-panel and account-row
-coordinates are recorded above and match the authored values in
-`finnmenu.c` before responsive render scaling.
+frame. Its left side is an app list headed `Apps | Pinned`, with a `View all`
+action; the right side is a widget area whose two cards carry the clock/date
+and machine status; the bottom-left account row carries the avatar/name and
+restart/power controls.
+This is not a four-column launcher grid. The measured panel, right-panel,
+account-row and row coordinates are recorded above and match the authored
+values in `finnmenu.c`, which now works in design units rather than a private
+scale. The two grey cards in the frame carry live widgets because a blank
+placeholder is not a capability; the rest of the panel is the frame.
 
 ---
 
@@ -478,6 +510,7 @@ pixel-for-pixel unseen screens. Display, Sound, and Power remain searchable and
 control-addressable. System Information uses the Figma hero/four-card composition
 with live RAM, root-storage and CPU values; GPU details remain explicitly
 unavailable. The measured stacked-window positions now match Figma; z-order and
-other runtime interactions remain unverified. Dock/desktop scaling needs a
-runtime comparison, and neither the clock page nor Finn Store has a dedicated
-Figma frame.
+other runtime interactions remain unverified. Neither the clock page, Finn
+Files nor Finn Store has a dedicated Figma frame; all three now use the
+canonical `finn_ui_scale()`, and Finn Files and Finn Store share Settings'
+window-sheet sidebar and active-row treatment.

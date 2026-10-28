@@ -62,22 +62,21 @@
 #define PAD             32.0f   /* content column, as in Settings */
 #define NARROW_PAD      20.0f
 #define RAIL_W         250.0f
-#define RAIL_PAD        16.0f   /* inside the sheet */
+#define RAIL_PAD        15.0f   /* inside the sheet, as in Settings */
 #define RAIL_MIN       560.0f   /* narrower than this: tabs over the content */
 #define RAIL_MIN_H     380.0f   /* too short for a rail: use tabs instead */
 
 #define CONTENT_MAX    780.0f   /* the point where a maximised column stops */
-#define TITLE_TOP       60.0f   /* content header title */
-#define SUB_TOP         88.0f   /* content header subtitle */
-#define FILTER_W       218.0f   /* rail width less its two margins */
+#define TITLE_TOP       44.0f   /* the frame's 20/44 header, as in Settings */
+#define SUB_TOP         70.0f   /* content header subtitle */
+#define FILTER_W       220.0f   /* the frame's 220x30 search field */
 #define FILTER_H        30.0f
 #define CONTENT_TOP    104.0f
 
-#define NAV_FIRST_Y    148.0f
+#define NAV_FIRST_Y    115.0f   /* the frame's rows: 30 high on a 35 pitch */
 #define NAV_ITEM_H      30.0f
-#define NAV_ROW_STEP    33.0f
-#define NAV_SECTION_GAP  6.0f
-#define NAV_SECTION_TOP 10.0f
+#define NAV_ROW_STEP    35.0f
+#define NAV_GROUP_GAP   10.0f   /* the frame's one break, as in Settings */
 #define TAB_H           30.0f
 #define TAB_GAP          6.0f
 
@@ -272,7 +271,7 @@ static char g_registry[512] = "";
 
 static finn_font g_f_hero, g_f_title, g_f_label, g_f_sub, g_f_micro;
 static float g_font_scale = -1.0f;
-static fsvg g_ic_home, g_ic_store, g_ic_grid, g_ic_windows, g_ic_library;
+static fsvg g_ic_home, g_ic_store, g_ic_native, g_ic_grid, g_ic_windows, g_ic_library;
 static fsvg g_ic_search, g_ic_clear, g_ic_back, g_ic_next, g_ic_refresh;
 static int g_ready = 0;
 static unsigned g_store_generation = 1;
@@ -389,18 +388,18 @@ static int load_fonts(float scale) {
     finn_font_free(&g_f_sub);
     finn_font_free(&g_f_micro);
 
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    /* Settings' scale, exactly: 22 for the title and a product name, 15 for
-     * a card's name, 13 for rows and buttons, 12 for descriptions and 11.5
-     * for the smallest captions. A Store one size smaller than the rest of
-     * the shell reads as a web page embedded in the OS. */
-    if (finn_font_load(&g_f_hero, p, finnapp_font_px(s, 22.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_title, p, finnapp_font_px(s, 15.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_label, p, finnapp_font_px(s, 13.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_sub, p, finnapp_font_px(s, 12.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_micro, p, finnapp_font_px(s, 11.5f)) != 0) return -1;
+    /* Settings' type, exactly: 16 for the page title and a product name, 14
+     * for a card's name, 12 for rows and buttons, 10 for descriptions and
+     * captions. A Store one size off the rest of the shell reads as a web
+     * page embedded in the OS. */
+    if (finn_font_load(&g_f_hero, p, finnapp_font_px(s, 16.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_title, p, finnapp_font_px(s, 14.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_label, p, finnapp_font_px(s, 12.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_sub, p, finnapp_font_px(s, 10.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_micro, p, finnapp_font_px(s, 10.0f)) != 0) return -1;
     return 0;
 }
 
@@ -434,9 +433,11 @@ static int app_available(const finn_app *a) {
 static int native_matches(int i) {
     int n = finn_apps_count();
     if (i < 0 || i >= n) return 0;
-    if (!g_filter[0]) return 1;
     const finn_app *a = finn_apps_at(i);
-    if (!a) return 0;
+    /* The catalogue file names the origin; a Flatpak or winget entry is not
+     * a native app just because the file lists it. */
+    if (!a || a->source[0]) return 0;
+    if (!g_filter[0]) return 1;
     return strcasestr(a->name, g_filter) != NULL ||
            strcasestr(a->id, g_filter) != NULL ||
            strcasestr(a->note, g_filter) != NULL;
@@ -2147,16 +2148,11 @@ static void layout_for(int ww, int wh, float s, store_layout *L) {
     L->status_x = L->content_x + L->content_w - L->status_w;
 }
 
-static const char *nav_section_for(int i) {
-    if (i <= 3) return "Browse";
-    return "Your apps";
-}
-
 static float nav_row_top(int i) {
     float y = NAV_FIRST_Y;
     for (int k = 0; k < i; k++) {
         y += NAV_ROW_STEP;
-        if (k == 3) y += NAV_SECTION_GAP + NAV_SECTION_TOP;
+        if (k == 3) y += NAV_GROUP_GAP;
     }
     return y;
 }
@@ -2475,7 +2471,6 @@ static const char *page_title(void) {
 
 static void page_subtitle(char *out, size_t cap) {
     int total = finn_apps_count();
-    int installed = finn_apps_installed_count();
 
     if (g_detail) {
         snprintf(out, cap, "Catalogue entry, install state and launcher");
@@ -2483,17 +2478,20 @@ static void page_subtitle(char *out, size_t cap) {
     }
 
     switch (g_page) {
-    case STORE_PAGE_NATIVE:
+    case STORE_PAGE_NATIVE: {
+        int native = native_visible_count();
+        int native_installed = native_installed_visible_count();
         if (g_load_error) {
             snprintf(out, cap, "The app catalogue could not be read");
         } else if (g_filter[0]) {
-            snprintf(out, cap, "%d of %d apps match \"%.64s\"",
-                     native_visible_count(), total, g_filter);
+            snprintf(out, cap, "%d of %d native app%s match \"%.64s\"",
+                     native, total, native == 1 ? "" : "s", g_filter);
         } else {
-            snprintf(out, cap, "%d app%s in the catalogue, %d installed",
-                     total, total == 1 ? "" : "s", installed);
+            snprintf(out, cap, "%d native app%s, %d installed",
+                     native, native == 1 ? "" : "s", native_installed);
         }
         break;
+    }
     case STORE_PAGE_LINUX:
         if (g_flatpak_error) {
             snprintf(out, cap, "Flatpak catalogue unavailable");
@@ -2532,15 +2530,17 @@ static void page_subtitle(char *out, size_t cap) {
                  g_library_count, g_library_count == 1 ? "" : "s");
         break;
     default: {
+        int native = native_visible_count();
+        int native_installed = native_installed_visible_count();
         int flat = g_flatpak_installed_count;
         int win = g_wine.count;
         if (!g_flatpak_loaded || g_wine.available < 0) {
             snprintf(out, cap, "%d native app%s, %d installed; reading other sources",
-                     total, total == 1 ? "" : "s", installed);
+                     native, native == 1 ? "" : "s", native_installed);
         } else {
             snprintf(out, cap,
                      "%d native apps, %d installed · %d Flatpak · %d Windows",
-                     total, installed, flat, win);
+                     native, native_installed, flat, win);
         }
         break;
     }
@@ -2585,22 +2585,21 @@ static const char *nav_label(int i, int narrow) {
 static fsvg *nav_icon(int i) {
     switch (i) {
     case 0: return &g_ic_home;
-    case 1: return &g_ic_store;
+    case 1: return &g_ic_native;
     case 2: return &g_ic_grid;
     case 3: return &g_ic_windows;
     default: return &g_ic_library;
     }
 }
 
-static void draw_rail(store_canvas *c, const store_layout *L, float s) {
-    float h = (float)c->h - L->rail_y;
+static void draw_rail(store_canvas *c, const store_layout *L, float s,
+                      float wh) {
+    float h = wh - L->rail_y;
     if (h <= 0.0f) return;
 
-    /* The same 0.92 sheet as Settings: wallpaper light, no wallpaper shape,
-     * and rounded only where the window itself is round. */
-    float wr = s * 8.0f;
-    c_frost(c, 0.0f, L->rail_y, L->rail_w, h, wr, FINN_GLASS, 0.92f);
-    c_frost(c, L->rail_w - wr, L->rail_y, wr, h, 0.0f, FINN_GLASS, 0.92f);
+    /* Like Settings, the rail is the window's own sheet: no fill, so the
+     * wallpaper's light comes through exactly as it does through the body.
+     * Only the seam marks where the page begins. */
     c_fill(c, L->rail_w - 1.0f, L->rail_y, 1.0f, h, 0.0f, FINN_HAIR);
 
     c_text(c, &g_f_hero, s * RAIL_PAD,
@@ -2613,33 +2612,22 @@ static void draw_rail(store_canvas *c, const store_layout *L, float s) {
         float x, y, w, hgt;
         nav_item_rect(L, i, s, &x, &y, &w, &hgt);
 
-        const char *section = nav_section_for(i);
-        if (i == 0 || strcmp(section, nav_section_for(i - 1)) != 0) {
-            c_text(c, &g_f_micro, x,
-                   y - s * NAV_SECTION_TOP +
-                   finn_text_cap_height(&g_f_micro),
-                   section, FINN_MUTE);
-        }
-
         int active = (i == g_page);
-        if (active) {
-            c_fill(c, x, y, w, hgt, s * 4.0f,
-                   finn_theme_dark() ? 0x38FFFFFFu : 0x26006FFFu);
-            c_stroke(c, x, y, w, hgt, s * 4.0f, 1.0f,
-                     finn_theme_dark() ? 0x2EFFFFFFu : 0x24006FFFu);
-        }
+        if (active)
+            c_fill(c, x, y, w, hgt, s * 4.14f,
+                   finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
 
         /* Settings' circular chip, in the Store's own blue. */
-        float chip = s * 20.0f;
-        float chip_x = x + s * 6.0f;
+        float chip = s * 22.0f;
+        float chip_x = x + s * 4.0f;
         float chip_y = y + (hgt - chip) * 0.5f;
         c_fill(c, chip_x, chip_y, chip, chip, chip * 0.5f,
                active ? FINN_ON
                       : (finn_theme_dark() ? 0xFF4A4F59u : 0xFF006FFFu));
         c_icon_ink(c, nav_icon(i), chip_x + chip * 0.5f, chip_y + chip * 0.5f,
-                   s * 13.0f, 0xFFFFFFFFu, 0xFFFFFFFFu);
+                   s * 18.0f, 0xFFFFFFFFu, 0xFFFFFFFFu);
 
-        c_text(c, &g_f_label, chip_x + chip + s * 10.0f,
+        c_text(c, &g_f_label, x + s * 34.0f,
                y + hgt * 0.5f + finn_text_cap_height(&g_f_label) * 0.5f,
                nav_label(i, 0), FINN_INK);
     }
@@ -2711,8 +2699,8 @@ static void draw_list_note(store_canvas *c, const store_layout *L, float s,
     char fitted[320];
     finnapp_ellipsis(&g_f_micro, fitted, sizeof fitted, text,
                      L->content_w);
-    c_text(c, &g_f_micro, L->content_x,
-           L->content_y + s * (top + LIST_LABEL_H) - scroll_px +
+    c_text(c, &g_f_micro, 0.0f,
+           s * (top + LIST_LABEL_H) - scroll_px +
            finn_text_cap_height(&g_f_micro),
            fitted, FINN_MUTE);
 }
@@ -3119,16 +3107,24 @@ static void draw_native_card(store_canvas *c, const store_layout *L, float s,
                     !strcmp(g_confirm_id, a->id) ? "Remove?" : "Remove",
                     !strcmp(g_confirm_id, a->id) ? BTN_REMOVE_CONFIRM
                                                  : BTN_REMOVE);
-    } else {
+        draw_button(c, ax, ay, aw, ah, s, native_primary_label(a),
+                    native_primary_kind(a));
+    } else if (app_available(a)) {
         draw_status_line(c, x + s * CARD_PAD,
                          ay + ah * 0.5f +
                          finn_text_cap_height(&g_f_micro) * 0.5f,
-                         s,
-                         app_available(a) ? "Available" : "Launcher missing",
-                         a->installed, app_available(a));
+                         s, "Available", a->installed, 1);
+        draw_button(c, ax, ay, aw, ah, s, native_primary_label(a),
+                    native_primary_kind(a));
+    } else {
+        /* Nothing can act, so the card says why and draws no button: a
+         * disabled "Unavailable" chip beside the same sentence was both a
+         * control that could not act and wide enough to collide with it. */
+        draw_status_line(c, x + s * CARD_PAD,
+                         ay + ah * 0.5f +
+                         finn_text_cap_height(&g_f_micro) * 0.5f,
+                         s, "Launcher missing", a->installed, 0);
     }
-    draw_button(c, ax, ay, aw, ah, s, native_primary_label(a),
-                native_primary_kind(a));
 }
 
 static void draw_native(store_canvas *c, const store_layout *L, float s,
@@ -4437,9 +4433,9 @@ static void load_nav_icon(fsvg *ic, const char *name) {
 }
 
 static void free_nav_icons(void) {
-    fsvg *icons[] = { &g_ic_home, &g_ic_store, &g_ic_grid, &g_ic_windows,
-                      &g_ic_library, &g_ic_search, &g_ic_clear, &g_ic_back,
-                      &g_ic_next, &g_ic_refresh };
+    fsvg *icons[] = { &g_ic_home, &g_ic_store, &g_ic_native, &g_ic_grid,
+                      &g_ic_windows, &g_ic_library, &g_ic_search, &g_ic_clear,
+                      &g_ic_back, &g_ic_next, &g_ic_refresh };
     for (size_t i = 0; i < sizeof icons / sizeof icons[0]; i++) {
         fsvg_free(icons[i]);
         memset(icons[i], 0, sizeof *icons[i]);
@@ -4465,6 +4461,7 @@ int finnstoreapp_init(const char *icon_dir, const char *font_dir,
 
     load_nav_icon(&g_ic_home, "home-09.svg");
     load_nav_icon(&g_ic_store, "store.svg");
+    load_nav_icon(&g_ic_native, "native-apps.svg");
     load_nav_icon(&g_ic_grid, "app-grid.svg");
     load_nav_icon(&g_ic_windows, "windows.svg");
     load_nav_icon(&g_ic_library, "library.svg");
@@ -4571,14 +4568,17 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
     winget_job_poll();
     flatpak_poll_job();
 
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     store_layout L;
     layout_for(ww, wh, s, &L);
 
+    /* The rail and the header draw in window coordinates, and the layer is
+     * the union of every open window: shift them by the window's origin in
+     * the layer, and keep the layer's own screen origin for the frost. */
     int ox = wx - lx0, oy = wy - ly0;
-    store_canvas c = { layer, lw, lh, wx, wy, 0.0f, 0.0f };
+    store_canvas c = { layer, lw, lh, lx0, ly0, (float)ox, (float)oy };
 
-    if (L.rail) draw_rail(&c, &L, s);
+    if (L.rail) draw_rail(&c, &L, s, (float)wh);
     else {
         draw_filter(&c, &L, s, g_filter_focused);
         draw_tabs(&c, &L, s);
@@ -4599,8 +4599,9 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
     uint32_t *buf = scratch_begin(bw, bh);
     if (!buf) return;
     copy_from_layer(buf, bw, bh, layer, lw, lh, ox + ix, oy + iy);
-    store_canvas cc = { buf, bw, bh, wx + ix, wy + iy,
-                        (float)ix, (float)iy };
+    /* The borrow is the content column's own rectangle, so a page draws in
+     * column coordinates from (0,0); the paste below puts it back. */
+    store_canvas cc = { buf, bw, bh, wx + ix, wy + iy, 0.0f, 0.0f };
 
     if (g_detail) {
         const finn_app *a = finn_apps_at(find_index(g_sel_id));
@@ -4703,7 +4704,7 @@ int finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     if (out_sub) *out_sub = 0;
     if (px < wx || py < wy || px >= wx + ww || py >= wy + wh) return 0;
 
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     store_layout L;
     layout_for(ww, wh, s, &L);
 
@@ -5182,7 +5183,7 @@ int finnstoreapp_key(const finn_key_event *e) {
 
 int finnstoreapp_scroll(int clicks, float scale) {
     if (!g_ready || !clicks || !g_view_ww || !scale) return 0;
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     store_layout L;
     layout_for(g_view_ww, g_view_wh, s, &L);
     float vph = L.content_bottom - L.content_y;

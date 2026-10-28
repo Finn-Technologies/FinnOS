@@ -183,16 +183,12 @@ static void maybe_save_capture(int screen_w, int screen_h) {
 }
 
 void finnboot_render(int screen_w, int screen_h, float scale) {
-    (void)scale;
     if (!g_ready) return;
 
-    /*
-     * Density scale: Figma 1280x832 reference frame renders 1:1 at s=1.0.
-     * On VM 2560x1600 or 2560x1664 (2x), scale is 2.0.
-     */
-    float s = (screen_w == 1280 && screen_h == 832)
-            ? 1.0f
-            : ((float)screen_w / 1280.0f);
+    /* The mark and the track share the shell's canonical density, so the
+     * boot screen and the desktop are drawn at the same size on every panel.
+     * A width-only factor overshot the design on a 16:10 screen. */
+    float s = scale;
 
     int mark = rs(BOOT_MARK_SZ, s);
     int line_w = rs(BOOT_TRACK_W, s);

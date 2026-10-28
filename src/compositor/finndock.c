@@ -18,7 +18,7 @@
 
 /*
  * Metrics authored for the Figma design system (1280x832 canvas, scaled by
- * u = screen_w / 1280, exactly 2.0x on the 2560x1600 VM):
+ * the canonical finn_ui_scale() — 1.923x on the 2560x1600 VM):
  *
  * 4 floating pills at rest:
  *   1. Taskbar (Apps):    content-sized, h=42, r=8. The exported Figma frame
@@ -30,11 +30,9 @@
  *                         width, so the half that would have held it is not air.
  *   4. Status / Tray:     w=116, h=42, r=8 (volume x=10, wifi x=47, battery x=84)
  *
- * Gaps between pills: 15 design px (30px at 2x).
- * Bottom margin:      15 design px (30px at 2x).
+ * Gaps between pills: 15 design px.
+ * Bottom margin:      15 design px.
  */
-#define REF           1.298077f
-
 #define DOCK_H        42.0f
 #define DOCK_R        8.0f
 #define DOCK_GAP      15.0f
@@ -48,7 +46,7 @@
 #define TILE_STEP     36.0f
 #define TILE_OUTER_INSET 8.5f
 #define TILE_TOP_INSET 8.0f
-#define TILE_RADIUS   4.0f
+#define TILE_RADIUS   5.909f
 
 #define DOCK_GAP_SUNK 7.5f
 
@@ -496,8 +494,8 @@ void finndock_set_apps(const finndock_app *apps, int n) {
 void finndock_render(int screen_w, int screen_h, float scale, const finn_state *st) {
     if (!g_ready) { g_visible = 0; return; }
 
-    /* The Figma design canvas is 1280x832. Scale u is 2.0x for 2560 scanout. */
-    float u = (screen_w >= 1280) ? ((float)screen_w / 1280.0f) : (scale * REF);
+    /* One canonical density, the same factor every other surface uses. */
+    float u = scale;
     g_dock_u = u;
 
     if (g_font_scale != u) { load_fonts(u); g_font_scale = u; }
@@ -510,15 +508,26 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     float bottom_m = (DOCK_BOTTOM * (1.0f - sink)) * u;
 
     /*
-     * The clock pill is authored 139 wide because it holds time and weather.
-     * A machine with no weather source has no second half to hold, and the
-     * space it would have used reads as a gap: the pill is then the clock's
-     * own width, with the same 10 left inset and a 12 right one.
+     * The clock pill is authored 139 wide because it holds time and a second
+     * column. That column is the weather when a weather source exists. A
+     * machine with none would otherwise leave a gap where the pill's other
+     * half used to be, so the column shows the date instead: the same width,
+     * the same two-line rhythm, and no invented temperature.
      */
     char clock_s[8];
     int minute = clock_minute_now(clock_s, sizeof clock_s);
     char wtemp[16] = {0}, wcond[32] = {0};
     int have_weather = read_weather(wtemp, sizeof wtemp, wcond, sizeof wcond);
+
+    char date1_s[8] = {0}, date2_s[24] = {0};
+    if (!have_weather) {
+        time_t now = time(NULL);
+        struct tm tm;
+        if (localtime_r(&now, &tm)) {
+            strftime(date1_s, sizeof date1_s, "%a", &tm);
+            strftime(date2_s, sizeof date2_s, "%d %b", &tm);
+        }
+    }
 
     float p1_w = g_n_tasks > 0
                ? (TILE_OUTER_INSET * 2.0f + TILE_W +
@@ -526,8 +535,6 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                : 0.0f;
     float p2_w = PILL2_W * u;
     float p3_w = PILL3_W * u;
-    if (!have_weather && g_font.face)
-        p3_w = (22.0f * u) + finn_text_width(&g_font, clock_s);
     float p4_w = PILL4_W * u;
 
     float p2_x = ((float)screen_w - p2_w) * 0.5f;
@@ -638,8 +645,6 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p1_bx, by, p1_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
-            finn_stroke_rrect(g_layer, lw, lh, p1_bx, by, p1_w, dh, dr,
-                              1.0f, FINN_HAIR);
         }
 
         for (int i = 0; i < g_n_tasks; i++) {
@@ -649,15 +654,18 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             float tw = TILE_W * u;
             float pressed = (g_pressed == FINNDOCK_HIT_TASK && g_pressed_task == i) ? 1.0f : 0.0f;
 
-            /* The plate under a running app: brightest when the app is the
-             * focused one, quieter when it is merely open, faintest when all
-             * of its windows are folded away. A pinned app that is not open
-             * has no plate — the glass is its resting state. */
+            /* The focused app sits on a 34x34 white well (Figma 186:3892),
+             * four design px larger than the tile on every side. An app that
+             * is open but not focused gets the same well at half strength, and
+             * a folded-away app barely at all: the shape says "open" and the
+             * weight says how far away it is. A pinned app that is not open
+             * has no well — the glass is its resting state. */
             if (t->windows > 0) {
-                float plate = t->focused ? 0.82f : (t->minimized ? 0.20f : 0.42f);
+                float plate = t->focused ? 1.0f : (t->minimized ? 0.20f : 0.42f);
                 uint32_t a8 = (uint32_t)(plate * 255.0f + 0.5f);
-                finn_fill_rrect(g_layer, lw, lh, tx, ty, tw, tw,
-                                TILE_RADIUS * u, (a8 << 24) | 0x00FFFFFFu);
+                finn_fill_rrect(g_layer, lw, lh, tx - 4.0f * u, by + 4.0f * u,
+                                34.0f * u, 34.0f * u, 4.0f * u,
+                                (a8 << 24) | 0x00FFFFFFu);
             }
 
             draw_wash(g_layer, lw, lh, tx, ty, tw, tw, TILE_RADIUS * u,
@@ -683,13 +691,12 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                                initial, FINN_INK);
             }
 
-            /* A running app carries the blue mark the design gives the
-             * active chip; a folded-away one carries it in mute ink so the
-             * indicator says "open" without pretending it is on screen. The
-             * focused app's mark is wider, which is the one difference that
-             * survives a bright frosted backdrop. */
+            /* A running app carries the 4x1.5 blue mark the design gives the
+             * focused tile (Figma 186:3893); a folded-away one carries it in
+             * mute ink so the indicator says "open" without pretending it is
+             * on screen. */
             if (t->windows > 0) {
-                float ind_w = (t->focused ? 12.0f : 4.0f) * u;
+                float ind_w = 4.0f * u;
                 float ind_h = 1.5f * u;
                 float ind_x = tx + (tw - ind_w) * 0.5f;
                 float ind_y = by + dh - 2.0f * u - ind_h * 0.5f;
@@ -707,17 +714,16 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p2_bx, by, p2_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
-            finn_stroke_rrect(g_layer, lw, lh, p2_bx, by, p2_w, dh, dr,
-                              1.0f, FINN_HAIR);
         }
 
-        /* Active Home well when Start Menu is open (Figma 4:191) */
+        /* Active Home well when Start Menu is open (Figma 218:190): a plain
+         * white 42x42 square, the height of the pill, not a rounded chip. */
         if (g_well_launcher > 0.004f) {
             float bg_w = 42.0f * u, bg_h = dh;
             float bg_x = p2_bx + 37.0f * u;
             float bg_y = by;
             uint32_t la = (uint32_t)(g_well_launcher * 255.0f + 0.5f);
-            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
+            finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 0.0f,
                             (la << 24) | 0x00FFFFFFu);
         }
 
@@ -756,8 +762,6 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p3_bx, by, p3_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
-            finn_stroke_rrect(g_layer, lw, lh, p3_bx, by, p3_w, dh, dr,
-                              1.0f, FINN_HAIR);
         }
 
         /* Active well when Notification Center / Clock page is open */
@@ -781,7 +785,8 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
                            p3_bx + 10.0f * u, base_y, clock_s, FINN_INK);
         }
 
-        /* Weather text & icon (only when a real weather source exists — never fake) */
+        /* Weather text & icon when a real source exists; otherwise the same
+         * column carries the date, which is real and keeps the pill's shape. */
         if (have_weather) {
             const char *temp_s = wtemp;
             const char *cond_s = wcond;
@@ -794,12 +799,21 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             }
             if (g_f_temp.face) {
                 float tx = p3_bx + 93.0f * u;
-                finn_text_draw(&g_f_temp, g_layer, lw, lh, tx, by + 19.0f * u, temp_s, 0xFF2B2B2Bu);
+                finn_text_draw(&g_f_temp, g_layer, lw, lh, tx, by + 19.0f * u, temp_s, FINN_INK);
             }
             if (g_f_cond.face && cond_s[0]) {
                 float tx = p3_bx + 93.0f * u;
-                finn_text_draw(&g_f_cond, g_layer, lw, lh, tx, by + 34.0f * u, cond_s, 0xFF606060u);
+                finn_text_draw(&g_f_cond, g_layer, lw, lh, tx, by + 34.0f * u, cond_s, FINN_DIM);
             }
+        } else if (date1_s[0]) {
+            if (g_f_temp.face)
+                finn_text_draw(&g_f_temp, g_layer, lw, lh,
+                               p3_bx + 60.0f * u, by + 19.0f * u,
+                               date1_s, FINN_INK);
+            if (g_f_cond.face && date2_s[0])
+                finn_text_draw(&g_f_cond, g_layer, lw, lh,
+                               p3_bx + 60.0f * u, by + 34.0f * u,
+                               date2_s, FINN_DIM);
         }
     }
 
@@ -810,8 +824,6 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             finn_frost_rrect(g_layer, lw, lh, g_lx, g_ly,
                              p4_bx, by, p4_w, dh, dr,
                              FINN_GLASS, FINN_GLASS_PANEL * frost);
-            finn_stroke_rrect(g_layer, lw, lh, p4_bx, by, p4_w, dh, dr,
-                              1.0f, FINN_HAIR);
         }
 
         /* White active well chip behind icons when Control Center is open (Figma 9:64) */

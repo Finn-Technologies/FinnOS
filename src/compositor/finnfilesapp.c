@@ -385,14 +385,25 @@ static const char *place_path(int i, char *buf, size_t cap) {
     return buf;
 }
 
-/* A place is active when the current path is that folder or inside it. */
-static int place_active(int i) {
+static size_t place_match_len(int i) {
+    if (i < 0 || i >= PLACE_COUNT || !g_place_exists[i]) return 0;
     char p[PATH_MAX * 2];
     place_path(i, p, sizeof p);
+    if (!strcmp(p, "/")) return g_path[0] == '/' ? 1 : 0;
     size_t n = strlen(p);
-    if (!strcmp(p, "/")) return 1;
     if (strncmp(g_path, p, n)) return 0;
-    return g_path[n] == '\0' || g_path[n] == '/';
+    return (g_path[n] == '\0' || g_path[n] == '/') ? n : 0;
+}
+
+/* The active place is the most specific one that contains the folder: / is a
+ * prefix of every path, so matching any prefix would light Home and Computer
+ * together on every folder in ~. */
+static int place_active(int i) {
+    size_t len = place_match_len(i);
+    if (!len) return 0;
+    for (int k = 0; k < PLACE_COUNT; k++)
+        if (place_match_len(k) > len) return 0;
+    return 1;
 }
 
 /* ---------------- preview ---------------- */
@@ -556,7 +567,7 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
         refresh_places();
     }
 
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     files_layout lay;
     layout_for(ww, wh, s, &lay);
 
@@ -578,8 +589,18 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
     #define LX(v) ((v) + ox)
     #define LY(v) ((v) + oy)
 
-    finn_frost_rrect(layer, lw, lh, lx0, ly0, LX(0.0f), LY(0.0f),
-                     lay.sb_w, (float)wh, s * 8.0f, FINN_GLASS, 0.86f);
+    /* The content column is the app's paper, not the window's glass. A file
+     * list is read, not looked through: a wallpaper stripe crossing the rows
+     * is exactly the kind of decoration the design uses glass for everywhere
+     * except where the content has to be legible. Settings makes the same
+     * distinction, and the two apps share the window, so they share the rule.
+     * The sidebar keeps the window's own sheet and draws only the seam. */
+    float wr = s * 8.0f;
+    float cbx = LX(lay.sb_w);
+    float cbw = (float)ww - lay.sb_w;
+    uint32_t paper = finn_theme_dark() ? 0xFF1E2128u : 0xFFFFFFFFu;
+    finn_fill_rrect(layer, lw, lh, cbx, LY(0.0f), cbw, (float)wh, wr, paper);
+    finn_fill_rrect(layer, lw, lh, cbx, LY(0.0f), wr, (float)wh, 0.0f, paper);
     finn_fill_rrect(layer, lw, lh, LX(lay.sb_w - 1.0f), LY(0.0f),
                     1.0f, (float)wh, 0.0f, FINN_HAIR);
 
@@ -599,8 +620,8 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
         int act = place_active(i);
         if (act)
             finn_fill_rrect(layer, lw, lh, LX(s * 6.0f), LY(y),
-                            lay.sb_w - s * 12.0f, h, s * 5.0f,
-                            0x24006FFFu);
+                            lay.sb_w - s * 12.0f, h, s * 4.14f,
+                            finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
         folder_glyph(layer, lw, lh, LX(s * SIDEBAR_PAD), LY(y + s * 7.0f),
                      s * 14.0f, act ? FINN_ON : FINN_MUTE);
         float lc = finn_text_cap_height(&g_f_label);
@@ -843,7 +864,7 @@ int finnfilesapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     if (out_sub) *out_sub = 0;
     if (px < wx || py < wy || px >= wx + ww || py >= wy + wh) return FINNFILES_HIT_NONE;
 
-    float s = scale * FINN_APP_REF;
+    float s = scale;
     files_layout lay;
     layout_for(ww, wh, s, &lay);
 

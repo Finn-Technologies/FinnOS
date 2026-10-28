@@ -16,43 +16,42 @@
 #include <time.h>
 
 /*
- * Metrics authored for the 1080p canvas, scaled from Figma 13:31 & 13:129
- * (1280x832 reference units * 1.298077):
- *   panel 260x260 r=15 (338x338 r=19.5)
- *   header at x=14, y=14: time 18px (23.4) in FINN_INK, date 12px (15.6) at
- *     x=68 on the same baseline ("Weekday, " in FINN_INK, "18 October" in FINN_DIM)
- *   empty state: centered "No notifications" 10px (13.0) in FINN_DIM
- *   items state: up to 4 cards at x=14, y=45, 232x36 r=12 (301.2x46.7 r=15.6),
- *     gap 8 (10.4), each with a 24x24 r=6 (31.2x31.2 r=7.8) #006FFF badge at
- *     inset 6 (7.8) carrying the white FinnOS mark (14px -> 18.0), title 10px
- *     (13.0) in FINN_INK, body 8px (10.4) in FINN_DIM
- *   bottom-center "Clear all" pill at y=223, 55x23 r=100 (71.4x29.9) frosted 0.50
+ * Metrics authored in design units (1280x832 canvas). This page is not in
+ * the current Figma file, so it is drawn in the same glass and type scale as
+ * the surfaces that are:
+ *   panel 260x260 r=8
+ *   header at x=14, y=14: time 18px, date 12px at x=68 on the same baseline
+ *   empty state: centered "No notifications" 10px in FINN_DIM
+ *   items state: up to 4 cards at x=14, y=45, 232x36 r=8, gap 8, each with a
+ *     24x24 badge at inset 6 carrying the white FinnOS mark (14px), title
+ *     10px in FINN_INK, body 8px in FINN_DIM
+ *   bottom-center "Clear all" pill at y=223, 55x23 r=100 frosted 0.50
  */
-#define PAGE_W        338.0f   /* reference 260 */
-#define PAGE_H        338.0f   /* reference 260 */
-#define PAGE_PAD       18.2f   /* reference 14 */
-#define PAGE_R        (8.0f * 1.298077f)   /* radius 8 in shell family */
-#define TILE_R        (8.0f * 1.298077f)   /* radius 8 for cards */
+#define PAGE_W        260.0f
+#define PAGE_H        260.0f
+#define PAGE_PAD       14.0f
+#define PAGE_R         8.0f
+#define TILE_R         8.0f
 
-#define HEAD_BASELINE  41.5f   /* reference 32 (14 + 18) */
-#define DATE_X         88.3f   /* reference 68 */
+#define HEAD_BASELINE  32.0f
+#define DATE_X         68.0f
 
-#define NOTE_Y0        58.4f   /* reference 45 */
-#define NOTE_H         46.7f   /* reference 36 */
-#define NOTE_GAP       10.4f   /* reference 8 */
+#define NOTE_Y0        45.0f
+#define NOTE_H         36.0f
+#define NOTE_GAP        8.0f
 #define NOTE_SLOTS      4
 
-#define BADGE_INSET     7.8f   /* reference 6 */
-#define BADGE_SIZE     31.2f   /* reference 24 */
-#define BADGE_R       (4.0f * 1.298077f)  /* active well radius 4 */
-#define BADGE_GLYPH    18.0f   /* reference 14 */
-#define NOTE_TEXT_X    46.7f   /* reference 36 */
+#define BADGE_INSET     6.0f
+#define BADGE_SIZE     24.0f
+#define BADGE_R         4.0f
+#define BADGE_GLYPH    14.0f
+#define NOTE_TEXT_X    36.0f
 
-#define CLEAR_W        71.4f   /* reference 55 */
-#define CLEAR_H        29.9f   /* reference 23 */
-#define CLEAR_Y       289.5f   /* reference 223 */
+#define CLEAR_W        55.0f
+#define CLEAR_H        23.0f
+#define CLEAR_Y       223.0f
 
-#define ANCHOR_GAP     19.5f   /* reference 15 */
+#define ANCHOR_GAP     15.0f
 
 /* ---------------- assets + fonts + layer ---------------- */
 static fsvg g_ic_start;
@@ -103,13 +102,13 @@ static int load_fonts(float s) {
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_time, p, font_px(s, 23.0f)) != 0) {
+    if (finn_font_load(&g_f_time, p, font_px(s, 18.0f)) != 0) {
         fprintf(stderr, "finnclock: cannot load %s\n", p);
         return -1;
     }
-    if (finn_font_load(&g_f_date, p, font_px(s, 15.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_label, p, font_px(s, 13.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_sub, p, font_px(s, 10.5f)) != 0) return -1;
+    if (finn_font_load(&g_f_date, p, font_px(s, 12.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_label, p, font_px(s, 10.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_sub, p, font_px(s, 8.0f)) != 0) return -1;
     return 0;
 }
 
@@ -347,7 +346,7 @@ void finnclock_render(int screen_w, int screen_h, float scale,
     finn_text_draw(&g_f_time, L, lw, lh, (float)x0, hbase, tbuf, time_ink);
 
     float dx = s * DATE_X;
-    float tw_time = finn_text_width(&g_f_time, tbuf) + s * 13.0f;
+    float tw_time = finn_text_width(&g_f_time, tbuf) + s * 10.0f;
     if ( (float)x0 + tw_time > dx ) dx = (float)x0 + tw_time;
 
     finn_text_draw(&g_f_date, L, lw, lh, dx, hbase, wday, FINN_INK);
