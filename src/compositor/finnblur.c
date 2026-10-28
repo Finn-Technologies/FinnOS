@@ -21,10 +21,15 @@ static uint32_t *g_base = NULL;   /* the wallpaper alone, sharp: what a partial
                                    * recomputes, so those blocks are blurred
                                    * once rather than twice */
 static uint32_t *g_tmp  = NULL;   /* one scratch buffer for the passes */
+static uint32_t *g_saved = NULL;  /* saved checkpoint of g_live */
+static uint32_t g_saved_hash = 1;
+static int g_saved_valid = 0;
 static int g_sw = 0, g_sh = 0;
 static int g_ready = 0;
 static unsigned g_gen = 1;
-static uint32_t g_hash = 0;   /* fingerprint of the last live backdrop */
+static uint32_t g_hash = 0;      /* fingerprint of the last live backdrop */
+static uint32_t g_live_hash = 1; /* current fingerprint of g_live */
+static uint32_t g_wall_hash = 1; /* fingerprint of g_wall baseline */
 
 /* scratch for a regional blur, kept between frames */
 static uint32_t *g_scratch_a = NULL, *g_scratch_b = NULL;
@@ -32,12 +37,15 @@ static size_t g_scratch_cells = 0;
 
 int finnblur_ready(void) { return g_ready; }
 unsigned finnblur_generation(void) { return g_gen; }
+uint32_t finnblur_hash(void) { return g_live_hash; }
 
 void finnblur_free(void) {
     free(g_live); g_live = NULL;
     free(g_wall); g_wall = NULL;
     free(g_base); g_base = NULL;
     free(g_tmp);  g_tmp = NULL;
+    free(g_saved); g_saved = NULL;
+    g_saved_valid = 0;
     free(g_scratch_a); g_scratch_a = NULL;
     free(g_scratch_b); g_scratch_b = NULL;
     g_scratch_cells = 0;
@@ -196,14 +204,25 @@ static int reserve(int w, int h) {
     uint32_t *wall = malloc((size_t)sw * sh * 4);
     uint32_t *base = malloc((size_t)sw * sh * 4);
     uint32_t *tmp  = malloc((size_t)sw * sh * 4);
-    if (!live || !wall || !base || !tmp) {
-        free(live); free(wall); free(base); free(tmp);
+    uint32_t *saved = malloc((size_t)sw * sh * 4);
+    if (!live || !wall || !base || !tmp || !saved) {
+        free(live); free(wall); free(base); free(tmp); free(saved);
         return 0;
     }
-    free(g_live); free(g_wall); free(g_base); free(g_tmp);
-    g_live = live; g_wall = wall; g_base = base; g_tmp = tmp;
+    free(g_live); free(g_wall); free(g_base); free(g_tmp); free(g_saved);
+    g_live = live; g_wall = wall; g_base = base; g_tmp = tmp; g_saved = saved;
+    g_saved_valid = 0;
     g_sw = sw; g_sh = sh;
     return 1;
+}
+
+static uint32_t hash_cells(const uint32_t *buf, size_t n) {
+    uint32_t hsh = 2166136261u;
+    for (size_t i = 0; i < n; i++) {
+        hsh ^= buf[i];
+        hsh *= 16777619u;
+    }
+    return hsh ? hsh : 1u;
 }
 
 void finnblur_wall(const uint32_t *wall, int w, int h) {
@@ -214,6 +233,8 @@ void finnblur_wall(const uint32_t *wall, int w, int h) {
     memcpy(g_wall, g_base, (size_t)g_sw * g_sh * 4);
     blur_all(g_wall, g_tmp, g_sw, g_sh);
     memcpy(g_live, g_wall, (size_t)g_sw * g_sh * 4);
+    g_wall_hash = hash_cells(g_wall, (size_t)g_sw * g_sh);
+    g_live_hash = g_wall_hash;
     g_ready = 1;
     g_gen++;
 }
@@ -221,11 +242,8 @@ void finnblur_wall(const uint32_t *wall, int w, int h) {
 /* The small buffer's fingerprint, kept so an unchanged backdrop does not
  * invalidate the glass that samples it. */
 static void bump_generation(void) {
-    uint32_t hsh = 2166136261u;
-    for (size_t i = 0; i < (size_t)g_sw * g_sh; i++) {
-        hsh ^= g_live[i];
-        hsh *= 16777619u;
-    }
+    uint32_t hsh = hash_cells(g_live, (size_t)g_sw * g_sh);
+    g_live_hash = hsh;
     if (hsh != g_hash) {
         g_hash = hsh;
         g_gen++;
@@ -252,6 +270,24 @@ void finnblur_live(const uint32_t *desktop, int w, int h) {
 void finnblur_reset(void) {
     if (!g_ready || !g_live || !g_wall) return;
     memcpy(g_live, g_wall, (size_t)g_sw * g_sh * 4);
+    g_live_hash = g_wall_hash;
+}
+
+void finnblur_save(void) {
+    if (!g_ready || !g_live || !g_saved) return;
+    memcpy(g_saved, g_live, (size_t)g_sw * g_sh * 4);
+    g_saved_hash = g_live_hash;
+    g_saved_valid = 1;
+}
+
+void finnblur_restore(void) {
+    if (!g_ready || !g_live || !g_saved || !g_saved_valid) return;
+    memcpy(g_live, g_saved, (size_t)g_sw * g_sh * 4);
+    g_live_hash = g_saved_hash;
+    if (g_live_hash != g_hash) {
+        g_hash = g_live_hash;
+        g_gen++;
+    }
 }
 
 /*
@@ -344,6 +380,90 @@ void finnblur_live_rect(const uint32_t *desktop, int w, int h,
     bump_generation();
 }
 
+void finnblur_live_layer(int w, int h,
+                         const uint32_t *layer, int lw, int lh,
+                         float x, float y, float rw, float rh, float alpha,
+                         int rx, int ry, int urw, int urh) {
+    if (urw <= 0 || urh <= 0 || !g_live || !g_base || !reserve(w, h)) return;
+    g_ready = 0;
+
+    int sx0 = rx / FINNBLUR_SCALE, sy0 = ry / FINNBLUR_SCALE;
+    int sx1 = (rx + urw - 1) / FINNBLUR_SCALE;
+    int sy1 = (ry + urh - 1) / FINNBLUR_SCALE;
+
+    int ex0 = sx0 - BLUR_SPREAD, ey0 = sy0 - BLUR_SPREAD;
+    int ex1 = sx1 + BLUR_SPREAD, ey1 = sy1 + BLUR_SPREAD;
+    if (ex0 < 0) ex0 = 0;
+    if (ey0 < 0) ey0 = 0;
+    if (ex1 > g_sw - 1) ex1 = g_sw - 1;
+    if (ey1 > g_sh - 1) ey1 = g_sh - 1;
+    if (ex1 < ex0 || ey1 < ey0) { g_ready = 1; return; }
+
+    for (int sy = ey0; sy <= ey1; sy++)
+        memcpy(g_live + (size_t)sy * g_sw + ex0, g_base + (size_t)sy * g_sw + ex0,
+               (size_t)(ex1 - ex0 + 1) * 4);
+
+    if (layer && lw > 0 && lh > 0 && rw >= 1.0f && rh >= 1.0f && alpha > 0.004f) {
+        if (alpha > 1.0f) alpha = 1.0f;
+        int lsx0 = (int)(x >= 0.0f ? x : 0.0f) / FINNBLUR_SCALE;
+        int lsy0 = (int)(y >= 0.0f ? y : 0.0f) / FINNBLUR_SCALE;
+        int lsx1 = (int)(x + rw) / FINNBLUR_SCALE;
+        int lsy1 = (int)(y + rh) / FINNBLUR_SCALE;
+        if (lsx0 < ex0) lsx0 = ex0;
+        if (lsy0 < ey0) lsy0 = ey0;
+        if (lsx1 > ex1) lsx1 = ex1;
+        if (lsy1 > ey1) lsy1 = ey1;
+
+        float inv_rw = (float)lw / rw;
+        float inv_rh = (float)lh / rh;
+        int alpha256 = (int)(alpha * 256.0f + 0.5f);
+
+        for (int sy = lsy0; sy <= lsy1; sy++) {
+            int py_base = sy * FINNBLUR_SCALE;
+            for (int sx = lsx0; sx <= lsx1; sx++) {
+                int px_base = sx * FINNBLUR_SCALE;
+                int rs = 0, gs = 0, bs = 0, as = 0;
+                for (int ky = 1; ky < FINNBLUR_SCALE; ky += 2) {
+                    int v = (int)(((float)(py_base + ky) + 0.5f - y) * inv_rh);
+                    if (v < 0 || v >= lh) continue;
+                    const uint32_t *row = layer + (size_t)v * lw;
+                    for (int kx = 1; kx < FINNBLUR_SCALE; kx += 2) {
+                        int u = (int)(((float)(px_base + kx) + 0.5f - x) * inv_rw);
+                        if (u < 0 || u >= lw) continue;
+                        uint32_t c = row[u];
+                        int a = (int)(c >> 24);
+                        if (!a) continue;
+                        rs += (int)(c & 0xFFu) * a;
+                        gs += (int)((c >> 8) & 0xFFu) * a;
+                        bs += (int)((c >> 16) & 0xFFu) * a;
+                        as += a;
+                    }
+                }
+                if (!as) continue;
+                /* 16 taps per cell */
+                int cov = ((as >> 4) * alpha256 + 128) >> 8;
+                if (cov <= 0) continue;
+                if (cov > 255) cov = 255;
+                int cr = rs / as, cg = gs / as, cb = bs / as;
+                size_t idx = (size_t)sy * g_sw + sx;
+                uint32_t d = g_live[idx];
+                int dr = (int)(d & 0xFFu);
+                int dg = (int)((d >> 8) & 0xFFu);
+                int db = (int)((d >> 16) & 0xFFu);
+                int rr = (cr * cov + dr * (255 - cov) + 127) / 255;
+                int gg = (cg * cov + dg * (255 - cov) + 127) / 255;
+                int bb = (cb * cov + db * (255 - cov) + 127) / 255;
+                g_live[idx] = pack(clamp255(rr), clamp255(gg), clamp255(bb));
+            }
+        }
+    }
+
+    blur_region(sx0, sy0, sx1, sy1);
+
+    g_ready = 1;
+    bump_generation();
+}
+
 void finnblur_patch(const uint32_t *layer, int lw, int lh, int lx, int ly,
                     int rx, int ry, int rw, int rh) {
     if (!g_ready || !layer || rw <= 0 || rh <= 0) return;
@@ -422,33 +542,33 @@ uint32_t finnblur_at(int x, int y) {
     if (!g_ready || !g_live) return 0;
 
     /* Map the screen coordinate into the small buffer's index space, sampling
-     * at pixel centres so the 1/8 grid lines up with the full-res one. */
-    float fx = ((float)x + 0.5f) / (float)FINNBLUR_SCALE - 0.5f;
-    float fy = ((float)y + 0.5f) / (float)FINNBLUR_SCALE - 0.5f;
-    float mx = (float)(g_sw - 1), my = (float)(g_sh - 1);
-    if (fx < 0.0f) fx = 0.0f;
-    if (fx > mx)   fx = mx;
-    if (fy < 0.0f) fy = 0.0f;
-    if (fy > my)   fy = my;
+     * at pixel centres so the 1/8 grid lines up with the full-res one.
+     * ((x + 0.5) / 8 - 0.5) == (2*x - 7) / 16, which is exact in 1/16ths. */
+    int qx = 2 * x - 7;
+    int qy = 2 * y - 7;
+    int mx = (g_sw - 1) << 4;
+    int my = (g_sh - 1) << 4;
+    if (qx < 0) qx = 0; else if (qx > mx) qx = mx;
+    if (qy < 0) qy = 0; else if (qy > my) qy = my;
 
-    int x0 = (int)fx, y0 = (int)fy;
-    int x1 = x0 + 1; if (x1 > g_sw - 1) x1 = g_sw - 1;
-    int y1 = y0 + 1; if (y1 > g_sh - 1) y1 = g_sh - 1;
-    float tx = fx - (float)x0, ty = fy - (float)y0;
+    int x0 = qx >> 4, y0 = qy >> 4;
+    int x1 = x0 + 1; if (x1 >= g_sw) x1 = g_sw - 1;
+    int y1 = y0 + 1; if (y1 >= g_sh) y1 = g_sh - 1;
+    int tx = qx & 15, ty = qy & 15;
 
     uint32_t c00 = g_live[(size_t)y0 * g_sw + x0];
     uint32_t c10 = g_live[(size_t)y0 * g_sw + x1];
     uint32_t c01 = g_live[(size_t)y1 * g_sw + x0];
     uint32_t c11 = g_live[(size_t)y1 * g_sw + x1];
 
-    float w00 = (1.0f - tx) * (1.0f - ty), w10 = tx * (1.0f - ty);
-    float w01 = (1.0f - tx) * ty,             w11 = tx * ty;
+    int w00 = (16 - tx) * (16 - ty), w10 = tx * (16 - ty);
+    int w01 = (16 - tx) * ty,        w11 = tx * ty;
 
-    int r = (int)((float)(c00 & 0xFFu) * w00 + (float)(c10 & 0xFFu) * w10 +
-                  (float)(c01 & 0xFFu) * w01 + (float)(c11 & 0xFFu) * w11 + 0.5f);
-    int g = (int)((float)((c00 >> 8) & 0xFFu) * w00 + (float)((c10 >> 8) & 0xFFu) * w10 +
-                  (float)((c01 >> 8) & 0xFFu) * w01 + (float)((c11 >> 8) & 0xFFu) * w11 + 0.5f);
-    int b = (int)((float)((c00 >> 16) & 0xFFu) * w00 + (float)((c10 >> 16) & 0xFFu) * w10 +
-                  (float)((c01 >> 16) & 0xFFu) * w01 + (float)((c11 >> 16) & 0xFFu) * w11 + 0.5f);
-    return pack(clamp255(r), clamp255(g), clamp255(b));
+    int r = ((int)(c00 & 0xFFu) * w00 + (int)(c10 & 0xFFu) * w10 +
+             (int)(c01 & 0xFFu) * w01 + (int)(c11 & 0xFFu) * w11 + 128) >> 8;
+    int g = ((int)((c00 >> 8) & 0xFFu) * w00 + (int)((c10 >> 8) & 0xFFu) * w10 +
+             (int)((c01 >> 8) & 0xFFu) * w01 + (int)((c11 >> 8) & 0xFFu) * w11 + 128) >> 8;
+    int b = ((int)((c00 >> 16) & 0xFFu) * w00 + (int)((c10 >> 16) & 0xFFu) * w10 +
+             (int)((c01 >> 16) & 0xFFu) * w01 + (int)((c11 >> 16) & 0xFFu) * w11 + 128) >> 8;
+    return 0xFF000000u | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
 }

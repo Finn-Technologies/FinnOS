@@ -125,10 +125,10 @@ static const uint32_t *icon_volume(int px, const finn_state *st) {
         g_ic_vol.shapes[1].visible = (waves >= 1);
         if (waves >= 2) {
             g_ic_vol.shapes[2].visible = 1;
-            g_ic_vol.shapes[2].stroke = 0xFF000000u;
+            g_ic_vol.shapes[2].stroke = FINN_INK;
         } else if (waves == 1) {
             g_ic_vol.shapes[2].visible = 1;
-            g_ic_vol.shapes[2].stroke = 0xFF969696u;
+            g_ic_vol.shapes[2].stroke = FINN_MUTE;
         } else {
             g_ic_vol.shapes[2].visible = 0;
         }
@@ -639,6 +639,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
     }
 
     /* ---------------- PILL 1: Taskbar ---------------- */
+    float well_max_a = finn_theme_dark() ? 56.0f : 255.0f;
     if (g_n_tasks > 0) {
         float p1_bx = g_p1_x - lx;
         if (frost > 0.004f) {
@@ -662,7 +663,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
              * has no well — the glass is its resting state. */
             if (t->windows > 0) {
                 float plate = t->focused ? 1.0f : (t->minimized ? 0.20f : 0.42f);
-                uint32_t a8 = (uint32_t)(plate * 255.0f + 0.5f);
+                uint32_t a8 = (uint32_t)(plate * well_max_a + 0.5f);
                 finn_fill_rrect(g_layer, lw, lh, tx - 4.0f * u, by + 4.0f * u,
                                 34.0f * u, 34.0f * u, 4.0f * u,
                                 (a8 << 24) | 0x00FFFFFFu);
@@ -722,7 +723,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             float bg_w = 42.0f * u, bg_h = dh;
             float bg_x = p2_bx + 37.0f * u;
             float bg_y = by;
-            uint32_t la = (uint32_t)(g_well_launcher * 255.0f + 0.5f);
+            uint32_t la = (uint32_t)(g_well_launcher * well_max_a + 0.5f);
             finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 0.0f,
                             (la << 24) | 0x00FFFFFFu);
         }
@@ -769,7 +770,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             float bg_w = p3_w - 8.0f * u, bg_h = 34.0f * u;
             float bg_x = p3_bx + 4.0f * u;
             float bg_y = by + 4.0f * u;
-            uint32_t ca = (uint32_t)(g_well_clock * 255.0f + 0.5f);
+            uint32_t ca = (uint32_t)(g_well_clock * well_max_a + 0.5f);
             finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
                             (ca << 24) | 0x00FFFFFFu);
         }
@@ -831,7 +832,7 @@ void finndock_render(int screen_w, int screen_h, float scale, const finn_state *
             float bg_w = 108.0f * u, bg_h = 34.0f * u;
             float bg_x = p4_bx + 4.0f * u;
             float bg_y = by + 4.0f * u;
-            uint32_t wa = (uint32_t)(g_well * 255.0f + 0.5f);
+            uint32_t wa = (uint32_t)(g_well * well_max_a + 0.5f);
             finn_fill_rrect(g_layer, lw, lh, bg_x, bg_y, bg_w, bg_h, 4.0f * u,
                             (wa << 24) | 0x00FFFFFFu);
         }

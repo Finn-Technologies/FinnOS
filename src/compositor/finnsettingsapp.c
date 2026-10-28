@@ -1437,21 +1437,21 @@ static void slider_ctrl(uint32_t *L, int lw, int lh, float x, float y,
         return;
     }
 
-    float fw = w * (float)pct / 100.0f;
-    if (fw < h) fw = h;
-    if (fw > w) fw = w;
-    /*
-     * The accent, not the shell's white fill: this slider sits on a card that
-     * is itself near-white, where a white bar reads as a hole in the track.
-     * The Control Center keeps the white fill because it is glass over the
-     * desktop; paper needs ink.
-     *
-     * Rounded at its start, square at the level: the track continues past it.
-     */
-    finn_fill_bar(L, lw, lh, x, y, fw, h, r, FINN_ON);
+    float fw = 0.0f;
+    if (pct > 0) {
+        fw = w * (float)pct / 100.0f;
+        if (fw > w) fw = w;
+        /*
+         * The accent, not the shell's white fill: this slider sits on a card
+         * that is itself near-white, where a white bar reads as a hole in the
+         * track. The Control Center keeps the white fill because it is glass
+         * over the desktop; paper needs ink.
+         */
+        finn_fill_bar(L, lw, lh, x, y, w, h, r, fw, FINN_ON);
+    }
 
     if (icon && icon->vw > 0) {
-        int covered = fw > h * 1.4f;
+        int covered = fw >= h * 0.5f;
         uint32_t ink = covered ? 0xFFFFFFFFu : FINN_INK;
         finn_icon_blit_ink(icon, L, lw, lh, (int)lroundf(x + h * 0.5f),
                            (int)lroundf(y + h * 0.5f),
@@ -1597,12 +1597,7 @@ static void render_sidebar(uint32_t *L, int lw, int lh,
         float chip = s * 22.0f;
         float chip_x = title_x + s * 4.0f;
         float chip_y = y + (rh - chip) * 0.5f;
-        uint32_t chip_col;
-        if (finn_theme_dark()) {
-            chip_col = active ? FINN_ON : 0xFF4A4F59u;
-        } else {
-            chip_col = g_pages[pidx].chip ? g_pages[pidx].chip : FINN_ON;
-        }
+        uint32_t chip_col = g_pages[pidx].chip ? g_pages[pidx].chip : FINN_ON;
         finn_fill_rrect(L, lw, lh, chip_x, chip_y, chip, chip, chip * 0.5f,
                         chip_col);
 
@@ -2627,6 +2622,11 @@ int finnsettingsapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     if (px < wx || py < wy || px >= wx + ww || py >= wy + wh)
         return FINNSETTINGS_HIT_NONE;
 
+    g_cached_wx = wx;
+    g_cached_wy = wy;
+    g_cached_ww = ww;
+    g_cached_wh = wh;
+
     float s = ui_scale(scale);
     float sb_w = s * SB_W;
     if (sb_w > (float)ww) sb_w = (float)ww;
@@ -2783,6 +2783,20 @@ int finnsettingsapp_drag(int px, int py, float scale, const finn_state *st) {
 
 void finnsettingsapp_release(void) {
     g_dragging_slider = 0;
+}
+
+int finnsettingsapp_scroll(int wx, int wy, int ww, int wh, int px, int py,
+                           int clicks, float scale, const finn_state *st) {
+    if (!clicks || !st || st->volume < 0) return 0;
+    int sub = 0;
+    int hit = finnsettingsapp_hit(wx, wy, ww, wh, px, py, scale, &sub);
+    if (hit == FINNSETTINGS_HIT_VOL_SLIDER) {
+        int pct = st->volume + clicks * 5;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        return finn_state_set_volume(pct) == 0;
+    }
+    return 0;
 }
 
 /* ---------------- keyboard input for search field ---------------- */

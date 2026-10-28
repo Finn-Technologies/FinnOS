@@ -206,38 +206,31 @@ static void slider_row(uint32_t *L, int lw, int lh, float s, cc_rect r,
     finn_fill_rrect(L, lw, lh, x, y, w, h, rad, FINN_TRACK);
 
     /*
-     * Filled bar: the bone fill, rounded where it starts and square where
-     * the level currently is. The track carries on to the right of it, so a
-     * round cap there would close the bar instead of marking a point on it.
+     * Filled bar: the bone fill, clipped to the pill track's rounded contour
+     * at both ends and square at the level in between. At 0 (or when hardware
+     * is absent) no fill or white circle is drawn.
      */
     float fw = 0.0f;
     if (available && fill > 0) {
         fw = w * ((float)fill / 100.0f);
         if (fw > w) fw = w;
-        finn_fill_bar(L, lw, lh, x, y, fw, h, rad, FINN_FILL);
+        finn_fill_bar(L, lw, lh, x, y, w, h, rad, fw, FINN_FILL);
     }
-
-    /*
-     * The icon sits on a white disc at the start of the track, as in the
-     * reference: brightness has no fill, and the disc is what carries the
-     * sun. On the volume bar the disc is the start of the white fill, so the
-     * two read as one shape until the level is high enough to separate them.
-     */
-    finn_fill_rrect(L, lw, lh, x, y, h, h, rad,
-                    finn_theme_dark() ? 0xFF2F333Cu : 0xFFFFFFFFu);
 
     /* Icon on the left */
     float ic_cx = x + h * 0.5f;
     float ic_cy = y + h * 0.5f;
 
     if (available) {
+        uint32_t ic_col = (finn_theme_dark() && fw >= h * 0.5f)
+                          ? CC_KNOB_INK : FINN_INK;
         finn_icon_blit_ink(icon, L, lw, lh,
                            (int)lroundf(ic_cx), (int)lroundf(ic_cy),
-                           rs(SLIDER_GLYPH, s), FINN_INK, FINN_INK, 0);
+                           rs(SLIDER_GLYPH, s), ic_col, ic_col, 0);
     } else {
         /* When hardware absent (e.g. brightness on a VM with no backlight):
-         * the chip stays — it is the control's shape — but the label is muted,
-         * and there is no fill pretending to be a level. */
+         * the label is muted, and there is no fill or disc pretending to be
+         * a level. */
         uint32_t inert_col = FINN_INK;
         finn_icon_blit_ink(icon, L, lw, lh,
                            (int)lroundf(ic_cx), (int)lroundf(ic_cy),
@@ -426,7 +419,9 @@ int finncontrol_settled(void) {
 
 void finncontrol_press(int act) {
     g_press = act;
-    if (act == FINNCONTROL_NONE)
+    if (act == FINNCONTROL_NONE ||
+        act == FINNCONTROL_BRIGHTNESS ||
+        act == FINNCONTROL_VOLUME)
         finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
     else
         finn_anim_to(&g_a_press, 1.0f, FINN_MOTION_PRESS_IN, 0.0f, FINN_EASE_OUT);
@@ -478,8 +473,12 @@ int finncontrol_running(void) {
            finn_anim_running(&g_a_vol)  || finn_anim_running(&g_a_bright);
 }
 
-static void follow(finn_anim *a, int value) {
+static void follow(finn_anim *a, int value, int dragging) {
     if (value < 0) return;
+    if (dragging || fabsf(finn_anim_v(a) - (float)value) <= 6.0f) {
+        finn_anim_jump(a, (float)value);
+        return;
+    }
     finn_anim_to(a, (float)value, FINN_MOTION_FILL, 0.0f, FINN_EASE_OUT);
 }
 
@@ -595,8 +594,8 @@ void finncontrol_render(int screen_w, int screen_h, float scale,
         finn_anim_jump(&g_a_bright, st->brightness >= 0 ? (float)st->brightness : 0.0f);
         g_fill_primed = 1;
     }
-    follow(&g_a_vol, st->volume);
-    follow(&g_a_bright, st->brightness);
+    follow(&g_a_vol, st->volume, g_press == FINNCONTROL_VOLUME);
+    follow(&g_a_bright, st->brightness, g_press == FINNCONTROL_BRIGHTNESS);
     int fill_vol = (int)(finn_anim_v(&g_a_vol) + 0.5f);
     int fill_bright = (int)(finn_anim_v(&g_a_bright) + 0.5f);
 

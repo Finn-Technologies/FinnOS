@@ -65,6 +65,8 @@ void finnsettingsapp_press(int hit, int sub, int px, int py, float scale,
                            const finn_state *st);
 int  finnsettingsapp_drag(int px, int py, float scale, const finn_state *st);
 void finnsettingsapp_release(void);
+int  finnsettingsapp_scroll(int wx, int wy, int ww, int wh, int px, int py,
+                            int clicks, float scale, const finn_state *st);
 
 /* Keyboard delivery for the search field */
 int  finnsettingsapp_key(const finn_key_event *e);

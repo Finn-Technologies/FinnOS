@@ -120,6 +120,23 @@ int main(void) {
                       0.0f, 0.0f, 0.0f, 0.0f, 0.03f);
     ok &= check(unchanged == 0xFFFFFFFFu,
                 "zero blur leaves the destination unchanged");
+
+    uint32_t bar[64 * 20];
+    memset(bar, 0, sizeof bar);
+    finn_fill_bar(bar, 64, 20, 0.0f, 0.0f, 60.0f, 20.0f, 10.0f, 6.0f,
+                  0xFFFFFFFFu);
+    ok &= check(bar[0 * 64 + 0] == 0 && bar[19 * 64 + 0] == 0 &&
+                bar[0 * 64 + 4] == 0 && bar[10 * 64 + 3] == 0xFFFFFFFFu &&
+                bar[10 * 64 + 10] == 0,
+                "low fill bar preserves full track left-cap rounding");
+
+    memset(bar, 0, sizeof bar);
+    finn_fill_bar(bar, 64, 20, 0.0f, 0.0f, 60.0f, 20.0f, 10.0f, 60.0f,
+                  0xFFFFFFFFu);
+    ok &= check(bar[0 * 64 + 59] == 0 && bar[19 * 64 + 59] == 0 &&
+                bar[10 * 64 + 58] == 0xFFFFFFFFu,
+                "full fill bar preserves right-cap rounding");
+
     if (!ok) return 1;
     puts("finndraw shadow: OK");
     return 0;

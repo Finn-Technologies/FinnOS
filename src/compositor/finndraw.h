@@ -117,13 +117,14 @@ void finn_stroke_rrect(uint32_t *b, int w, int h, float x, float y,
                        float rw, float rh, float r, float thickness, uint32_t c);
 
 /*
- * A progress fill: rounded on its left end, square on its right. The right
- * edge is where the level currently is, with the unfilled track continuing
- * past it, so a round cap there would read as the end of the bar rather than
- * as a point along it.
+ * A progress fill inside a rounded track `(x, y, rw, rh, r)` filled to width
+ * `fw`: rounded on its left end (matching the track's left cap even when `fw`
+ * is narrower than `2*r`), square where the level currently is in the interior
+ * of the track, and rounded on its right end when `fw` reaches the track's
+ * right cap (`fw > rw - r` up to `fw == rw`).
  */
 void finn_fill_bar(uint32_t *b, int w, int h, float x, float y,
-                   float rw, float rh, float r, uint32_t c);
+                   float rw, float rh, float r, float fw, uint32_t c);
 
 /*
  * Fill a rounded rect with the blurred backdrop tinted by `tint`.

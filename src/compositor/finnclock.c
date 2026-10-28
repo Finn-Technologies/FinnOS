@@ -114,6 +114,8 @@ static int load_fonts(float s) {
 
 int finnclock_init(const char *icon_dir, const char *font_dir) {
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir);
+    finn_anim_jump(&g_a_tick, 1.0f);
+    finn_anim_jump(&g_a_note, 1.0f);
     if (icon_dir && *icon_dir) {
         char p[600];
         snprintf(p, sizeof p, "%s/boot-mark.svg", icon_dir);
@@ -373,6 +375,10 @@ void finnclock_render(int screen_w, int screen_h, float scale,
                 finn_anim_jump(&g_a_note, 0.0f);
                 finn_anim_to(&g_a_note, 1.0f, FINN_MOTION_NOTE, 0.0f,
                              FINN_EASE_OUT);
+                g_note = 0.0f;
+            } else {
+                finn_anim_jump(&g_a_note, 1.0f);
+                g_note = 1.0f;
             }
         }
 

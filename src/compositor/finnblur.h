@@ -63,6 +63,16 @@ void finnblur_live_rect(const uint32_t *desktop, int w, int h,
                         int rx, int ry, int rw, int rh);
 
 /*
+ * Rebuild the live backdrop inside (rx,ry,urw,urh) directly from the cached
+ * wallpaper baseline and a transformed window layer (x,y,rw,rh,alpha), without
+ * allocating or painting an intermediate full-resolution desktop buffer.
+ */
+void finnblur_live_layer(int w, int h,
+                         const uint32_t *layer, int lw, int lh,
+                         float x, float y, float rw, float rh, float alpha,
+                         int rx, int ry, int urw, int urh);
+
+/*
  * Restore the live backdrop to the wallpaper baseline, so the first window of
  * a frame frosts the wallpaper rather than the previous frame's glass. Has no
  * effect, and does not move the generation, before a baseline exists.
@@ -81,11 +91,19 @@ void finnblur_reset(void);
 void finnblur_patch(const uint32_t *layer, int lw, int lh, int lx, int ly,
                     int rx, int ry, int rw, int rh);
 
+/* Save and restore a checkpoint of the live backdrop (e.g., stationary
+ * background windows below the active window). */
+void finnblur_save(void);
+void finnblur_restore(void);
+
 void finnblur_free(void);
 int  finnblur_ready(void);
 
 /* Moves whenever the live backdrop changed. Never zero. */
 unsigned finnblur_generation(void);
+
+/* Content fingerprint of the current live backdrop (restored on finnblur_reset). */
+uint32_t finnblur_hash(void);
 
 /*
  * Sample the backdrop at a screen coordinate — bilinear, clamped at the small

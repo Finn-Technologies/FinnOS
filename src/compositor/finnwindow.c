@@ -244,9 +244,52 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
  */
 static finn_frost_plate g_body_plate[FINNWINDOW_MAX];
 
+typedef struct {
+    uint32_t *px;
+    int       w, h;
+    uint32_t  key;
+    int       valid;
+    uint32_t *app_px;
+    int       app_w, app_h;
+    uint32_t  app_key;
+    int       app_valid;
+} win_body_cache;
+
+static win_body_cache g_win_cache[FINNWINDOW_MAX];
+
+static uint32_t *g_bg_layer = NULL;
+static size_t    g_bg_cap = 0;
+static int       g_bg_w = 0, g_bg_h = 0;
+static uint32_t  g_bg_key = 0;
+static int       g_bg_valid = 0;
+static size_t    g_layer_cap = 0;
+
+static void win_cache_free_slot(int i) {
+    finn_frost_plate_free(&g_body_plate[i]);
+    free(g_win_cache[i].px);
+    g_win_cache[i].px = NULL;
+    g_win_cache[i].w = g_win_cache[i].h = 0;
+    g_win_cache[i].valid = 0;
+    free(g_win_cache[i].app_px);
+    g_win_cache[i].app_px = NULL;
+    g_win_cache[i].app_w = g_win_cache[i].app_h = 0;
+    g_win_cache[i].app_valid = 0;
+}
+
+static void win_cache_free_all(void) {
+    for (int i = 0; i < FINNWINDOW_MAX; i++)
+        win_cache_free_slot(i);
+    free(g_bg_layer);
+    g_bg_layer = NULL;
+    g_bg_cap = 0;
+    g_bg_w = g_bg_h = 0;
+    g_bg_valid = 0;
+}
+
 void finnwindow_free(void) {
     for (int i = 0; i < g_n_wins; i++) external_surface_free(&g_wins[i]);
     g_client_pixels_used = 0;
+    win_cache_free_all();
     finnsettingsapp_free();
     finnfilesapp_free();
     finnstoreapp_free();
@@ -259,6 +302,7 @@ void finnwindow_free(void) {
     finn_font_free(&g_f_title);
     free(g_layer);
     g_layer = NULL;
+    g_layer_cap = 0;
     g_lw = g_lh = 0;
     g_layer_refused = 0;
     free(g_ovl);
@@ -286,9 +330,31 @@ static int find_idx(int id) {
 static void bring_to_front(int idx) {
     if (idx < 0 || idx >= g_n_wins - 1) return;
     finn_win tmp = g_wins[idx];
-    for (int i = idx; i < g_n_wins - 1; i++)
+    win_body_cache tmp_c = g_win_cache[idx];
+    finn_frost_plate tmp_p = g_body_plate[idx];
+    for (int i = idx; i < g_n_wins - 1; i++) {
         g_wins[i] = g_wins[i + 1];
+        g_win_cache[i] = g_win_cache[i + 1];
+        g_body_plate[i] = g_body_plate[i + 1];
+    }
     g_wins[g_n_wins - 1] = tmp;
+    g_win_cache[g_n_wins - 1] = tmp_c;
+    g_body_plate[g_n_wins - 1] = tmp_p;
+}
+
+static void remove_win_slot(int idx) {
+    if (idx < 0 || idx >= g_n_wins) return;
+    external_surface_free(&g_wins[idx]);
+    win_cache_free_slot(idx);
+    for (int i = idx; i < g_n_wins - 1; i++) {
+        g_wins[i] = g_wins[i + 1];
+        g_win_cache[i] = g_win_cache[i + 1];
+        g_body_plate[i] = g_body_plate[i + 1];
+    }
+    memset(&g_wins[g_n_wins - 1], 0, sizeof g_wins[0]);
+    memset(&g_win_cache[g_n_wins - 1], 0, sizeof g_win_cache[0]);
+    memset(&g_body_plate[g_n_wins - 1], 0, sizeof g_body_plate[0]);
+    g_n_wins--;
 }
 
 static double now_ms(void) {
@@ -494,12 +560,7 @@ int finnwindow_open(const char *arg) {
      * fading in the new one. */
     if (g_closing) {
         int ci = find_idx(g_closing);
-        if (ci >= 0) {
-            external_surface_free(&g_wins[ci]);
-            for (int i = ci; i < g_n_wins - 1; i++)
-                g_wins[i] = g_wins[i + 1];
-            g_n_wins--;
-        }
+        if (ci >= 0) remove_win_slot(ci);
         g_closing = 0;
         finn_anim_jump(&g_a_open, 0.0f);
         g_built = 0;
@@ -743,14 +804,37 @@ int finnwindow_close(int id) {
         return 0;
     }
 
-    external_surface_free(&g_wins[idx]);
-    for (int i = idx; i < g_n_wins - 1; i++)
-        g_wins[i] = g_wins[i + 1];
-    g_n_wins--;
+    remove_win_slot(idx);
     g_built = 0;
     if (finnwindow_visible_count() == 0)
         finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
     return 0;
+}
+
+static void start_zoom_rect(int oldx, int oldy, int oldw, int oldh,
+                            const finn_win *w) {
+    if (finnwindow_visible_count() != 1 || g_min_active || !w) return;
+    g_zfx = (float)oldx; g_zfy = (float)oldy;
+    g_zfw = (float)oldw; g_zfh = (float)oldh;
+    g_ztx = (float)w->x; g_zty = (float)w->y;
+    g_ztw = (float)w->w; g_zth = (float)w->h;
+    if (g_zfx != g_ztx || g_zfy != g_zty || g_zfw != g_ztw || g_zfh != g_zth) {
+        finn_anim_jump(&g_a_zoom, 0.0f);
+        finn_anim_to(&g_a_zoom, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT);
+        g_zoom_active = 1;
+    }
+}
+
+static void start_unminimize_zoom(const finn_win *w) {
+    if (finnwindow_visible_count() != 1 || g_min_active || !w) return;
+    int ax = 0, ay = 0;
+    finndock_app_icon_for(w->app_id, &ax, &ay);
+    int tw = rs(26.0f, g_scale), th = tw;
+    if (ax <= 0 && ay <= 0) {
+        ax = w->x + w->w / 2;
+        ay = g_screen_h - rs(40.0f, g_scale);
+    }
+    start_zoom_rect(ax - tw / 2, ay - th / 2, tw, th, w);
 }
 
 int finnwindow_focus(int id) {
@@ -759,10 +843,12 @@ int finnwindow_focus(int id) {
     /* Focus is the pointer's way back into a window, so a window that was
      * leaving is simply staying. */
     if (g_closing == id) g_closing = 0;
+    int was_min = g_wins[idx].minimized;
     g_wins[idx].minimized = 0;
     bring_to_front(idx);
     g_built = 0;
     finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
+    if (was_min) start_unminimize_zoom(&g_wins[ g_n_wins - 1 ]);
     return 0;
 }
 
@@ -781,9 +867,16 @@ int finnwindow_cycle_focus(int dir) {
      */
     if (dir >= 0) {
         finn_win top = g_wins[g_n_wins - 1];
-        for (int i = g_n_wins - 1; i > 0; i--)
+        win_body_cache top_c = g_win_cache[g_n_wins - 1];
+        finn_frost_plate top_p = g_body_plate[g_n_wins - 1];
+        for (int i = g_n_wins - 1; i > 0; i--) {
             g_wins[i] = g_wins[i - 1];
+            g_win_cache[i] = g_win_cache[i - 1];
+            g_body_plate[i] = g_body_plate[i - 1];
+        }
         g_wins[0] = top;
+        g_win_cache[0] = top_c;
+        g_body_plate[0] = top_p;
         return finnwindow_focus(g_wins[g_n_wins - 1].id);
     }
     return finnwindow_focus(g_wins[0].id);
@@ -814,12 +907,15 @@ int finnwindow_minimize(int id) {
         return 0;
     }
 
+    int was_min = w->minimized;
     w->minimized = !w->minimized;
     g_built = 0;
-    if (finnwindow_visible_count() == 0)
+    if (finnwindow_visible_count() == 0) {
         finn_anim_to(&g_a_open, 0.0f, FINN_MOTION_CLOSE, 0.0f, FINN_EASE_IN_OUT);
-    else
+    } else {
         finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
+        if (was_min && !w->minimized) start_unminimize_zoom(w);
+    }
     return 0;
 }
 
@@ -858,17 +954,7 @@ int finnwindow_maximize(int id) {
     /* One visible window means the layer is that window, so the compositor's
      * rect can carry the whole zoom. With a stack behind it the window still
      * snaps, because moving the shared layer would drag the others along. */
-    if (finnwindow_visible_count() == 1 && !g_min_active) {
-        g_zfx = (float)oldx; g_zfy = (float)oldy;
-        g_zfw = (float)oldw; g_zfh = (float)oldh;
-        g_ztx = (float)w->x; g_zty = (float)w->y;
-        g_ztw = (float)w->w; g_zth = (float)w->h;
-        if (g_zfx != g_ztx || g_zfy != g_zty || g_zfw != g_ztw || g_zfh != g_zth) {
-            finn_anim_jump(&g_a_zoom, 0.0f);
-            finn_anim_to(&g_a_zoom, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT);
-            g_zoom_active = 1;
-        }
-    }
+    start_zoom_rect(oldx, oldy, oldw, oldh, &g_wins[g_n_wins - 1]);
     return 0;
 }
 
@@ -878,6 +964,7 @@ int finnwindow_restore(int id) {
     finn_win *w = &g_wins[idx];
     if (!w->maximized && !w->snapped) return 0;
 
+    int oldx = w->x, oldy = w->y, oldw = w->w, oldh = w->h;
     w->x = w->saved_x; w->y = w->saved_y;
     w->w = w->saved_w; w->h = w->saved_h;
     w->maximized = 0;
@@ -885,6 +972,7 @@ int finnwindow_restore(int id) {
     clamp_window_pos(w, &w->x, &w->y);
     bring_to_front(idx);
     g_built = 0;
+    start_zoom_rect(oldx, oldy, oldw, oldh, &g_wins[g_n_wins - 1]);
     return 0;
 }
 
@@ -954,6 +1042,7 @@ int finnwindow_snap(int id, int edge) {
         return finnwindow_maximize(id);
 
     finn_win *w = &g_wins[idx];
+    int oldx = w->x, oldy = w->y, oldw = w->w, oldh = w->h;
     save_free_rect(w);
     int x, y, width, height;
     snap_rect(edge, &x, &y, &width, &height);
@@ -963,6 +1052,7 @@ int finnwindow_snap(int id, int edge) {
     w->minimized = 0;
     bring_to_front(idx);
     g_built = 0;
+    start_zoom_rect(oldx, oldy, oldw, oldh, &g_wins[g_n_wins - 1]);
     return 0;
 }
 
@@ -1083,7 +1173,8 @@ int finnwindow_tick(float dt) {
     ch |= finn_anim_tick(&g_a_press, dt);
     ch |= finn_anim_tick(&g_a_zoom, dt);
     ch |= finn_anim_tick(&g_a_min, dt);
-    ch |= finnsettingsapp_tick(dt);
+    if (finnsettingsapp_tick(dt)) { g_built = 0; ch = 1; }
+    if (finnstoreapp_tick(dt))    { g_built = 0; ch = 1; }
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; ch = 1; }
 
@@ -1111,12 +1202,7 @@ int finnwindow_tick(float dt) {
             g_closing = 0;
         } else {
             int idx = find_idx(g_closing);
-            if (idx >= 0) {
-                external_surface_free(&g_wins[idx]);
-                for (int i = idx; i < g_n_wins - 1; i++)
-                    g_wins[i] = g_wins[i + 1];
-                g_n_wins--;
-            }
+            if (idx >= 0) remove_win_slot(idx);
             g_closing = 0;
             g_built = 0;
         }
@@ -1130,7 +1216,8 @@ int finnwindow_running(void) {
            finn_anim_running(&g_a_hover) ||
            finn_anim_running(&g_a_press) ||
            finn_anim_running(&g_a_zoom) ||
-           finn_anim_running(&g_a_min);
+           finn_anim_running(&g_a_min) ||
+           finnstoreapp_running();
 }
 
 static void opt_pill_rect(const finn_win *w, float s,
@@ -1220,7 +1307,6 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
                 g_app_sub = sub;
                 return FINNWINDOW_HIT_APP_CTRL;
             }
-            return FINNWINDOW_HIT_BODY;
         }
 
         int is_settings = (strcasecmp(w->title, "Settings") == 0 ||
@@ -1281,6 +1367,17 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
     g_resizing = 0;
 
     if (hit_part == FINNWINDOW_HIT_TITLEBAR && idx >= 0) {
+        if (strcasecmp(g_wins[idx].app_id, "store") == 0 &&
+            finnstoreapp_press(FINNSTORE_HIT_BODY, 0, px, py, g_scale))
+            g_built = 0;
+        else if (strcasecmp(g_wins[idx].app_id, "files") == 0 &&
+                 finnfilesapp_press(FINNFILES_HIT_NONE, 0, px, py, g_scale))
+            g_built = 0;
+        else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
+                 strcasecmp(g_wins[idx].app_id, "settings") == 0) {
+            finnsettingsapp_press(FINNSETTINGS_HIT_BODY, 0, px, py, g_scale, &g_last_st);
+            g_built = 0;
+        }
         /*
          * A double click on the titlebar is the oldest window gesture there
          * is: maximize, and the second double click puts it back. It is
@@ -1503,6 +1600,11 @@ int finnwindow_scroll(int px, int py, int clicks) {
         res = finnfilesapp_scroll(clicks, px, py, g_scale);
     else if (strcasecmp(g_wins[idx].app_id, "store") == 0)
         res = finnstoreapp_scroll(clicks, g_scale);
+    else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
+             strcasecmp(g_wins[idx].app_id, "settings") == 0)
+        res = finnsettingsapp_scroll(g_wins[idx].x, g_wins[idx].y,
+                                     g_wins[idx].w, g_wins[idx].h,
+                                     px, py, clicks, g_scale, &g_last_st);
     if (res) g_built = 0;
     return res;
 }
@@ -1514,6 +1616,33 @@ int finnwindow_scroll(int px, int py, int clicks) {
  * when the pointer does. It also leaves out the status fields — the window
  * glass does not draw Wi-Fi, battery or volume, and a volume-slider drag
  * must not repaint a full-screen window sixty times a second. */
+static uint32_t single_win_key(const finn_win *w, float s,
+                               const finn_state *st, int focused,
+                               uint32_t blur_h) {
+    uint32_t h = 2166136261u;
+    #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX((int)(s * 1000.0f));
+    MIX(st ? st->dark + 2 : 0);
+    MIX(focused);
+    MIX(blur_h);
+    MIX(w->id); MIX(w->external);
+    MIX(w->client_rev); MIX(w->client_w); MIX(w->client_h);
+    MIX(w->x); MIX(w->y); MIX(w->w); MIX(w->h);
+    MIX(w->minimized); MIX(w->maximized); MIX(w->snapped);
+    for (const char *p = w->title; *p; p++) MIX(*p);
+    for (const char *p = w->app_id; *p; p++) MIX(*p);
+    if (strcasecmp(w->title, "Settings") == 0 ||
+        strcasecmp(w->app_id, "settings") == 0) {
+        MIX(finnsettingsapp_build_key(s, st));
+    } else if (strcasecmp(w->app_id, "files") == 0) {
+        MIX(finnfilesapp_build_key(s));
+    } else if (strcasecmp(w->app_id, "store") == 0) {
+        MIX(finnstoreapp_build_key(s));
+    }
+    #undef MIX
+    return h ? h : 1u;
+}
+
 static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
     uint32_t h = 2166136261u;
     #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
@@ -1728,22 +1857,150 @@ static int layer_reserve(int lw, int lh) {
     if (g_layer && lw == g_lw && lh == g_lh) return 1;
     if (!layer_fits(lw, lh)) return 0;
 
-    uint32_t *p = malloc((size_t)lw * (size_t)lh * 4);
-    if (!p) {
-        if (!g_layer_refused) {
-            fprintf(stderr, "finnwindow: cannot allocate a %dx%d window layer\n",
-                    lw, lh);
-            g_layer_refused = 1;
+    size_t need = (size_t)lw * (size_t)lh;
+    if (!g_layer || need > g_layer_cap) {
+        uint32_t *p = malloc(need * 4);
+        if (!p) {
+            if (!g_layer_refused) {
+                fprintf(stderr, "finnwindow: cannot allocate a %dx%d window layer\n",
+                        lw, lh);
+                g_layer_refused = 1;
+            }
+            return 0;
         }
-        return 0;
+        free(g_layer);
+        g_layer = p;
+        g_layer_cap = need;
     }
 
-    free(g_layer);
-    g_layer = p;
     g_lw = lw;
     g_lh = lh;
     g_layer_refused = 0;
     return 1;
+}
+
+static int is_split_app_win(const finn_win *w) {
+    return strcasecmp(w->title, "Settings") == 0 ||
+           strcasecmp(w->app_id, "settings") == 0 ||
+           strcasecmp(w->app_id, "files") == 0 ||
+           strcasecmp(w->app_id, "store") == 0;
+}
+
+/* App content key for Settings, Finn Files, and Finn Store: depends only on
+ * the window's size, theme, and internal app state — never on (w->x, w->y),
+ * focus, or the backdrop blur hash, so dragging or focusing a window never
+ * re-rasterises its FreeType text, SVG icons, or cards. */
+static uint32_t app_content_key(const finn_win *w, float s, const finn_state *st) {
+    uint32_t h = 2166136261u;
+    #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX((int)(s * 1000.0f));
+    MIX(st ? st->dark + 2 : 0);
+    MIX(w->id);
+    MIX(w->w); MIX(w->h);
+    MIX(w->maximized);
+    for (const char *p = w->title; *p; p++) MIX(*p);
+    for (const char *p = w->app_id; *p; p++) MIX(*p);
+    if (strcasecmp(w->title, "Settings") == 0 ||
+        strcasecmp(w->app_id, "settings") == 0) {
+        MIX(finnsettingsapp_build_key(s, st));
+    } else if (strcasecmp(w->app_id, "files") == 0) {
+        MIX(finnfilesapp_build_key(s));
+    } else if (strcasecmp(w->app_id, "store") == 0) {
+        MIX(finnstoreapp_build_key(s));
+    }
+    #undef MIX
+    return h ? h : 1u;
+}
+
+static uint32_t bg_stack_key(int last_vis, float s, int lw, int lh,
+                             const finn_state *st, uint32_t wall_blur_h) {
+    uint32_t h = 2166136261u;
+    #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    MIX((int)(s * 1000.0f));
+    MIX(lw); MIX(lh); MIX(g_lx0); MIX(g_ly0);
+    MIX(st ? st->dark + 2 : 0);
+    MIX(wall_blur_h);
+    MIX(last_vis);
+    for (int i = 0; i < last_vis; i++) {
+        if (!g_wins[i].used || g_wins[i].minimized) {
+            MIX(0);
+            continue;
+        }
+        MIX(single_win_key(&g_wins[i], s, st, 0, 0u));
+    }
+    #undef MIX
+    return h ? h : 1u;
+}
+
+static void draw_opt_pill(const finn_win *w, uint32_t *dst, int dw, int dh,
+                          int origin_x, int origin_y, float s) {
+    int ox_abs, oy_abs, ow, oh;
+    opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
+    int ox = ox_abs - origin_x;
+    int oy = oy_abs - origin_y;
+
+    finn_fill_rrect(dst, dw, dh, (float)ox, (float)oy,
+                    (float)ow, (float)oh, s * OPT_R,
+                    finn_theme_dark() ? FINN_TILE : WIN_OPTION_LIGHT);
+
+    int cy_opt = oy + oh / 2;
+    int cx_exp = ox + rs(OPT_SLOT_CX, s);
+    int cx_min = ox + ow / 2;
+    int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
+
+    opt_icon_blit(&g_ic_expand, dst, dw, dh, cx_exp, cy_opt, s);
+    opt_icon_blit(&g_ic_min, dst, dw, dh, cx_min, cy_opt, s);
+    opt_icon_blit(&g_ic_close, dst, dw, dh, cx_cls, cy_opt, s);
+}
+
+static void blit_split_app_cache(uint32_t *dst, int dw, int dh,
+                                 const uint32_t *app_px, int ww, int wh,
+                                 int wx, int wy, float s) {
+    int corner_r = rs(WIN_R, s) + 2;
+    if (corner_r * 2 > wh) corner_r = wh / 2;
+    int sb_split = rs(250.0f, s) + 2;
+    if (sb_split > ww) sb_split = ww;
+
+    for (int r = 0; r < wh; r++) {
+        int ty = wy + r;
+        if (ty < 0 || ty >= dh) continue;
+        const uint32_t *srow = app_px + (size_t)r * ww;
+        uint32_t *drow = dst + (size_t)ty * dw;
+
+        int blend_end = (r < corner_r || r >= wh - corner_r) ? ww : sb_split;
+        int x0 = 0;
+        if (wx + x0 < 0) x0 = -wx;
+        int x1 = blend_end;
+        if (wx + x1 > dw) x1 = dw - wx;
+        for (int x = x0; x < x1; x++) {
+            uint32_t sc = srow[x];
+            unsigned sa = sc >> 24;
+            if (!sa) continue;
+            if (sa == 255u) {
+                drow[wx + x] = sc;
+            } else {
+                uint32_t dc = drow[wx + x];
+                unsigned inv = 255u - sa;
+                unsigned sr = (sc >> 16) & 0xFFu, sg = (sc >> 8) & 0xFFu, sb = sc & 0xFFu;
+                unsigned dr = (dc >> 16) & 0xFFu, dg = (dc >> 8) & 0xFFu, db = dc & 0xFFu;
+                unsigned da = (dc >> 24) & 0xFFu;
+                unsigned nr = (sr * sa + dr * inv + 127u) / 255u;
+                unsigned ng = (sg * sa + dg * inv + 127u) / 255u;
+                unsigned nb = (sb * sa + db * inv + 127u) / 255u;
+                unsigned na = sa + (da * inv + 127u) / 255u;
+                drow[wx + x] = (na << 24) | (nr << 16) | (ng << 8) | nb;
+            }
+        }
+
+        if (blend_end < ww) {
+            int cx0 = blend_end;
+            if (wx + cx0 < 0) cx0 = -wx;
+            int cx1 = ww;
+            if (wx + cx1 > dw) cx1 = dw - wx;
+            if (cx1 > cx0)
+                memcpy(drow + wx + cx0, srow + cx0, (size_t)(cx1 - cx0) * 4);
+        }
+    }
 }
 
 void finnwindow_render(int screen_w, int screen_h, float scale,
@@ -1792,6 +2049,19 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
     if (vis <= 0 || max_x <= min_x || max_y <= min_y) {
         /* Keep last geometry while close animation finishes */
         return;
+    }
+
+    /* When not running a single-window scale/zoom/minimize animation, lock
+     * the layer bounds to the screen so dragging or resizing a window never
+     * changes (lw, lh) or reallocates the GPU texture. */
+    int single_anim = (vis == 1) &&
+                      (g_min_active || g_zoom_active || finn_anim_running(&g_a_open));
+    if (!single_anim && screen_w > 0 && screen_h > 0 &&
+        layer_fits(screen_w, screen_h)) {
+        min_x = 0;
+        min_y = 0;
+        max_x = screen_w;
+        max_y = screen_h;
     }
 
     int64_t uw = max_x - min_x;
@@ -1850,29 +2120,36 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
         g_built = 1;
         g_rev++;
 
-        memset(g_layer, 0, (size_t)lw * (size_t)lh * 4);
-
-        /*
-         * A window frosts what is under it, and what is under it is the
-         * desktop — not the desktop with this same window already on it. The
-         * backdrop is put back to the surfaces drawn so far before anything
-         * is rastered, or the glass samples its own picture back out and the
-         * window reads as a pale ghost of itself. Each window then bakes
-         * itself in below, so the next one in z-order frosts this one.
-         */
-        finnblur_reset();
-
         float s = scale;
+        int last_vis = -1;
+        for (int i = g_n_wins - 1; i >= 0; i--) {
+            if (g_wins[i].used && !g_wins[i].minimized) { last_vis = i; break; }
+        }
 
-        for (int i = 0; i < g_n_wins; i++) {
+        finnblur_reset();
+        uint32_t wall_blur_h = finnblur_ready() ? finnblur_hash() : 0u;
+        uint32_t bkey = (last_vis > 0) ? bg_stack_key(last_vis, s, lw, lh, st, wall_blur_h) : 0u;
+        int start_i = 0;
+
+        if (last_vis > 0 && g_bg_valid && g_bg_layer &&
+            g_bg_w == lw && g_bg_h == lh && g_bg_key == bkey) {
+            memcpy(g_layer, g_bg_layer, (size_t)lw * (size_t)lh * 4);
+            finnblur_restore();
+            start_i = last_vis;
+        } else {
+            memset(g_layer, 0, (size_t)lw * (size_t)lh * 4);
+        }
+
+        for (int i = start_i; i < g_n_wins; i++) {
             const finn_win *w = &g_wins[i];
             if (!w->used || w->minimized) continue;
 
             int wx = w->x - g_lx0;
             int wy = w->y - g_ly0;
+            int focused = (i == last_vis);
 
-            /* The reference window casts a 3% black shadow at (0,4) with
-             * blur 100, then the body frosts the desktop at 0.70. A maximized
+            /* The reference window casts a 15% black shadow at (0,4) with
+             * blur 250, then the body frosts the desktop at 0.70. A maximized
              * window meets the screen and dock, so neither its corners nor
              * its floating shadow are drawn. */
             float body_r = w->maximized ? 0.0f : s * WIN_R;
@@ -1882,89 +2159,159 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                                   s * REF * WIN_SHADOW_BLUR, 0.0f,
                                   s * REF * FINN_SHADOW_OFFSET_Y,
                                   WIN_SHADOW_ALPHA);
-            finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh,
-                                        g_lx0, g_ly0, (float)wx, (float)wy,
-                                        (float)w->w, (float)w->h, body_r,
-                                        FINN_GLASS,
-                                        finn_theme_dark() ? WIN_BODY_ALPHA_DARK
-                                                          : WIN_BODY_ALPHA);
-            /* A maximized window meets the screen; its sheet is square. */
 
-            if (strcasecmp(w->title, "Settings") == 0 || strcasecmp(w->app_id, "settings") == 0) {
-                int focused = (i == g_n_wins - 1);
-                finnsettingsapp_render(g_layer, lw, lh, g_lx0, g_ly0,
-                                       w->x, w->y, w->w, w->h,
-                                       screen_w, screen_h,
-                                       s, st, focused);
-            } else if (strcasecmp(w->app_id, "files") == 0) {
-                int focused = (i == g_n_wins - 1);
-                finnfilesapp_render(g_layer, lw, lh, g_lx0, g_ly0,
-                                    w->x, w->y, w->w, w->h,
-                                    s, st, focused);
-            } else if (strcasecmp(w->app_id, "store") == 0) {
-                int focused = (i == g_n_wins - 1);
-                finnstoreapp_render(g_layer, lw, lh, g_lx0, g_ly0,
-                                    w->x, w->y, w->w, w->h,
-                                    s, st, focused);
-            } else if (w->external) {
-                external_surface_draw(w, wx, wy, lw, lh, s);
-                uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u;
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + rs(14.0f, s),
-                               (float)wy + rs(31.0f, s), w->title, col);
+            uint32_t wkey = single_win_key(w, s, st, focused,
+                                           finnblur_ready() ? finnblur_hash() : 0u);
+            win_body_cache *wc = &g_win_cache[i];
+            if (wc->valid && wc->px && wc->w == w->w && wc->h == w->h &&
+                wc->key == wkey) {
+                finn_blit(g_layer, lw, lh, wc->px, wc->w, wc->h, wx, wy);
+            } else if (is_split_app_win(w) && w->w > 0 && w->h > 0) {
+                uint32_t akey = app_content_key(w, s, st);
+                if (!wc->app_valid || !wc->app_px ||
+                    wc->app_w != w->w || wc->app_h != w->h ||
+                    wc->app_key != akey) {
+                    if (!wc->app_px || wc->app_w != w->w || wc->app_h != w->h) {
+                        free(wc->app_px);
+                        wc->app_px = malloc((size_t)w->w * (size_t)w->h * 4);
+                        wc->app_w = wc->app_px ? w->w : 0;
+                        wc->app_h = wc->app_px ? w->h : 0;
+                    }
+                    if (wc->app_px) {
+                        memset(wc->app_px, 0, (size_t)w->w * (size_t)w->h * 4);
+                        if (strcasecmp(w->title, "Settings") == 0 ||
+                            strcasecmp(w->app_id, "settings") == 0) {
+                            finnsettingsapp_render(wc->app_px, w->w, w->h,
+                                                   w->x, w->y, w->x, w->y, w->w, w->h,
+                                                   screen_w, screen_h, s, st, focused);
+                        } else if (strcasecmp(w->app_id, "files") == 0) {
+                            finnfilesapp_render(wc->app_px, w->w, w->h,
+                                                w->x, w->y, w->x, w->y, w->w, w->h,
+                                                s, st, focused);
+                        } else if (strcasecmp(w->app_id, "store") == 0) {
+                            finnstoreapp_render(wc->app_px, w->w, w->h,
+                                                w->x, w->y, w->x, w->y, w->w, w->h,
+                                                s, st, focused);
+                        }
+                        draw_opt_pill(w, wc->app_px, w->w, w->h, w->x, w->y, s);
+                        wc->app_key = akey;
+                        wc->app_valid = 1;
+                    }
+                }
+
+                int sb_frost_w = rs(250.0f, s) + rs(WIN_R, s) * 2 + 4;
+                if (w->maximized || sb_frost_w > w->w) sb_frost_w = w->w;
+                finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh,
+                                            g_lx0, g_ly0, (float)wx, (float)wy,
+                                            (float)sb_frost_w, (float)w->h, body_r,
+                                            FINN_GLASS,
+                                            finn_theme_dark() ? WIN_BODY_ALPHA_DARK
+                                                              : WIN_BODY_ALPHA);
+                if (wc->app_px && wc->app_valid) {
+                    blit_split_app_cache(g_layer, lw, lh, wc->app_px,
+                                         w->w, w->h, wx, wy, s);
+                }
+
+                if (wx >= 0 && wy >= 0 && wx + w->w <= lw && wy + w->h <= lh) {
+                    if (!wc->px || wc->w != w->w || wc->h != w->h) {
+                        free(wc->px);
+                        wc->px = malloc((size_t)w->w * (size_t)w->h * 4);
+                        wc->w = wc->px ? w->w : 0;
+                        wc->h = wc->px ? w->h : 0;
+                    }
+                    if (wc->px) {
+                        for (int r = 0; r < w->h; r++)
+                            memcpy(wc->px + (size_t)r * w->w,
+                                   g_layer + (size_t)(wy + r) * lw + wx,
+                                   (size_t)w->w * 4);
+                        wc->key = wkey;
+                        wc->valid = 1;
+                    }
+                }
             } else {
-                /* Centered window label (Figma 14:245: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
-                const char *label = (!w->title[0] ||
-                                     strcasecmp(w->title, "Empty window") == 0 ||
-                                     strcasecmp(w->title, "Finn Window") == 0)
-                                  ? "Empty window"
-                                  : w->title;
-                float tw = finn_text_width(&g_f_title, label);
-                float cap = finn_text_cap_height(&g_f_title);
-                uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
-                finn_text_draw(&g_f_title, g_layer, lw, lh,
-                               (float)wx + ((float)w->w - tw) * 0.5f,
-                               (float)wy + (float)w->h * 0.5f + cap * 0.5f,
-                               label, col);
+                finn_frost_rrect_plate_live(&g_body_plate[i], g_layer, lw, lh,
+                                            g_lx0, g_ly0, (float)wx, (float)wy,
+                                            (float)w->w, (float)w->h, body_r,
+                                            FINN_GLASS,
+                                            finn_theme_dark() ? WIN_BODY_ALPHA_DARK
+                                                              : WIN_BODY_ALPHA);
+
+                if (w->external) {
+                    external_surface_draw(w, wx, wy, lw, lh, s);
+                    uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u;
+                    finn_text_draw(&g_f_title, g_layer, lw, lh,
+                                   (float)wx + rs(14.0f, s),
+                                   (float)wy + rs(31.0f, s), w->title, col);
+                } else {
+                    /* Centered window label (Figma 14:245: 12px Fixel Display Regular, FINN_INK at 70% opacity) */
+                    const char *label = (!w->title[0] ||
+                                         strcasecmp(w->title, "Empty window") == 0 ||
+                                         strcasecmp(w->title, "Finn Window") == 0)
+                                      ? "Empty window"
+                                      : w->title;
+                    float tw = finn_text_width(&g_f_title, label);
+                    float cap = finn_text_cap_height(&g_f_title);
+                    uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u; /* 70% opacity */
+                    finn_text_draw(&g_f_title, g_layer, lw, lh,
+                                   (float)wx + ((float)w->w - tw) * 0.5f,
+                                   (float)wy + (float)w->h * 0.5f + cap * 0.5f,
+                                   label, col);
+                }
+
+                draw_opt_pill(w, g_layer, lw, lh, g_lx0, g_ly0, s);
+
+                if (wx >= 0 && wy >= 0 && wx + w->w <= lw && wy + w->h <= lh &&
+                    w->w > 0 && w->h > 0) {
+                    if (!wc->px || wc->w != w->w || wc->h != w->h) {
+                        free(wc->px);
+                        wc->px = malloc((size_t)w->w * (size_t)w->h * 4);
+                        wc->w = wc->px ? w->w : 0;
+                        wc->h = wc->px ? w->h : 0;
+                    }
+                    if (wc->px) {
+                        for (int r = 0; r < w->h; r++)
+                            memcpy(wc->px + (size_t)r * w->w,
+                                   g_layer + (size_t)(wy + r) * lw + wx,
+                                   (size_t)w->w * 4);
+                        wc->key = wkey;
+                        wc->valid = 1;
+                    }
+                }
             }
 
             /*
-             * The window options pill is drawn after the app, not before it:
-             * the app's paper is opaque and covers the whole window, and a
-             * pill painted underneath it simply disappears. In the reference
-             * the pill floats over the content's top-right corner.
-             *
-             * Figma 14:237: 72x24 r=4.14, inset 10, solid #F9F9F9.
+             * If another visible window sits above this one in z-order, bake
+             * this window into the live backdrop so the upper window frosts it.
+             * The topmost window needs no patch here because the compositor
+             * updates the chrome's live backdrop after finnwindow_render.
              */
-            int ox_abs, oy_abs, ow, oh;
-            opt_pill_rect(w, s, &ox_abs, &oy_abs, &ow, &oh);
-            int ox = ox_abs - g_lx0;
-            int oy = oy_abs - g_ly0;
-
-            finn_fill_rrect(g_layer, lw, lh, (float)ox, (float)oy,
-                            (float)ow, (float)oh, s * OPT_R,
-                            finn_theme_dark() ? FINN_TILE : WIN_OPTION_LIGHT);
-
-            /* Icon centres inside the 72x24 pill (Figma 14:238/240/242:
-             * 15.43px boxes at 12, 36 and 60 from the pill's left edge) */
-            int cy_opt = oy + oh / 2;
-            int cx_exp = ox + rs(OPT_SLOT_CX, s);
-            int cx_min = ox + ow / 2;
-            int cx_cls = ox + ow - rs(OPT_SLOT_CX, s);
-
-            opt_icon_blit(&g_ic_expand, g_layer, lw, lh, cx_exp, cy_opt, s);
-            opt_icon_blit(&g_ic_min, g_layer, lw, lh, cx_min, cy_opt, s);
-            opt_icon_blit(&g_ic_close, g_layer, lw, lh, cx_cls, cy_opt, s);
-
-            /*
-             * The window is drawn, so it is now part of what is behind the
-             * next one. Baking it here — window by window, in z-order — is
-             * what lets a window frost another window instead of frosting
-             * the wallpaper through it. The body is opaque over its whole
-             * rect, so the blur can read the layer directly.
-             */
-            finnblur_patch(g_layer, lw, lh, g_lx0, g_ly0,
-                           w->x, w->y, w->w, w->h);
+            if (i < last_vis) {
+                finnblur_patch(g_layer, lw, lh, g_lx0, g_ly0,
+                               w->x, w->y, w->w, w->h);
+                int next_vis = -1;
+                for (int j = i + 1; j <= last_vis; j++) {
+                    if (g_wins[j].used && !g_wins[j].minimized) { next_vis = j; break; }
+                }
+                if (next_vis == last_vis) {
+                    size_t need = (size_t)lw * (size_t)lh;
+                    if (!g_bg_layer || need > g_bg_cap) {
+                        uint32_t *np = malloc(need * 4);
+                        if (np) {
+                            free(g_bg_layer);
+                            g_bg_layer = np;
+                            g_bg_cap = need;
+                        }
+                    }
+                    if (g_bg_layer && g_bg_cap >= need) {
+                        memcpy(g_bg_layer, g_layer, need * 4);
+                        g_bg_w = lw;
+                        g_bg_h = lh;
+                        g_bg_key = bkey;
+                        g_bg_valid = 1;
+                        finnblur_save();
+                    }
+                }
+            }
         }
     }
 
@@ -1998,19 +2345,33 @@ void finnwindow_transform(float *x, float *y, float *w, float *h, float *alpha) 
         float m = finn_anim_v(&g_a_min);
         float a = m < 0.72f ? 1.0f : (1.0f - m) / 0.28f;
         if (a < 0.0f) a = 0.0f;
-        if (x) *x = g_mfx + (g_mtx - g_mfx) * m;
-        if (y) *y = g_mfy + (g_mty - g_mfy) * m;
-        if (w) *w = g_mfw + (g_mtw - g_mfw) * m;
-        if (h) *h = g_mfh + (g_mth - g_mfh) * m;
+        float bx = g_mfx + (g_mtx - g_mfx) * m;
+        float by = g_mfy + (g_mty - g_mfy) * m;
+        float bw = g_mfw + (g_mtw - g_mfw) * m;
+        float bh = g_mfh + (g_mth - g_mfh) * m;
+        float sx = g_mfw > 0.0f ? bw / g_mfw : 1.0f;
+        float sy = g_mfh > 0.0f ? bh / g_mfh : 1.0f;
+        /* g_layer includes shadow padding around the window body (g_mfx..g_mfw),
+         * so map the interpolated body rect to the full layer rect. */
+        if (x) *x = bx + ((float)g_lx0 - g_mfx) * sx;
+        if (y) *y = by + ((float)g_ly0 - g_mfy) * sy;
+        if (w) *w = (float)g_lw * sx;
+        if (h) *h = (float)g_lh * sy;
         if (alpha) *alpha = a;
         return;
     }
     if (g_zoom_active) {
         float m = finn_anim_v(&g_a_zoom);
-        if (x) *x = g_zfx + (g_ztx - g_zfx) * m;
-        if (y) *y = g_zfy + (g_zty - g_zfy) * m;
-        if (w) *w = g_zfw + (g_ztw - g_zfw) * m;
-        if (h) *h = g_zfh + (g_zth - g_zfh) * m;
+        float bx = g_zfx + (g_ztx - g_zfx) * m;
+        float by = g_zfy + (g_zty - g_zfy) * m;
+        float bw = g_zfw + (g_ztw - g_zfw) * m;
+        float bh = g_zfh + (g_zth - g_zfh) * m;
+        float sx = g_ztw > 0.0f ? bw / g_ztw : 1.0f;
+        float sy = g_zth > 0.0f ? bh / g_zth : 1.0f;
+        if (x) *x = bx + ((float)g_lx0 - g_ztx) * sx;
+        if (y) *y = by + ((float)g_ly0 - g_zty) * sy;
+        if (w) *w = (float)g_lw * sx;
+        if (h) *h = (float)g_lh * sy;
         if (alpha) *alpha = 1.0f;
         return;
     }

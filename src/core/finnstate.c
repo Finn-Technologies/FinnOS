@@ -366,33 +366,49 @@ int finn_state_set_volume(int pct) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
-    if (finn_audio_set(pct) != 0) return -1;
+    int has_override = (access(STATE_DIR "/volume", F_OK) == 0);
+    int audio_ok = (finn_audio_set(pct) == 0);
+    int v;
+    int has_setting = (finn_settings_get_int("volume", &v) == 0);
 
-    /* A failed persist costs the remembered level, not the level itself, so
-     * it does not turn a mixer that took the value into an error. */
-    finn_settings_set_int("volume", pct);
+    if (!audio_ok && !has_override && !has_setting) return -1;
+
+    if (has_override) write_int_file(STATE_DIR "/volume", pct);
+    if (audio_ok || has_setting) finn_settings_set_int("volume", pct);
     finn_state_invalidate();
     return 0;
 }
 
 int finn_state_set_brightness(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+
+    int has_override = (access(STATE_DIR "/brightness", F_OK) == 0);
+    if (has_override) write_int_file(STATE_DIR "/brightness", pct);
+
     char d[512];
-    if (sysfs_first("backlight", "brightness", d, sizeof d) != 0) return -1;
+    if (sysfs_first("backlight", "brightness", d, sizeof d) != 0) {
+        if (!has_override) return -1;
+        finn_state_invalidate();
+        return 0;
+    }
 
     char cp[600], mp[600];
     snprintf(cp, sizeof cp, "%s/brightness", d);
     snprintf(mp, sizeof mp, "%s/max_brightness", d);
 
     int maxv;
-    if (read_int_file(mp, &maxv) != 0 || maxv <= 0) return -1;
+    if (read_int_file(mp, &maxv) != 0 || maxv <= 0) {
+        if (!has_override) return -1;
+        finn_state_invalidate();
+        return 0;
+    }
 
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
     int v = maxv * pct / 100;
     if (v < 1 && pct > 0) v = 1;          /* never go fully black */
     int rc = write_int_file(cp, v);
     finn_state_invalidate();
-    return rc;
+    return has_override ? 0 : rc;
 }
 
 int finn_state_set_wifi(int on) {

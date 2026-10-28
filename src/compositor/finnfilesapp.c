@@ -22,6 +22,7 @@
 #include "finnappui.h"
 #include "finndraw.h"
 #include "finntext.h"
+#include "finnvg.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -39,24 +40,28 @@
 
 /* ---------------- metrics, in reference units ---------------- */
 
-#define SIDEBAR_W     176.0f
-#define SIDEBAR_PAD    14.0f
-#define SIDEBAR_TITLE  42.0f
-#define PLACES_CAP     70.0f
-#define PLACES_TOP     82.0f
-#define PLACE_H        28.0f
-#define PLACE_STEP     30.0f
+#define SIDEBAR_W     250.0f
+#define SIDEBAR_PAD    15.0f
+#define SIDEBAR_TITLE  44.0f
+#define SB_SEARCH_Y    70.0f
+#define SB_SEARCH_H    30.0f
+#define PLACES_TOP    115.0f
+#define PLACE_H        30.0f
+#define PLACE_STEP     35.0f
+#define PLACE_GAP      10.0f
 
-#define MAIN_PAD       14.0f
-#define HEADER_TOP     54.0f
-#define UP_SIZE        24.0f
-#define SEARCH_W      190.0f
-#define SEARCH_H       26.0f
-#define LIST_TOP       94.0f
-#define ROW_H          28.0f
-#define FOOTER_H       26.0f
-#define PREVIEW_W     300.0f
-#define PREVIEW_GAP    12.0f
+#define MAIN_PAD       20.0f
+#define MAIN_PAD_R     16.0f
+#define HEADER_TOP     44.0f
+#define UP_W           54.0f
+#define UP_H           24.0f
+#define LIST_TOP       70.0f
+#define ROW_H          34.0f
+#define CARD_R          4.0f
+#define CARD_PAD       16.0f
+#define FOOTER_H       28.0f
+#define PREVIEW_W     280.0f
+#define PREVIEW_GAP    10.0f
 
 #define DOUBLE_MS     400
 
@@ -72,17 +77,18 @@ typedef struct {
     const char *rel;        /* relative to home; NULL means the place is
                              * computed or always present */
     const char *path;       /* absolute override, for Computer */
+    uint32_t    chip;
 } place_desc;
 
 static const place_desc g_places[] = {
-    { "Home",      "",          NULL },
-    { "Desktop",   "Desktop",   NULL },
-    { "Documents", "Documents", NULL },
-    { "Downloads", "Downloads", NULL },
-    { "Pictures",  "Pictures",  NULL },
-    { "Music",     "Music",     NULL },
-    { "Videos",    "Videos",    NULL },
-    { "Computer",  NULL,        "/"  },
+    { "Home",      "",          NULL, 0xFF006FFFu },
+    { "Desktop",   "Desktop",   NULL, 0xFF006FFFu },
+    { "Documents", "Documents", NULL, 0xFF006FFFu },
+    { "Downloads", "Downloads", NULL, 0xFF006FFFu },
+    { "Pictures",  "Pictures",  NULL, 0xFF006FFFu },
+    { "Music",     "Music",     NULL, 0xFF006FFFu },
+    { "Videos",    "Videos",    NULL, 0xFF006FFFu },
+    { "Computer",  NULL,        "/",  0xFF858585u },
 };
 #define PLACE_COUNT ((int)(sizeof g_places / sizeof g_places[0]))
 
@@ -109,9 +115,11 @@ static int g_preview_len = 0;
 static int g_preview_binary = 0;
 static int g_preview_loaded = 0;
 
-static finn_font g_f_title, g_f_label, g_f_sub, g_f_micro;
+static finn_font g_f_hero, g_f_title, g_f_label, g_f_sub, g_f_micro;
+static fsvg g_ic_search, g_ic_home, g_ic_computer;
 static float g_font_scale = -1.0f;
 static char g_font_dir[512] = "";
+static char g_icon_dir[512] = "";
 static int g_ready = 0;
 
 static int g_last_click_entry = -1;
@@ -140,6 +148,7 @@ static const char *base_name(const char *path) {
 }
 
 static int load_fonts(float scale) {
+    finn_font_free(&g_f_hero);
     finn_font_free(&g_f_title);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_sub);
@@ -147,10 +156,11 @@ static int load_fonts(float scale) {
 
     char p[600];
     snprintf(p, sizeof p, "%s/FixelDisplay-Regular.otf", g_font_dir);
-    if (finn_font_load(&g_f_title, p, finnapp_font_px(scale, 15.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_hero,  p, finnapp_font_px(scale, 16.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_title, p, finnapp_font_px(scale, 16.0f)) != 0) return -1;
     if (finn_font_load(&g_f_label, p, finnapp_font_px(scale, 12.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_sub, p, finnapp_font_px(scale, 10.0f)) != 0) return -1;
-    if (finn_font_load(&g_f_micro, p, finnapp_font_px(scale, 8.5f)) != 0) return -1;
+    if (finn_font_load(&g_f_sub,   p, finnapp_font_px(scale, 10.0f)) != 0) return -1;
+    if (finn_font_load(&g_f_micro, p, finnapp_font_px(scale, 10.0f)) != 0) return -1;
     return 0;
 }
 
@@ -454,9 +464,9 @@ static void load_preview(void) {
 
 typedef struct {
     float sb_w, main_x, main_w;
-    float up_x, up_y;
+    float up_x, up_y, up_w, up_h;
     float title_x, title_base;
-    float search_x, search_y, search_w;
+    float search_x, search_y, search_w, search_h;
     float list_x, list_y, list_w, list_h;
     float prev_x, prev_y, prev_w, prev_h;
     float foot_y;
@@ -466,47 +476,55 @@ typedef struct {
     int   up;
 } files_layout;
 
+static float place_row_y(int row_idx, int place_idx, float s) {
+    float y = s * PLACES_TOP + (float)row_idx * s * PLACE_STEP;
+    if (place_idx == PLACE_COUNT - 1 && row_idx > 0)
+        y += s * PLACE_GAP;
+    return y;
+}
+
 static void layout_for(int ww, int wh, float s, files_layout *L) {
     memset(L, 0, sizeof *L);
     L->sb_w = s * SIDEBAR_W;
-    if (L->sb_w > (float)ww * 0.45f) L->sb_w = (float)ww * 0.45f;
+    if (L->sb_w > (float)ww * 0.42f) L->sb_w = (float)ww * 0.42f;
     L->main_x = L->sb_w;
     L->main_w = (float)ww - L->main_x;
-    L->up = L->main_w > s * 300.0f;
-    L->up_x = L->main_x + s * MAIN_PAD;
-    L->up_y = s * HEADER_TOP;
 
-    float up_sz = s * UP_SIZE;
-    L->title_x = L->up ? L->up_x + up_sz + s * 10.0f : L->up_x;
-    L->title_base = s * HEADER_TOP + up_sz * 0.78f;
+    float sb_pad = s * SIDEBAR_PAD;
+    L->search_x = sb_pad;
+    L->search_y = s * SB_SEARCH_Y;
+    L->search_w = L->sb_w - sb_pad * 2.0f;
+    L->search_h = s * SB_SEARCH_H;
 
-    L->search_w = s * SEARCH_W;
-    float max_search = L->main_w - (L->title_x - L->main_x) - s * (MAIN_PAD * 2.0f);
-    if (L->search_w > max_search) L->search_w = max_search;
-    if (L->search_w < s * 80.0f) L->search_w = 0.0f;
-    L->search_x = L->main_x + L->main_w - s * MAIN_PAD - L->search_w;
-    L->search_y = s * HEADER_TOP;
+    L->title_x = L->main_x + s * MAIN_PAD;
+    L->title_base = s * HEADER_TOP + finn_text_cap_height(&g_f_hero);
+
+    L->up = L->main_w > s * 220.0f;
+    L->up_w = s * UP_W;
+    L->up_h = s * UP_H;
+    L->up_x = L->main_x + L->main_w - s * MAIN_PAD_R - L->up_w;
+    L->up_y = s * HEADER_TOP - s * 4.0f;
 
     L->list_x = L->main_x + s * MAIN_PAD;
     L->list_y = s * LIST_TOP;
-    L->list_w = L->main_w - s * MAIN_PAD * 2.0f;
+    L->list_w = L->main_w - s * (MAIN_PAD + MAIN_PAD_R);
     L->list_h = (float)wh - L->list_y - s * FOOTER_H;
     if (L->list_h < s * 40.0f) L->list_h = s * 40.0f;
 
-    L->show_preview = L->list_w >= s * 560.0f;
+    L->show_preview = L->list_w >= s * 520.0f;
     if (L->show_preview) {
         L->prev_w = s * PREVIEW_W;
-        if (L->prev_w > L->list_w * 0.46f) L->prev_w = L->list_w * 0.46f;
+        if (L->prev_w > L->list_w * 0.44f) L->prev_w = L->list_w * 0.44f;
         L->prev_x = L->list_x + L->list_w - L->prev_w;
         L->prev_y = L->list_y;
         L->prev_h = L->list_h;
         L->list_w -= L->prev_w + s * PREVIEW_GAP;
     }
 
-    L->show_date = L->list_w >= s * 320.0f;
+    L->show_date = L->list_w >= s * 300.0f;
     L->rows = (int)(L->list_h / (s * ROW_H));
     if (L->rows < 1) L->rows = 1;
-    L->foot_y = (float)wh - s * 20.0f;
+    L->foot_y = (float)wh - s * 19.0f;
 }
 
 static void clamp_scroll(const files_layout *L) {
@@ -519,34 +537,28 @@ static void clamp_scroll(const files_layout *L) {
 
 /* ---------------- drawing helpers ---------------- */
 
+static void card_bg(uint32_t *L, int lw, int lh,
+                    float x, float y, float w, float h, float r) {
+    finn_fill_rrect(L, lw, lh, x, y, w, h, r,
+                    finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u);
+}
+
 static void folder_glyph(uint32_t *L, int lw, int lh, float x, float y,
                          float sz, uint32_t col) {
-    float tab_w = sz * 0.45f, tab_h = sz * 0.22f;
-    finn_fill_rrect(L, lw, lh, x + sz * 0.08f, y + sz * 0.18f,
+    float tab_w = sz * 0.44f, tab_h = sz * 0.22f;
+    finn_fill_rrect(L, lw, lh, x + sz * 0.06f, y + sz * 0.16f,
                     tab_w, tab_h * 1.4f, sz * 0.09f, col);
-    finn_fill_rrect(L, lw, lh, x, y + sz * 0.30f, sz, sz * 0.60f,
+    finn_fill_rrect(L, lw, lh, x, y + sz * 0.28f, sz, sz * 0.60f,
                     sz * 0.14f, col);
 }
 
 static void file_glyph(uint32_t *L, int lw, int lh, float x, float y,
-                       float sz, uint32_t col) {
-    float w = sz * 0.72f, h = sz * 0.92f;
-    finn_fill_rrect(L, lw, lh, x + (sz - w) * 0.5f, y + sz * 0.04f,
+                       float sz, uint32_t col, uint32_t cut_col) {
+    float w = sz * 0.72f, h = sz * 0.90f;
+    finn_fill_rrect(L, lw, lh, x + (sz - w) * 0.5f, y + sz * 0.05f,
                     w, h, sz * 0.10f, col);
-    /* a folded corner in the window's own glass colour */
-    finn_fill_rrect(L, lw, lh, x + (sz - w) * 0.5f + w * 0.55f, y + sz * 0.04f,
-                    w * 0.45f, h * 0.30f, sz * 0.06f, FINN_GLASS);
-}
-
-static void draw_chip(uint32_t *L, int lw, int lh, const files_layout *lay,
-                      const char *text, float s, uint32_t ink) {
-    float cap = finn_text_cap_height(&g_f_sub);
-    finn_fill_rrect(L, lw, lh, lay->search_x, lay->search_y, lay->search_w, s * SEARCH_H,
-                    s * 7.0f, finn_theme_dark() ? 0x14FFFFFFu : 0x0C000000u);
-    finn_stroke_rrect(L, lw, lh, lay->search_x, lay->search_y, lay->search_w,
-                      s * SEARCH_H, s * 7.0f, 1.0f, FINN_HAIR);
-    finn_text_draw(&g_f_sub, L, lw, lh, lay->search_x + s * 10.0f,
-                   lay->search_y + s * SEARCH_H * 0.5f + cap * 0.5f, text, ink);
+    finn_fill_rrect(L, lw, lh, x + (sz - w) * 0.5f + w * 0.55f, y + sz * 0.05f,
+                    w * 0.45f, h * 0.30f, sz * 0.06f, cut_col);
 }
 
 /* ---------------- render ---------------- */
@@ -604,75 +616,133 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
     finn_fill_rrect(layer, lw, lh, LX(lay.sb_w - 1.0f), LY(0.0f),
                     1.0f, (float)wh, 0.0f, FINN_HAIR);
 
-    float cap_h = finn_text_cap_height(&g_f_title);
-    finn_text_draw(&g_f_title, layer, lw, lh,
-                   LX(s * SIDEBAR_PAD), LY(s * SIDEBAR_TITLE + cap_h),
+    /* Sidebar title: 16px at (15, 44), matching Settings and Store. */
+    float sb_pad = s * SIDEBAR_PAD;
+    float cap_h = finn_text_cap_height(&g_f_hero);
+    finn_text_draw(&g_f_hero, layer, lw, lh,
+                   LX(sb_pad), LY(s * SIDEBAR_TITLE + cap_h),
                    "Finn Files", FINN_INK);
 
-    finn_text_draw(&g_f_micro, layer, lw, lh,
-                   LX(s * SIDEBAR_PAD), LY(s * PLACES_CAP), "PLACES", FINN_MUTE);
-
-    int row = 0;
-    for (int i = 0; i < PLACE_COUNT; i++) {
-        if (!g_place_exists[i]) continue;
-        float y = s * PLACES_TOP + (float)row * s * PLACE_STEP;
-        float h = s * PLACE_H;
-        int act = place_active(i);
-        if (act)
-            finn_fill_rrect(layer, lw, lh, LX(s * 6.0f), LY(y),
-                            lay.sb_w - s * 12.0f, h, s * 4.14f,
-                            finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
-        folder_glyph(layer, lw, lh, LX(s * SIDEBAR_PAD), LY(y + s * 7.0f),
-                     s * 14.0f, act ? FINN_ON : FINN_MUTE);
-        float lc = finn_text_cap_height(&g_f_label);
-        finn_text_draw(&g_f_label, layer, lw, lh,
-                       LX(s * (SIDEBAR_PAD + 24.0f)),
-                       LY(y + h * 0.5f + lc * 0.45f),
-                       g_places[i].label, act ? FINN_INK : FINN_DIM);
-        row++;
-    }
-
-    /* Header: up, title, path, filter. */
-    if (lay.up) {
-        float ux = lay.up_x, uy = lay.up_y, us = s * UP_SIZE;
-        finn_frost_rrect(layer, lw, lh, lx0, ly0, LX(ux), LY(uy), us, us,
-                         us * 0.5f, FINN_GLASS, FINN_GLASS_TILE);
-        finn_stroke_rrect(layer, lw, lh, LX(ux), LY(uy), us, us, us * 0.5f,
-                          1.0f, FINN_HAIR);
-        float ac = finn_text_cap_height(&g_f_label);
-        finn_text_draw(&g_f_label, layer, lw, lh, LX(ux + us * 0.5f - s * 3.0f),
-                       LY(uy + us * 0.5f + ac * 0.45f), "\xE2\x86\x91", FINN_DIM);
-    }
-
+    /* Sidebar filter field: 220x30 at (15, 70), radius 4. */
     {
-        const char *title = base_name(g_path);
-        float tw = lay.search_x - lay.title_x - s * 10.0f;
-        if (tw < s * 40.0f) tw = s * 40.0f;
-        char fitted[256];
-        finnapp_ellipsis(&g_f_title, fitted, sizeof fitted, title, tw);
-        float tc = finn_text_cap_height(&g_f_title);
-        finn_text_draw(&g_f_title, layer, lw, lh, LX(lay.title_x),
-                       LY(lay.title_base + tc * 0.1f), fitted, FINN_INK);
+        float sf_x = lay.search_x;
+        float sf_y = lay.search_y;
+        float sf_w = lay.search_w;
+        float sf_h = lay.search_h;
+        float sf_r = s * 4.0f;
+        finn_fill_rrect(layer, lw, lh, LX(sf_x), LY(sf_y), sf_w, sf_h, sf_r,
+                        finn_theme_dark() ? 0x33FFFFFFu : 0x40C7C7C7u);
+        if (g_filter_focused)
+            finn_stroke_rrect(layer, lw, lh, LX(sf_x), LY(sf_y), sf_w, sf_h,
+                              sf_r, 1.5f, FINN_ON);
 
-        if (lay.search_w > 0.0f) {
-            draw_chip(layer, lw, lh, &lay, g_filter[0] ? g_filter : "Filter this folder",
-                      s, g_filter[0] ? FINN_INK : FINN_MUTE);
-            if (g_filter_focused) {
-                float tw2 = finn_text_width(&g_f_sub, g_filter);
-                float cx = lay.search_x + s * 10.0f + tw2 + s * 2.0f;
-                finn_fill_rrect(layer, lw, lh, LX(cx),
-                                LY(lay.search_y + s * 7.0f), 1.0f,
-                                s * (SEARCH_H - 14.0f), 0.0f, FINN_ON);
-            }
+        if (g_ic_search.vw > 0)
+            finn_icon_blit_ink(&g_ic_search, layer, lw, lh,
+                               (int)lroundf(LX(sf_x + s * 15.0f)),
+                               (int)lroundf(LY(sf_y + sf_h * 0.5f)),
+                               finnapp_font_px(s, 18.0f), FINN_INK, FINN_MUTE, 0);
+
+        float stx = sf_x + s * 34.0f;
+        float sty = sf_y + sf_h * 0.5f + finn_text_cap_height(&g_f_label) * 0.5f;
+        char ftext[64];
+        finnapp_ellipsis(&g_f_label, ftext, sizeof ftext,
+                         g_filter[0] ? g_filter : "Filter this folder",
+                         sf_w - s * 40.0f);
+        finn_text_draw(&g_f_label, layer, lw, lh, LX(stx), LY(sty), ftext,
+                       g_filter[0] ? FINN_INK : (finn_theme_dark() ? FINN_MUTE : 0xFF555555u));
+        if (g_filter_focused) {
+            float tw2 = finn_text_width(&g_f_label, g_filter);
+            if (tw2 > sf_w - s * 42.0f) tw2 = sf_w - s * 42.0f;
+            float ch = finn_text_cap_height(&g_f_label) * 1.15f;
+            finn_fill_rrect(layer, lw, lh, LX(stx + tw2 + 2.0f),
+                            LY(sf_y + (sf_h - ch) * 0.5f), 1.5f, ch, 0.75f, FINN_ON);
         }
     }
 
-    /* The listing. */
-    finn_fill_rrect(layer, lw, lh, LX(lay.list_x), LY(lay.list_y),
-                    lay.list_w, lay.list_h, s * 8.0f,
-                    finn_theme_dark() ? 0x08FFFFFFu : 0x06000000u);
+    /* Sidebar places: 30px rows on a 35px pitch with 22px circular chips. */
+    int row = 0;
+    for (int i = 0; i < PLACE_COUNT; i++) {
+        if (!g_place_exists[i]) continue;
+        float y = place_row_y(row, i, s);
+        float h = s * PLACE_H;
+        float rw = lay.sb_w - sb_pad * 2.0f;
+        int act = place_active(i);
+        if (act)
+            finn_fill_rrect(layer, lw, lh, LX(sb_pad), LY(y),
+                            rw, h, s * 4.14f,
+                            finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
+
+        float chip = s * 22.0f;
+        float chip_x = sb_pad + s * 4.0f;
+        float chip_y = y + (h - chip) * 0.5f;
+        uint32_t chip_col = finn_theme_dark()
+                          ? (act ? FINN_ON : 0xFF4A4F59u)
+                          : g_places[i].chip;
+        finn_fill_rrect(layer, lw, lh, LX(chip_x), LY(chip_y),
+                        chip, chip, chip * 0.5f, chip_col);
+
+        if (i == 0 && g_ic_home.vw > 0) {
+            finn_icon_blit_ink(&g_ic_home, layer, lw, lh,
+                               (int)lroundf(LX(chip_x + chip * 0.5f)),
+                               (int)lroundf(LY(chip_y + chip * 0.5f)),
+                               finnapp_font_px(s, 14.0f), 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+        } else if (i == PLACE_COUNT - 1 && g_ic_computer.vw > 0) {
+            finn_icon_blit_ink(&g_ic_computer, layer, lw, lh,
+                               (int)lroundf(LX(chip_x + chip * 0.5f)),
+                               (int)lroundf(LY(chip_y + chip * 0.5f)),
+                               finnapp_font_px(s, 14.0f), 0xFFFFFFFFu, 0xFFFFFFFFu, 0);
+        } else {
+            folder_glyph(layer, lw, lh,
+                         LX(chip_x + chip * 0.5f - s * 5.5f),
+                         LY(chip_y + chip * 0.5f - s * 5.5f),
+                         s * 11.0f, 0xFFFFFFFFu);
+        }
+
+        float lc = finn_text_cap_height(&g_f_label);
+        finn_text_draw(&g_f_label, layer, lw, lh,
+                       LX(sb_pad + s * 34.0f),
+                       LY(y + h * 0.5f + lc * 0.5f),
+                       g_places[i].label, FINN_INK);
+        row++;
+    }
+
+    /* Content header: 16px folder title at (sb_w + 20, 44) and Up pill button. */
+    {
+        const char *title = base_name(g_path);
+        float max_tw = (lay.up ? lay.up_x : (lay.main_x + lay.main_w - s * MAIN_PAD_R))
+                     - lay.title_x - s * 12.0f;
+        if (max_tw < s * 40.0f) max_tw = s * 40.0f;
+        char fitted[256];
+        finnapp_ellipsis(&g_f_hero, fitted, sizeof fitted, title, max_tw);
+        finn_text_draw(&g_f_hero, layer, lw, lh, LX(lay.title_x),
+                       LY(lay.title_base), fitted, FINN_INK);
+
+        if (lay.up) {
+            int can_up = strcmp(g_path, "/") != 0;
+            uint32_t ubg = !can_up
+                         ? (finn_theme_dark() ? 0x14FFFFFFu : 0xFFEFEFEFu)
+                         : (finn_theme_dark() ? 0x24FFFFFFu : 0xFFE8E8ECu);
+            uint32_t ufg = can_up ? FINN_INK : FINN_MUTE;
+            finn_fill_rrect(layer, lw, lh, LX(lay.up_x), LY(lay.up_y),
+                            lay.up_w, lay.up_h, lay.up_h * 0.5f, ubg);
+            const char *ulab = "\xE2\x86\x91 Up";
+            float uw = finn_text_width(&g_f_sub, ulab);
+            float uc = finn_text_cap_height(&g_f_sub);
+            finn_text_draw(&g_f_sub, layer, lw, lh,
+                           LX(lay.up_x + (lay.up_w - uw) * 0.5f),
+                           LY(lay.up_y + lay.up_h * 0.5f + uc * 0.5f),
+                           ulab, ufg);
+        }
+    }
+
+    /* File listing card: #F9F9F9 / #2A2D33 paper, r = 4. */
+    float card_r = s * CARD_R;
+    uint32_t card_col = finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u;
+    card_bg(layer, lw, lh, LX(lay.list_x), LY(lay.list_y),
+            lay.list_w, lay.list_h, card_r);
 
     float rh = s * ROW_H;
+    float cpad = s * CARD_PAD;
     int nvis = visible_count();
     for (int k = 0; k < lay.rows; k++) {
         int entry = visible_entry(g_scroll + k);
@@ -681,37 +751,40 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
         float y = lay.list_y + (float)k * rh;
         int selected = entry == g_sel;
 
-        if (selected)
-            finn_fill_rrect(layer, lw, lh, LX(lay.list_x + s * 4.0f), LY(y + s * 1.0f),
-                            lay.list_w - s * 8.0f, rh - s * 2.0f, s * 5.0f,
-                            0x2E006FFFu);
+        if (k > 0)
+            finn_fill_rrect(layer, lw, lh, LX(lay.list_x + cpad), LY(y),
+                            lay.list_w - cpad * 2.0f, 1.0f, 0.0f, FINN_HAIR);
 
-        float icon_x = lay.list_x + s * 10.0f;
+        if (selected)
+            finn_fill_rrect(layer, lw, lh, LX(lay.list_x + s * 6.0f), LY(y + s * 2.0f),
+                            lay.list_w - s * 12.0f, rh - s * 4.0f, s * 4.0f,
+                            finn_theme_dark() ? 0x38FFFFFFu : 0xFFEAEAEFu);
+
+        float icon_x = lay.list_x + cpad;
         if (e->is_dir)
             folder_glyph(layer, lw, lh, LX(icon_x), LY(y + rh * 0.5f - s * 7.0f),
-                         s * 14.0f, selected ? FINN_ON : FINN_DIM);
+                         s * 14.0f, FINN_ON);
         else
             file_glyph(layer, lw, lh, LX(icon_x), LY(y + rh * 0.5f - s * 7.0f),
-                       s * 14.0f, selected ? FINN_ON : FINN_MUTE);
+                       s * 14.0f, selected ? FINN_ON : FINN_MUTE, card_col);
 
-        float name_x = lay.list_x + s * 30.0f;
-        float size_right = lay.list_x + lay.list_w - s * 10.0f;
-        if (lay.show_date) size_right -= s * 104.0f;
-        float name_max = size_right - name_x - s * 8.0f;
+        float name_x = lay.list_x + cpad + s * 22.0f;
+        float size_right = lay.list_x + lay.list_w - cpad;
+        if (lay.show_date) size_right -= s * 108.0f;
+        float name_max = size_right - name_x - s * 10.0f;
         if (name_max < s * 40.0f) name_max = s * 40.0f;
         char name[256];
         finnapp_ellipsis(&g_f_label, name, sizeof name, e->name, name_max);
         float lc = finn_text_cap_height(&g_f_label);
         finn_text_draw(&g_f_label, layer, lw, lh, LX(name_x),
-                       LY(y + rh * 0.5f + lc * 0.45f), name,
-                       selected ? FINN_INK : FINN_DIM);
+                       LY(y + rh * 0.5f + lc * 0.45f), name, FINN_INK);
 
         if (lay.show_date) {
             char date[32];
             finnapp_format_time(e->mtime, date, sizeof date);
             float dw = finn_text_width(&g_f_micro, date);
             finn_text_draw(&g_f_micro, layer, lw, lh,
-                           LX(lay.list_x + lay.list_w - s * 10.0f - dw),
+                           LX(lay.list_x + lay.list_w - cpad - dw),
                            LY(y + rh * 0.5f + lc * 0.35f), date, FINN_MUTE);
         }
 
@@ -732,7 +805,7 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
         finn_text_draw(&g_f_label, layer, lw, lh,
                        LX(lay.list_x + lay.list_w * 0.5f - finn_text_width(&g_f_label, line) * 0.5f),
                        LY(lay.list_y + lay.list_h * 0.5f + lc * 0.5f),
-                       line, FINN_DIM);
+                       line, FINN_MUTE);
     } else if (nvis > lay.rows) {
         /* A restrained scroll indicator, not a full scrollbar. */
         float track_h = lay.list_h - s * 8.0f;
@@ -745,16 +818,14 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
                         LY(ty), s * 3.0f, th, s * 1.5f, FINN_MUTE);
     }
 
-    /* Preview. */
+    /* Preview card: #F9F9F9 / #2A2D33 paper, r = 4, matching Settings cards. */
     if (lay.show_preview) {
-        finn_frost_rrect(layer, lw, lh, lx0, ly0, LX(lay.prev_x), LY(lay.prev_y),
-                         lay.prev_w, lay.prev_h, s * 8.0f, FINN_GLASS, 0.72f);
-        finn_stroke_rrect(layer, lw, lh, LX(lay.prev_x), LY(lay.prev_y),
-                          lay.prev_w, lay.prev_h, s * 8.0f, 1.0f, FINN_HAIR);
+        card_bg(layer, lw, lh, LX(lay.prev_x), LY(lay.prev_y),
+                lay.prev_w, lay.prev_h, card_r);
 
-        float px = lay.prev_x + s * 16.0f;
-        float py = lay.prev_y + s * 22.0f;
-        float pw = lay.prev_w - s * 32.0f;
+        float px = lay.prev_x + cpad;
+        float py = lay.prev_y + s * 18.0f;
+        float pw = lay.prev_w - cpad * 2.0f;
 
         if (g_sel < 0 || g_sel >= g_n_entries) {
             float lc = finn_text_cap_height(&g_f_sub);
@@ -774,9 +845,13 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
             snprintf(meta, sizeof meta, "%s \xC2\xB7 %s", size, date);
             float mc = finn_text_cap_height(&g_f_micro);
             finn_text_draw(&g_f_micro, layer, lw, lh, LX(px),
-                           LY(py + tc + s * 16.0f + mc), meta, FINN_MUTE);
+                           LY(py + tc + s * 14.0f + mc), meta, FINN_MUTE);
 
-            float body_y = py + tc + s * 40.0f;
+            float div_y = py + tc + s * 28.0f;
+            finn_fill_rrect(layer, lw, lh, LX(px), LY(div_y),
+                            pw, 1.0f, 0.0f, FINN_HAIR);
+
+            float body_y = div_y + s * 14.0f;
             float body_h = lay.prev_y + lay.prev_h - body_y - s * 14.0f;
             if (e->is_dir) {
                 float lc = finn_text_cap_height(&g_f_label);
@@ -795,7 +870,7 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
                                    FINN_DIM);
                 } else {
                     float line_h = s * 15.0f;
-                    float ly = body_y;
+                    float ly = body_y + finn_text_cap_height(&g_f_sub);
                     char line[512];
                     size_t used = 0;
                     for (int i = 0; i <= g_preview_len; i++) {
@@ -807,7 +882,7 @@ void finnfilesapp_render(uint32_t *layer, int lw, int lh,
                         if (c == '\r') continue;
                         line[used] = '\0';
                         used = 0;
-                        if (ly + line_h > body_y + body_h) break;
+                        if (ly > body_y + body_h) break;
 
                         /* Tabs are four spaces, because the preview font has
                          * no tab stop of its own. */
@@ -873,13 +948,17 @@ int finnfilesapp_hit(int wx, int wy, int ww, int wh, int px, int py,
 
     /* Leave the top strip to the window manager: it is the titlebar, and a
      * drag there has to move the window. */
-    if (y < s * 48.0f) return FINNFILES_HIT_NONE;
+    if (y < s * 36.0f) return FINNFILES_HIT_NONE;
 
     if (x < lay.sb_w) {
+        if (x >= lay.search_x && x < lay.search_x + lay.search_w &&
+            y >= lay.search_y && y < lay.search_y + lay.search_h)
+            return FINNFILES_HIT_FILTER;
+
         int row = 0;
         for (int i = 0; i < PLACE_COUNT; i++) {
             if (!g_place_exists[i]) continue;
-            float ry = s * PLACES_TOP + (float)row * s * PLACE_STEP;
+            float ry = place_row_y(row, i, s);
             if (y >= ry && y < ry + s * PLACE_H) {
                 if (out_sub) *out_sub = i;
                 return FINNFILES_HIT_PLACE;
@@ -890,15 +969,11 @@ int finnfilesapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     }
 
     if (lay.up) {
-        float us = s * UP_SIZE;
-        if (x >= lay.up_x && x < lay.up_x + us &&
-            y >= lay.up_y && y < lay.up_y + us)
+        if (x >= lay.up_x && x < lay.up_x + lay.up_w &&
+            y >= lay.up_y && y < lay.up_y + lay.up_h)
             return FINNFILES_HIT_UP;
     }
-    if (lay.search_w > 0 &&
-        x >= lay.search_x && x < lay.search_x + lay.search_w &&
-        y >= lay.search_y && y < lay.search_y + s * SEARCH_H)
-        return FINNFILES_HIT_FILTER;
+    if (y < s * 48.0f) return FINNFILES_HIT_NONE;
 
     if (x >= lay.list_x && x < lay.list_x + lay.list_w &&
         y >= lay.list_y && y < lay.list_y + lay.list_h) {
@@ -1097,8 +1172,19 @@ uint32_t finnfilesapp_build_key(float scale) {
 }
 
 int finnfilesapp_init(const char *icon_dir, const char *font_dir) {
-    (void)icon_dir;
+    snprintf(g_icon_dir, sizeof g_icon_dir, "%s", icon_dir ? icon_dir : "");
     snprintf(g_font_dir, sizeof g_font_dir, "%s", font_dir ? font_dir : "");
+
+    if (g_icon_dir[0]) {
+        char p[600];
+        snprintf(p, sizeof p, "%s/search-01.svg", g_icon_dir);
+        (void)fsvg_load(p, &g_ic_search);
+        snprintf(p, sizeof p, "%s/home-09.svg", g_icon_dir);
+        (void)fsvg_load(p, &g_ic_home);
+        snprintf(p, sizeof p, "%s/display.svg", g_icon_dir);
+        (void)fsvg_load(p, &g_ic_computer);
+    }
+
     finnapp_home(g_home, sizeof g_home);
     refresh_places();
 
@@ -1116,6 +1202,10 @@ int finnfilesapp_init(const char *icon_dir, const char *font_dir) {
 
 void finnfilesapp_free(void) {
     free_entries();
+    fsvg_free(&g_ic_search);
+    fsvg_free(&g_ic_home);
+    fsvg_free(&g_ic_computer);
+    finn_font_free(&g_f_hero);
     finn_font_free(&g_f_title);
     finn_font_free(&g_f_label);
     finn_font_free(&g_f_sub);

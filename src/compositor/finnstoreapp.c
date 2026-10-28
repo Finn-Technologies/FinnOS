@@ -59,8 +59,8 @@
  * margin, the title on the same baseline and the search field directly under
  * it. What changes is only what the rail contains.
  */
-#define PAD             32.0f   /* content column, as in Settings */
-#define NARROW_PAD      20.0f
+#define PAD             20.0f   /* content column pad, as in Settings (186:3907) */
+#define NARROW_PAD      16.0f
 #define RAIL_W         250.0f
 #define RAIL_PAD        15.0f   /* inside the sheet, as in Settings */
 #define RAIL_MIN       560.0f   /* narrower than this: tabs over the content */
@@ -71,7 +71,7 @@
 #define SUB_TOP         70.0f   /* content header subtitle */
 #define FILTER_W       220.0f   /* the frame's 220x30 search field */
 #define FILTER_H        30.0f
-#define CONTENT_TOP    104.0f
+#define CONTENT_TOP     96.0f
 
 #define NAV_FIRST_Y    115.0f   /* the frame's rows: 30 high on a 35 pitch */
 #define NAV_ITEM_H      30.0f
@@ -80,9 +80,9 @@
 #define TAB_H           30.0f
 #define TAB_GAP          6.0f
 
-#define CARD_R           8.0f
-#define CARD_PAD        18.0f
-#define CARD_GAP        12.0f
+#define CARD_R           4.0f   /* Figma 186:3907 card corner radius */
+#define CARD_PAD        16.0f
+#define CARD_GAP        10.0f   /* Figma 186:3907 10px card spacing */
 #define HERO_H         132.0f
 #define SHELF_CARD_H   128.0f
 #define GRID_CARD_H    176.0f
@@ -316,6 +316,7 @@ static char g_flatpak_job_id[FLATPAK_JOB_ID_CAP] = "";
 static char g_flatpak_job_app[FLATPAK_APP_ID_CAP] = "";
 static char g_flatpak_job_name[FLATPAK_APP_NAME_CAP] = "";
 static int g_flatpak_job_install = 0;
+static long long g_flatpak_job_last_ms = 0;
 
 static flatpak_task g_flatpak_task;
 static pthread_t g_flatpak_thread;
@@ -1892,10 +1893,11 @@ static void winget_install_result(const winget_result *r) {
 }
 
 static void flatpak_poll_job(void) {
-    if (!g_flatpak_job_id[0]) {
-        flatpak_query_start(g_filter);
-        return;
-    }
+    if (!g_flatpak_job_id[0]) return;
+    long long now = now_ms();
+    if (g_flatpak_job_last_ms && now - g_flatpak_job_last_ms < 900) return;
+    g_flatpak_job_last_ms = now;
+
     char request[FLATPAK_JOB_ID_CAP + 24];
     char reply[256] = "";
     int n = snprintf(request, sizeof request, "flatpak.job %s",
@@ -1970,10 +1972,10 @@ static void c_stroke(store_canvas *c, float x, float y, float w, float h,
                       col);
 }
 
-static void c_frost(store_canvas *c, float x, float y, float w, float h,
-                    float r, uint32_t tint, float alpha) {
-    finn_frost_rrect(c->px, c->w, c->h, c->ox, c->oy, x + c->dx, y + c->dy,
-                     w, h, r, tint, alpha);
+static void c_grad(store_canvas *c, float x, float y, float w, float h,
+                   float r, uint32_t top, uint32_t bottom) {
+    finn_fill_rrect_grad(c->px, c->w, c->h, x + c->dx, y + c->dy, w, h, r,
+                         top, bottom);
 }
 
 static void c_text(store_canvas *c, const finn_font *f, float x, float base,
@@ -2200,26 +2202,29 @@ static float list_top_for(int page) {
 
 /* ---------------- drawing helpers ---------------- */
 
+static uint32_t store_paper_col(void) {
+    return finn_theme_dark() ? 0xFF1E2128u : 0xFFFFFFFFu;
+}
+
+static uint32_t store_card_col(void) {
+    return finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u;
+}
+
 static void card_bg(store_canvas *c, float x, float y, float w, float h,
                     float s, int selected) {
     float r = s * CARD_R;
-    c_frost(c, x, y, w, h, r, FINN_GLASS, 0.72f);
-    if (finn_theme_dark())
-        c_fill(c, x, y, w, h, r, 0x0AFFFFFFu);
+    c_fill(c, x, y, w, h, r, store_card_col());
     if (selected) {
         c_fill(c, x, y, w, h, r,
-               finn_theme_dark() ? 0x1C0A84FFu : 0x10006FFFu);
+               finn_theme_dark() ? 0x220A84FFu : 0x10006FFFu);
         c_stroke(c, x, y, w, h, r, 1.5f, FINN_ON);
-    } else {
-        c_stroke(c, x, y, w, h, r, 1.0f, FINN_HAIR);
     }
 }
 
 /* The quiet well a page shows instead of a list when it has nothing to list. */
 static void quiet_well(store_canvas *c, float x, float y, float w, float h,
                        float s, const char *line, const char *sub) {
-    c_fill(c, x, y, w, h, s * CARD_R,
-           finn_theme_dark() ? 0x1AFFFFFFu : 0x0D000000u);
+    c_fill(c, x, y, w, h, s * CARD_R, store_card_col());
     float tx = x + s * CARD_PAD;
     float maxw = w - s * CARD_PAD * 2.0f;
     char fitted[320];
@@ -2283,23 +2288,21 @@ static void draw_button(store_canvas *c, float x, float y, float w, float h,
         ink = 0xFFFFFFFFu;
         break;
     case BTN_REMOVE:
-        fill = finn_theme_dark() ? 0x1AFFFFFFu : 0x0C000000u;
+        fill = finn_theme_dark() ? 0x24FFFFFFu : 0xFFEFEFEFu;
         ink = FINN_INK;
-        stroked = 1;
         break;
     case BTN_REMOVE_CONFIRM:
-        fill = finn_theme_dark() ? 0x1AFFFFFFu : 0x0C000000u;
+        fill = finn_theme_dark() ? 0x24FFFFFFu : 0xFFEFEFEFu;
         ink = FINN_INK;
         stroked = 1;
         stroke = FINN_ON;
         break;
     case BTN_QUIET:
-        fill = finn_theme_dark() ? 0x14FFFFFFu : 0x08000000u;
-        ink = FINN_DIM;
-        stroked = 1;
+        fill = finn_theme_dark() ? 0x24FFFFFFu : 0xFFEFEFEFu;
+        ink = FINN_INK;
         break;
     default:
-        fill = finn_theme_dark() ? 0x10FFFFFFu : 0x08000000u;
+        fill = finn_theme_dark() ? 0x16FFFFFFu : 0xFFEFEFEFu;
         ink = FINN_MUTE;
         break;
     }
@@ -2412,19 +2415,17 @@ static void draw_filter(store_canvas *c, const store_layout *L, float s,
     float w = L->filter_w, h = L->filter_h;
     float r = s * 4.0f;
 
-    /* Settings' field, not a web search bar: the same wash of ink, the same
-     * 4-unit corners and the same 13px type as the row labels beside it. */
+    /* Settings' field (Figma 186:3941): 220x30 r=4, #C7C7C7 at 25%, no
+     * hairline border when unfocused. */
     c_fill(c, x, y, w, h, r,
            finn_theme_dark() ? 0x33FFFFFFu : 0x40C7C7C7u);
     if (focused)
         c_stroke(c, x, y, w, h, r, 1.5f, FINN_ON);
-    else
-        c_stroke(c, x, y, w, h, r, 1.0f, FINN_HAIR);
 
     c_icon_ink(c, &g_ic_search, x + s * 15.0f, y + h * 0.5f,
-               s * 16.0f, FINN_DIM, FINN_MUTE);
+               s * 18.0f, FINN_DIM, FINN_MUTE);
 
-    float tx = x + s * 36.0f;
+    float tx = x + s * 34.0f;
     float clear_x = x + w;
     int has_clear = g_filter[0] != '\0';
     float text_right = x + w - (has_clear ? s * 36.0f : s * 12.0f);
@@ -2617,15 +2618,18 @@ static void draw_rail(store_canvas *c, const store_layout *L, float s,
             c_fill(c, x, y, w, hgt, s * 4.14f,
                    finn_theme_dark() ? 0x38FFFFFFu : 0xFFEFEFEFu);
 
-        /* Settings' circular chip, in the Store's own blue. */
+        /* Settings' circular chip (Figma 186:3940): blue (#006FFF) and mint
+         * (#14B87A) for the catalogue sources above the group break, neutral
+         * slate (#858585) for Library below the break. */
+        static const uint32_t chip_cols[5] = {
+            0xFF006FFFu, 0xFF006FFFu, 0xFF14B87Au, 0xFF006FFFu, 0xFF858585u
+        };
         float chip = s * 22.0f;
         float chip_x = x + s * 4.0f;
         float chip_y = y + (hgt - chip) * 0.5f;
-        c_fill(c, chip_x, chip_y, chip, chip, chip * 0.5f,
-               active ? FINN_ON
-                      : (finn_theme_dark() ? 0xFF4A4F59u : 0xFF006FFFu));
+        c_fill(c, chip_x, chip_y, chip, chip, chip * 0.5f, chip_cols[i]);
         c_icon_ink(c, nav_icon(i), chip_x + chip * 0.5f, chip_y + chip * 0.5f,
-                   s * 18.0f, 0xFFFFFFFFu, 0xFFFFFFFFu);
+                   s * 16.0f, 0xFFFFFFFFu, 0xFFFFFFFFu);
 
         c_text(c, &g_f_label, x + s * 34.0f,
                y + hgt * 0.5f + finn_text_cap_height(&g_f_label) * 0.5f,
@@ -2730,29 +2734,6 @@ static uint32_t *scratch_begin(int w, int h) {
     return g_scratch;
 }
 
-/*
- * An offscreen buffer has to start as the surface it is going to replace,
- * or the glass drawn into it frosts the wallpaper instead of the window and
- * the cards read as stickers on a different material. The window body has
- * already been painted into the layer by the time a view renders, so the
- * scratch borrows exactly those pixels and puts them back under the new
- * content.
- */
-static void copy_from_layer(uint32_t *dst, int dw, int dh,
-                            const uint32_t *src, int sw, int sh,
-                            int ox, int oy) {
-    for (int y = 0; y < dh; y++) {
-        int sy = oy + y;
-        if (sy < 0 || sy >= sh) continue;
-        int x0 = ox < 0 ? -ox : 0;
-        int x1 = dw;
-        if (ox + x1 > sw) x1 = sw - ox;
-        if (x1 <= x0) continue;
-        memcpy(dst + (size_t)y * dw + x0, src + (size_t)sy * sw + ox + x0,
-               (size_t)(x1 - x0) * sizeof(uint32_t));
-    }
-}
-
 /* ---------------- Home ---------------- */
 
 typedef struct {
@@ -2847,9 +2828,10 @@ static void draw_link(store_canvas *c, const store_layout *L, const char *label,
 static void draw_hero(store_canvas *c, const store_layout *L, float s,
                       float y, const finn_app *a, int idx) {
     float w = L->content_w;
-    card_bg(c, 0.0f, y, w, s * HERO_H, s, 0);
-    c_fill(c, 0.0f, y, w, s * HERO_H, s * CARD_R,
-           finn_theme_dark() ? 0x0E0A84FFu : 0x07006FFFu);
+    /* Figma 186:3909 hero banner gradient: #F9F9F9 -> #E7FFFB (dark #2A2D33 -> #17322F) */
+    uint32_t g_top = finn_theme_dark() ? 0xFF2A2D33u : 0xFFF9F9F9u;
+    uint32_t g_bot = finn_theme_dark() ? 0xFF17322Fu : 0xFFE7FFFBu;
+    c_grad(c, 0.0f, y, w, s * HERO_H, s * CARD_R, g_top, g_bot);
 
     float icon = s * 64.0f;
     draw_app_icon(c, a, idx, s * CARD_PAD,
@@ -3303,9 +3285,7 @@ static void draw_detail_content(store_canvas *c, const store_layout *L,
     float meta_y = body_top + (float)lines * 17.0f + 16.0f;
     float meta_h = 90.0f;
     c_fill(c, 0.0f, sy + s * meta_y, L->content_w, s * meta_h,
-           s * CARD_R, finn_theme_dark() ? 0x1AFFFFFFu : 0x0D000000u);
-    c_stroke(c, 0.0f, sy + s * meta_y, L->content_w, s * meta_h,
-             s * CARD_R, 1.0f, FINN_HAIR);
+           s * CARD_R, store_card_col());
 
     draw_meta_row(c, 0.0f, sy + s * meta_y, L->content_w, s,
                   "Catalogue id", a->id);
@@ -3331,8 +3311,7 @@ static void draw_detail_fixed(store_canvas *c, const store_layout *L,
     float bx = G->back_x, by = G->back_y;
     float bh = G->back_h, bw = G->back_w;
     c_fill(c, bx, by, bw, bh, bh * 0.5f,
-           finn_theme_dark() ? 0x1AFFFFFFu : 0x0A000000u);
-    c_stroke(c, bx, by, bw, bh, bh * 0.5f, 1.0f, FINN_HAIR);
+           finn_theme_dark() ? 0x24FFFFFFu : 0xFFEFEFEFu);
     c_icon_ink(c, &g_ic_back, bx + s * 13.0f, by + bh * 0.5f,
                s * 11.0f, FINN_DIM, FINN_DIM);
     c_text(c, &g_f_sub, bx + s * 24.0f,
@@ -4272,7 +4251,8 @@ static void refresh_page(int page) {
         reload_catalogue();
         break;
     case STORE_PAGE_LINUX:
-        flatpak_query_start(g_filter);
+        if (g_flatpak_job_id[0]) flatpak_poll_job();
+        else flatpak_query_start(g_filter);
         break;
     case STORE_PAGE_WINDOWS:
         winget_info_clear();
@@ -4565,6 +4545,7 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
     wine_query_poll();
     winget_search_poll();
     winget_info_poll();
+    winget_job_poll_start();
     winget_job_poll();
     flatpak_poll_job();
 
@@ -4578,17 +4559,29 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
     int ox = wx - lx0, oy = wy - ly0;
     store_canvas c = { layer, lw, lh, lx0, ly0, (float)ox, (float)oy };
 
-    if (L.rail) draw_rail(&c, &L, s, (float)wh);
-    else {
+    /* Paint the content column's opaque paper (Figma 186:3907: #FFFFFF in
+     * light mode, #1E2128 in dark mode), leaving the 250-unit sidebar rail on
+     * the window's frosted glass sheet. */
+    uint32_t paper_col = store_paper_col();
+    if (L.rail) {
+        float px = L.rail_w;
+        float pw = (float)ww - px;
+        float r = s * 8.0f;
+        if (pw > 0.0f) {
+            c_fill(&c, px, 0.0f, pw, (float)wh, r, paper_col);
+            if (pw > r)
+                c_fill(&c, px, 0.0f, r, (float)wh, 0.0f, paper_col);
+        }
+        draw_rail(&c, &L, s, (float)wh);
+    } else {
+        c_fill(&c, 0.0f, 0.0f, (float)ww, (float)wh, s * 8.0f, paper_col);
         draw_filter(&c, &L, s, g_filter_focused);
         draw_tabs(&c, &L, s);
     }
     draw_header(&c, &L, s);
 
-    /* The scrolled page draws into the content column's own buffer, which
-     * starts as the glass underneath it: cards that move under the header
-     * are clipped by the buffer's edge instead of painting over it, and
-     * the rounded corners keep sampling the surface they sit on. */
+    /* The scrolled page draws into the content column's own buffer over the
+     * opaque paper surface. */
     float vpw = L.content_w;
     float vph = L.content_bottom - L.content_y;
     if (vpw < 1.0f || vph < 1.0f) return;
@@ -4598,7 +4591,8 @@ void finnstoreapp_render(uint32_t *layer, int lw, int lh,
     int iy = (int)(L.content_y + 0.5f);
     uint32_t *buf = scratch_begin(bw, bh);
     if (!buf) return;
-    copy_from_layer(buf, bw, bh, layer, lw, lh, ox + ix, oy + iy);
+    for (size_t i = 0, n = (size_t)bw * (size_t)bh; i < n; i++)
+        buf[i] = paper_col;
     /* The borrow is the content column's own rectangle, so a page draws in
      * column coordinates from (0,0); the paste below puts it back. */
     store_canvas cc = { buf, bw, bh, wx + ix, wy + iy, 0.0f, 0.0f };
@@ -4711,6 +4705,8 @@ int finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
     float x = (float)(px - wx);
     float y = (float)(py - wy);
 
+    if (y < s * 36.0f) return FINNSTORE_HIT_NONE;
+
     for (int i = 0; i < STORE_PAGE_COUNT; i++) {
         float nx, ny, nw, nh;
         nav_item_rect(&L, i, s, &nx, &ny, &nw, &nh);
@@ -4748,8 +4744,11 @@ int finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
                         DG.remove_w, DG.action_h))
                 return FINNSTORE_HIT_DETAIL_REMOVE;
         }
+        if (y < s * 48.0f) return FINNSTORE_HIT_NONE;
         return FINNSTORE_HIT_BODY;
     }
+
+    if (y < s * 48.0f) return FINNSTORE_HIT_NONE;
 
     float scroll_px = (float)g_scroll[g_page];
     float cx, cy;
@@ -5206,6 +5205,28 @@ int finnstoreapp_scroll(int clicks, float scale) {
     if (*slot > max) *slot = max;
     if (*slot != before) { bump(); return 1; }
     return 0;
+}
+
+int finnstoreapp_tick(float dt) {
+    (void)dt;
+    if (!g_ready) return 0;
+    unsigned before = g_rev;
+    flatpak_query_poll();
+    wine_query_poll();
+    winget_search_poll();
+    winget_info_poll();
+    winget_job_poll_start();
+    winget_job_poll();
+    flatpak_poll_job();
+    return g_rev != before;
+}
+
+int finnstoreapp_running(void) {
+    if (!g_ready) return 0;
+    return g_flatpak_active || g_wine_active ||
+           g_winget_search_running || g_winget_info_running ||
+           g_winget_job_running || g_winget_job_id[0] != '\0' ||
+           g_flatpak_job_id[0] != '\0';
 }
 
 uint32_t finnstoreapp_build_key(float scale) {

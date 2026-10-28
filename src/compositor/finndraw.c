@@ -164,6 +164,24 @@ void finn_fill_rrect_grad(uint32_t *b, int w, int h, float x, float y,
     }
 }
 
+static inline uint32_t blend_shadow_px(uint32_t d, uint32_t a8) {
+    if (!a8) return d;
+    if (d == 0) return a8 << 24;
+    uint32_t da = d >> 24;
+    uint32_t ia = 255u - a8;
+    if ((d & 0x00FFFFFFu) == 0) {
+        uint32_t ra8 = a8 + ((da * ia + 127u) / 255u);
+        return ra8 << 24;
+    }
+    if (da == 0xFFu) {
+        uint32_t r0 = ((d & 0xFFu) * ia + 127u) / 255u;
+        uint32_t r1 = (((d >> 8) & 0xFFu) * ia + 127u) / 255u;
+        uint32_t r2 = (((d >> 16) & 0xFFu) * ia + 127u) / 255u;
+        return 0xFF000000u | (r2 << 16) | (r1 << 8) | r0;
+    }
+    return finn_over(d, 0xFF000000u, (float)a8 * (1.0f / 255.0f));
+}
+
 void finn_shadow_rrect(uint32_t *b, int w, int h, float x, float y,
                        float rw, float rh, float r, float blur,
                        float offset_x, float offset_y, float opacity) {
@@ -185,36 +203,136 @@ void finn_shadow_rrect(uint32_t *b, int w, int h, float x, float y,
     int x1 = (int)ceilf(sx + rw + extent + 1.0f);
     int y0 = (int)floorf(sy - extent - 1.0f);
     int y1 = (int)ceilf(sy + rh + extent + 1.0f);
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= w) x1 = w - 1;
+    if (y1 >= h) y1 = h - 1;
+    if (x0 > x1 || y0 > y1) return;
+
     float cx = sx + rw * 0.5f, cy = sy + rh * 0.5f;
     float hw = rw * 0.5f, hh = rh * 0.5f;
+    float ihw = hw - r, ihh = hh - r;
     const float inv_sqrt_two_sigma = 0.70710678118f / sigma;
 
+    /* Precompute 1025-entry Gaussian falloff LUT over distance in [0, extent]
+     * so we evaluate erfcf 1025 times total instead of millions of times. */
+    uint8_t lut[1025];
+    float step = extent / 1024.0f;
+    for (int i = 0; i <= 1024; i++) {
+        float d = (float)i * step;
+        float blurred = 0.5f * erfcf(d * inv_sqrt_two_sigma);
+        int a = (int)(opacity * blurred * 255.0f + 0.5f);
+        lut[i] = (uint8_t)(a > 255 ? 255 : (a < 0 ? 0 : a));
+    }
+    uint32_t a8_inside = (uint32_t)(opacity * 255.0f + 0.5f);
+    if (a8_inside > 255u) a8_inside = 255u;
+    float inv_extent = extent > 0.0f ? (1024.0f / extent) : 0.0f;
+
+    int mx0 = (int)ceilf(cx - ihw - 0.5f);
+    int mx1 = (int)floorf(cx + ihw - 0.5f);
+    if (mx0 < x0) mx0 = x0;
+    if (mx1 > x1) mx1 = x1;
+
     for (int yy = y0; yy <= y1; yy++) {
-        if (yy < 0 || yy >= h) continue;
-        for (int xx = x0; xx <= x1; xx++) {
-            if (xx < 0 || xx >= w) continue;
-            float distance = sdf_rrect(xx + 0.5f, yy + 0.5f,
-                                       cx, cy, hw, hh, r);
-            if (distance >= extent) continue;
-            float blurred = distance <= 0.0f ? 1.0f :
-                0.5f * erfcf(distance * inv_sqrt_two_sigma);
-            if (blurred <= 0.0f) continue;
-            size_t index = (size_t)yy * (size_t)w + (size_t)xx;
-            b[index] = finn_over(b[index], 0xFF000000u,
-                                 opacity * blurred);
+        float dy = fabsf((float)yy + 0.5f - cy) - ihh;
+        uint32_t *row = b + (size_t)yy * (size_t)w;
+
+        if (dy <= 0.0f) {
+            /* Vertical straight band: oy == 0 everywhere in this row, so
+             * distance is dx - r on the left/right and <= 0 in the middle. */
+            int left_end = mx0 <= mx1 ? mx0 - 1 : x1;
+            for (int xx = x0; xx <= left_end; xx++) {
+                float dx = fabsf((float)xx + 0.5f - cx) - ihw;
+                float distance = dx > 0.0f ? dx - r : 0.0f;
+                if (distance >= extent) continue;
+                uint32_t a8 = distance <= 0.0f ? a8_inside :
+                              lut[(int)(distance * inv_extent + 0.5f)];
+                if (a8) row[xx] = blend_shadow_px(row[xx], a8);
+            }
+            if (mx0 <= mx1 && a8_inside) {
+                uint32_t solid_blk = a8_inside << 24;
+                for (int xx = mx0; xx <= mx1; xx++) {
+                    uint32_t d = row[xx];
+                    row[xx] = d == 0 ? solid_blk : blend_shadow_px(d, a8_inside);
+                }
+            }
+            int right_start = mx0 <= mx1 ? mx1 + 1 : x1 + 1;
+            for (int xx = right_start; xx <= x1; xx++) {
+                float dx = fabsf((float)xx + 0.5f - cx) - ihw;
+                float distance = dx > 0.0f ? dx - r : 0.0f;
+                if (distance >= extent) continue;
+                uint32_t a8 = distance <= 0.0f ? a8_inside :
+                              lut[(int)(distance * inv_extent + 0.5f)];
+                if (a8) row[xx] = blend_shadow_px(row[xx], a8);
+            }
+        } else {
+            /* Top and bottom bands (dy > 0): in the horizontal middle span
+             * [mx0..mx1], dx <= 0 so distance is constant (dy - r). */
+            float mid_dist = dy - r;
+            uint32_t mid_a8 = 0;
+            if (mid_dist < extent) {
+                mid_a8 = mid_dist <= 0.0f ? a8_inside :
+                         lut[(int)(mid_dist * inv_extent + 0.5f)];
+            }
+            float dy2 = dy * dy;
+            int left_end = mx0 <= mx1 ? mx0 - 1 : x1;
+            for (int xx = x0; xx <= left_end; xx++) {
+                float dx = fabsf((float)xx + 0.5f - cx) - ihw;
+                float distance = dx > 0.0f ? sqrtf(dx * dx + dy2) - r : mid_dist;
+                if (distance >= extent) continue;
+                uint32_t a8 = distance <= 0.0f ? a8_inside :
+                              lut[(int)(distance * inv_extent + 0.5f)];
+                if (a8) row[xx] = blend_shadow_px(row[xx], a8);
+            }
+            if (mx0 <= mx1 && mid_a8) {
+                uint32_t mid_blk = mid_a8 << 24;
+                for (int xx = mx0; xx <= mx1; xx++) {
+                    uint32_t d = row[xx];
+                    row[xx] = d == 0 ? mid_blk : blend_shadow_px(d, mid_a8);
+                }
+            }
+            int right_start = mx0 <= mx1 ? mx1 + 1 : x1 + 1;
+            for (int xx = right_start; xx <= x1; xx++) {
+                float dx = fabsf((float)xx + 0.5f - cx) - ihw;
+                float distance = dx > 0.0f ? sqrtf(dx * dx + dy2) - r : mid_dist;
+                if (distance >= extent) continue;
+                uint32_t a8 = distance <= 0.0f ? a8_inside :
+                              lut[(int)(distance * inv_extent + 0.5f)];
+                if (a8) row[xx] = blend_shadow_px(row[xx], a8);
+            }
         }
     }
 }
 
 void finn_fill_bar(uint32_t *b, int w, int h, float x, float y,
-                   float rw, float rh, float r, uint32_t c) {
-    if (rw <= 0.0f || rh <= 0.0f) return;
+                   float rw, float rh, float r, float fw, uint32_t c) {
+    if (rw <= 0.0f || rh <= 0.0f || fw <= 0.0f) return;
+    if (fw >= rw) {
+        finn_fill_rrect(b, w, h, x, y, rw, rh, r, c);
+        return;
+    }
     if (r > rw * 0.5f) r = rw * 0.5f;
     if (r > rh * 0.5f) r = rh * 0.5f;
-    finn_fill_rrect(b, w, h, x, y, rw, rh, r, c);
-    /* Replace the right cap with the square edge it should have had. */
-    if (r > 0.0f && rw > r)
-        finn_fill_rrect(b, w, h, x + rw - r, y, r, rh, 0.0f, c);
+
+    int x0 = (int)floorf(x - 1.0f), x1 = (int)ceilf(x + fw + 1.0f);
+    int y0 = (int)floorf(y - 1.0f), y1 = (int)ceilf(y + rh + 1.0f);
+    float cx = x + rw * 0.5f, cy = y + rh * 0.5f;
+    float hw = rw * 0.5f, hh = rh * 0.5f;
+    float cut = x + fw;
+
+    for (int yy = y0; yy <= y1; yy++) {
+        if (yy < 0 || yy >= h) continue;
+        for (int xx = x0; xx <= x1; xx++) {
+            if (xx < 0 || xx >= w) continue;
+            float px = (float)xx + 0.5f, py = (float)yy + 0.5f;
+            float clip = 0.5f - (px - cut);
+            if (clip <= 0.0f) continue;
+            float a = rrect_cov(px, py, cx, cy, hw, hh, r);
+            if (a <= 0.0f) continue;
+            if (clip < 1.0f) a *= clip;
+            b[(size_t)yy * w + xx] = finn_over(b[(size_t)yy * w + xx], c, a);
+        }
+    }
 }
 
 void finn_stroke_rrect(uint32_t *b, int w, int h, float x, float y,
@@ -406,7 +524,7 @@ static void frost_rrect_plate_core(finn_frost_plate *p, uint32_t *b, int w, int 
     if (pw <= 0 || ph <= 0) return;
 
     int dark = g_dark, ready = finnblur_ready();
-    unsigned gen = ready ? finnblur_generation() : 0;
+    unsigned gen = ready ? finnblur_hash() : 0;
 
     int hit = p->valid && p->px && p->w == pw && p->h == ph &&
               p->ox == ox && p->oy == oy &&
@@ -575,9 +693,14 @@ void finn_blit_scaled(uint32_t *dst, int dw, int dh,
                 if (u0 < 0) u0 = 0;
                 if (u0 > sw - 1) u0 = sw - 1;
                 uint32_t t = srow[u0];
-                float a00 = (float)((t >> 24) & 0xFFu);
+                uint32_t ta = (t >> 24) & 0xFFu;
+                if (!ta) continue;
+                if (ta == 0xFFu && alpha >= 0.999f) {
+                    drow[px] = t;
+                    continue;
+                }
+                float a00 = (float)ta;
                 float A = a00;
-                if (A <= 0.5f) continue;
 
                 /* Same operations, same order as the general path with
                  * fx = fy = 0: multiply by the alpha, then divide it back

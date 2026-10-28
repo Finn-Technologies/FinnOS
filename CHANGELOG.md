@@ -30,12 +30,27 @@ and the changes to it are worth reading.
   and Finn Store keep that sheet on their sidebars instead of laying a second
   frost, and Settings' pages and the Files listing draw opaque paper on the
   content column so a wallpaper stripe cannot run through a row of text.
-- Finn Store aligns its rail rhythm, type scale, circular chips and active-row
-  treatment with Settings, translates its canvas by the window's origin in the
-  shared window layer, and restricts the Native Apps view to catalogue entries
-  without a Flatpak or winget `source`. Finn Files highlights only the most
-  specific matching place so `Computer` (`/`) does not stay lit alongside
-  `Home`.
+- Finn Store and Finn Files align with the Settings (`186:3941`) shell language:
+  a 250-unit glass sidebar with 220 × 30 search pills and 41-pitch navigation
+  rows, an opaque `#FFFFFF` content sheet on the right (`#1A1D24` in dark mode)
+  with `#F9F9F9` (`#232730` dark) 5 px cards, and unified 24-unit headers.
+  Finn Store's titlebar is now draggable across its empty header space just like
+  Settings and Finn Files.
+- Control Center and Settings sliders now clip their fill bars against the
+  outer pill radius (`finn_fill_rrect_clipped_left`), keeping both the low-end
+  left cap and 100% right cap cleanly rounded, and omit the white fill circle
+  when a slider is at `0%` or unavailable (`pct <= 0`). Sliders also respond to
+  mouse-wheel scrolling (`±5%` per notch) and snap immediately while dragging
+  without waiting on the 2 Hz `/run/finn/state` poll.
+- Multi-window compositing caches each open window in its own layer slot with
+  an incremental blurred-backdrop cache in `finnwindow.c`, so dragging or
+  interacting with one window with multiple apps open no longer re-blurs and
+  rerasters every background window each frame.
+- Dark mode renders consistently across the taskbar (`finndock`), Notification
+  Center (`finnclock`), and Settings sidebar: dark pill fills, active wells,
+  hover states, and calendar cells replace hardcoded white fills, and
+  notifications posted while the clock panel is closed initialize their text
+  alpha so they appear legible on first open.
 - The dock's focused tile is the frame's 34 × 34 white well behind the 26 px
   icon, with the 4 × 1.5 blue indicator. With no weather source, the 139-wide
   time pill keeps its width and shows the date in the second column.

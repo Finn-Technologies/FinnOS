@@ -67,6 +67,8 @@ int  finnstoreapp_hit(int wx, int wy, int ww, int wh, int px, int py,
 int  finnstoreapp_press(int hit, int sub, int px, int py, float scale);
 int  finnstoreapp_key(const finn_key_event *e);
 int  finnstoreapp_scroll(int clicks, float scale);
+int  finnstoreapp_tick(float dt);
+int  finnstoreapp_running(void);
 
 uint32_t finnstoreapp_build_key(float scale);
 

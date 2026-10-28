@@ -1501,14 +1501,6 @@ static void timing_sample(double now, double build_ms, double flip_ms) {
  * samples, so the glass over a window shows that window's colour rather than
  * the picture it hides.
  *
- * It lives here, in the compositor, because the compositor is the only part
- * of the system that knows where the windows currently are: the window
- * manager caches one layer and the transform is applied at composition time.
- */
-static uint32_t *g_backdrop = NULL;
-static int g_backdrop_w = 0, g_backdrop_h = 0;
-
-/*
  * The backdrop only has to be rebuilt when what it is a picture of moves: the
  * window's layer revision, or where the transform puts it. Dock hovers, menu
  * fades and a cursor crossing a panel are chrome-only frames — rebuilding
@@ -1567,30 +1559,6 @@ static uint32_t scene_key(int w, int h) {
 }
 
 /*
- * Paint the desktop under the chrome: the wallpaper, with the window in the
- * place the transform currently puts it, over the rect (r) it occupies. Only
- * that rect is touched, so the two full-screen copies this used to make per
- * frame are gone.
- */
-static void backdrop_paint(const uint32_t *wall, int w, int h, const int r[4]) {
-    if (!wall || !g_backdrop) return;
-    int rx = r[0], ry = r[1], rw = r[2], rh = r[3];
-    for (int y = ry; y < ry + rh; y++)
-        memcpy(g_backdrop + (size_t)y * w + rx,
-               wall + (size_t)y * w + rx, (size_t)rw * 4);
-
-    int wx = 0, wy = 0, ww = 0, wh = 0;
-    unsigned rev = 0;
-    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &rev);
-    if (wl && ww > 0 && wh > 0) {
-        float x = (float)wx, y = (float)wy, rw2 = (float)ww, rh2 = (float)wh, a = 1.0f;
-        finnwindow_transform(&x, &y, &rw2, &rh2, &a);
-        if (a > 0.004f)
-            finn_blit_scaled(g_backdrop, w, h, wl, ww, wh, x, y, rw2, rh2, a);
-    }
-}
-
-/*
  * Bring the blurred backdrop up to date, doing only the work the change
  * warrants: nothing when the scene is the same as last frame, the window's
  * own rect when the window moved or redrew, and everything on a new geometry.
@@ -1600,15 +1568,6 @@ static void backdrop_update(const uint32_t *wall, int w, int h) {
 
     int r[4];
     int has = window_footprint(w, h, r);
-
-    if (g_backdrop_w != w || g_backdrop_h != h || !g_backdrop) {
-        free(g_backdrop);
-        g_backdrop = malloc((size_t)w * h * 4);
-        g_backdrop_w = g_backdrop ? w : 0;
-        g_backdrop_h = g_backdrop ? h : 0;
-        g_scene_valid = 0;
-    }
-    if (!g_backdrop) return;
 
     /* the old footprint has to go back to the wallpaper, and the new one has
      * to be painted: one union rect covers both */
@@ -1630,8 +1589,17 @@ static void backdrop_update(const uint32_t *wall, int w, int h) {
         u[0] = x0; u[1] = y0; u[2] = x1 - x0; u[3] = y1 - y0;
     }
 
-    backdrop_paint(wall, w, h, u);
-    finnblur_live_rect(g_backdrop, w, h, u[0], u[1], u[2], u[3]);
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    unsigned rev = 0;
+    const uint32_t *wl = finnwindow_layer(&wx, &wy, &ww, &wh, &rev);
+    float x = (float)wx, y = (float)wy, rw2 = (float)ww, rh2 = (float)wh, a = 1.0f;
+    if (wl && ww > 0 && wh > 0)
+        finnwindow_transform(&x, &y, &rw2, &rh2, &a);
+    else
+        wl = NULL;
+
+    finnblur_live_layer(w, h, wl, ww, wh, x, y, rw2, rh2, a,
+                        u[0], u[1], u[2], u[3]);
 
     if (has) memcpy(g_bd_rect, r, sizeof g_bd_rect);
     g_bd_had_win = has;
@@ -2717,6 +2685,8 @@ static int shell_input(finn_pointer *p, const finn_state *st,
         case FINNCONTROL_APPEARANCE:
         case FINNCONTROL_PERSONALIZE:
         case FINNCONTROL_SETTINGS:
+        case FINNCONTROL_BRIGHTNESS:
+        case FINNCONTROL_VOLUME:
             finncontrol_press(act);
             break;
         default:
@@ -3525,8 +3495,21 @@ int main(int argc, char **argv) {
          * panels and setup are modal-ish: scrolling the desktop behind them
          * would move something the person is not looking at. */
         int wheel = finn_pointer_take_wheel(&ptr);
-        if (wheel && !finnmenu_is_open() && !finncontrol_is_open() &&
-            !finnclock_is_open() && !finnsetup_is_open()) {
+        if (wheel && finncontrol_is_open()) {
+            int act = finncontrol_hit(ptr.x, ptr.y, NULL);
+            if (act == FINNCONTROL_VOLUME && st.volume >= 0) {
+                int v = st.volume + wheel * 5;
+                if (v < 0) v = 0;
+                if (v > 100) v = 100;
+                if (finn_state_set_volume(v) == 0) shell_changed = 1;
+            } else if (act == FINNCONTROL_BRIGHTNESS && st.brightness >= 0) {
+                int v = st.brightness + wheel * 5;
+                if (v < 0) v = 0;
+                if (v > 100) v = 100;
+                if (finn_state_set_brightness(v) == 0) shell_changed = 1;
+            }
+        } else if (wheel && !finnmenu_is_open() && !finncontrol_is_open() &&
+                   !finnclock_is_open() && !finnsetup_is_open()) {
             int client_id = 0, sx = 0, sy = 0;
             int over_client = wayland.server &&
                 (wayland.pointer_window ||
