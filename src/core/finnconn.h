@@ -8,7 +8,8 @@
  * A stream carries bytes, not requests: what a read returns depends on how
  * the sender's write happened to be split, so a reader that treats one
  * read as one request can run a split request twice and can treat a pause
- * as the end of the connection (docs/review.md P1.3). This keeps what has
+ * as the end of the connection
+ * (docs/audits/2026-10-working-os-review.md P1.3). This keeps what has
  * arrived and hands out complete lines only.
  *
  * The fd must be non-blocking. `finn_read_line` in finnsock.h stays the

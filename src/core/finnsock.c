@@ -126,7 +126,8 @@ int finn_write_str(int fd, const char *s) {
  * One-shot line read: a request and its reply, with a bounded wait. The
  * caller is not keeping a session, so there is nowhere to put a half-read
  * line until the rest arrives — and returning one as complete is how a
- * split request gets run twice (docs/review.md P1.3).
+ * split request gets run twice
+ * (docs/audits/2026-10-working-os-review.md P1.3).
  *
  * Returns the length without the newline, 0 on a clean EOF, -1 on error or
  * on a line that ended without its newline, and -2 when the line did not

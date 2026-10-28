@@ -1,0 +1,22 @@
+# %(title)s — the manifest of a .finn package.
+#
+# finnpkg reads manifest.toml from the archive root. It requires an id the
+# OS catalogue already knows, because the catalogue — not this file — names
+# the command that launches the app.
+#
+#   id       the name the rest of the system uses (required)
+#   name     what the user sees
+#   icon     an SVG in /usr/share/finn/icons
+#   command  what the catalogue would launch; not installed onto the PATH
+#   version  the version of the package
+#   summary  free text, shown as the app's detail line
+#
+# A .finn package is a tarball containing this file, a SHA256SUMS covering
+# every other file, and the app's files. See src/pkg/README.md.
+
+id = "%(id)s"
+name = "%(title)s"
+icon = "%(id)s.svg"
+command = "/usr/local/bin/finn-%(id)s"
+version = "0.1.0"
+summary = "%(title)s"

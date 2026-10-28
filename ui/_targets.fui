@@ -4,24 +4,22 @@
 // and on hotplug or fold.
 //
 // What is honest here: the shell that exists today is a dock, a Control
-// Center, a clock page and a Start Menu. There is no window manager, so
-// the window area in these targets is a design intent and not a feature —
-// see docs/architecture.md, "What is not here yet". Only Desktop is
-// implemented; the other three are the language's shape on other kinds of
-// machine.
+// Center, a clock page, a Start Menu and a window manager with keyboard
+// focus. Only Desktop has code behind it; the other three are the language's
+// shape on other kinds of machine — see docs/architecture.md, "What is not
+// here yet".
 
 target Desktop {
   viewport: min 1024x600, base 1920x1080
   density: 1.0x, type_scale: 1.0
-  // A pointer and nothing else: the compositor reads no keyboard yet.
-  input: pointer
-  nav: shell_surfaces + floating_dock
+  input: pointer + keyboard
+  nav: windowed_workspace + floating_dock
   shell: {
     topbar: none,          // the tray holds the status, in the dock
     dock: bottom_center_floating,
-    windows: none_yet      // no window manager: see docs/architecture.md
+    windows: freeform_tiled
   }
-  focus: mouse_hover
+  focus: mouse_hover + keyboard_chords
 }
 
 target Mobile {

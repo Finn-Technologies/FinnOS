@@ -17,14 +17,21 @@ branding), and it is the same directory the install medium is built from.
 | Resources | 4 GB RAM, 2 vCPU, 32 GB disk - the i3-4130 / 4 GB target |
 | Disk | `/dev/sda1` 512M EFI (vfat) + `/dev/sda2` 1M BIOS boot + `/dev/sda3` root (ext4, label `finnos`) |
 | Bootloader | GRUB: the BIOS boot code in the MBR, and an EFI loader on the partition |
-| Console | VMware console, autologin `finn` on tty1 |
+| Console | VMware console; `tty1` is the compositor, `Ctrl+Alt+F2` is a getty |
 | Network | VMware NAT, DHCP. The guest IP is assigned by VMware; read it with `ip addr` |
 | GPU | Intel HD Graphics (Mesa) - the accelerated path, GBM + EGL 1.5 |
 
 ## Credentials
 
-- `finn` / `finn` (passwordless sudo), `root` / `finn`
-- SSH: `ssh finn@<guest-ip>` (port 22, password auth enabled).
+There is **no default password**. An installed machine uses the password given
+to the installer (`FINN_PASSWORD`) or the one the chroot generated and printed
+once. `sudo` asks for it.
+
+A bare Arch rootfs prepared by `vm/deploy.sh` is different: the script creates
+`finn` with a locked password and passwordless sudo, so it is reached as `root`
+over SSH or with a key, never by guessing a password.
+
+- SSH: `ssh finn@<guest-ip>` once the account has a password or key.
 - Root SSH is publickey-only (the Arch default, `prohibit-password`).
 
 Override the address used by the scripts with `FINN_HOST`:
@@ -74,9 +81,10 @@ ssh finn@<guest-ip> '
 ## Installing a fresh VM
 
 The FinnOS ISO is bootable: it is a live medium built from this tree -
-the profile, the package list, the live root and the three boot menus in
-`base/`, with the FinnOS sources inside it at `/opt/finnos`. One disc, no
-host HTTP server, no downloaded base image. The default entry is
+the profile, the package list, the live root and the disc's two boot
+menus (syslinux and systemd-boot) in `base/`, with the FinnOS sources
+inside it at `/opt/finnos`. One disc, no downloaded base image and no host
+HTTP server needed. The default entry is
 **Install FinnOS**, which boots the live environment and hands over to
 the installer, and **FinnOS live shell** is the way in without installing.
 
@@ -93,13 +101,14 @@ the installer, and **FinnOS live shell** is the way in without installing.
    Either way the tree is checked beforehand with
    `base/mkfinniso --check`.
 
-3. Check that it boots, if you have QEMU:
+2. Check that it boots, if you have QEMU:
 
    ```sh
    vm/test-boot.sh finnos.iso
    ```
 
-   This boots the disc and waits for the guest to reach a login prompt.
+   This boots the disc and waits for the guest to reach userspace: the
+   installer, or a multi-user target on the live shell.
 
    To see the menu itself rather than the kernel's output, take a frame
    of the console:
@@ -112,13 +121,13 @@ the installer, and **FinnOS live shell** is the way in without installing.
    at a few moments, so the frames land in `/tmp/menu`; open the one that
    shows the menu.
 
-4. Create the VMware VM:
+3. Create the VMware VM:
 
    ```sh
    vm/create-dev-vm.sh
    ```
 
-5. Boot the VM. The default entry, **Install FinnOS**, starts the
+4. Boot the VM. The default entry, **Install FinnOS**, starts the
    installer from the live shell after ten seconds; **FinnOS live shell**
    leaves you at the prompt, where `finn-install` does the same thing.
 
@@ -132,7 +141,7 @@ the installer, and **FinnOS live shell** is the way in without installing.
    A separate data disc labelled `FINNOS` still works, and if there is
    no disc the installer falls back to the host HTTP server.
 
-6. On a machine that was installed before the installer built the shell,
+5. On a machine that was installed before the installer built the shell,
    or after a change to the sources, build and install it by hand:
 
    ```sh

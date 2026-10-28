@@ -8,8 +8,9 @@
     finn-sdk shot /tmp/desktop.ppm
     finn-sdk power restart
 
-The same verbs the protocol has, with the same names. Anything the
-protocol can do and this cannot is a bug in this.
+The common verbs, with shell-friendly names. The protocol itself has more:
+packaging, Flatpak, Wine, winget, updates and the Files, Settings and setup
+windows are reached through `finnctl`.
 """
 
 import argparse

@@ -5,6 +5,36 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The documentation is rewritten around the system that exists
+
+- `README.md`, `CONTRIBUTING.md` and `AGENTS.md` are rewritten as a front
+  door, a contributor guide and a working agreement, with the tree, the dev
+  loop and the rules stated once each.
+- `docs/` gains an index (`docs/README.md`) and four new pages: `install.md`
+  (the disc, the stick, the installer, recovery), `testing.md` (the suites,
+  CI, and what only hardware proves), `security.md` (authority, audit, the
+  gaps) and `troubleshooting.md` (boot, session, input, graphics, updates).
+- `docs/ota.md` is now `docs/updates.md`, because the page describes a
+  runtime package and an OTA frontend, not a stub.
+- The old working-OS review moves to
+  `docs/audits/2026-10-working-os-review.md` and carries a historical banner;
+  it is no longer mistaken for current documentation.
+- Claims that had drifted from the code are corrected: the control plane is
+  enabled and local-only rather than "off by default"; the runtime update path
+  exists; `finnpkg` is not a stub; Flatpak is in both package manifests; the
+  compositor has a limited in-process Wayland host.
+- `ui/_targets.fui` and `ui/Desktop.fui` no longer say there is no window
+  manager or keyboard. The Desktop target names the window manager and the
+  keyboard that exist; the other three targets remain specifications.
+- The syslinux menu's help line no longer says "erase the first disk", which
+  the installer has not done since it started requiring a named disk.
+
+### `fuic new` writes a manifest `finnpkg` can read
+
+- The template is now `manifest.toml` with `key = value` pairs, the shape
+  `finnpkg install` reads, instead of a pipe-separated `.manifest` that
+  nothing read and that still called the package manager a stub.
+
 ### The deploy script can prepare a bare rootfs
 
 - `vm/deploy.sh` initializes the pacman keyring and sync database, installs

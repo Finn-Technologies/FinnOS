@@ -4,7 +4,7 @@
 1. **One "Finn" root.** Every first-party product carries the `Finn` prefix — no exceptions, no second family brand.
 2. **Platform names are one word, CamelCase:** `FinnOS`, `FinnUI`, `FinnAI`, `FinnSDK`. The suffix is a *layer*, not a product.
 3. **Apps read as "Finn" + a noun**, written with a space and Title Case: `Finn Code`, `Finn Files`, `Finn Store`. The noun must be a plain English word — never invented, never abbreviated.
-4. **System daemons and binaries are lowercase, hyphenated:** `finn-comp`, `finnpkg`, `finn-shell`. A binary name is never shown to a user.
+4. **System daemons and binaries are lowercase, hyphenated:** `finn-comp`, `finnpkg`, `finnctl`. A binary name is never shown to a user.
 5. **File type is the language, not the brand:** `.fui` (source), `.fbin` (compiled). Never `.finnui` or `.finnos`.
 6. **"FinnOS X" marks a first-party subsystem of the OS itself** — part of the base image, not an installable app: `FinnOS Compose`, `FinnOS Update`.
 7. **No AI in the name of anything that isn't AI.** Only `FinnAI` may carry it.
@@ -14,9 +14,9 @@
 |---|---|
 | **FinnOS** | The operating system |
 | **FinnUI** | The UI language — tokens, layout primitives, adaptive targets. The `.fui` spec |
-| **FinnOS Compose** | The framework that composes FinnUI into a running shell — compiler + state + renderer |
-| **FinnOS Update** | Atomic A/B OTA subsystem, driven by `finnpkg` |
-| **FinnAI** | Opt-in local inference runtime. Ships off. No models in the base image |
+| **FinnOS Compose** | The compositor and the control plane as one subsystem (`finnos-compose`): `finn-comp`, `finnd`, `finnctl` and the shell's data. The compiled-screen reader exists; the `.fbin` renderer does not yet |
+| **FinnOS Update** | The runtime package and its OTA frontend (`finnpkg update`). There are no A/B slots yet |
+| **FinnAI** | Reserved: an opt-in local inference runtime. It is not implemented, and no models are in the base image |
 | **FinnSDK** | Public toolkit: `fuic`, the client library, the app templates, the docs |
 
 ## System components
@@ -51,7 +51,7 @@ pointer + cursor), `finnkbd` (evdev keyboard), `finnsock` (unix-socket
 helpers), `finnconn` (per-connection line framing), `finnproto` (the
 control wire protocol), `finnsettings` (the versioned settings store),
 `finnapps` (the application registry), `finndraw`
-(the shared drawing primitives), `finnblur` (the blurred wallpaper),
+(the shared drawing primitives), `finnblur` (the blurred backdrop),
 `finnanim` (the animation tracks), `finnnotify` (the notification queue),
 `finngpu` (GBM/EGL compositing).
 
@@ -60,20 +60,25 @@ control wire protocol), `finnsettings` (the versioned settings store),
 No external protocol — MCP or otherwise — is ever implemented inside a
 system daemon. Control is root-equivalent authority: it is bound to
 `/run/finn/control.sock` (mode 0660), never to TCP, authenticated per
-connection, and audited. It is switched off by default, on the same intent
-as the zero-AI rule.
+connection, and audited. Remote access is not a default, on the same intent as
+the zero-AI rule.
 
 ## First-party apps
 | Name | Role |
 |---|---|
-| **Finn Code** | Editor / IDE |
-| **Finn Files** | File manager |
-| **Finn Store** | App distribution (`finnpkg` GUI) |
-| **Finn Vault** | Credentials and keys |
-| **Finn Terminal** | Shell host |
-| **Finn Notes** | Notes |
-| **Finn Studio** | Visual FinnUI designer, outputs `.fui` |
-| **Finn Sync** | Device-to-device sync |
+| **Finn Files** | File manager — exists |
+| **Finn Store** | App distribution (`finnpkg` GUI) — exists |
+| **Finn Code** | Editor / IDE — reserved, not written |
+| **Finn Vault** | Credentials and keys — reserved, not written |
+| **Finn Terminal** | Shell host — reserved, not written |
+| **Finn Notes** | Notes — reserved, not written |
+| **Finn Studio** | Visual FinnUI designer, outputs `.fui` — reserved, not written |
+| **Finn Sync** | Device-to-device sync — reserved, not written |
+
+The system settings surface is called **Settings**, not *Finn Settings*: it is
+part of the shell rather than an app in the family. Only the three shipped
+entries in `assets/apps.registry` — Settings, Finn Files and Finn Store — are
+real; the other names are reserved so that two people do not invent two.
 
 ## Reserved — do not use
 `Findex` (conflicts with the JDK indexer), `Finka`, `Finnix` (existing Linux distro), `FinnX`, `Finn Shell` as a *product* name (the shell is a compositor subsystem).

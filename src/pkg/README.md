@@ -25,7 +25,11 @@ finnpkg info notes            # everything known about one app
 finnpkg install notes         # install an app from the catalogue
 finnpkg install thing.finn    # install a package file
 finnpkg remove notes          # uninstall it
-finnpkg update                # check the system for updates
+finnpkg update status         # the cached runtime-update state
+finnpkg update check          # one bounded GitHub release lookup
+finnpkg update download       # fetch and verify the runtime package
+finnpkg update install        # apply it with pacman -U
+finnpkg update rollback       # restore the previous runtime package
 ```
 
 An id is a plain lowercase word — a letter, then letters, digits or `-`,
@@ -105,6 +109,48 @@ the displayed expression. This was not a booted FinnOS desktop or a Store
 search/install/launch walkthrough, so full desktop compatibility is still
 unverified.
 
+## winget
+
+winget is a catalogue and an installer runner, not an app manager:
+
+```sh
+finnpkg winget search notepad
+finnpkg winget info Notepad++.Notepad++
+finnpkg winget install Notepad++.Notepad++
+```
+
+Search reads a third-party index (`api.winget.run`), which can be stale; `info`
+and `install` resolve the official `microsoft/winget-pkgs` manifest, which is
+the same repository winget itself reads. Package ids are validated before use,
+the download is bounded, its checksum is checked before the installer runs, and
+the installer is started as a tracked job.
+
+`winget.install` reports that **the installer exited**, not that the
+application is installed. There is no post-install discovery and no GUI
+validation. See [docs/control-protocol.md](../../docs/control-protocol.md#winget).
+
+## Updates
+
+`finnpkg update` is the command-line half of the runtime OTA frontend. It reads
+the same GitHub Release as the Settings page and the same `finnos-runtime`
+package:
+
+```sh
+finnpkg update status      # cached state; never blocks on the network
+finnpkg update check       # one bounded release lookup
+finnpkg update download    # fetch the package and its .sha256
+finnpkg update install     # pacman -U the verified package
+finnpkg update rollback    # reinstall the previous package from the cache
+```
+
+This is a **userland** update: it replaces the compositor, the control plane,
+`finnpkg`, the registry, the icons, the wallpapers, the fonts and the units. It
+does not replace the kernel, the initramfs, the firmware or GRUB; those still
+move with `pacman -Syu`. There is no A/B slot and no package signature yet.
+
+The full description, including what the checksum does and does not prove, is
+in [docs/updates.md](../../docs/updates.md).
+
 ## Installing from the catalogue
 
 `finnpkg install <id>` is for an app whose files the image already has.
@@ -173,9 +219,8 @@ for an id the catalogue no longer describes.
   PATH or read by `finnapps`.
 - **Dependencies, versions and upgrades.** One version per id, no
   dependency graph, and `install` over an installed app replaces it.
-- **OTA.** `finnpkg update` is a stub, and it says so. The design it is
-  aiming at is in [docs/roadmap.md](../../docs/roadmap.md): an A/B slot
-  switch, where the new system is written to the inactive slot, the
-  bootloader is told which one to boot, and the switch is confirmed by the
-  new system coming up. A machine that is often running on battery, in a
-  bag, with nobody watching, cannot be updated in place.
+- **A/B slots and package signing.** `finnpkg update` is a real runtime
+  update: versioned, SHA-256 verified and reversible from the cache. It is
+  not an A/B slot switch and it has no signature check, so it cannot boot a
+  previous kernel and cannot prove who built the package. Both are design
+  work in [docs/roadmap.md](../../docs/roadmap.md), not flags.

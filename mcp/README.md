@@ -31,7 +31,7 @@ ssh finn@10.211.55.6 finnctl screen.capture -o - > shot.ppm
 
 ## Requirements
 
-Python 3.6+ on the host, `ssh` on the host, `finnctl` + `finnd` on the device.
+Python 3.8+ on the host, `ssh` on the host, `finnctl` + `finnd` on the device.
 Pillow is optional — without it `finn_screenshot` returns a PPM file path
 instead of an inline PNG.
 
@@ -126,7 +126,9 @@ opencode (`~/.config/opencode/config.json`):
 `finnd` is root-equivalent authority over a running system: it can move the
 pointer, read the framebuffer, and power the machine off. It is therefore:
 
-- **off by default**, on the same intent as the zero-AI rule;
+- **local-only**: the service runs, because the shell uses it, but it binds a
+  unix socket and never TCP. Remote access is not a default — `sshd` is
+  installed and disabled until someone enables it on the machine;
 - bound to a **unix socket only** — there is no TCP listener, ever;
 - **authenticated per connection** with `SO_PEERCRED` (root, or the `finn` user);
 - **audited** to `/var/log/finn/control.log`, with the peer uid on every call;

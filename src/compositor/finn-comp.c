@@ -2609,7 +2609,8 @@ static int shell_input(finn_pointer *p, const finn_state *st,
         }
 
         /* A slider follows the finger from the moment it lands; a toggle acts
-         * on release, where the finger actually is (docs/review.md P1.6). */
+         * on release, where the finger actually is
+         * (docs/audits/2026-10-working-os-review.md P1.6). */
         if (act == FINNCONTROL_BRIGHTNESS || act == FINNCONTROL_VOLUME)
             return cc_set_level(act, v01, st);
         if (act != FINNCONTROL_NONE && act != FINNCONTROL_PANEL) {
@@ -3539,7 +3540,7 @@ int main(int argc, char **argv) {
         /* The minute changing is a frame, even when nothing else is moving.
          * On the software path the base has to be recomposed for it; a tick
          * that only reaches the damage test is what froze the dock clock
-         * (docs/review.md P1.9). */
+         * (docs/audits/2026-10-working-os-review.md P1.9). */
         int clock_tick = finndock_clock_tick();
 
         if (cx.dirty) { cx.dirty = 0; shell_changed = 1; }

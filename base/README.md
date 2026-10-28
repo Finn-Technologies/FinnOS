@@ -71,7 +71,7 @@ finn-failure.service the unit that says the compositor stopped
 finnd.service        the control plane's unit
 finn-tmpfiles.conf   /run/finn, the IPC namespace
 airootfs/            the live root: branding, hooks, units, autologin
-boot/                the three boot menus
+boot/                the boot menus: syslinux, systemd-boot and GRUB
 pkgbuilds/           the local packages: finn-filesystem, finnos-compose,
                      finnpkg, finnsdk
 ```
@@ -186,7 +186,9 @@ sudo base/mkfinniso finnos.iso
 
 It stages the profile for `mkarchiso`, which resolves `packages.<arch>`
 against the repositories, runs `mkinitcpio` with the hooks in
-`airootfs/etc/mkinitcpio.conf`, and writes all three boot menus. The
+`airootfs/etc/mkinitcpio.conf`, and writes the two boot menus the disc
+uses: syslinux for BIOS and systemd-boot for UEFI. The GRUB menu is kept
+for a manual boot; it is not a boot mode of the disc. The
 sources go into the live root at `/opt/finnos`, where the installer reads
 them. This is the real build and needs a network.
 
@@ -318,17 +320,22 @@ and the failure to avoid is two of them disagreeing.
 - **The external client host is a limited implementation.** `finn-comp`
   exposes an in-process xdg-shell server and accepts SHM toplevels, with
   compositor-managed windows and routed focus/input. Popup roles, subsurfaces,
-  dmabuf, touch, scaling, clipboard and drag-and-drop are not implemented, and
-  the new path has not yet been built or run on the Linux target. See
+  dmabuf, touch, scaling, clipboard and drag-and-drop are not implemented. It
+  has been exercised with a real GTK application against a standalone test
+  server on an ARM Linux VM, not across a booted FinnOS desktop. See
   `docs/architecture.md` for the exact boundaries.
 - **No X11 or external Wayland compositor.** The `wayland` client/server
   libraries are on the disc for Mesa and FinnOS's limited app-surface server;
   FinnOS still owns the display directly through DRM/KMS. Xwayland and other
   competing display servers are not part of the base.
-- **No AI, and no weights.** FinnAI is opt-in and off by default, and
-  nothing in this directory talks to a model.
-- **No OTA.** `finnpkg update` is a stub. The A/B slots are a design in
-  `docs/roadmap.md`, not a feature.
+- **No AI, and no weights.** There is no model or inference code in this
+  directory, and nothing here talks to a model. Any future FinnAI is opt-in and
+  off by default.
+- **No A/B update slots and no package signatures.** The runtime package
+  (`finnos-runtime`) is versioned, SHA-256 verified, installed with
+  `pacman -U` and reversible from the cache; it replaces the userland only.
+  A/B slots and a signing key are designs in `docs/roadmap.md`, not features.
+  See `docs/updates.md`.
 - **No repository.** `packages.<arch>` is resolved from Arch's mirrors.
   FinnOS has no mirror of its own yet, so a machine installed from this
   base updates from Arch — minus the packages `pacman.conf` refuses.

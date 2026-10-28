@@ -1,12 +1,17 @@
 # A working-OS review
 
-Reviewed at `1fab5c4`, October 2026 (historical point-in-time audit of the
-pre-hardening tree; see `CHANGELOG.md` for what has been resolved since).
-This is a review of the system as it was at `1fab5c4`, not a wish list:
-every finding below was read in the code at the cited path. The suite at
-`1fab5c4` passed (174 tests) and the style check was clean; those
-tests covered the compiler, the SDK and the adapter, not the compositor,
-the control plane, input or the installer.
+> **Historical document.** This is a point-in-time audit of the tree at
+> `1fab5c4`, kept because the reasoning is still useful. It is **not** a
+> description of the current system: several findings below have since been
+> fixed, and the current state is in
+> [../architecture.md](../architecture.md) and [../roadmap.md](../roadmap.md).
+> See [What has changed since](#what-has-changed-since) at the end.
+
+Reviewed at `1fab5c4`, October 2026. This is a review of the system as it was
+at that commit, not a wish list: every finding below was read in the code at
+the cited path. The suite at `1fab5c4` passed (174 tests) and the style check
+was clean; those tests covered the compiler, the SDK and the adapter, not the
+compositor, the control plane, input or the installer.
 
 ## The verdict
 
@@ -551,3 +556,34 @@ every surface is waiting for: a keyboard and a client surface protocol.
 - No boot or install was run for this review; the runtime claims
   (software clock, GPU/software ordering) are read from the code paths and
   are cheap to confirm on the VM with `FINN_GPU=0` and a one-minute idle.
+
+## What has changed since
+
+This section was written when the audit was moved into `docs/audits/`; it is
+the only part of the page that describes a later tree. It is a summary, not a
+re-review — `CHANGELOG.md` is the record.
+
+- **The keyboard exists.** `finnkbd` reads evdev, derives modifiers and locks,
+  handles `SYN_DROPPED`, handles hotplug, and exposes `key.press/release/tap`.
+  `Ctrl+Alt+F1..F6` and `Alt+Tab` are implemented.
+- **A client surface exists.** `finnwayland` hosts xdg-shell toplevels backed
+  by `wl_shm`; a GNOME Calculator rendered and accepted input on a standalone
+  test server. Its limits are listed in
+  [../architecture.md](../architecture.md#what-is-not-here-yet).
+- **The first-boot gate is durable.** `/var/lib/finn/setup-done` is written
+  atomically, and setup reopens until it completes.
+- **The session has a rescue path.** `getty@tty2`, `finn-failure.service`, a
+  start limit and a watchdog.
+- **The control plane is hardened and audited.** Unix socket only,
+  `SO_PEERCRED`, `0660` root:finn, every call logged with the peer uid,
+  systemd hardening.
+- **The installer names its disk and checks what it wrote.** There is no
+  default disk, the target must be a whole unmounted disk, and
+  `FINN_INSTALL_COMPLETE` is printed only after the new root is inspected.
+- **A runtime update path exists.** `finnos-runtime` is versioned,
+  checksum-verified, installed with `pacman -U` and reversible from the cache.
+  It is not A/B and it is not signed.
+- **The gaps that remain** — no `.fbin` renderer, limited Wayland protocols, no
+  screen lock, no A/B slots, no package signatures, one display — are listed in
+  [../architecture.md](../architecture.md#what-is-not-here-yet), not here.
+

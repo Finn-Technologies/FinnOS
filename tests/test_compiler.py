@@ -159,7 +159,7 @@ class TemplateTest(unittest.TestCase):
         tmp = self.new_app("Finn Notes")
         try:
             self.assertTrue(os.path.exists(os.path.join(tmp, "Notes.fui")))
-            self.assertTrue(os.path.exists(os.path.join(tmp, "notes.manifest")))
+            self.assertTrue(os.path.exists(os.path.join(tmp, "manifest.toml")))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -176,10 +176,10 @@ class TemplateTest(unittest.TestCase):
     def test_the_manifest_says_what_the_package_is(self):
         tmp = self.new_app("Finn Notes")
         try:
-            with open(os.path.join(tmp, "notes.manifest"), "r", encoding="utf-8") as handle:
+            with open(os.path.join(tmp, "manifest.toml"), "r", encoding="utf-8") as handle:
                 text = handle.read()
-            self.assertIn("id      | notes", text)
-            self.assertIn("name    | Finn Notes", text)
+            self.assertIn('id = "notes"', text)
+            self.assertIn('name = "Finn Notes"', text)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

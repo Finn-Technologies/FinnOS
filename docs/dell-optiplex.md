@@ -1,138 +1,124 @@
-# Dell OptiPlex local development
+# The Dell OptiPlex 3020
 
-This is the path for running FinnOS on a real x86_64 PC rather than the dev
-VM: a Dell OptiPlex (or any other x86_64 machine) is the target for the
-local-dev loop once the compositor has to be judged on real hardware.
+The reference x86_64 machine: the one the release is judged on, and the one
+whose firmware menu the instructions name. It is a general x86_64 profile, not
+a model-specific image; the same disc boots on other UEFI and BIOS machines
+Arch supports.
 
-## Prerequisites
+## The machine
 
-- A USB stick of at least 4 GB (the whole device will be erased).
-- Secure Boot disabled in the OptiPlex firmware (F2 at boot, then
-  *Security → Secure Boot → Disabled*). The installer writes an unsigned
-  GRUB, and a machine with Secure Boot on refuses it.
-- The disk you are willing to erase named explicitly: the installer has
-  no default disk and will not pick one.
+| | |
+|---|---|
+| CPU | Intel Core i3-4130 (Haswell, 2 cores / 4 threads) |
+| Graphics | Intel HD Graphics 4400, driven by `i915` and Mesa |
+| RAM | 4 GB minimum; 8 GB is comfortable with Flatpak and Wine |
+| Disk | SATA SSD or HDD; an NVMe disk is `/dev/nvme0n1`, a SATA disk `/dev/sda` |
+| Display | 1080p over DisplayPort, HDMI or VGA |
+| Network | Realtek Gigabit Ethernet. Wi-Fi only with an add-in card |
+| Firmware | UEFI or BIOS; Secure Boot must be off |
 
-No Arch ISO is downloaded: the FinnOS ISO is built natively from the
-`base/` tree in this repo (profile, package lists, live root, boot
-menus) with the FinnOS sources at `/opt/finnos`. The base is
-source-level Arch — a modified package set and configuration — not a
-remaster of a downloaded image. See `base/README.md`.
+The whole package set is in [hardware.md](hardware.md). This page is the
+machine-specific part: what to press, what to check, and what has actually been
+seen.
 
-## Build the ISO
+## Firmware
 
-On an Arch machine (or the OptiPlex once it runs FinnOS):
+1. Press **F2** at power-on for the firmware settings.
+2. **Security → Secure Boot → Disabled.** The installer writes an unsigned
+   GRUB or systemd-boot; a machine with Secure Boot on refuses it.
+3. Choose UEFI or BIOS. Both boot paths are on the disc; the installer prefers
+   GRUB's UEFI loader and falls back to systemd-boot when GRUB cannot register
+   its EFI entry.
+4. Press **F12** at power-on for the one-time boot menu and choose the USB
+   entry.
+
+The disc's menu has **Install FinnOS** and **FinnOS live shell**. The first
+hands the console to the installer after ten seconds; Ctrl-C stays in the
+shell. The full walkthrough is [install.md](install.md).
+
+## Install
 
 ```sh
-base/mkfinniso --check
-sudo base/mkfinniso finnos.iso
+lsblk -dno NAME,SIZE,TYPE,MODEL
+finn-install --disk /dev/nvme0n1 --yes     # or /dev/sda
 ```
 
-It needs root, the `archiso` package, and the build-host tools named in
-`base/README.md` (`syslinux` for BIOS, `mtools`/`dosfstools` for UEFI,
-`squashfs-tools` + `xorriso` for the image). The result is a hybrid ISO
-that boots under UEFI and BIOS, which matters on an OptiPlex that may
-be in either mode.
+The installer has no default disk, refuses a partition or a mounted disk, and
+prints `FINN_INSTALL_COMPLETE` only after checking the disk it wrote. It does
+not reboot for you: unmount the medium, remove it, and start the machine.
 
-Where there is no Arch machine, CI builds the exact same disc in a
-privileged Arch container — see `.github/workflows/iso.yml` — and the
-release carries the ISO as an artifact. Never write a stick from a
-third-party Arch ISO: only a `mkfinniso` disc is FinnOS.
+## What has been verified
 
-Check it before trusting it:
+| | |
+|---|---|
+| Boot the install medium | yes — the machine boots the stick; the disc carries both UEFI and BIOS entries |
+| Install to the internal disk | yes — the installer completes and the disk boots |
+| Reach the desktop | yes — `finn-comp` starts on tty1, the shell draws |
+| Accelerated path | not separately recorded; the machine has `i915` + Mesa, so the GBM/EGL path is available. `journalctl -u finn-comp \| grep -i 'gbm\|egl'` says which path came up |
+| Rescue console | `Ctrl+Alt+F2` reaches `getty@tty2` |
+
+Shipping a machine and *using* it are different claims. The table records what
+the project has looked at; audio, Bluetooth, suspend, Wi-Fi on an add-in card
+and long-running stability are the things to check on your own machine and
+report, with the output of the commands below.
+
+## Checks after installing
 
 ```sh
-base/mkfinniso --check
-vm/test-boot.sh finnos.iso
-vm/menu-shot.sh finnos.iso /tmp/menu
+lspci -k | grep -A3 -E 'VGA|3D|Ethernet|Network'
+dmesg | grep -E 'i915|firmware|error'
+systemctl status finn-comp finnd NetworkManager
+wpctl status            # PipeWire sees the sink
+aplay -l                # ALSA sees the card
+nmcli device status     # wired/wireless state
 ```
 
-## Write the stick (bootable USB)
+The Settings pages read the same state: System Information for CPU/RAM/disk,
+Network for link state, Sound for the ALSA mixer, Power for the battery when
+one is present. A desktop with no battery reports mains, not 0%.
 
-The ISO is a hybrid BIOS+UEFI image: a raw copy makes a bootable stick.
-Copy the whole device, never a partition, and eject before unplugging.
-
-Linux:
+## Working on it over the network
 
 ```sh
-lsblk -dno NAME,SIZE,MODEL,TRAN
-sudo dd if=finnos.iso of=/dev/sdX bs=4M status=progress conv=fsync
-echo $?
-sudo eject /dev/sdX || sudo umount /dev/sdX* || true
+sudo systemctl enable --now sshd
+VM=finn@<optiplex-ip> make deploy
+FINN_HOST=finn@<optiplex-ip> vm/shot.sh /tmp/shot.png
 ```
 
-macOS (the stick was connected to a Mac):
+The dev loop is the same as the VM's: [development.md](development.md). The
+machine's build is the real one — the OptiPlex has the DRM headers and the
+compiler, which is why an install builds the compositor there rather than
+copying a binary.
+
+If the installer used the serial console, the installed GRUB and systemd-boot
+entries keep `console=ttyS0` and the serial getty is enabled, so the machine
+stays reachable over a serial cable. An install from a screen gets no serial
+console.
+
+## Limits on this machine
+
+- **Secure Boot** is off, not signed. Enrol your own key if you need it on.
+- **Wi-Fi** needs an add-in card; the on-board Ethernet is the supported network
+  path. `wpa_supplicant` is installed as NetworkManager's backend, and the
+  Control Center and Settings show the adapter that is actually there.
+- **NVIDIA** is not installed. The image ships Mesa; a machine with a
+  proprietary-driver requirement must install it itself.
+- **Flatpak and Wine** are x86_64 paths and are installed, but their GUI
+  behaviour on this hardware has not been fully validated. See
+  [architecture.md](architecture.md#what-is-not-here-yet) for the exact status.
+- **Printers, scanners and fingerprint readers** have no settings surface and
+  no configuration promise.
+
+## If it does not come up
+
+`Ctrl+Alt+F2`, then:
 
 ```sh
-diskutil list external
-STICK=/dev/diskN   # the whole USB device, not diskNs1
-sudo diskutil unmountDisk "$STICK"
-sudo dd if=finnos.iso of=/dev/rdiskN bs=4m status=progress
-sudo diskutil eject "$STICK"
-```
-
-Verify before booting (size + El Torito):
-
-```sh
-ls -lh finnos.iso
-xorriso -indev finnos.iso -report_el_torito plain
-```
-
-A `dd` that is interrupted leaves a half-written stick: re-run the full
-copy, do not resume it.
-
-## Boot and install
-
-1. Plug the stick into the OptiPlex and boot it (F12 for the one-time boot
-   menu). Choose the USB entry; either the UEFI or the BIOS one works.
-2. The disc boots into the live environment and, on the default entry,
-   hands over to `finn-install` after ten seconds. Press Ctrl-C to stay in
-   the shell instead.
-3. Find the disk:
-
-   ```sh
-   lsblk -dno NAME,SIZE,TYPE,MODEL
-   ```
-
-   An OptiPlex with an NVMe SSD is `/dev/nvme0n1`; a SATA disk is
-   `/dev/sda`.
-4. Run the installer against the named disk:
-
-   ```sh
-   finn-install --disk /dev/nvme0n1 --yes
-   ```
-
-   The installer partitions the disk (512M ESP, 1M BIOS boot, the rest
-   ext4 labelled `finnos`), pacstraps the base, installs GRUB for both
-   UEFI and BIOS, and runs `base/setup.sh`.
-5. Reboot when it prints `FINN_INSTALL_COMPLETE`.
-
-## After the install
-
-The installer builds the shell on the machine (`/opt/finnos` →
-`/usr/local/bin/finn-comp`), enables `finn-comp` + `finnd`, and sets
-graphical boot — so a finished install (`FINN_INSTALL_COMPLETE` +
-`FINN_CHROOT_COMPLETE`) reboots straight into FinnOS. No manual build.
-
-If the build failed on the target (no network for deps, toolchain
-missing), it boots to a login console instead. Then, on the machine:
-
-```sh
-cd /opt/finnos
-make
-sudo make install
-sudo systemctl enable --now finn-comp finnd
-sudo systemctl set-default graphical.target
 systemctl status finn-comp finnd
+sudo journalctl -u finn-comp -n 100 --no-pager
 ```
 
-For the day-to-day loop over the network, set the dev VM's address to the
-OptiPlex's and use the same commands:
-
-```sh
-FINN_HOST=finn@<optiplex-ip> make deploy
-```
-
-The installer's log uploader defaults to the VMware host address
-(`192.168.44.1:8765`); override it with `FINN_HOST_URL` if you run a log
-server elsewhere.
+The compositor has a start limit and `finn-failure.service`, so a crash loop
+stops and prints "FinnOS: the compositor stopped; press Ctrl+Alt+F2 for a
+console" on the screen it was painting. The rest of the recovery paths are in
+[troubleshooting.md](troubleshooting.md).

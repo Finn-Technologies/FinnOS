@@ -28,8 +28,9 @@ protocol with `src/core/finnproto.h`. The protocol is documented in
 2. **The security posture.** The control plane is root-equivalent
    authority. It must stay: bound to a unix socket, never TCP;
    authenticated per connection with `SO_PEERCRED`; audited with the peer
-   uid; off by default. A change that weakens any of those is a serious
-   finding, and a change that weakens one without saying so is worse.
+   uid; local-only, with no remote access by default. A change that weakens
+   any of those is a serious finding, and a change that weakens one without
+   saying so is worse.
 
 3. **Reporting verbs and changing verbs.** `display.get` reports;
    `display.set` changes. A reporting verb must not change anything, and a

@@ -95,7 +95,7 @@ def cmd_new(args):
 
     written = []
     for template, filename in (("app.fui", noun + ".fui"),
-                                ("app.manifest", slug + ".manifest")):
+                                ("manifest.toml", "manifest.toml")):
         path = os.path.join(target_dir, filename)
         with open(os.path.join(templates, template), "r", encoding="utf-8") as handle:
             text = handle.read()

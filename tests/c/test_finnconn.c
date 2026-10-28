@@ -1,10 +1,10 @@
 /*
  * test_finnconn — the framing module, against a socket pair.
  *
- * The defect it guards is docs/review.md P1.3: a request split across two
- * writes was delivered as two requests, the second half executed as a new
- * verb. Plain C with no framework, because it has to run wherever the
- * compiler does.
+ * The defect it guards is docs/audits/2026-10-working-os-review.md P1.3:
+ * a request split across two writes was delivered as two requests, the
+ * second half executed as a new verb. Plain C with no framework, because
+ * it has to run wherever the compiler does.
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE

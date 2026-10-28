@@ -83,10 +83,10 @@ sections and the warnings rather than writing a file.
 | File | What it is |
 |---|---|
 | `app.fui` | a screen: the skeleton of a first-party app |
-| `app.manifest` | the manifest of a `.finn` package |
+| `manifest.toml` | the manifest of a `.finn` package |
 
 `fuic new "Finn Notes"` writes `apps/notes/Notes.fui` and
-`apps/notes/notes.manifest`, and says nothing else. The name follows
+`apps/notes/manifest.toml`, and says nothing else. The name follows
 the house rule in `NAMING.md`: the brand and a plain English noun, never
 an invented word.
 
@@ -94,15 +94,18 @@ The templates ship with the source tree, so `fuic new` needs the SDK
 installed from a checkout (`pip install -e sdk`). A wheel does not carry
 them, and the command says so rather than writing a broken app.
 
-The `.finn` package format is not implemented — `finnpkg` is a stub — so
-the manifest is the shape the SDK writes and the package format is a
-design that has not been settled.
+The `.finn` package format is real: `finnpkg install <file.finn>` accepts a
+tarball with a `manifest.toml`, a `SHA256SUMS` covering every file, and the
+app's files. There is no signature check and no dependency graph; the manifest
+is what the SDK writes and what the package manager reads. See
+[../src/pkg/README.md](../src/pkg/README.md#the-finn-package).
 
 ## The client
 
-`FinnClient` is the control plane as Python. Every verb in
-[../docs/control-protocol.md](../docs/control-protocol.md) has a method,
-with the same names.
+`FinnClient` is the control plane as Python. It wraps the common verbs —
+state, input, screen, windows, setup and settings — with methods of the same
+names. The packaging, Flatpak, Wine, winget and update families are not
+wrapped; use `finnctl` or `finnpkg` for those.
 
 ```python
 from finnsdk import FinnClient
@@ -117,7 +120,7 @@ with FinnClient() as finn:
     for app in finn.apps():
         print(app.id, app.state, app.name)
 
-    finn.launch("notes")
+    finn.launch("files")
 ```
 
 A field in the state has an absent value rather than a plausible
@@ -125,10 +128,12 @@ default: a battery of `-1` means there is no battery, and a wireless of
 `-1` means there is no adapter. A machine that cannot do something says
 so.
 
-The client falls back to the compositor's own socket when the control
-plane is not running, which is enough to move the pointer and take a
-frame. `FinnClient(path=...)` says which socket to use, and
-`FINN_CONTROL_SOCK` says it to every client at once.
+`FinnClient(path=...)` says which socket to use, and `FINN_CONTROL_SOCK`
+says it to every client at once. `FinnClient(direct=True)` talks to the
+compositor's own socket (`/run/finn/comp.sock`) instead; that is the explicit
+development path, it needs root, and it bypasses `finnd` and its audit log.
+There is **no automatic fallback**: a device whose control plane is down is
+unreachable rather than quietly unaudited.
 
 When the device refuses, the client raises `FinnError` with the
 message the device gave:
@@ -144,7 +149,7 @@ except FinnError as exc:
 
 ### From a shell
 
-The same verbs, with the same names:
+A small set of them, with shell-friendly names:
 
 ```sh
 finn-sdk state
@@ -170,7 +175,7 @@ sdk/
   finnsdk/
     __init__.py         FinnClient, FinnError, FinnState
     protocol.py         the wire: the sockets, the line protocol
-    client.py           the verbs, as Python
+    client.py           the common verbs, as Python
     cli.py              `finn-sdk`
     fuic/
       lexer.py          the tokens
@@ -186,7 +191,9 @@ sdk/
 
 - **No emulator.** The SDK talks to a running FinnOS; it does not draw
   one.
-- **No package manager.** `fuic new` writes the files of an app; the
-  `.finn` format and `finnpkg` are not written yet.
+- **No package build command.** `fuic new` writes the files of an app, and
+  `finnpkg install <file.finn>` installs one, but the SDK does not build the
+  `.finn` tarball: that is `tar` plus `SHA256SUMS` today, and a first-class
+  `finnpkg pack` is not written yet.
 - **No AI.** Nothing in the SDK talks to a model, and nothing in the OS
   does either.

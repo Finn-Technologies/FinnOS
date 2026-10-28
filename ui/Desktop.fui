@@ -5,10 +5,9 @@
 // src/compositor/finndock.c, and this file is the reference it was drawn
 // from — the numbers here are that file's numbers.
 //
-// What is honest here: there is no window manager, so there is no window
-// area. It is written as absent rather than as an empty box with a hint
-// in it, because a box that says "nothing here yet" is a box the shell
-// cannot put anything in.
+// The window area is managed by src/compositor/finnwindow.c: free-floating
+// windows with snap, maximise, minimise and keyboard focus. It is written as
+// a real area because there is a window manager to put something in it.
 
 screen DesktopHome {
   target: Desktop (primary)

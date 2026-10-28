@@ -1,8 +1,8 @@
 """The two command lines: `fuic` and `finn-sdk`.
 
-They are the same verbs as the protocol and the compiler, with the same
-names, so what is tested here is that they speak to the fake device and
-to the compiler and say what they mean.
+They speak to the same device and the same compiler as the daemons, and
+what is tested here is that they say what they mean and report the
+device's own refusal.
 """
 
 import os
@@ -115,7 +115,7 @@ class FuicCliTest(unittest.TestCase):
             code = fuic_main(["new", "Finn Notes", "-d", self.tmp])
         self.assertEqual(code, 0)
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "Notes.fui")))
-        self.assertTrue(os.path.exists(os.path.join(self.tmp, "notes.manifest")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "manifest.toml")))
 
     def test_without_a_command_it_prints_the_help(self):
         with support.quiet() as quiet:
