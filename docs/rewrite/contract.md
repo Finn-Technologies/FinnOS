@@ -38,8 +38,11 @@ Two sockets, two owners.
 Apps join neither group and never talk to `finnd`. The shell asks
 `finn-session` to launch. There is no TCP listener and no second door.
 
-The display socket is a display, not authority: `$XDG_RUNTIME_DIR/wayland-0`,
-`0660`, group `finn`. One path, one owner, set by systemd for the session.
+The display socket is a display, not authority: `/run/finn/wayland-0`,
+`0660`, group `finn`. It lives in the shared runtime directory because the
+compositor runs as root and the apps run as `finn`; `$XDG_RUNTIME_DIR` for
+root is not reachable by any app. Clients use the absolute path in
+`WAYLAND_DISPLAY`.
 
 ## The app contract
 

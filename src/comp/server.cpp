@@ -7,12 +7,42 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
+#include <grp.h>
 #include <memory>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <systemd/sd-daemon.h>
 #include <xkbcommon/xkbcommon.h>
 
 namespace finn {
 namespace {
+
+bool prefers_dark() {
+    if (const char* value = std::getenv("FINN_DARK"); value != nullptr) {
+        const std::string text(value);
+        if (text == "1" || text == "true" || text == "dark") return true;
+        if (text == "0" || text == "false" || text == "light") return false;
+    }
+    const char* home = std::getenv("HOME");
+    const std::string user_path =
+        home != nullptr && *home != '\0'
+            ? std::string(home) + "/.config/finn/settings"
+            : "/home/finn/.config/finn/settings";
+    for (const std::string& path :
+         {user_path, std::string("/home/finn/.config/finn/settings"),
+          std::string("/var/lib/finn/settings")}) {
+        std::ifstream settings(path);
+        std::string line;
+        while (std::getline(settings, line)) {
+            if (line == "dark=1") return true;
+            if (line == "dark=0") return false;
+        }
+    }
+    return false;
+}
 
 void detach(wl_listener& listener) {
     if (listener.link.next == nullptr) return;
@@ -47,12 +77,18 @@ struct Server::Toplevel {
     wl_listener unmap{};
     wl_listener commit{};
     wl_listener destroy{};
+    wl_listener request_move{};
+    wl_listener request_resize{};
+    wl_listener request_maximize{};
 
     ~Toplevel() {
         detach(map);
         detach(unmap);
         detach(commit);
         detach(destroy);
+        detach(request_move);
+        detach(request_resize);
+        detach(request_maximize);
     }
 };
 
@@ -67,6 +103,22 @@ struct Server::Keyboard {
     ~Keyboard() {
         detach(modifiers);
         detach(key);
+        detach(destroy);
+    }
+};
+
+struct Server::Layer {
+    Server* server = nullptr;
+    wlr_layer_surface_v1* layer = nullptr;
+    wlr_scene_layer_surface_v1* scene = nullptr;
+    wl_listener map{};
+    wl_listener commit{};
+    wl_listener destroy{};
+    bool configured = false;
+
+    ~Layer() {
+        detach(map);
+        detach(commit);
         detach(destroy);
     }
 };
@@ -117,10 +169,30 @@ bool Server::init() {
     wlr_compositor_create(display_, 5, renderer_);
     wlr_subcompositor_create(display_);
     wlr_data_device_manager_create(display_);
+    wlr_screencopy_manager_v1_create(display_);
 
     output_layout_ = wlr_output_layout_create(display_);
+    wlr_xdg_output_manager_v1_create(display_, output_layout_);
     scene_ = wlr_scene_create();
     scene_layout_ = wlr_scene_attach_output_layout(scene_, output_layout_);
+
+    /* The scene is ordered once, here: background, background layer, bottom
+     * layer, ordinary windows, top layer, overlay. A layer surface therefore
+     * stays above app windows without the shell or the compositor knowing an
+     * app id. */
+    const bool dark = prefers_dark();
+    float background_color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
+    if (dark) {
+        background_color[0] = 0.086f;
+        background_color[1] = 0.094f;
+        background_color[2] = 0.114f;
+    }
+    background_ = wlr_scene_rect_create(&scene_->tree, 1, 1, background_color);
+    layer_trees_[0] = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[1] = wlr_scene_tree_create(&scene_->tree);
+    toplevel_tree_ = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[2] = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[3] = wlr_scene_tree_create(&scene_->tree);
 
     new_output_.notify = on_new_output;
     wl_signal_add(&backend_->events.new_output, &new_output_);
@@ -132,6 +204,14 @@ bool Server::init() {
     }
     new_toplevel_.notify = on_new_toplevel;
     wl_signal_add(&xdg_shell_->events.new_toplevel, &new_toplevel_);
+
+    layer_shell_ = wlr_layer_shell_v1_create(display_, 4);
+    if (layer_shell_ == nullptr) {
+        wlr_log(WLR_ERROR, "finn-comp: no layer-shell");
+        return false;
+    }
+    new_layer_.notify = on_new_layer;
+    wl_signal_add(&layer_shell_->events.new_surface, &new_layer_);
 
     cursor_ = wlr_cursor_create();
     if (cursor_ == nullptr) {
@@ -182,6 +262,18 @@ bool Server::init() {
                 std::strerror(errno));
         return false;
     }
+    const std::string socket_path = std::string(runtime) + "/wayland-0";
+    if (chmod(socket_path.c_str(), 0660) != 0) {
+        wlr_log(WLR_ERROR, "finn-comp: cannot chmod %s: %s", socket_path.c_str(),
+                std::strerror(errno));
+    }
+    if (group* finn_group = getgrnam("finn"); finn_group != nullptr) {
+        if (chown(socket_path.c_str(), static_cast<uid_t>(-1),
+                  finn_group->gr_gid) != 0) {
+            wlr_log(WLR_ERROR, "finn-comp: cannot chown %s: %s",
+                    socket_path.c_str(), std::strerror(errno));
+        }
+    }
 
     if (!wlr_backend_start(backend_)) {
         wlr_log(WLR_ERROR, "finn-comp: backend failed to start");
@@ -189,6 +281,7 @@ bool Server::init() {
     }
 
     wlr_log(WLR_INFO, "finn-comp: listening on WAYLAND_DISPLAY=wayland-0");
+    sd_notify(0, "READY=1");
     return true;
 }
 
@@ -199,11 +292,13 @@ void Server::shutdown() {
 
     toplevels_.clear();
     keyboards_.clear();
+    layers_.clear();
     outputs_.clear();
 
     remove_listener(new_output_);
     remove_listener(new_input_);
     remove_listener(new_toplevel_);
+    remove_listener(new_layer_);
     remove_listener(cursor_motion_);
     remove_listener(cursor_motion_absolute_);
     remove_listener(cursor_button_);
@@ -230,6 +325,7 @@ void Server::shutdown() {
     scene_layout_ = nullptr;
     output_layout_ = nullptr;
     xdg_shell_ = nullptr;
+    layer_shell_ = nullptr;
     seat_ = nullptr;
     cursor_ = nullptr;
     cursor_manager_ = nullptr;
@@ -264,6 +360,34 @@ void Server::add_output(wlr_output* output) {
         wlr_scene_output_create(scene_, output);
     wlr_scene_output_layout_add_output(scene_layout_, layout_output,
                                        scene_output);
+
+    if (usable_w_ == 0 || usable_h_ == 0) {
+        usable_x_ = 0;
+        usable_y_ = 0;
+        usable_w_ = output->width;
+        usable_h_ = output->height;
+    }
+
+    const bool dark = prefers_dark();
+    float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
+    if (dark) {
+        color[0] = 0.086f;
+        color[1] = 0.094f;
+        color[2] = 0.114f;
+    }
+    if (background_ != nullptr) {
+        wlr_scene_rect_set_size(background_, output->width, output->height);
+        wlr_scene_rect_set_color(background_, color);
+        wlr_scene_node_set_position(&background_->node, 0, 0);
+        wlr_scene_node_lower_to_bottom(&background_->node);
+    }
+
+    for (auto& layer : layers_) {
+        if (layer->layer->output == nullptr) {
+            layer->layer->output = output;
+            configure_layer(layer.get());
+        }
+    }
 
     outputs_.push_back(std::move(entry));
 }
@@ -339,7 +463,7 @@ void Server::add_toplevel(wlr_xdg_toplevel* xdg_toplevel) {
     auto entry = std::make_unique<Toplevel>();
     entry->server = this;
     entry->xdg_toplevel = xdg_toplevel;
-    entry->scene_tree = wlr_scene_xdg_surface_create(&scene_->tree,
+    entry->scene_tree = wlr_scene_xdg_surface_create(toplevel_tree_,
                                                      xdg_toplevel->base);
     entry->scene_tree->node.data = entry.get();
     xdg_toplevel->base->data = entry->scene_tree;
@@ -355,18 +479,204 @@ void Server::add_toplevel(wlr_xdg_toplevel* xdg_toplevel) {
     wl_signal_add(&xdg_toplevel->base->surface->events.commit, &entry->commit);
     entry->destroy.notify = on_toplevel_destroy;
     wl_signal_add(&xdg_toplevel->events.destroy, &entry->destroy);
+    entry->request_move.notify = on_toplevel_request_move;
+    wl_signal_add(&xdg_toplevel->events.request_move, &entry->request_move);
+    entry->request_resize.notify = on_toplevel_request_resize;
+    wl_signal_add(&xdg_toplevel->events.request_resize, &entry->request_resize);
+    entry->request_maximize.notify = on_toplevel_request_maximize;
+    wl_signal_add(&xdg_toplevel->events.request_maximize,
+                  &entry->request_maximize);
 
     toplevels_.push_back(std::move(entry));
 }
 
 void Server::remove_toplevel(Toplevel* toplevel) {
     if (focused_ == toplevel) focused_ = nullptr;
+    if (last_focused_ == toplevel) last_focused_ = nullptr;
+    if (grabbed_ == toplevel) reset_cursor_mode();
     toplevels_.erase(std::remove_if(toplevels_.begin(), toplevels_.end(),
                                     [toplevel](const auto& entry) {
                                         return entry.get() == toplevel;
                                     }),
                      toplevels_.end());
 }
+
+void Server::add_layer(wlr_layer_surface_v1* layer_surface) {
+    if (layer_surface == nullptr) return;
+    if (layer_surface->output == nullptr) {
+        if (outputs_.empty()) {
+            wlr_log(WLR_ERROR, "finn-comp: layer surface before an output");
+            return;
+        }
+        layer_surface->output = outputs_.front()->output;
+    }
+
+    auto entry = std::make_unique<Layer>();
+    entry->server = this;
+    entry->layer = layer_surface;
+    std::uint32_t layer_number =
+        static_cast<std::uint32_t>(layer_surface->current.layer);
+    if (layer_number > 3) layer_number = 3;
+    wlr_scene_tree* tree = layer_trees_[layer_number];
+    if (tree == nullptr) tree = &scene_->tree;
+    entry->scene = wlr_scene_layer_surface_v1_create(tree, layer_surface);
+    if (entry->scene == nullptr) return;
+
+    entry->map.notify = on_layer_map;
+    wl_signal_add(&layer_surface->surface->events.map, &entry->map);
+    entry->commit.notify = on_layer_commit;
+    wl_signal_add(&layer_surface->surface->events.commit, &entry->commit);
+    entry->destroy.notify = on_layer_destroy;
+    wl_signal_add(&layer_surface->events.destroy, &entry->destroy);
+
+    layers_.push_back(std::move(entry));
+    wlr_log(WLR_INFO, "finn-comp: layer surface '%s'", layer_surface->namespace_);
+}
+
+void Server::remove_layer(Layer* layer) {
+    if (focused_layer_ == layer) {
+        focused_layer_ = nullptr;
+        wlr_seat_keyboard_notify_clear_focus(seat_);
+        if (last_focused_ != nullptr) focus(last_focused_);
+    }
+    layers_.erase(std::remove_if(layers_.begin(), layers_.end(),
+                                 [layer](const auto& entry) {
+                                     return entry.get() == layer;
+                                 }),
+                  layers_.end());
+}
+
+void Server::configure_layer(Layer* layer) {
+    if (layer == nullptr || layer->layer->output == nullptr) return;
+    wlr_box full{};
+    wlr_output_layout_get_box(output_layout_, layer->layer->output, &full);
+    if (full.width <= 0 || full.height <= 0) {
+        full = wlr_box{0, 0, layer->layer->output->width,
+                       layer->layer->output->height};
+    }
+    wlr_box usable = full;
+    wlr_scene_layer_surface_v1_configure(layer->scene, &full, &usable);
+    if (usable.width > 0 && usable.height > 0) {
+        usable_x_ = usable.x;
+        usable_y_ = usable.y;
+        usable_w_ = usable.width;
+        usable_h_ = usable.height;
+    }
+}
+
+void Server::focus_layer(Layer* layer) {
+    if (layer == nullptr || seat_ == nullptr) return;
+    if (!layer->layer->surface->mapped) return;
+    if (layer->layer->current.keyboard_interactive == 0) return;
+    wlr_keyboard* keyboard = wlr_seat_get_keyboard(seat_);
+    if (keyboard == nullptr) return;
+    wlr_seat_keyboard_notify_enter(seat_, layer->layer->surface,
+                                   keyboard->keycodes, keyboard->num_keycodes,
+                                   &keyboard->modifiers);
+    if (focused_ != nullptr) {
+        wlr_xdg_toplevel_set_activated(focused_->xdg_toplevel, false);
+        focused_ = nullptr;
+    }
+    focused_layer_ = layer;
+}
+
+void Server::maximize(Toplevel* toplevel) {
+    if (toplevel == nullptr) return;
+    int x = usable_x_;
+    int y = usable_y_;
+    int w = usable_w_;
+    int h = usable_h_;
+    if (w <= 0 || h <= 0) {
+        if (outputs_.empty()) return;
+        x = 0;
+        y = 0;
+        w = outputs_.front()->output->width;
+        h = outputs_.front()->output->height;
+    }
+    wlr_scene_node_set_position(&toplevel->scene_tree->node, x, y);
+    wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, w, h);
+    wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
+    focus(toplevel);
+}
+
+void Server::begin_interactive(Toplevel* toplevel, CursorMode mode,
+                               uint32_t edges) {
+    if (toplevel == nullptr) return;
+    grabbed_ = toplevel;
+    cursor_mode_ = mode;
+    if (mode == CursorMode::move) {
+        grab_x_ = cursor_->x - toplevel->scene_tree->node.x;
+        grab_y_ = cursor_->y - toplevel->scene_tree->node.y;
+        return;
+    }
+    const wlr_box& geometry = toplevel->xdg_toplevel->base->geometry;
+    const double border_x = toplevel->scene_tree->node.x + geometry.x +
+                            ((edges & WLR_EDGE_RIGHT) != 0 ? geometry.width : 0);
+    const double border_y = toplevel->scene_tree->node.y + geometry.y +
+                            ((edges & WLR_EDGE_BOTTOM) != 0 ? geometry.height : 0);
+    grab_x_ = cursor_->x - border_x;
+    grab_y_ = cursor_->y - border_y;
+    grab_gx_ = geometry.x + static_cast<int>(toplevel->scene_tree->node.x);
+    grab_gy_ = geometry.y + static_cast<int>(toplevel->scene_tree->node.y);
+    grab_gw_ = geometry.width;
+    grab_gh_ = geometry.height;
+    resize_edges_ = edges;
+}
+
+void Server::process_cursor_move() {
+    if (grabbed_ == nullptr) return;
+    wlr_scene_node_set_position(&grabbed_->scene_tree->node,
+                                static_cast<int>(cursor_->x - grab_x_),
+                                static_cast<int>(cursor_->y - grab_y_));
+}
+
+void Server::process_cursor_resize() {
+    if (grabbed_ == nullptr) return;
+    const double border_x = cursor_->x - grab_x_;
+    const double border_y = cursor_->y - grab_y_;
+    int left = grab_gx_;
+    int right = grab_gx_ + grab_gw_;
+    int top = grab_gy_;
+    int bottom = grab_gy_ + grab_gh_;
+
+    if ((resize_edges_ & WLR_EDGE_TOP) != 0) {
+        top = static_cast<int>(border_y);
+        if (top >= bottom) top = bottom - 1;
+    } else if ((resize_edges_ & WLR_EDGE_BOTTOM) != 0) {
+        bottom = static_cast<int>(border_y);
+        if (bottom <= top) bottom = top + 1;
+    }
+    if ((resize_edges_ & WLR_EDGE_LEFT) != 0) {
+        left = static_cast<int>(border_x);
+        if (left >= right) left = right - 1;
+    } else if ((resize_edges_ & WLR_EDGE_RIGHT) != 0) {
+        right = static_cast<int>(border_x);
+        if (right <= left) right = left + 1;
+    }
+
+    const wlr_box& geometry = grabbed_->xdg_toplevel->base->geometry;
+    wlr_scene_node_set_position(&grabbed_->scene_tree->node, left - geometry.x,
+                                top - geometry.y);
+    wlr_xdg_toplevel_set_size(grabbed_->xdg_toplevel, right - left, bottom - top);
+}
+
+void Server::process_cursor_motion(uint32_t time_msec) {
+    if (cursor_mode_ == CursorMode::move) {
+        process_cursor_move();
+        return;
+    }
+    if (cursor_mode_ == CursorMode::resize) {
+        process_cursor_resize();
+        return;
+    }
+    pointer_motion(time_msec);
+}
+
+void Server::reset_cursor_mode() {
+    cursor_mode_ = CursorMode::passthrough;
+    grabbed_ = nullptr;
+}
+
 
 void Server::focus(Toplevel* toplevel) {
     if (toplevel == nullptr) return;
@@ -392,6 +702,8 @@ void Server::focus(Toplevel* toplevel) {
                                        &keyboard->modifiers);
     }
     focused_ = toplevel;
+    last_focused_ = toplevel;
+    focused_layer_ = nullptr;
 }
 
 bool Server::handle_keybinding(uint32_t keysym) {
@@ -419,6 +731,16 @@ bool Server::handle_keybinding(uint32_t keysym) {
     }
 }
 
+wlr_surface* Server::surface_at(double lx, double ly, double* sx, double* sy) {
+    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node, lx, ly, sx, sy);
+    if (node == nullptr || node->type != WLR_SCENE_NODE_BUFFER) return nullptr;
+    wlr_scene_buffer* scene_buffer = wlr_scene_buffer_from_node(node);
+    wlr_scene_surface* scene_surface =
+        wlr_scene_surface_try_from_buffer(scene_buffer);
+    if (scene_surface == nullptr) return nullptr;
+    return scene_surface->surface;
+}
+
 Server::Toplevel* Server::toplevel_at(double lx, double ly,
                                       wlr_surface** surface, double* sx,
                                       double* sy) {
@@ -443,10 +765,8 @@ Server::Toplevel* Server::toplevel_at(double lx, double ly,
 void Server::pointer_motion(uint32_t time_msec) {
     double sx = 0;
     double sy = 0;
-    wlr_surface* surface = nullptr;
-    Toplevel* toplevel =
-        toplevel_at(cursor_->x, cursor_->y, &surface, &sx, &sy);
-    if (toplevel == nullptr && cursor_manager_ != nullptr) {
+    wlr_surface* surface = surface_at(cursor_->x, cursor_->y, &sx, &sy);
+    if (surface == nullptr && cursor_manager_ != nullptr) {
         wlr_cursor_set_xcursor(cursor_, cursor_manager_, "default");
     }
     if (surface != nullptr) {
@@ -475,6 +795,12 @@ void Server::on_new_toplevel(wl_listener* listener, void* data) {
     server->add_toplevel(static_cast<wlr_xdg_toplevel*>(data));
 }
 
+void Server::on_new_layer(wl_listener* listener, void* data) {
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, new_layer_);
+    server->add_layer(static_cast<wlr_layer_surface_v1*>(data));
+}
+
 void Server::on_output_frame(wl_listener* listener, void* data) {
     (void)data;
     Output* output = nullptr;
@@ -484,6 +810,18 @@ void Server::on_output_frame(wl_listener* listener, void* data) {
     if (scene_output == nullptr) return;
 
     wlr_scene_output_commit(scene_output, nullptr);
+    sd_notify(0, "WATCHDOG=1");
+
+    if (++output->server->theme_counter_ % 60 == 0 && output->server->background_ != nullptr) {
+        const bool dark = prefers_dark();
+        float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
+        if (dark) {
+            color[0] = 0.086f;
+            color[1] = 0.094f;
+            color[2] = 0.114f;
+        }
+        wlr_scene_rect_set_color(output->server->background_, color);
+    }
 
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -539,6 +877,68 @@ void Server::on_toplevel_destroy(wl_listener* listener, void* data) {
     toplevel->server->remove_toplevel(toplevel);
 }
 
+void Server::on_toplevel_request_move(wl_listener* listener, void* data) {
+    (void)data;
+    Toplevel* toplevel = nullptr;
+    toplevel = wl_container_of(listener, toplevel, request_move);
+    toplevel->server->begin_interactive(toplevel, CursorMode::move, 0);
+}
+
+void Server::on_toplevel_request_resize(wl_listener* listener, void* data) {
+    Toplevel* toplevel = nullptr;
+    toplevel = wl_container_of(listener, toplevel, request_resize);
+    auto* event = static_cast<wlr_xdg_toplevel_resize_event*>(data);
+    toplevel->server->begin_interactive(toplevel, CursorMode::resize,
+                                        event->edges);
+}
+
+void Server::on_toplevel_request_maximize(wl_listener* listener, void* data) {
+    (void)data;
+    Toplevel* toplevel = nullptr;
+    toplevel = wl_container_of(listener, toplevel, request_maximize);
+    if (toplevel->xdg_toplevel->base->initialized) {
+        toplevel->server->maximize(toplevel);
+    }
+}
+
+void Server::on_layer_map(wl_listener* listener, void* data) {
+    (void)data;
+    Layer* layer = nullptr;
+    layer = wl_container_of(listener, layer, map);
+    if (layer->layer->current.keyboard_interactive != 0) {
+        layer->server->focus_layer(layer);
+    }
+}
+
+void Server::on_layer_commit(wl_listener* listener, void* data) {
+    (void)data;
+    Layer* layer = nullptr;
+    layer = wl_container_of(listener, layer, commit);
+    Server* server = layer->server;
+    if (!layer->configured) {
+        if (layer->layer->initialized) {
+            layer->configured = true;
+            server->configure_layer(layer);
+        }
+        return;
+    }
+    if (!layer->layer->surface->mapped) return;
+    if (layer->layer->current.keyboard_interactive != 0) {
+        server->focus_layer(layer);
+    } else if (server->focused_layer_ == layer) {
+        server->focused_layer_ = nullptr;
+        wlr_seat_keyboard_notify_clear_focus(server->seat_);
+        if (server->last_focused_ != nullptr) server->focus(server->last_focused_);
+    }
+}
+
+void Server::on_layer_destroy(wl_listener* listener, void* data) {
+    (void)data;
+    Layer* layer = nullptr;
+    layer = wl_container_of(listener, layer, destroy);
+    layer->server->remove_layer(layer);
+}
+
 void Server::on_keyboard_modifiers(wl_listener* listener, void* data) {
     (void)data;
     Keyboard* keyboard = nullptr;
@@ -589,7 +989,7 @@ void Server::on_cursor_motion(wl_listener* listener, void* data) {
     auto* event = static_cast<wlr_pointer_motion_event*>(data);
     wlr_cursor_move(server->cursor_, &event->pointer->base, event->delta_x,
                     event->delta_y);
-    server->pointer_motion(event->time_msec);
+    server->process_cursor_motion(event->time_msec);
 }
 
 void Server::on_cursor_motion_absolute(wl_listener* listener, void* data) {
@@ -598,7 +998,7 @@ void Server::on_cursor_motion_absolute(wl_listener* listener, void* data) {
     auto* event = static_cast<wlr_pointer_motion_absolute_event*>(data);
     wlr_cursor_warp_absolute(server->cursor_, &event->pointer->base, event->x,
                              event->y);
-    server->pointer_motion(event->time_msec);
+    server->process_cursor_motion(event->time_msec);
 }
 
 void Server::on_cursor_button(wl_listener* listener, void* data) {
@@ -613,6 +1013,8 @@ void Server::on_cursor_button(wl_listener* listener, void* data) {
         wlr_surface* surface = nullptr;
         server->focus(server->toplevel_at(server->cursor_->x, server->cursor_->y,
                                           &surface, &sx, &sy));
+    } else {
+        server->reset_cursor_mode();
     }
 }
 

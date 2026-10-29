@@ -31,6 +31,7 @@
 #include <vector>
 
 #define static
+#define namespace namespace_
 extern "C" {
 #include <wlr/backend.h>
 #include <wlr/render/allocator.h>
@@ -40,16 +41,21 @@ extern "C" {
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/edges.h>
 #include <wlr/util/log.h>
 }
+#undef namespace
 #undef static
 
 #endif

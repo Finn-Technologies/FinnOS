@@ -1,68 +1,44 @@
 [Unit]
 Description=FinnOS Compositor (finn-comp)
 Documentation=man:finn-comp(1)
-# finn-comp owns the display seat directly; it must come up before getty.
-#
-# The DRM node is waited for, not tested for once. ConditionPathExists= is
-# evaluated at start time and a failed condition is not retried by Restart=,
-# so a GPU that appeared a moment late used to be skipped for the whole boot
-# with nothing said on screen. The device unit makes systemd wait for the node
-# instead, and a node that never appears is a failed start the start limit and
-# OnFailure= can see. card0 is the trigger, not the only device the compositor
-# can open: it enumerates /dev/dri/card* itself, so a machine with two GPUs
-# whose display is card1 still starts once the card0 node exists.
-Wants=dev-dri-card0.device
-After=systemd-user-sessions.service dev-dri-card0.device
+# The compositor is the display: it must come up before getty and the shell.
+# It opens DRM and evdev through seatd, so the seat daemon has to be there.
+Wants=seatd.service
+After=systemd-user-sessions.service seatd.service
 Before=getty@tty1.service display-manager.service
 Conflicts=getty@tty1.service
-# A crash loop used to reset the console every second and leave no way out.
-# It now stops at a bound, and a unit that says what happened is pulled in.
 OnFailure=finn-failure.service
 StartLimitIntervalSec=30
 StartLimitBurst=5
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/finn-comp /usr/share/finn/wallpaper/default.webp
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/local/bin/finn-comp
 
-# DRM master requires the display seat. finn-comp owns the scanout buffer and
-# the pointer, and publishes them over /run/finn/comp.sock as the provider for
-# the finnd control plane; it is not a general IPC surface and runs no clients.
-# It stays root for the DRM master lock. TODO: move to a logind seat session.
+# DRM master and evdev are opened through seatd, not directly. The display
+# socket lives in /run/finn so that the apps, which run as finn, can reach it;
+# root's $XDG_RUNTIME_DIR is private and would be the wrong place.
 User=root
 Group=finn
-SupplementaryGroups=video render audio
+SupplementaryGroups=video render input seat audio
+Environment=XDG_RUNTIME_DIR=/run/finn
+Environment=WLR_BACKENDS=drm
+Environment=LIBSEAT_BACKEND=seatd
 
-# Keep the compositor's diagnostics in the journal: with StandardInput=tty the
-# default is to inherit the TTY, which puts every log line on a screen that
-# the compositor is in the middle of painting.
 StandardOutput=journal
 StandardError=journal
-
 StandardInput=tty
 TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
 
-# on-failure, not always: a clean exit is a decision, and restarting it would
-# drag the machine back to a session that was ended on purpose. The start
-# limit above bounds a crash loop; OnFailure= names the way out.
 Restart=on-failure
 RestartSec=2
-# never let it fight systemd for control of the TTY
+WatchdogSec=15
 IgnoreSIGPIPE=yes
 
-# Hardening a DRM/evdev process can live with: it opens device nodes and
-# ioctls them, reads /sys and /proc, and writes its own /run socket. None of
-# that needs a second user, a writable /home, a loadable module or an inet
-# socket.
-#
-# ProtectKernelTunables= is deliberately absent. It makes /sys read-only, and
-# the compositor is what writes /sys/class/backlight/*/brightness and
-# /sys/class/rfkill/*/soft: turning it on would answer "ERR hardware
-# unavailable" to every brightness and radio change. It can come back when
-# those two actuators move behind a helper of their own.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=read-only
@@ -70,15 +46,6 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictRealtime=yes
 RestrictAddressFamilies=AF_UNIX
-
-# The watchdog is the contract on the frame loop: the compositor feeds it with
-# sd_notify(WATCHDOG=1), so a process that is alive but has stopped painting is
-# restarted instead of left as a frozen image. Type=simple on purpose: startup
-# must not depend on the notify socket being reachable. A watchdog nobody feeds
-# kills a healthy compositor every 15 seconds, so if the heartbeat ever comes
-# out of the binary, this line comes out with it.
-WatchdogSec=15
-NotifyAccess=main
 
 [Install]
 WantedBy=graphical.target
