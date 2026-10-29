@@ -34,7 +34,8 @@
 The desktop shell — the boot splash (`finnboot`), the first-boot setup
 screen (`finnsetup`), the dock (`finndock`), the Control Center
 (`finncontrol`), the Notification Center (`finnclock`), the Start Menu
-(`finnmenu`) and the window manager (`finnwindow`) — is **not a separate
+(`finnmenu`), the window manager (`finnwindow`) and the browser chrome
+(`finnbrowserapp`) — is **not a separate
 binary**. It is a set of surfaces inside `finn-comp`, because a surface
 that lives in the compositor's own frame costs a blit rather than a round
 trip over a socket. `finn-shell` is reserved for the name if that ever
@@ -46,7 +47,8 @@ Named for what they render, not for how: `finnvg` (vector rasteriser), `finntext
 `finnboot` (the boot splash), `finnsetup` (the first-boot setup screen),
 `finndock` (the dock), `finncontrol` (the Control Center), `finnclock` (the
 Notification Center and clock page), `finnmenu` (the Start Menu),
-`finnwindow` (the window manager and app windows), `finnpointer` (evdev
+`finnwindow` (the window manager and app windows), `finnbrowserapp` (the browser
+window chrome and web view), `finnpointer` (evdev
 pointer + cursor), `finnkbd` (evdev keyboard), `finnsock` (unix-socket
 helpers), `finnconn` (per-connection line framing), `finnproto` (the
 control wire protocol), `finnsettings` (the versioned settings store),
@@ -68,6 +70,7 @@ the zero-AI rule.
 |---|---|
 | **Finn Files** | File manager — exists |
 | **Finn Store** | App distribution (`finnpkg` GUI) — exists |
+| **Finn Browser** | Web browser (`browser`) — exists |
 | **Finn Code** | Editor / IDE — reserved, not written |
 | **Finn Vault** | Credentials and keys — reserved, not written |
 | **Finn Terminal** | Shell host — reserved, not written |
@@ -76,9 +79,11 @@ the zero-AI rule.
 | **Finn Sync** | Device-to-device sync — reserved, not written |
 
 The system settings surface is called **Settings**, not *Finn Settings*: it is
-part of the shell rather than an app in the family. Only the three shipped
-entries in `assets/apps.registry` — Settings, Finn Files and Finn Store — are
-real; the other names are reserved so that two people do not invent two.
+part of the shell rather than an app in the family. Only the four shipped
+entries in `assets/apps.registry` — Settings, Finn Files, Finn Store and
+Finn Browser — are
+real; the other names are reserved so that two people
+do not invent two.
 
 ## Reserved — do not use
 `Findex` (conflicts with the JDK indexer), `Finka`, `Finnix` (existing Linux distro), `FinnX`, `Finn Shell` as a *product* name (the shell is a compositor subsystem).

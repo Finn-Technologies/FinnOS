@@ -145,6 +145,7 @@ static void test_app_start(const char *systemd_run, const char *log_path) {
     assert(strstr(log, "--uid=1000\n--gid=1000\n") != NULL);
     assert(strstr(log, "--setenv=XDG_RUNTIME_DIR=/run/user/1000\n") != NULL);
     assert(strstr(log, "--setenv=WAYLAND_DISPLAY=wayland-0\n") != NULL);
+    assert(strstr(log, "--setenv=GTK_CSD=0\n") != NULL);
     assert(strstr(log, "--property=Restart=no\n--\n") != NULL);
     assert(strstr(log, command) != NULL);
 
@@ -166,7 +167,9 @@ static void test_flatpak_run(const char *systemd_run, const char *log_path) {
     read_text(log_path, log, sizeof log);
     assert(strstr(log, "--setenv=XDG_RUNTIME_DIR=/run/user/1000\n") != NULL);
     assert(strstr(log, "--setenv=WAYLAND_DISPLAY=wayland-0\n") != NULL);
+    assert(strstr(log, "--setenv=GTK_CSD=0\n") != NULL);
     assert(strstr(log, "/usr/bin/dbus-run-session\n--\n/usr/bin/flatpak\nrun\n--system\n") != NULL);
+    assert(strstr(log, "--env=GTK_CSD=0\n") != NULL);
     assert(strstr(log, "--socket=wayland\n--socket=session-bus\norg.gnome.Calculator\n") != NULL);
 
     assert(finncompat_flatpak_run(systemd_run, "/usr/bin/flatpak",
@@ -305,6 +308,7 @@ static void test_wine_run(const char *systemd_run, const char *log_path) {
     assert(strstr(log, "--setenv=HOME=/home/finn\n") != NULL);
     assert(strstr(log, "--setenv=WINEPREFIX=/home/finn/.local/share/finn/wine/paint/prefix\n") != NULL);
     assert(strstr(log, "--setenv=WAYLAND_DISPLAY=wayland-0\n") != NULL);
+    assert(strstr(log, "--setenv=GTK_CSD=0\n") != NULL);
     assert(strstr(log, "--property=Restart=no\n--\n/usr/bin/wine\n") != NULL);
     assert(strstr(log, exe) != NULL);
     assert(access(injected, F_OK) != 0);
@@ -320,6 +324,70 @@ static void test_wine_run(const char *systemd_run, const char *log_path) {
                                "finn-wine-paint-401-8", "/home/finn",
                                exe, "relative-prefix", 1000, 1000,
                                error, sizeof error) != 0);
+}
+
+static void test_wine_configure_prefix(void) {
+    char prefix[512], reg_path[512], reg_content[8192], error[256] = "";
+    int n = snprintf(prefix, sizeof prefix, "%s/wine-prefix-test", g_dir);
+    assert(n > 0 && (size_t)n < sizeof prefix);
+    n = snprintf(reg_path, sizeof reg_path, "%s/user.reg", prefix);
+    assert(n > 0 && (size_t)n < sizeof reg_path);
+
+    assert(mkdir(prefix, 0700) == 0);
+
+    /* Light theme (dark = 0) on empty prefix. */
+    assert(finncompat_wine_configure_prefix(prefix, (unsigned)getuid(),
+                                            (unsigned)getgid(), 0,
+                                            error, sizeof error) == 0);
+    read_text(reg_path, reg_content, sizeof reg_content);
+    assert(strstr(reg_content, "WINE REGISTRY Version 2") != NULL);
+    assert(strstr(reg_content, ";; FINNOS-MANAGED-BEGIN") != NULL);
+    assert(strstr(reg_content, ";; FINNOS-MANAGED-END") != NULL);
+    assert(strstr(reg_content, "\"Graphics\"=\"wayland\"") != NULL);
+    assert(strstr(reg_content, "\"Decorated\"=\"N\"") != NULL);
+    assert(strstr(reg_content, "\"Managed\"=\"Y\"") != NULL);
+    assert(strstr(reg_content, "\"BorderWidth\"=\"0\"") != NULL);
+    assert(strstr(reg_content, "\"PaddedBorderWidth\"=\"0\"") != NULL);
+    assert(strstr(reg_content, "\"Window\"=\"255 255 255\"") != NULL);
+    assert(strstr(reg_content, "\"ButtonFace\"=\"249 249 249\"") != NULL);
+
+    /* Preserve existing keys outside managed block and update to dark theme (dark = 1). */
+    FILE *f = fopen(reg_path, "a");
+    assert(f != NULL);
+    assert(fputs("\n[Software\\\\CustomApp]\n\"Installed\"=dword:00000001\n", f) >= 0);
+    assert(fclose(f) == 0);
+
+    assert(finncompat_wine_configure_prefix(prefix, (unsigned)getuid(),
+                                            (unsigned)getgid(), 1,
+                                            error, sizeof error) == 0);
+    read_text(reg_path, reg_content, sizeof reg_content);
+    assert(strstr(reg_content, "[Software\\\\CustomApp]") != NULL);
+    assert(strstr(reg_content, "\"Installed\"=dword:00000001") != NULL);
+    assert(strstr(reg_content, "\"Graphics\"=\"wayland\"") != NULL);
+    assert(strstr(reg_content, "\"Decorated\"=\"N\"") != NULL);
+    assert(strstr(reg_content, "\"Window\"=\"35 38 46\"") != NULL);
+    assert(strstr(reg_content, "\"ButtonFace\"=\"47 51 60\"") != NULL);
+    assert(strstr(reg_content, "\"Window\"=\"255 255 255\"") == NULL);
+    assert(strstr(reg_content, "\"ButtonFace\"=\"249 249 249\"") == NULL);
+
+    /* Non-private prefix directory must be rejected. */
+    assert(chmod(prefix, 0755) == 0);
+    assert(finncompat_wine_configure_prefix(prefix, (unsigned)getuid(),
+                                            (unsigned)getgid(), 0,
+                                            error, sizeof error) != 0);
+    assert(strstr(error, "not private") != NULL);
+    assert(chmod(prefix, 0700) == 0);
+
+    /* Invalid prefix arguments. */
+    assert(finncompat_wine_configure_prefix("relative/prefix", (unsigned)getuid(),
+                                            (unsigned)getgid(), 0,
+                                            error, sizeof error) != 0);
+    assert(finncompat_wine_configure_prefix(prefix, 0,
+                                            (unsigned)getgid(), 0,
+                                            error, sizeof error) != 0);
+
+    unlink(reg_path);
+    rmdir(prefix);
 }
 
 static void test_job_status(const char *systemctl) {
@@ -387,6 +455,7 @@ int main(void) {
     test_flatpak_run(systemd_run, run_log);
     test_wine_app_read();
     test_wine_run(systemd_run, run_log);
+    test_wine_configure_prefix();
     test_job_status(systemctl);
 
     unlink(pkg);

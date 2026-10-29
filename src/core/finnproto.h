@@ -28,6 +28,16 @@
 #define FINN_COMP_SOCK     "/run/finn/comp.sock"
 #define FINN_STATE_DIR     "/run/finn/state"
 
+/* The in-process xdg-shell server listens here, not under /run/user/<uid>:
+ * the compositor runs ProtectHome=read-only, which mounts /run/user
+ * read-only in its own namespace, so a bind() there fails with EROFS on
+ * every boot. /run/finn is the compositor's own IPC namespace and is
+ * writable in its sandbox. WAYLAND_DISPLAY takes an absolute path, so
+ * clients connect to exactly this file; no /run/user/<uid>/wayland-0
+ * path is used. */
+#define FINN_WAYLAND_SOCK  "/run/finn/wayland-0"
+#define FINN_BROWSER_SOCK  "/run/finn/browser.sock"
+
 /* The Home panel's recent-activity list. finnd is the only program that
  * starts an app, so it is the only writer; the shell reads it to report what
  * actually happened rather than inventing a history. */

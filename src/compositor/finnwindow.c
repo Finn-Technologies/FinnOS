@@ -4,6 +4,7 @@
 #include "finnsettingsapp.h"
 #include "finnfilesapp.h"
 #include "finnstoreapp.h"
+#include "finnbrowserapp.h"
 #include "finndock.h"
 #include "finndraw.h"
 #include "finntext.h"
@@ -89,6 +90,7 @@ typedef struct {
     int  minimized;
     int  snapped;       /* FINNWINDOW_SNAP_*; 0 when the window floats free */
     int  external;
+    int  ssd;           /* 1 when server-side decoration was negotiated */
     int  client_mapped;
     uint32_t *client_pixels;
     int  client_w, client_h, client_opaque;
@@ -96,10 +98,30 @@ typedef struct {
 } finn_win;
 
 #define FINNWINDOW_CLIENT_MAX_PIXELS (16u * 1024u * 1024u)
+/* Popups are transients, not windows: they never take a slot in g_wins, so
+ * a menu can never refuse a window by exhausting the 8-window budget. The
+ * cap bounds one client's menu cascade, not the desktop. */
+#define FINNWINDOW_POPUP_MAX 16
 static size_t g_client_pixels_used = 0;
 static finn_win g_wins[FINNWINDOW_MAX];
 static int      g_n_wins = 0;
 static int      g_next_id = 1;
+
+/* A popup's pixels live apart from its parent window's: the parent's layer
+ * is cached and shared, and a menu that wrote into it would poison the
+ * cache with chrome that dismisses. The popup draws above its parent at a
+ * parent-relative offset; the offset tracks the parent when it moves. */
+typedef struct {
+    int used;
+    int id;
+    int parent_id;
+    int x, y;
+    uint32_t *pixels;
+    int w, h, opaque;
+    unsigned rev;
+} finn_popup;
+static finn_popup g_popups[FINNWINDOW_POPUP_MAX];
+static int g_popup_serial = 1;
 static unsigned g_external_serial = 1;
 static finnwindow_external_close_handler g_external_close_handler = NULL;
 static void *g_external_close_userdata = NULL;
@@ -233,6 +255,7 @@ int finnwindow_init(const char *icon_dir, const char *font_dir, const char *regi
     finnsettingsapp_init(g_icon_dir, g_font_dir);
     finnfilesapp_init(g_icon_dir, g_font_dir);
     finnstoreapp_init(g_icon_dir, g_font_dir, g_registry);
+    finnbrowserapp_init(g_icon_dir, g_font_dir);
     return ok ? 0 : -1;
 }
 
@@ -293,6 +316,7 @@ void finnwindow_free(void) {
     finnsettingsapp_free();
     finnfilesapp_free();
     finnstoreapp_free();
+    finnbrowserapp_free();
     fsvg_free(&g_ic_expand);
     fsvg_free(&g_ic_min);
     fsvg_free(&g_ic_close);
@@ -344,6 +368,8 @@ static void bring_to_front(int idx) {
 
 static void remove_win_slot(int idx) {
     if (idx < 0 || idx >= g_n_wins) return;
+    if (strcasecmp(g_wins[idx].app_id, "browser") == 0)
+        finnbrowserapp_window_closed();
     external_surface_free(&g_wins[idx]);
     win_cache_free_slot(idx);
     for (int i = idx; i < g_n_wins - 1; i++) {
@@ -547,6 +573,8 @@ int finnwindow_open(const char *arg) {
                 int id = g_wins[i].id;
                 if (g_closing == id) g_closing = 0;
                 bring_to_front(i);
+                if (strcasecmp(app_id, "browser") == 0)
+                    finnbrowserapp_window_opened();
                 g_built = 0;
                 finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
                 return id;
@@ -605,6 +633,8 @@ int finnwindow_open(const char *arg) {
     w->x = wx; w->y = wy; w->w = ww; w->h = wh;
     clamp_window_pos(w, &w->x, &w->y);
     w->saved_x = w->x; w->saved_y = w->y; w->saved_w = ww; w->saved_h = wh;
+    if (strcasecmp(app_id, "browser") == 0)
+        finnbrowserapp_window_opened();
 
     g_built = 0;
     finn_anim_to(&g_a_open, 1.0f, FINN_MOTION_OPEN, 0.0f, FINN_EASE_OUT_BACK);
@@ -634,6 +664,7 @@ int finnwindow_external_open(const char *app_id, const char *title,
     int idx = find_idx(id);
     if (idx < 0) return -1;
     g_wins[idx].external = 1;
+    g_wins[idx].ssd = 1;
     if (surface_w > 0 && surface_h > 0) {
         int title_h = rs(TITLEBAR_H, g_scale);
         if (finnwindow_resize(id, surface_w, surface_h + title_h) != 0) {
@@ -723,13 +754,170 @@ void finnwindow_set_external_close_handler(finnwindow_external_close_handler han
     g_external_close_userdata = userdata;
 }
 
+int finnwindow_external_app_id(int id, const char *app_id) {
+    int idx = find_idx(id);
+    if (idx < 0 || !app_id) return -1;
+    size_t n = 0;
+    while (app_id[n] && n + 1 < sizeof g_wins[idx].app_id) {
+        unsigned char c = (unsigned char)app_id[n];
+        g_wins[idx].app_id[n] = (c == '\n' || c == '\r') ? ' ' : (char)c;
+        n++;
+    }
+    g_wins[idx].app_id[n] = 0;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_external_set_ssd(int id, int ssd) {
+    int idx = find_idx(id);
+    if (idx < 0 || !g_wins[idx].external) return -1;
+    int val = ssd != 0;
+    if (g_wins[idx].ssd != val) {
+        g_wins[idx].ssd = val;
+        g_built = 0;
+    }
+    return 0;
+}
+
 int finnwindow_external_destroy(int id) {
     int idx = find_idx(id);
     if (idx < 0 || !g_wins[idx].external) return -1;
+    for (int i = 0; i < FINNWINDOW_POPUP_MAX; i++)
+        if (g_popups[i].used && g_popups[i].parent_id == id) {
+            free(g_popups[i].pixels);
+            g_client_pixels_used -=
+                (size_t)g_popups[i].w * (size_t)g_popups[i].h;
+            memset(&g_popups[i], 0, sizeof g_popups[i]);
+        }
     g_external_destroying = 1;
     int result = finnwindow_close(id);
     g_external_destroying = 0;
     return result;
+}
+
+static finn_popup *popup_find(int id) {
+    for (int i = 0; i < FINNWINDOW_POPUP_MAX; i++)
+        if (g_popups[i].used && g_popups[i].id == id)
+            return &g_popups[i];
+    return NULL;
+}
+
+int finnwindow_popup_open(int parent_id, int x, int y,
+                          int surface_w, int surface_h) {
+    int pidx = find_idx(parent_id);
+    if (pidx < 0) return -1;
+    for (int i = 0; i < FINNWINDOW_POPUP_MAX; i++) {
+        finn_popup *p = &g_popups[i];
+        if (p->used) continue;
+        if (surface_w <= 0 || surface_h <= 0 || surface_w > 8192 ||
+            surface_h > 8192)
+            return -1;
+        if ((size_t)surface_w * (size_t)surface_h >
+            FINNWINDOW_CLIENT_MAX_PIXELS)
+            return -1;
+        memset(p, 0, sizeof *p);
+        p->used = 1;
+        p->id = g_popup_serial++;
+        if (g_popup_serial <= 0) g_popup_serial = 1;
+        p->parent_id = parent_id;
+        p->x = x;
+        p->y = y;
+        p->w = surface_w;
+        p->h = surface_h;
+        g_built = 0;
+        return p->id;
+    }
+    return -1;
+}
+
+int finnwindow_popup_move(int id, int x, int y) {
+    finn_popup *p = popup_find(id);
+    if (!p) return -1;
+    p->x = x;
+    p->y = y;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_popup_commit(int id, const uint32_t *pixels,
+                            int width, int height, int stride, int opaque) {
+    finn_popup *p = popup_find(id);
+    if (!p) return -1;
+    if (!pixels && width == 0 && height == 0) {
+        free(p->pixels);
+        g_client_pixels_used -= (size_t)p->w * (size_t)p->h;
+        p->pixels = NULL;
+        p->w = 0;
+        p->h = 0;
+        g_built = 0;
+        return 0;
+    }
+    if (!pixels || width <= 0 || height <= 0 || width > 8192 || height > 8192 ||
+        stride < width * 4)
+        return -1;
+    size_t count = (size_t)width * (size_t)height;
+    size_t old_count = (size_t)p->w * (size_t)p->h;
+    if (count > FINNWINDOW_CLIENT_MAX_PIXELS ||
+        g_client_pixels_used - old_count >
+            FINNWINDOW_CLIENT_MAX_PIXELS - count)
+        return -1;
+    uint32_t *copy = p->pixels;
+    int reuse = copy && p->w == width && p->h == height;
+    if (!reuse) {
+        copy = malloc(count * sizeof *copy);
+        if (!copy) return -1;
+    }
+    for (int r = 0; r < height; r++)
+        memcpy(copy + (size_t)r * width,
+               (const unsigned char *)pixels + (size_t)r * (size_t)stride,
+               (size_t)width * sizeof *copy);
+    if (!reuse) {
+        free(p->pixels);
+        g_client_pixels_used -= old_count;
+        g_client_pixels_used += count;
+        p->pixels = copy;
+        p->w = width;
+        p->h = height;
+    }
+    p->opaque = opaque != 0;
+    p->rev++;
+    g_built = 0;
+    return 0;
+}
+
+int finnwindow_popup_destroy(int id) {
+    finn_popup *p = popup_find(id);
+    if (!p) return -1;
+    free(p->pixels);
+    g_client_pixels_used -= (size_t)p->w * (size_t)p->h;
+    memset(p, 0, sizeof *p);
+    g_built = 0;
+    return 0;
+}
+
+/* Popups sit above their parent and below nothing else: the hit walks every
+ * live popup topmost-first, ahead of the window chrome. The coordinates come
+ * back parent-relative so the Wayland seat sees client pixels, not glass. */
+int finnwindow_popup_hit(int px, int py, int *id, int *sx, int *sy) {
+    for (int i = FINNWINDOW_POPUP_MAX - 1; i >= 0; i--) {
+        finn_popup *p = &g_popups[i];
+        int pidx;
+        int title_h;
+        int ox, oy;
+        if (!p->used || !p->pixels || p->w <= 0 || p->h <= 0) continue;
+        pidx = find_idx(p->parent_id);
+        if (pidx < 0 || g_wins[pidx].minimized) continue;
+        title_h = rs(TITLEBAR_H, g_scale);
+        ox = g_wins[pidx].x + p->x;
+        oy = g_wins[pidx].y + title_h + p->y;
+        if (px < ox || px >= ox + p->w || py < oy || py >= oy + p->h)
+            continue;
+        if (id) *id = p->id;
+        if (sx) *sx = px - ox;
+        if (sy) *sy = py - oy;
+        return 1;
+    }
+    return 0;
 }
 
 int finnwindow_external_hit(int px, int py, int *id, int *sx, int *sy) {
@@ -1175,6 +1363,7 @@ int finnwindow_tick(float dt) {
     ch |= finn_anim_tick(&g_a_min, dt);
     if (finnsettingsapp_tick(dt)) { g_built = 0; ch = 1; }
     if (finnstoreapp_tick(dt))    { g_built = 0; ch = 1; }
+    if (finnbrowserapp_poll())    { g_built = 0; ch = 1; }
     float hv = finn_anim_v(&g_a_hover);
     if (hv != g_hover) { g_hover = hv; ch = 1; }
 
@@ -1309,6 +1498,16 @@ int finnwindow_hit(int px, int py, int *out_win_id) {
             }
         }
 
+        if (strcasecmp(w->app_id, "browser") == 0) {
+            int sub = -1;
+            int bh = finnbrowserapp_hit(w->x, w->y, w->w, w->h, px, py, g_scale, &sub);
+            if (bh != FINNBROWSER_HIT_NONE) {
+                g_app_hit = bh;
+                g_app_sub = sub;
+                return FINNWINDOW_HIT_APP_CTRL;
+            }
+        }
+
         int is_settings = (strcasecmp(w->title, "Settings") == 0 ||
                            strcasecmp(w->app_id, "settings") == 0);
         if (is_settings) {
@@ -1372,6 +1571,12 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
             g_built = 0;
         else if (strcasecmp(g_wins[idx].app_id, "files") == 0 &&
                  finnfilesapp_press(FINNFILES_HIT_NONE, 0, px, py, g_scale))
+            g_built = 0;
+        else if (strcasecmp(g_wins[idx].app_id, "browser") == 0 &&
+                 finnbrowserapp_press(FINNBROWSER_HIT_NONE, 0,
+                                      g_wins[idx].x, g_wins[idx].y,
+                                      g_wins[idx].w, g_wins[idx].h,
+                                      px, py, g_scale))
             g_built = 0;
         else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
                  strcasecmp(g_wins[idx].app_id, "settings") == 0) {
@@ -1440,6 +1645,12 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
         else if (strcasecmp(g_wins[idx].app_id, "store") == 0 &&
                  finnstoreapp_press(g_app_hit, g_app_sub, px, py, g_scale))
             g_built = 0;
+        else if (strcasecmp(g_wins[idx].app_id, "browser") == 0 &&
+                 finnbrowserapp_press(g_app_hit, g_app_sub,
+                                      g_wins[idx].x, g_wins[idx].y,
+                                      g_wins[idx].w, g_wins[idx].h,
+                                      px, py, g_scale))
+            g_built = 0;
     }
 
     if (hit_part >= FINNWINDOW_HIT_EXPAND && hit_part <= FINNWINDOW_HIT_CLOSE)
@@ -1448,6 +1659,15 @@ void finnwindow_press(int hit_part, int win_id, int px, int py) {
 
 int finnwindow_drag(int px, int py) {
     int s_drag = finnsettingsapp_drag(px, py, g_scale, &g_last_st);
+    for (int i = g_n_wins - 1; i >= 0; i--) {
+        if (g_wins[i].used && !g_wins[i].minimized &&
+            strcasecmp(g_wins[i].app_id, "browser") == 0) {
+            if (finnbrowserapp_move(g_wins[i].x, g_wins[i].y,
+                                    g_wins[i].w, g_wins[i].h, px, py, g_scale))
+                s_drag = 1;
+            break;
+        }
+    }
     if (s_drag) g_built = 0;
 
     if (g_resizing) {
@@ -1568,6 +1788,15 @@ void finnwindow_release(int px, int py) {
     g_ov_built = 0;
     finnsettingsapp_release();
     finnfilesapp_release();
+    for (int i = g_n_wins - 1; i >= 0; i--) {
+        if (g_wins[i].used && !g_wins[i].minimized &&
+            strcasecmp(g_wins[i].app_id, "browser") == 0) {
+            finnbrowserapp_release(g_wins[i].x, g_wins[i].y,
+                                   g_wins[i].w, g_wins[i].h, px, py, g_scale);
+            g_built = 0;
+            break;
+        }
+    }
     finn_anim_to(&g_a_press, 0.0f, FINN_MOTION_PRESS_OUT, 0.0f, FINN_EASE_OUT);
 }
 
@@ -1580,6 +1809,8 @@ int finnwindow_key(const finn_key_event *e) {
         res = finnfilesapp_key(e);
     else if (strcasecmp(g_wins[idx].app_id, "store") == 0)
         res = finnstoreapp_key(e);
+    else if (strcasecmp(g_wins[idx].app_id, "browser") == 0)
+        res = finnbrowserapp_key(e);
     else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
              strcasecmp(g_wins[idx].app_id, "settings") == 0)
         res = finnsettingsapp_key(e);
@@ -1600,6 +1831,10 @@ int finnwindow_scroll(int px, int py, int clicks) {
         res = finnfilesapp_scroll(clicks, px, py, g_scale);
     else if (strcasecmp(g_wins[idx].app_id, "store") == 0)
         res = finnstoreapp_scroll(clicks, g_scale);
+    else if (strcasecmp(g_wins[idx].app_id, "browser") == 0)
+        res = finnbrowserapp_scroll(clicks, g_wins[idx].x, g_wins[idx].y,
+                                    g_wins[idx].w, g_wins[idx].h,
+                                    px, py, g_scale);
     else if (strcasecmp(g_wins[idx].title, "Settings") == 0 ||
              strcasecmp(g_wins[idx].app_id, "settings") == 0)
         res = finnsettingsapp_scroll(g_wins[idx].x, g_wins[idx].y,
@@ -1625,7 +1860,7 @@ static uint32_t single_win_key(const finn_win *w, float s,
     MIX(st ? st->dark + 2 : 0);
     MIX(focused);
     MIX(blur_h);
-    MIX(w->id); MIX(w->external);
+    MIX(w->id); MIX(w->external); MIX(w->ssd);
     MIX(w->client_rev); MIX(w->client_w); MIX(w->client_h);
     MIX(w->x); MIX(w->y); MIX(w->w); MIX(w->h);
     MIX(w->minimized); MIX(w->maximized); MIX(w->snapped);
@@ -1638,6 +1873,14 @@ static uint32_t single_win_key(const finn_win *w, float s,
         MIX(finnfilesapp_build_key(s));
     } else if (strcasecmp(w->app_id, "store") == 0) {
         MIX(finnstoreapp_build_key(s));
+    } else if (strcasecmp(w->app_id, "browser") == 0) {
+        MIX(finnbrowserapp_build_key(s));
+    } else if (w->external) {
+        for (int pi = 0; pi < FINNWINDOW_POPUP_MAX; pi++) {
+            MIX(g_popups[pi].used ? g_popups[pi].id : 0);
+            MIX(g_popups[pi].rev); MIX(g_popups[pi].x); MIX(g_popups[pi].y);
+            MIX(g_popups[pi].w); MIX(g_popups[pi].h);
+        }
     }
     #undef MIX
     return h ? h : 1u;
@@ -1650,7 +1893,7 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
     MIX(st->dark + 2);
     MIX(g_n_wins);
     for (int i = 0; i < g_n_wins; i++) {
-        MIX(g_wins[i].id); MIX(g_wins[i].external);
+        MIX(g_wins[i].id); MIX(g_wins[i].external); MIX(g_wins[i].ssd);
         MIX(g_wins[i].client_rev); MIX(g_wins[i].client_w); MIX(g_wins[i].client_h);
         MIX(g_wins[i].x); MIX(g_wins[i].y);
         MIX(g_wins[i].w); MIX(g_wins[i].h);
@@ -1665,6 +1908,8 @@ static uint32_t build_key(float s, int lw, int lh, const finn_state *st) {
             MIX(finnfilesapp_build_key(s));
         } else if (strcasecmp(g_wins[i].app_id, "store") == 0) {
             MIX(finnstoreapp_build_key(s));
+        } else if (strcasecmp(g_wins[i].app_id, "browser") == 0) {
+            MIX(finnbrowserapp_build_key(s));
         }
     }
     #undef MIX
@@ -1895,7 +2140,7 @@ static uint32_t app_content_key(const finn_win *w, float s, const finn_state *st
     #define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
     MIX((int)(s * 1000.0f));
     MIX(st ? st->dark + 2 : 0);
-    MIX(w->id);
+    MIX(w->id); MIX(w->ssd);
     MIX(w->w); MIX(w->h);
     MIX(w->maximized);
     for (const char *p = w->title; *p; p++) MIX(*p);
@@ -1907,6 +2152,14 @@ static uint32_t app_content_key(const finn_win *w, float s, const finn_state *st
         MIX(finnfilesapp_build_key(s));
     } else if (strcasecmp(w->app_id, "store") == 0) {
         MIX(finnstoreapp_build_key(s));
+    } else if (strcasecmp(w->app_id, "browser") == 0) {
+        MIX(finnbrowserapp_build_key(s));
+    } else if (w->external) {
+        for (int pi = 0; pi < FINNWINDOW_POPUP_MAX; pi++) {
+            MIX(g_popups[pi].used ? g_popups[pi].id : 0);
+            MIX(g_popups[pi].rev); MIX(g_popups[pi].x); MIX(g_popups[pi].y);
+            MIX(g_popups[pi].w); MIX(g_popups[pi].h);
+        }
     }
     #undef MIX
     return h ? h : 1u;
@@ -2236,7 +2489,11 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                                             finn_theme_dark() ? WIN_BODY_ALPHA_DARK
                                                               : WIN_BODY_ALPHA);
 
-                if (w->external) {
+                if (strcasecmp(w->app_id, "browser") == 0) {
+                    finnbrowserapp_render(g_layer, lw, lh,
+                                          g_lx0, g_ly0, w->x, w->y, w->w, w->h,
+                                          s, st, focused);
+                } else if (w->external) {
                     external_surface_draw(w, wx, wy, lw, lh, s);
                     uint32_t col = (FINN_INK & 0x00FFFFFFu) | 0xB2000000u;
                     finn_text_draw(&g_f_title, g_layer, lw, lh,
@@ -2259,6 +2516,64 @@ void finnwindow_render(int screen_w, int screen_h, float scale,
                 }
 
                 draw_opt_pill(w, g_layer, lw, lh, g_lx0, g_ly0, s);
+
+                /* The parent's own transients draw immediately above it, in
+                 * slot order: a menu belongs to its window, and a higher
+                 * window frosts the menu exactly as it frosts the glass
+                 * underneath. Chromeless — no shadow, no pill, no title. */
+                if (w->external) {
+                    int title_h = rs(TITLEBAR_H, s);
+                    for (int pi = 0; pi < FINNWINDOW_POPUP_MAX; pi++) {
+                        const finn_popup *pp = &g_popups[pi];
+                        int ox, oy;
+                        if (!pp->used || pp->parent_id != w->id || !pp->pixels ||
+                            pp->w <= 0 || pp->h <= 0)
+                            continue;
+                        ox = wx + pp->x;
+                        oy = wy + title_h + pp->y;
+                        for (int r = 0; r < pp->h; r++) {
+                            int ty = oy + r;
+                            uint32_t *drow;
+                            const uint32_t *srow;
+                            int x0, x1, x;
+                            if (ty < 0 || ty >= lh) continue;
+                            drow = g_layer + (size_t)ty * lw;
+                            srow = pp->pixels + (size_t)r * pp->w;
+                            x0 = ox < 0 ? -ox : 0;
+                            x1 = ox + pp->w > lw ? lw - ox : pp->w;
+                            for (x = x0; x < x1; x++) {
+                                uint32_t sc = srow[x];
+                                unsigned sa = sc >> 24;
+                                uint32_t *dst;
+                                uint32_t dc;
+                                unsigned inv;
+                                unsigned sr, sg, sb, dr, dg, db;
+                                unsigned r, g, b;
+                                if (!sa) continue;
+                                dst = &drow[ox + x];
+                                if (sa == 255u || pp->opaque) {
+                                    *dst = sc | 0xff000000u;
+                                    continue;
+                                }
+                                dc = *dst;
+                                inv = 255u - sa;
+                                sr = (sc >> 16) & 0xffu;
+                                sg = (sc >> 8) & 0xffu;
+                                sb = sc & 0xffu;
+                                dr = (dc >> 16) & 0xffu;
+                                dg = (dc >> 8) & 0xffu;
+                                db = dc & 0xffu;
+                                r = (sr * sa + dr * inv + 127u) / 255u;
+                                g = (sg * sa + dg * inv + 127u) / 255u;
+                                b = (sb * sa + db * inv + 127u) / 255u;
+                                *dst = 0xff000000u |
+                                    (r > 255u ? 255u : r) << 16 |
+                                    (g > 255u ? 255u : g) << 8 |
+                                    (b > 255u ? 255u : b);
+                            }
+                        }
+                    }
+                }
 
                 if (wx >= 0 && wy >= 0 && wx + w->w <= lw && wy + w->h <= lh &&
                     w->w > 0 && w->h > 0) {

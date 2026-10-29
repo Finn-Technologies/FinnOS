@@ -78,6 +78,7 @@ exists only at that outer boundary.
 | `finnctl` | the control-plane client; every verb is scriptable | device |
 | `finnpkg` | the package manager and the OTA frontend | device |
 | `finn-window` | a small client that opens or focuses a window | device |
+| `finn-browser` | the headless Chromium driver and frame streamer for Finn Browser | device |
 | `finn-mcp` | the MCP adapter | host |
 
 ## The layers
@@ -91,7 +92,7 @@ exists only at that outer boundary.
                       finnanim · finnpointer · finnkbd · finngpu
                       finndock · finncontrol · finnclock · finnmenu
                       finnwindow · finnsettingsapp · finnfilesapp
-                      finnstoreapp · finnsetup · finnboot · finnwayland
+                      finnstoreapp · finnbrowserapp · finnsetup · finnboot · finnwayland
                             │  DRM/KMS, evdev, ALSA, sysfs
         kernel        Arch Linux: linux, mesa, firmware, systemd
 ```
@@ -161,6 +162,7 @@ transparent layers, and the compositor blits them.
 | Settings | `finnsettingsapp` | a window | the Start Menu, the Control Center, `settings.page` |
 | Finn Files | `finnfilesapp` | a window | the Start Menu or `files.open` |
 | Finn Store | `finnstoreapp` | a window | the Start Menu |
+| Finn Browser | `finnbrowserapp` | a window | the Start Menu, the dock, or `window.open` |
 
 The Start Menu is the one surface that is not anchored to a control: it is the
 system's front door, so it stands in the middle of the room and the desktop
@@ -195,6 +197,32 @@ because GTK refuses a display without it; no data crosses.
 This path was exercised with a real GTK Calculator through a standalone test
 server on an ARM Linux VM. It has not been verified as a full desktop
 walkthrough on installed FinnOS.
+
+### Single-Chrome Windows and Third-Party Toolkits
+
+FinnOS aims for single-chrome windows where application windows use the system's
+native titlebars and decorations rather than duplicated or mismatched foreign
+titlebars.
+
+**What works**:
+- `finn-comp` advertises `zxdg_decoration_manager_v1` (server-side mode) and
+  `org_kde_kwin_server_decoration_manager` (server mode).
+- `finnd` passes `GTK_CSD=0` to launched apps and Flatpaks (`--env=GTK_CSD=0`).
+- Toolkits that honour server-side decoration or `GTK_CSD=0` (standard GTK3 apps,
+  standard GTK4 `GtkWindow`s without a custom titlebar, Qt/SDL/winit clients
+  using `xdg-decoration`, and Wine apps configured with `Decorated=N` and Finn
+  Light/Dark `Control Panel\Colors`) open with Finn's titlebar as the only
+  chrome.
+
+**What still shows foreign chrome and why**:
+- GTK4 / libadwaita applications that explicitly set a custom client titlebar
+  widget (`gtk_window_set_titlebar()` or `AdwApplicationWindow` /
+  `AdwHeaderBar`, such as GNOME Calculator `org.gnome.Calculator`)
+  unconditionally render their own headerbar inside the client surface and
+  ignore both `zxdg_decoration_manager_v1` /
+  `org_kde_kwin_server_decoration_manager` and `GTK_CSD=0`. Because FinnOS
+  never crops or guesses client headerbars out of the pixel stream, these apps
+  still display their internal `AdwHeaderBar` beneath Finn's titlebar.
 
 ## The control plane
 
@@ -247,15 +275,20 @@ Keeping them apart is what lets the shell show an app that is honestly "not
 installed" without the package manager having to edit a file the OS ships — and
 it keeps a catalogue update from wiping the user's install list.
 
-The catalogue ships three native entries: **Settings** (`settings-app.svg`),
-**Finn Files** (`files.svg`) and **Finn Store** (`store.svg`). All three are
-first-party applications drawn inside the compositor. It also carries remote
-catalogue entries whose `source` is `flatpak` or `winget`; those are discovery
-records for the Store, not native apps, and they have no local command.
+The catalogue ships four native entries: **Settings** (`settings-app.svg`),
+**Finn Files** (`files.svg`), **Finn Store** (`store.svg`) and **Finn Browser**
+(`browser.svg`). All four are first-party applications drawn inside the
+compositor. It also carries remote catalogue entries whose `source` is
+`flatpak` or `winget`; those are discovery records for the Store, not native
+apps, and they have no local command.
 
 An app joins the native catalogue when its view is real. An entry is not a
-promise that the window is useful. There is no browser entry, because no
-browser view exists.
+promise that the window is useful. **Finn Browser** combines native shell chrome
+with an isolated web engine: `finnbrowserapp` in `finn-comp` draws native tabs,
+address bar, navigation, and find bar directly into the compositor's frame,
+while `/usr/local/bin/finn-browser` drives headless Chromium over
+`--remote-debugging-pipe` on fds 3 & 4 and streams decoded `0xFFRRGGBB` frames
+over `/run/finn/browser.sock` (`0660`, `root:finn`, `SO_PEERCRED`-checked).
 
 An app is "installed" when the package manager has recorded its id, and it
 records that only after checking that the launcher is executable. A lit tile

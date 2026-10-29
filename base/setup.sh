@@ -153,7 +153,7 @@ else
     echo "Flatpak is not packaged for $ARCH; Flatpak apps are unavailable on this image"
 fi
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\nstore\nbrowser\n' > /var/lib/finnpkg/installed
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l

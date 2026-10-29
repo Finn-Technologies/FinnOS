@@ -70,6 +70,15 @@ int finncompat_wine_run_wrapped(const char *systemd_run, const char *wine,
                                 const char *home, const char *executable,
                                 const char *prefix, unsigned uid, unsigned gid,
                                 char *error, size_t error_cap);
+/*
+ * Apply Finn's Wayland driver, zero-border metrics and system theme colors
+ * directly to the Wine prefix user registry so Windows applications blend
+ * cleanly into the desktop and redraw without simulated window borders.
+ */
+int finncompat_wine_configure_prefix(const char *prefix,
+                                     unsigned uid, unsigned gid,
+                                     int dark,
+                                     char *error, size_t error_cap);
 /* Launch one validated system-installed Flatpak app in the FinnOS Wayland
  * session. The app id is passed as one argv element; no shell is involved. */
 int finncompat_flatpak_run(const char *systemd_run, const char *flatpak,

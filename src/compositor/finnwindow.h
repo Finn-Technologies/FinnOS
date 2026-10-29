@@ -135,11 +135,28 @@ int  finnwindow_briefs(finnwindow_brief *out, int max);
  * Surface pixels are copied into compositor-owned memory (bounded to 64 Mi
  * pixels across clients) so a client can reuse its SHM buffer immediately. */
 int  finnwindow_external_open(const char *app_id, const char *title,
-                              int surface_w, int surface_h);
+                               int surface_w, int surface_h);
 int  finnwindow_external_title(int id, const char *title);
+/* The client named its application after the window already existed
+ * (set_app_id arrives after get_toplevel). Regroups the taskbar tile
+ * rather than reopening. */
+int  finnwindow_external_app_id(int id, const char *app_id);
+int  finnwindow_external_set_ssd(int id, int ssd);
 int  finnwindow_external_commit(int id, const uint32_t *pixels,
                                 int width, int height, int stride, int opaque);
 int  finnwindow_external_destroy(int id);
+/* A popup is a chromeless child of its parent's window: no titlebar, no
+ * options pill, no resize handles, no slot in the 8-window budget and no
+ * row in window.list. It draws above its parent at a parent-relative
+ * offset, dismisses on an outside press or Escape, and never takes focus
+ * away as a window of its own. */
+int  finnwindow_popup_open(int parent_id, int x, int y,
+                           int surface_w, int surface_h);
+int  finnwindow_popup_move(int id, int x, int y);
+int  finnwindow_popup_commit(int id, const uint32_t *pixels,
+                             int width, int height, int stride, int opaque);
+int  finnwindow_popup_destroy(int id);
+int  finnwindow_popup_hit(int px, int py, int *id, int *sx, int *sy);
 typedef void (*finnwindow_external_close_handler)(int id, void *userdata);
 void finnwindow_set_external_close_handler(finnwindow_external_close_handler handler,
                                            void *userdata);

@@ -40,6 +40,7 @@ install: all
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-files
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/finn-store
 	ln -sf finn-window $(DESTDIR)$(BINDIR)/arc
+	# Note: /usr/local/bin/finn-browser is installed as a dedicated binary by src/compositor/Makefile
 
 clean:
 	rm -f finnd finnctl finn-window

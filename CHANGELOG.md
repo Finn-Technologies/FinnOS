@@ -5,6 +5,32 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Single-chrome window decoration and toolkit integration
+
+- `finn-comp` advertises `zxdg_decoration_manager_v1` (server-side mode) and
+  `org_kde_kwin_server_decoration_manager` (server mode) so client toolkits
+  negotiate server-side window framing.
+- `finnd` passes `GTK_CSD=0` (`--env=GTK_CSD=0`) to launched applications and
+  Flatpaks, ensuring applications that honour server-side decoration or
+  `GTK_CSD=0` (GTK3, standard GTK4 `GtkWindow`s, Qt, SDL, winit) open with
+  Finn's titlebar as the single window chrome.
+- Wine applications receive undecorated Wayland framing (`Decorated=N`) and
+  Light/Dark palette synchronization matching FinnOS system appearance via
+  `Control Panel\Colors`.
+
+### Finn Browser
+
+- Added first-party web browser (**Finn Browser**, `browser` in
+  `assets/apps.registry` and `/var/lib/finnpkg/installed`).
+- `finnbrowserapp` in `finn-comp` draws native tabs, address bar, navigation
+  buttons, and find bar directly into the compositor's frame.
+- `/usr/local/bin/finn-browser` drives headless Chromium over
+  `--remote-debugging-pipe` on fds 3 & 4 and streams decoded `0xFFRRGGBB` frames
+  over `/run/finn/browser.sock` (`0660`, `root:finn`, `SO_PEERCRED`-checked).
+- When headless Chromium (`chromium` or Flatpak `org.chromium.Chromium`) is not
+  installed, the browser window opens cleanly and reports that the engine is
+  unavailable.
+
 ### The shell is drawn at one scale, from the Figma frames
 
 - `finn_ui_scale()` is now the one density factor for every surface:

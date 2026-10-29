@@ -158,7 +158,7 @@ mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/l
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\nstore\nbrowser\n' > /var/lib/finnpkg/installed
 # Every icon, when the payload is the tree. A list of names is a second
 # place to forget one, and an icon the shell cannot find is a tile drawn
 # as an empty square. The list below is only for the host-server flow,

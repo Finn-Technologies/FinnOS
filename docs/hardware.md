@@ -135,6 +135,11 @@ only, which is what an ARM board has.
   pretending every Flathub app works.
 - **Wine and winget GUI behaviour** has not been validated on FinnOS. The
   commands exist; the pixels are unproven.
+- **Finn Browser and headless Chromium.** Finn Browser draws its native chrome
+  inside `finn-comp` and relies on an external headless Chromium engine
+  (`chromium` from the Arch repositories or Flatpak `org.chromium.Chromium`) to
+  render web content. If neither engine is installed, the browser window opens
+  cleanly and reports that the engine is unavailable.
 
 ## Checking a machine
 

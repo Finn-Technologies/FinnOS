@@ -341,6 +341,24 @@ sudo journalctl -u 'finn-app-*' --no-pager | tail -60
 command` rather than starting something that is not there. A launched app runs
 in its own transient systemd unit; the journal for it is under its unit name.
 
+### Finn Browser reports the engine is unavailable
+
+Finn Browser separates native tab and chrome rendering (`finnbrowserapp` inside
+`finn-comp`) from page rendering (`/usr/local/bin/finn-browser`). The browser
+requires headless Chromium (`chromium` or Flatpak `org.chromium.Chromium`).
+
+If neither engine is installed on the machine, the browser window opens cleanly
+and reports that the engine is unavailable instead of crashing or showing a
+black canvas.
+
+To provide the engine, install `chromium` via pacman or Flatpak:
+
+```sh
+sudo pacman -S chromium
+# or
+flatpak install --system flathub org.chromium.Chromium
+```
+
 ### A Flatpak opens a blank window or crashes
 
 The compositor hosts only xdg-shell `wl_shm` toplevels. Popups, subsurfaces,

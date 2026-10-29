@@ -17,7 +17,15 @@
 #include <wayland-server.h>
 #include <wayland-server-protocol.h>
 #include "xdg-shell-server-protocol.h"
+#include "xdg-decoration-unstable-v1-server-protocol.h"
 #include <xkbcommon/xkbcommon.h>
+
+typedef enum {
+    FINN_WL_ROLE_NONE = 0,
+    FINN_WL_ROLE_TOPLEVEL,
+    FINN_WL_ROLE_POPUP,
+    FINN_WL_ROLE_SUBSURFACE
+} FinnWlRole;
 
 #define FINN_WAYLAND_MAX_DIMENSION 32768
 #define FINN_WAYLAND_MAX_BUFFER_BYTES (256u * 1024u * 1024u)
@@ -26,6 +34,29 @@
 struct FinnFrameCallback {
     struct wl_list link;
     struct wl_resource *resource;
+};
+
+/* The pending xdg_positioner: every set_* accumulates here until get_popup
+ * consumes it once. A used or destroyed positioner cannot be reused — the
+ * second get_popup is INVALID_POSITIONER, not a second popup. */
+struct FinnPositioner {
+    struct wl_resource *resource;
+    bool has_size;
+    int32_t width;
+    int32_t height;
+    int32_t anchor_x;
+    int32_t anchor_y;
+    int32_t anchor_w;
+    int32_t anchor_h;
+    uint32_t anchor;
+    uint32_t gravity;
+    uint32_t constraint;
+    int32_t offset_x;
+    int32_t offset_y;
+    bool reactive;
+    int32_t parent_w;
+    int32_t parent_h;
+    uint32_t parent_serial;
 };
 
 struct FinnPointerResource {
@@ -43,23 +74,59 @@ struct FinnWaylandSurface {
     struct FinnWayland *server;
     struct wl_resource *resource;
     struct wl_resource *xdg_surface_resource;
-    struct wl_resource *toplevel_resource;
+    union {
+        struct wl_resource *toplevel_resource;
+        struct wl_resource *xdg_toplevel_res;
+    };
+    struct wl_resource *popup_resource;
+    struct wl_resource *subsurface_resource;
+    struct wl_resource *toplevel_decoration_res;
+    struct wl_resource *kde_decoration_res;
+    int server_decorated;
+    FinnWlRole role;
+    /* A subsurface's parent: commits composite into the parent's pixels
+     * rather than opening a window. Popups name their parent at creation
+     * instead, through the popup_created callback. */
+    FinnWaylandSurface *parent;
+    struct wl_list children;
+    struct wl_list siblings;
+    int32_t subsurface_x;
+    int32_t subsurface_y;
+    bool subsurface_desync;
+    /* xdg_popup geometry, resolved at creation from the positioner. The
+     * compositor places the transient relative to its parent window. */
+    int32_t popup_x;
+    int32_t popup_y;
+    bool is_popup;
+    bool popup_grabbed;
     struct wl_resource *pending_buffer;
     struct wl_listener pending_buffer_destroy;
     bool pending_attach;
+    struct {
+        bool buffer_set;
+        struct wl_resource *buffer_res;
+    } pending;
+    bool has_buffer;
     bool committed_once;
     bool initial_configure_sent;
     bool role_assigned;
     bool role_created;
     bool destroying;
+    uint32_t first_configure_serial;
     uint32_t last_configure_serial;
     uint32_t acked_configure_serial;
+    int32_t cfg_width;
+    int32_t cfg_height;
+    bool cfg_activated;
+    bool cfg_maximized;
+    uint32_t cfg_states;
     int32_t width;
     int32_t height;
     int32_t stride;
     FinnWaylandFormat format;
     uint32_t *pixels;
     char *title;
+    char *app_id;
     struct wl_list frame_callbacks;
 };
 
@@ -67,10 +134,13 @@ struct FinnWayland {
     struct wl_display *display;
     struct wl_event_loop *event_loop;
     struct wl_global *compositor_global;
+    struct wl_global *subcompositor_global;
     struct wl_global *seat_global;
     struct wl_global *output_global;
     struct wl_global *xdg_global;
     struct wl_global *data_device_manager_global;
+    struct wl_global *xdg_decoration_global;
+    struct wl_global *kde_decoration_global;
     struct wl_list surfaces;
     struct wl_list pointers;
     struct wl_list keyboards;
@@ -100,6 +170,8 @@ struct FinnWayland {
 static void surface_resource_destroy(struct wl_resource *resource);
 static void xdg_surface_resource_destroy(struct wl_resource *resource);
 static void toplevel_resource_destroy(struct wl_resource *resource);
+static void composite_subsurface(FinnWaylandSurface *parent);
+static uint32_t send_pending_configure(FinnWayland *server, FinnWaylandSurface *surface);
 static const struct xdg_surface_interface xdg_surface_implementation;
 static const struct xdg_toplevel_interface toplevel_implementation;
 
@@ -209,6 +281,8 @@ pending_buffer_destroyed(struct wl_listener *listener, void *data)
     (void)data;
     surface->pending_buffer = NULL;
     surface->pending_attach = true;
+    surface->pending.buffer_res = NULL;
+    surface->pending.buffer_set = true;
     wl_list_remove(&surface->pending_buffer_destroy.link);
     wl_list_init(&surface->pending_buffer_destroy.link);
 }
@@ -220,6 +294,10 @@ clear_pending_buffer_listener(FinnWaylandSurface *surface)
         wl_list_remove(&surface->pending_buffer_destroy.link);
         wl_list_init(&surface->pending_buffer_destroy.link);
     }
+    surface->pending_buffer = NULL;
+    surface->pending_attach = false;
+    surface->pending.buffer_res = NULL;
+    surface->pending.buffer_set = false;
 }
 
 static void
@@ -261,8 +339,26 @@ surface_resource_destroy(struct wl_resource *resource)
     if (surface->server->keyboard_focus == surface)
         finn_wayland_keyboard_focus(surface->server, NULL);
 
+    if (surface->is_popup &&
+        surface->server->callbacks.popup_destroyed)
+        surface->server->callbacks.popup_destroyed(
+            surface->server->userdata, surface);
     if (surface->toplevel_resource)
         wl_resource_destroy(surface->toplevel_resource);
+    if (surface->popup_resource)
+        wl_resource_destroy(surface->popup_resource);
+    if (surface->subsurface_resource)
+        wl_resource_destroy(surface->subsurface_resource);
+    if (surface->toplevel_decoration_res) {
+        wl_resource_set_user_data(surface->toplevel_decoration_res, NULL);
+        wl_resource_destroy(surface->toplevel_decoration_res);
+        surface->toplevel_decoration_res = NULL;
+    }
+    if (surface->kde_decoration_res) {
+        wl_resource_set_user_data(surface->kde_decoration_res, NULL);
+        wl_resource_destroy(surface->kde_decoration_res);
+        surface->kde_decoration_res = NULL;
+    }
     if (surface->xdg_surface_resource)
         wl_resource_destroy(surface->xdg_surface_resource);
     clear_pending_buffer_listener(surface);
@@ -270,9 +366,18 @@ surface_resource_destroy(struct wl_resource *resource)
     wl_list_for_each_safe(frame, tmp, &surface->frame_callbacks, link)
         wl_resource_destroy(frame->resource);
     notify_role_destroyed(surface);
+    if (surface->parent)
+        wl_list_remove(&surface->siblings);
+    FinnWaylandSurface *child, *child_tmp;
+    wl_list_for_each_safe(child, child_tmp, &surface->children, siblings) {
+        child->parent = NULL;
+        wl_list_remove(&child->siblings);
+        wl_list_init(&child->siblings);
+    }
     wl_list_remove(&surface->link);
     free(surface->pixels);
     free(surface->title);
+    free(surface->app_id);
     free(surface);
 }
 
@@ -341,7 +446,10 @@ surface_attach_request(struct wl_client *client, struct wl_resource *resource,
     clear_pending_buffer_listener(surface);
     surface->pending_buffer = buffer;
     surface->pending_attach = true;
+    surface->pending.buffer_res = buffer;
+    surface->pending.buffer_set = true;
     if (buffer) {
+        surface->has_buffer = true;
         surface->pending_buffer_destroy.notify = pending_buffer_destroyed;
         wl_resource_add_destroy_listener(buffer,
                                          &surface->pending_buffer_destroy);
@@ -472,9 +580,20 @@ compositor_create_surface(struct wl_client *client,
         wl_client_post_no_memory(client);
         return;
     }
+    surface->app_id = strdup("");
+    if (!surface->app_id) {
+        free(surface->title);
+        free(surface);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    surface->subsurface_desync = true;
+    wl_list_init(&surface->children);
+    wl_list_init(&surface->siblings);
     surface->resource = wl_resource_create(client, &wl_surface_interface,
                                            wl_resource_get_version(resource), id);
     if (!surface->resource) {
+        free(surface->app_id);
         free(surface->title);
         free(surface);
         wl_client_post_no_memory(client);
@@ -492,6 +611,191 @@ static const struct wl_compositor_interface compositor_implementation = {
     .create_surface = compositor_create_surface,
     .create_region = compositor_create_region,
 };
+
+/*
+ * Subsurfaces: the piece Firefox 158 refuses to start without. A subsurface
+ * has no window of its own: it is a layer of its parent's surface, placed at
+ * an offset the client names with set_position. At commit the layer is
+ * composited into the parent's pixels in stacking order (place_above /
+ * place_below reorder siblings), and the parent's surface_committed fires
+ * once with the whole picture — the compositor never opens a window for a
+ * subsurface, and committing one without a parent is a protocol error, not
+ * a toplevel.
+ *
+ * Sync mode (set_sync, the default) batches a subsurface commit with its
+ * parent: the pixels wait until the parent commits. Desync applies at once.
+ * Firefox uses subsurfaces for video overlays and GPU-adjacent layers; here
+ * every layer is SHM software, so sync vs desync only decides *when* the
+ * parent's callback fires.
+ */
+static void subsurface_resource_destroy(struct wl_resource *resource);
+
+static void
+subsurface_destroy_request(struct wl_client *client,
+                           struct wl_resource *resource)
+{
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static void
+subsurface_set_position(struct wl_client *client, struct wl_resource *resource,
+                        int32_t x, int32_t y)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    if (x < -FINN_WAYLAND_MAX_DIMENSION || x > FINN_WAYLAND_MAX_DIMENSION ||
+        y < -FINN_WAYLAND_MAX_DIMENSION || y > FINN_WAYLAND_MAX_DIMENSION) {
+        wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "subsurface position is out of range");
+        return;
+    }
+    surface->subsurface_x = x;
+    surface->subsurface_y = y;
+}
+
+static void
+subsurface_place_above(struct wl_client *client, struct wl_resource *resource,
+                       struct wl_resource *sibling_resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    FinnWaylandSurface *sibling = sibling_resource
+        ? wl_resource_get_user_data(sibling_resource) : NULL;
+    (void)client;
+    if (sibling && (!sibling->subsurface_resource ||
+                    sibling->parent != surface->parent)) {
+        wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "place_above names a surface that is not a sibling subsurface");
+        return;
+    }
+    wl_list_remove(&surface->siblings);
+    if (sibling)
+        wl_list_insert(&sibling->siblings, &surface->siblings);
+    else if (surface->parent)
+        wl_list_insert(surface->parent->children.prev, &surface->siblings);
+}
+
+static void
+subsurface_place_below(struct wl_client *client, struct wl_resource *resource,
+                       struct wl_resource *sibling_resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    FinnWaylandSurface *sibling = sibling_resource
+        ? wl_resource_get_user_data(sibling_resource) : NULL;
+    (void)client;
+    if (sibling && (!sibling->subsurface_resource ||
+                    sibling->parent != surface->parent)) {
+        wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "place_below names a surface that is not a sibling subsurface");
+        return;
+    }
+    wl_list_remove(&surface->siblings);
+    if (sibling)
+        wl_list_insert(sibling->siblings.prev, &surface->siblings);
+    else if (surface->parent)
+        wl_list_insert(&surface->parent->children, &surface->siblings);
+}
+
+static void
+subsurface_set_sync(struct wl_client *client, struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    surface->subsurface_desync = false;
+}
+
+static void
+subsurface_set_desync(struct wl_client *client, struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    surface->subsurface_desync = true;
+}
+
+static const struct wl_subsurface_interface subsurface_implementation = {
+    .destroy = subsurface_destroy_request,
+    .set_position = subsurface_set_position,
+    .place_above = subsurface_place_above,
+    .place_below = subsurface_place_below,
+    .set_sync = subsurface_set_sync,
+    .set_desync = subsurface_set_desync,
+};
+
+static void
+subsurface_resource_destroy(struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    if (!surface)
+        return;
+    surface->subsurface_resource = NULL;
+    if (surface->parent) {
+        wl_list_remove(&surface->siblings);
+        wl_list_init(&surface->siblings);
+        surface->parent = NULL;
+        if (!surface->destroying) {
+            surface->role_assigned = false;
+            surface->role = FINN_WL_ROLE_NONE;
+        }
+    }
+}
+
+static void
+subcompositor_destroy_request(struct wl_client *client,
+                              struct wl_resource *resource)
+{
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static void
+subcompositor_get_subsurface(struct wl_client *client,
+                             struct wl_resource *resource, uint32_t id,
+                             struct wl_resource *surface_resource,
+                             struct wl_resource *parent_resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(surface_resource);
+    FinnWaylandSurface *parent = wl_resource_get_user_data(parent_resource);
+    struct wl_resource *subsurface;
+    if (!surface || !parent || surface == parent ||
+        surface->role_assigned || surface->committed_once) {
+        wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_SURFACE,
+                               "surface cannot take the subsurface role");
+        return;
+    }
+    subsurface = wl_resource_create(client, &wl_subsurface_interface,
+                                    wl_resource_get_version(resource), id);
+    if (!subsurface) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    surface->subsurface_resource = subsurface;
+    surface->role_assigned = true;
+    surface->role = FINN_WL_ROLE_SUBSURFACE;
+    surface->parent = parent;
+    wl_list_insert(parent->children.prev, &surface->siblings);
+    wl_resource_set_implementation(subsurface, &subsurface_implementation,
+                                   surface, subsurface_resource_destroy);
+}
+
+static const struct wl_subcompositor_interface subcompositor_implementation = {
+    .destroy = subcompositor_destroy_request,
+    .get_subsurface = subcompositor_get_subsurface,
+};
+
+static void
+bind_subcompositor(struct wl_client *client, void *data, uint32_t version,
+                   uint32_t id)
+{
+    FinnWayland *server = data;
+    struct wl_resource *resource = wl_resource_create(
+        client, &wl_subcompositor_interface, version < 1 ? version : 1, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &subcompositor_implementation,
+                                   server, NULL);
+}
 
 static void
 bind_compositor(struct wl_client *client, void *data, uint32_t version,
@@ -937,40 +1241,182 @@ static void
 xdg_positioner_destroy(struct wl_client *client,
                        struct wl_resource *resource)
 {
+    struct FinnPositioner *positioner = wl_resource_get_user_data(resource);
     (void)client;
+    if (positioner) {
+        if (positioner->resource == resource)
+            positioner->resource = NULL;
+        free(positioner);
+    }
     wl_resource_destroy(resource);
 }
 
-#define IGNORE_POSITIONER_REQUEST(name, args, ignored) \
-    static void name args { (void)client; (void)resource; ignored; }
+static struct FinnPositioner *
+positioner_from(struct wl_resource *resource)
+{
+    struct FinnPositioner *positioner = wl_resource_get_user_data(resource);
+    if (!positioner || positioner->resource != resource) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner is already used or destroyed");
+        return NULL;
+    }
+    return positioner;
+}
 
-IGNORE_POSITIONER_REQUEST(positioner_size,
-    (struct wl_client *client, struct wl_resource *resource,
-     int32_t width, int32_t height), (void)width; (void)height)
-IGNORE_POSITIONER_REQUEST(positioner_anchor_rect,
-    (struct wl_client *client, struct wl_resource *resource,
-     int32_t x, int32_t y, int32_t width, int32_t height),
-    (void)x; (void)y; (void)width; (void)height)
-IGNORE_POSITIONER_REQUEST(positioner_anchor,
-    (struct wl_client *client, struct wl_resource *resource, uint32_t anchor),
-    (void)anchor)
-IGNORE_POSITIONER_REQUEST(positioner_gravity,
-    (struct wl_client *client, struct wl_resource *resource, uint32_t gravity),
-    (void)gravity)
-IGNORE_POSITIONER_REQUEST(positioner_constraint_adjustment,
-    (struct wl_client *client, struct wl_resource *resource,
-     uint32_t adjustment), (void)adjustment)
-IGNORE_POSITIONER_REQUEST(positioner_offset,
-    (struct wl_client *client, struct wl_resource *resource,
-     int32_t x, int32_t y), (void)x; (void)y)
-IGNORE_POSITIONER_REQUEST(positioner_reactive,
-    (struct wl_client *client, struct wl_resource *resource), (void)0)
-IGNORE_POSITIONER_REQUEST(positioner_parent_size,
-    (struct wl_client *client, struct wl_resource *resource,
-     int32_t width, int32_t height), (void)width; (void)height)
-IGNORE_POSITIONER_REQUEST(positioner_parent_configure,
-    (struct wl_client *client, struct wl_resource *resource, uint32_t serial),
-    (void)serial)
+static void
+positioner_size(struct wl_client *client, struct wl_resource *resource,
+                int32_t width, int32_t height)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (width <= 0 || height <= 0 ||
+        width > FINN_WAYLAND_MAX_DIMENSION ||
+        height > FINN_WAYLAND_MAX_DIMENSION) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner size is out of range");
+        return;
+    }
+    p->width = width;
+    p->height = height;
+    p->has_size = true;
+}
+
+static void
+positioner_anchor_rect(struct wl_client *client, struct wl_resource *resource,
+                       int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (width <= 0 || height <= 0 ||
+        width > FINN_WAYLAND_MAX_DIMENSION ||
+        height > FINN_WAYLAND_MAX_DIMENSION ||
+        x < -FINN_WAYLAND_MAX_DIMENSION || x > FINN_WAYLAND_MAX_DIMENSION ||
+        y < -FINN_WAYLAND_MAX_DIMENSION || y > FINN_WAYLAND_MAX_DIMENSION) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner anchor rectangle is out of range");
+        return;
+    }
+    p->anchor_x = x;
+    p->anchor_y = y;
+    p->anchor_w = width;
+    p->anchor_h = height;
+}
+
+static void
+positioner_anchor(struct wl_client *client, struct wl_resource *resource,
+                  uint32_t anchor)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (anchor > (XDG_POSITIONER_ANCHOR_TOP | XDG_POSITIONER_ANCHOR_BOTTOM |
+                  XDG_POSITIONER_ANCHOR_LEFT | XDG_POSITIONER_ANCHOR_RIGHT)) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner anchor is not a valid anchor");
+        return;
+    }
+    p->anchor = anchor;
+}
+
+static void
+positioner_gravity(struct wl_client *client, struct wl_resource *resource,
+                   uint32_t gravity)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (gravity > (XDG_POSITIONER_GRAVITY_TOP | XDG_POSITIONER_GRAVITY_BOTTOM |
+                    XDG_POSITIONER_GRAVITY_LEFT |
+                    XDG_POSITIONER_GRAVITY_RIGHT)) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner gravity is not a valid gravity");
+        return;
+    }
+    p->gravity = gravity;
+}
+
+static void
+positioner_constraint_adjustment(
+    struct wl_client *client, struct wl_resource *resource, uint32_t adjustment)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (adjustment > (XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+                      XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+                      XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
+                      XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y |
+                      XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X |
+                      XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_Y)) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner constraint adjustment is not valid");
+        return;
+    }
+    p->constraint = adjustment;
+}
+
+static void
+positioner_offset(struct wl_client *client, struct wl_resource *resource,
+                  int32_t x, int32_t y)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (x < -FINN_WAYLAND_MAX_DIMENSION || x > FINN_WAYLAND_MAX_DIMENSION ||
+        y < -FINN_WAYLAND_MAX_DIMENSION || y > FINN_WAYLAND_MAX_DIMENSION) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner offset is out of range");
+        return;
+    }
+    p->offset_x = x;
+    p->offset_y = y;
+}
+
+static void
+positioner_reactive(struct wl_client *client, struct wl_resource *resource)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    p->reactive = true;
+}
+
+static void
+positioner_parent_size(struct wl_client *client, struct wl_resource *resource,
+                       int32_t width, int32_t height)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    if (width <= 0 || height <= 0 ||
+        width > FINN_WAYLAND_MAX_DIMENSION ||
+        height > FINN_WAYLAND_MAX_DIMENSION) {
+        wl_resource_post_error(resource,
+                               XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "positioner parent size is out of range");
+        return;
+    }
+    p->parent_w = width;
+    p->parent_h = height;
+}
+
+static void
+positioner_parent_configure(struct wl_client *client,
+                            struct wl_resource *resource, uint32_t serial)
+{
+    struct FinnPositioner *p = positioner_from(resource);
+    (void)client;
+    if (!p) return;
+    p->parent_serial = serial;
+}
 
 static const struct xdg_positioner_interface positioner_implementation = {
     .destroy = xdg_positioner_destroy,
@@ -987,16 +1433,26 @@ static const struct xdg_positioner_interface positioner_implementation = {
 
 static void
 xdg_wm_base_create_positioner(struct wl_client *client,
-                             struct wl_resource *resource, uint32_t id)
+                              struct wl_resource *resource, uint32_t id)
 {
-    struct wl_resource *positioner = wl_resource_create(
-        client, &xdg_positioner_interface, wl_resource_get_version(resource), id);
+    struct FinnPositioner *positioner = calloc(1, sizeof(*positioner));
+    struct wl_resource *positioner_resource;
     if (!positioner) {
         wl_client_post_no_memory(client);
         return;
     }
-    wl_resource_set_implementation(positioner, &positioner_implementation,
-                                   NULL, NULL);
+    positioner_resource = wl_resource_create(
+        client, &xdg_positioner_interface,
+        wl_resource_get_version(resource), id);
+    if (!positioner_resource) {
+        free(positioner);
+        wl_client_post_no_memory(client);
+        return;
+    }
+    positioner->resource = positioner_resource;
+    wl_resource_set_implementation(positioner_resource,
+                                   &positioner_implementation, positioner,
+                                   NULL);
 }
 
 static void
@@ -1101,6 +1557,7 @@ xdg_surface_get_toplevel(struct wl_client *client,
     surface->toplevel_resource = toplevel;
     surface->role_assigned = true;
     surface->role_created = true;
+    surface->role = FINN_WL_ROLE_TOPLEVEL;
     wl_resource_set_implementation(toplevel, &toplevel_implementation, surface,
                                    toplevel_resource_destroy);
     if (surface->server->callbacks.surface_created)
@@ -1109,16 +1566,215 @@ xdg_surface_get_toplevel(struct wl_client *client,
 }
 
 static void
-xdg_surface_get_popup(struct wl_client *client, struct wl_resource *resource,
-                      uint32_t id, struct wl_resource *parent,
-                      struct wl_resource *positioner)
+popup_resource_destroy(struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    if (!surface)
+        return;
+    surface->popup_resource = NULL;
+    if (!surface->destroying) {
+        surface->is_popup = false;
+        surface->popup_grabbed = false;
+        surface->role_assigned = false;
+        surface->role = FINN_WL_ROLE_NONE;
+        surface->first_configure_serial = 0;
+    }
+}
+
+static void
+popup_destroy_request(struct wl_client *client, struct wl_resource *resource)
 {
     (void)client;
-    (void)id;
-    (void)parent;
-    (void)positioner;
-    wl_resource_post_error(resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
-                           "xdg_popup roles are not supported");
+    wl_resource_destroy(resource);
+}
+
+/* An explicit grab is what lets a menu take the pointer: while grabbed,
+ * the compositor dismisses the popup on an outside press instead of
+ * delivering the press to whatever is underneath. */
+static void
+popup_grab_request(struct wl_client *client, struct wl_resource *resource,
+                   struct wl_resource *seat, uint32_t serial)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    (void)seat;
+    (void)serial;
+    if (!surface->initial_configure_sent) {
+        wl_resource_post_error(resource,
+                               XDG_SURFACE_ERROR_INVALID_SERIAL,
+                               "popup grab before the initial configure");
+        return;
+    }
+    surface->popup_grabbed = true;
+}
+
+/* Resolve the positioner's anchor/gravity into a parent-relative offset.
+ * The rule is the protocol's: the anchor point sits on the anchor rect's
+ * edge, and gravity decides which of the popup's edges meets it. Flip and
+ * slide adjustments keep the popup on the parent; resize is a configure
+ * the compositor cannot partially honour, so it stays unimplemented and
+ * the popup keeps its size. */
+static void
+popup_resolve_geometry(const struct FinnPositioner *p, int32_t parent_w,
+                       int32_t parent_h, int32_t *out_x, int32_t *out_y)
+{
+    int32_t ax = p->anchor_x;
+    int32_t ay = p->anchor_y;
+    int32_t w = p->has_size ? p->width : 0;
+    int32_t h = p->has_size ? p->height : 0;
+    int32_t x, y;
+
+    if (p->anchor & XDG_POSITIONER_ANCHOR_LEFT)
+        ax = p->anchor_x;
+    else if (p->anchor & XDG_POSITIONER_ANCHOR_RIGHT)
+        ax = p->anchor_x + p->anchor_w;
+    else
+        ax = p->anchor_x + p->anchor_w / 2;
+    if (p->anchor & XDG_POSITIONER_ANCHOR_TOP)
+        ay = p->anchor_y;
+    else if (p->anchor & XDG_POSITIONER_ANCHOR_BOTTOM)
+        ay = p->anchor_y + p->anchor_h;
+    else
+        ay = p->anchor_y + p->anchor_h / 2;
+
+    if (p->gravity & XDG_POSITIONER_GRAVITY_LEFT)
+        x = ax - w;
+    else if (p->gravity & XDG_POSITIONER_GRAVITY_RIGHT)
+        x = ax;
+    else
+        x = ax - w / 2;
+    if (p->gravity & XDG_POSITIONER_GRAVITY_TOP)
+        y = ay - h;
+    else if (p->gravity & XDG_POSITIONER_GRAVITY_BOTTOM)
+        y = ay;
+    else
+        y = ay - h / 2;
+
+    x += p->offset_x;
+    y += p->offset_y;
+
+    /* Flip mirrors the popup across the anchor point: a menu that would hang
+     * off the parent's right edge opens to the left of the anchor instead.
+     * Slide clamps into the parent afterwards; resize would need a fresh
+     * configure round-trip the compositor cannot partially honour, so the
+     * popup keeps the size the positioner named. */
+    if (p->constraint & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X) {
+        if (x < 0)
+            x = ax + (ax - (x + w));
+        else if (x + w > parent_w)
+            x = ax - (x + w - ax) - w;
+    }
+    if (p->constraint & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y) {
+        if (y < 0)
+            y = ay + (ay - (y + h));
+        else if (y + h > parent_h)
+            y = ay - (y + h - ay) - h;
+    }
+    if (p->constraint & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X) {
+        if (x < 0)
+            x = 0;
+        if (x + w > parent_w && parent_w >= w)
+            x = parent_w - w;
+    }
+    if (p->constraint & XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y) {
+        if (y < 0)
+            y = 0;
+        if (y + h > parent_h && parent_h >= h)
+            y = parent_h - h;
+    }
+    if (x < -FINN_WAYLAND_MAX_DIMENSION || x > FINN_WAYLAND_MAX_DIMENSION)
+        x = 0;
+    if (y < -FINN_WAYLAND_MAX_DIMENSION || y > FINN_WAYLAND_MAX_DIMENSION)
+        y = 0;
+
+    *out_x = x;
+    *out_y = y;
+}
+
+static void
+popup_reposition_request(struct wl_client *client, struct wl_resource *resource,
+                         struct wl_resource *positioner_resource,
+                         uint32_t token)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    struct FinnPositioner *p = wl_resource_get_user_data(positioner_resource);
+    (void)client;
+    if (!p || p->resource != positioner_resource) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "popup reposition needs an unused positioner");
+        return;
+    }
+    if (!p->has_size) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "popup reposition needs a sized positioner");
+        return;
+    }
+    popup_resolve_geometry(p, surface->width, surface->height,
+                           &surface->popup_x, &surface->popup_y);
+    p->resource = NULL;
+    xdg_popup_send_repositioned(resource, token);
+    if (surface->server->callbacks.surface_committed)
+        surface->server->callbacks.surface_committed(
+            surface->server->userdata, surface);
+}
+
+static const struct xdg_popup_interface popup_implementation = {
+    .destroy = popup_destroy_request,
+    .grab = popup_grab_request,
+    .reposition = popup_reposition_request,
+};
+
+static void
+xdg_surface_get_popup(struct wl_client *client, struct wl_resource *resource,
+                      uint32_t id, struct wl_resource *parent_resource,
+                      struct wl_resource *positioner_resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    FinnWaylandSurface *parent = parent_resource
+        ? wl_resource_get_user_data(parent_resource) : NULL;
+    struct FinnPositioner *p = wl_resource_get_user_data(positioner_resource);
+    struct wl_resource *popup;
+    if (!surface || surface->role_assigned || surface->committed_once) {
+        wl_resource_post_error(resource, XDG_SURFACE_ERROR_ALREADY_CONSTRUCTED,
+                               "surface already has a role");
+        return;
+    }
+    if (!parent || !parent->xdg_surface_resource ||
+        (!parent->toplevel_resource && !parent->popup_resource) ||
+        wl_resource_get_client(parent->resource) != client) {
+        wl_resource_post_error(resource, XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
+                               "popup needs a constructed parent surface");
+        return;
+    }
+    if (!p || p->resource != positioner_resource) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "popup needs an unused positioner");
+        return;
+    }
+    if (!p->has_size) {
+        wl_resource_post_error(resource, XDG_WM_BASE_ERROR_INVALID_POSITIONER,
+                               "popup positioner has no size");
+        return;
+    }
+    popup = wl_resource_create(client, &xdg_popup_interface,
+                               wl_resource_get_version(resource), id);
+    if (!popup) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    surface->popup_resource = popup;
+    surface->role_assigned = true;
+    surface->role_created = true;
+    surface->is_popup = true;
+    surface->role = FINN_WL_ROLE_POPUP;
+    popup_resolve_geometry(p, parent->width, parent->height, &surface->popup_x,
+                           &surface->popup_y);
+    p->resource = NULL;
+    wl_resource_set_implementation(popup, &popup_implementation, surface,
+                                   popup_resource_destroy);
+    if (surface->server->callbacks.popup_created)
+        surface->server->callbacks.popup_created(surface->server->userdata,
+                                                 surface, parent);
 }
 
 static void
@@ -1142,7 +1798,9 @@ xdg_surface_ack_configure(struct wl_client *client,
     FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
     (void)client;
     if (!surface->initial_configure_sent ||
-        serial != surface->last_configure_serial) {
+        serial < surface->first_configure_serial ||
+        serial > surface->last_configure_serial ||
+        serial < surface->acked_configure_serial) {
         wl_resource_post_error(resource, XDG_SURFACE_ERROR_INVALID_SERIAL,
                                "ack_configure references an unknown serial");
         return;
@@ -1167,8 +1825,10 @@ xdg_surface_resource_destroy(struct wl_resource *resource)
     surface->xdg_surface_resource = NULL;
     if (!surface->destroying) {
         surface->initial_configure_sent = false;
+        surface->first_configure_serial = 0;
         surface->last_configure_serial = 0;
         surface->acked_configure_serial = 0;
+        surface->role = FINN_WL_ROLE_NONE;
     }
 }
 
@@ -1187,6 +1847,8 @@ toplevel_resource_destroy(struct wl_resource *resource)
     if (!surface)
         return;
     surface->toplevel_resource = NULL;
+    surface->role = FINN_WL_ROLE_NONE;
+    surface->first_configure_serial = 0;
     notify_role_destroyed(surface);
 }
 
@@ -1220,9 +1882,17 @@ static void
 toplevel_set_app_id(struct wl_client *client, struct wl_resource *resource,
                     const char *app_id)
 {
-    (void)client;
-    (void)resource;
-    (void)app_id;
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    char *copy = strdup(app_id ? app_id : "");
+    if (!copy) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    free(surface->app_id);
+    surface->app_id = copy;
+    if (surface->server->callbacks.app_id_changed)
+        surface->server->callbacks.app_id_changed(surface->server->userdata,
+                                                 surface, surface->app_id);
 }
 
 static void
@@ -1330,6 +2000,362 @@ static const struct xdg_toplevel_interface toplevel_implementation = {
     .set_minimized = toplevel_set_minimized,
 };
 
+/*
+ * org_kde_kwin_server_decoration: the decoration protocol GTK3 and GTK4 check
+ * via gdk_wayland_display_prefers_ssd() to decide whether to draw client-side
+ * window headers or let the compositor draw them. An inline interface avoids
+ * adding code generation rules for an older extension.
+ */
+static const struct wl_interface org_kde_kwin_server_decoration_interface;
+static const struct wl_interface org_kde_kwin_server_decoration_manager_interface;
+
+static const struct wl_interface *kde_decoration_manager_create_types[] = {
+    &org_kde_kwin_server_decoration_interface,
+    &wl_surface_interface,
+};
+
+static const struct wl_message org_kde_kwin_server_decoration_requests[] = {
+    { "release", "", NULL },
+    { "request_mode", "u", NULL },
+};
+
+static const struct wl_message org_kde_kwin_server_decoration_events[] = {
+    { "mode", "u", NULL },
+};
+
+static const struct wl_interface org_kde_kwin_server_decoration_interface = {
+    "org_kde_kwin_server_decoration",
+    1,
+    2, org_kde_kwin_server_decoration_requests,
+    1, org_kde_kwin_server_decoration_events,
+};
+
+static const struct wl_message org_kde_kwin_server_decoration_manager_requests[] = {
+    { "create", "no", kde_decoration_manager_create_types },
+};
+
+static const struct wl_message org_kde_kwin_server_decoration_manager_events[] = {
+    { "default_mode", "u", NULL },
+};
+
+static const struct wl_interface org_kde_kwin_server_decoration_manager_interface = {
+    "org_kde_kwin_server_decoration_manager",
+    1,
+    1, org_kde_kwin_server_decoration_manager_requests,
+    1, org_kde_kwin_server_decoration_manager_events,
+};
+
+static void
+kde_decoration_resource_destroy(struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    if (!surface)
+        return;
+    if (surface->kde_decoration_res == resource)
+        surface->kde_decoration_res = NULL;
+}
+
+static void
+kde_decoration_release(struct wl_client *client, struct wl_resource *resource)
+{
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static void
+kde_decoration_request_mode(struct wl_client *client,
+                            struct wl_resource *resource, uint32_t mode)
+{
+    (void)client;
+    (void)mode;
+    /* Mode 2 announces server-side decorations; the shell always draws chrome. */
+    wl_resource_post_event(resource, 0, 2u);
+}
+
+struct kde_server_decoration_interface {
+    void (*release)(struct wl_client *client, struct wl_resource *resource);
+    void (*request_mode)(struct wl_client *client, struct wl_resource *resource,
+                         uint32_t mode);
+};
+
+static const struct kde_server_decoration_interface kde_decoration_implementation = {
+    .release = kde_decoration_release,
+    .request_mode = kde_decoration_request_mode,
+};
+
+static void
+kde_decoration_manager_create(struct wl_client *client,
+                              struct wl_resource *resource, uint32_t id,
+                              struct wl_resource *surface_resource)
+{
+    FinnWaylandSurface *surface = surface_resource
+        ? wl_resource_get_user_data(surface_resource) : NULL;
+    struct wl_resource *dec_res;
+
+    dec_res = wl_resource_create(client,
+                                 &org_kde_kwin_server_decoration_interface,
+                                 wl_resource_get_version(resource), id);
+    if (!dec_res) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(dec_res, &kde_decoration_implementation,
+                                   surface, kde_decoration_resource_destroy);
+
+    /* Immediately tell the client that server-side decorations are active. */
+    wl_resource_post_event(dec_res, 0, 2u);
+
+    if (surface) {
+        surface->kde_decoration_res = dec_res;
+        surface->server_decorated = 1;
+        if (surface->server->callbacks.decoration_changed)
+            surface->server->callbacks.decoration_changed(
+                surface->server->userdata, surface);
+    }
+}
+
+struct kde_server_decoration_manager_interface {
+    void (*create)(struct wl_client *client, struct wl_resource *resource,
+                   uint32_t id, struct wl_resource *surface_resource);
+};
+
+static const struct kde_server_decoration_manager_interface kde_decoration_manager_implementation = {
+    .create = kde_decoration_manager_create,
+};
+
+static void
+bind_kde_server_decoration_manager(struct wl_client *client, void *data,
+                                   uint32_t version, uint32_t id)
+{
+    FinnWayland *server = data;
+    (void)server;
+    uint32_t resource_version = version < 1 ? version : 1;
+    struct wl_resource *resource = wl_resource_create(
+        client, &org_kde_kwin_server_decoration_manager_interface,
+        resource_version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource,
+                                   &kde_decoration_manager_implementation,
+                                   server, NULL);
+    /* Announce server mode (2) as the default mode upon bind. */
+    wl_resource_post_event(resource, 0, 2u);
+}
+
+/* Dispatches the current configure state to the client. A configure cycle
+ * finishes with xdg_surface.configure carrying a monotonic serial. */
+static uint32_t
+send_pending_configure(FinnWayland *server, FinnWaylandSurface *surface)
+{
+    uint32_t serial = wl_display_next_serial(server->display);
+    if (surface->first_configure_serial == 0)
+        surface->first_configure_serial = serial;
+
+    if (surface->toplevel_resource) {
+        struct wl_array state_array;
+        uint32_t *state;
+        wl_array_init(&state_array);
+        if (surface->cfg_activated) {
+            state = wl_array_add(&state_array, sizeof(*state));
+            if (state)
+                *state = XDG_TOPLEVEL_STATE_ACTIVATED;
+        }
+        if (surface->cfg_maximized) {
+            state = wl_array_add(&state_array, sizeof(*state));
+            if (state)
+                *state = XDG_TOPLEVEL_STATE_MAXIMIZED;
+        }
+        xdg_toplevel_send_configure(surface->toplevel_resource,
+                                    surface->cfg_width, surface->cfg_height,
+                                    &state_array);
+        wl_array_release(&state_array);
+    }
+    /* In xdg-decoration, the mode configure must belong to the configure cycle
+     * that xdg_surface.configure seals, so the client receives the mode before
+     * acknowledging the serial. */
+    if (surface->toplevel_decoration_res != NULL)
+        zxdg_toplevel_decoration_v1_send_configure(
+            surface->toplevel_decoration_res,
+            ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+
+    xdg_surface_send_configure(surface->xdg_surface_resource, serial);
+    surface->last_configure_serial = serial;
+    return serial;
+}
+
+static void
+toplevel_decoration_resource_destroy(struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    if (!surface)
+        return;
+    if (surface->toplevel_decoration_res == resource)
+        surface->toplevel_decoration_res = NULL;
+}
+
+static void
+toplevel_decoration_destroy_request(struct wl_client *client,
+                                    struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    /* Destroying the toplevel before its decoration object leaves the decoration
+     * orphaned; the protocol forbids this order. */
+    if (!surface || surface->xdg_toplevel_res == NULL) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                               "xdg_toplevel destroyed before decoration object");
+        return;
+    }
+    surface->toplevel_decoration_res = NULL;
+    wl_resource_destroy(resource);
+}
+
+static void
+toplevel_decoration_set_mode(struct wl_client *client,
+                             struct wl_resource *resource, uint32_t mode)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    if (!surface || surface->xdg_toplevel_res == NULL) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                               "xdg_toplevel destroyed before decoration object");
+        return;
+    }
+    if (mode != ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
+        mode != ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_INVALID_MODE,
+                               "invalid decoration mode");
+        return;
+    }
+    /* Regardless of client preference, FinnOS always decorates toplevels. */
+    surface->server_decorated = 1;
+    if (surface->initial_configure_sent) {
+        send_pending_configure(surface->server, surface);
+    } else {
+        zxdg_toplevel_decoration_v1_send_configure(
+            resource, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+}
+
+static void
+toplevel_decoration_unset_mode(struct wl_client *client,
+                               struct wl_resource *resource)
+{
+    FinnWaylandSurface *surface = wl_resource_get_user_data(resource);
+    (void)client;
+    if (!surface || surface->xdg_toplevel_res == NULL) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                               "xdg_toplevel destroyed before decoration object");
+        return;
+    }
+    surface->server_decorated = 1;
+    if (surface->initial_configure_sent) {
+        send_pending_configure(surface->server, surface);
+    } else {
+        zxdg_toplevel_decoration_v1_send_configure(
+            resource, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+}
+
+static const struct zxdg_toplevel_decoration_v1_interface toplevel_decoration_implementation = {
+    .destroy = toplevel_decoration_destroy_request,
+    .set_mode = toplevel_decoration_set_mode,
+    .unset_mode = toplevel_decoration_unset_mode,
+};
+
+static void
+decoration_manager_destroy_request(struct wl_client *client,
+                                   struct wl_resource *resource)
+{
+    (void)client;
+    wl_resource_destroy(resource);
+}
+
+static void
+decoration_manager_get_toplevel_decoration(struct wl_client *client,
+                                           struct wl_resource *resource,
+                                           uint32_t id,
+                                           struct wl_resource *toplevel_resource)
+{
+    FinnWaylandSurface *surface = toplevel_resource
+        ? wl_resource_get_user_data(toplevel_resource) : NULL;
+    struct wl_resource *dec_res;
+
+    if (!surface || surface->role != FINN_WL_ROLE_TOPLEVEL ||
+        surface->xdg_toplevel_res != toplevel_resource ||
+        wl_resource_get_client(toplevel_resource) != client) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                               "xdg_toplevel is defunct or invalid");
+        return;
+    }
+    if (surface->toplevel_decoration_res != NULL) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED,
+                               "toplevel already has a decoration object");
+        return;
+    }
+    /* Version 1 required decoration negotiation before buffer attachment to
+     * avoid redrawing geometry after a client already assumed CSD bounds. */
+    if (wl_resource_get_version(resource) < 2 && surface->has_buffer) {
+        wl_resource_post_error(resource,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_UNCONFIGURED_BUFFER,
+                               "buffer attached before decoration configure");
+        return;
+    }
+
+    dec_res = wl_resource_create(client, &zxdg_toplevel_decoration_v1_interface,
+                                 wl_resource_get_version(resource), id);
+    if (!dec_res) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    surface->toplevel_decoration_res = dec_res;
+    surface->server_decorated = 1;
+    wl_resource_set_implementation(dec_res, &toplevel_decoration_implementation,
+                                   surface,
+                                   toplevel_decoration_resource_destroy);
+
+    if (surface->server->callbacks.decoration_changed)
+        surface->server->callbacks.decoration_changed(surface->server->userdata,
+                                                      surface);
+
+    if (surface->initial_configure_sent) {
+        send_pending_configure(surface->server, surface);
+    } else {
+        zxdg_toplevel_decoration_v1_send_configure(
+            dec_res, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+    }
+}
+
+static const struct zxdg_decoration_manager_v1_interface decoration_manager_implementation = {
+    .destroy = decoration_manager_destroy_request,
+    .get_toplevel_decoration = decoration_manager_get_toplevel_decoration,
+};
+
+static void
+bind_zxdg_decoration_manager_v1(struct wl_client *client, void *data,
+                                uint32_t version, uint32_t id)
+{
+    FinnWayland *server = data;
+    uint32_t resource_version = version < 2 ? version : 2;
+    struct wl_resource *resource = wl_resource_create(
+        client, &zxdg_decoration_manager_v1_interface, resource_version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource,
+                                   &decoration_manager_implementation,
+                                   server, NULL);
+}
+
 static int
 copy_shm_buffer(FinnWaylandSurface *surface, struct wl_resource *buffer)
 {
@@ -1410,41 +2436,74 @@ surface_commit_request(struct wl_client *client, struct wl_resource *resource)
     (void)client;
     surface->committed_once = true;
 
-    if (surface->xdg_surface_resource && !surface->toplevel_resource) {
+    /* A commit on a surface whose toplevel was destroyed while keeping its
+     * decoration object alive is an orphaned protocol violation. */
+    if (surface->toplevel_decoration_res != NULL &&
+        surface->xdg_toplevel_res == NULL) {
+        wl_resource_post_error(surface->toplevel_decoration_res,
+                               ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ORPHANED,
+                               "surface committed with orphaned decoration object");
+        return;
+    }
+
+    if (surface->xdg_surface_resource && !surface->toplevel_resource &&
+        !surface->popup_resource && !surface->subsurface_resource) {
         wl_resource_post_error(surface->xdg_surface_resource,
                                XDG_SURFACE_ERROR_NOT_CONSTRUCTED,
                                "xdg role must be created before commit");
         return;
     }
-    if (!surface->initial_configure_sent && surface->toplevel_resource) {
-        if (surface->pending_attach && surface->pending_buffer) {
+    if (!surface->initial_configure_sent &&
+        (surface->role == FINN_WL_ROLE_TOPLEVEL ||
+         surface->role == FINN_WL_ROLE_POPUP)) {
+        if (surface->pending.buffer_set && surface->pending.buffer_res != NULL) {
             wl_resource_post_error(surface->xdg_surface_resource,
                                    XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
                                    "buffer committed before initial configure");
             return;
         }
         surface->initial_configure_sent = true;
-        (void)finn_wayland_configure(surface, 0, 0, 0, NULL);
+        if (surface->role == FINN_WL_ROLE_TOPLEVEL) {
+            (void)send_pending_configure(surface->server, surface);
+        } else {
+            uint32_t serial =
+                wl_display_next_serial(surface->server->display);
+            if (surface->first_configure_serial == 0)
+                surface->first_configure_serial = serial;
+            xdg_popup_send_configure(surface->popup_resource,
+                                     surface->popup_x, surface->popup_y,
+                                     surface->width, surface->height);
+            xdg_surface_send_configure(surface->xdg_surface_resource, serial);
+            surface->last_configure_serial = serial;
+        }
         if (surface->server->callbacks.surface_committed)
             surface->server->callbacks.surface_committed(
                 surface->server->userdata, surface);
         return;
     }
-    if (surface->toplevel_resource &&
-        surface->acked_configure_serial != surface->last_configure_serial) {
-        if (surface->pending_attach && surface->pending_buffer)
+    /* Only reject commits if initial configure was never acknowledged. Once
+     * acked, newer configure cycles in flight do not block client commits. */
+    if ((surface->role == FINN_WL_ROLE_TOPLEVEL ||
+         surface->role == FINN_WL_ROLE_POPUP) &&
+        (!surface->initial_configure_sent ||
+         surface->acked_configure_serial == 0)) {
+        if (surface->pending.buffer_set && surface->pending.buffer_res != NULL) {
             wl_resource_post_error(surface->xdg_surface_resource,
                                    XDG_SURFACE_ERROR_UNCONFIGURED_BUFFER,
                                    "buffer committed before configure acknowledgement");
+            return;
+        }
         return;
     }
 
-    attached = surface->pending_attach;
+    attached = surface->pending.buffer_set;
     if (attached) {
-        buffer = surface->pending_buffer;
+        buffer = surface->pending.buffer_res;
         clear_pending_buffer_listener(surface);
         surface->pending_buffer = NULL;
         surface->pending_attach = false;
+        surface->pending.buffer_res = NULL;
+        surface->pending.buffer_set = false;
         if (!buffer) {
             free(surface->pixels);
             surface->pixels = NULL;
@@ -1458,33 +2517,84 @@ surface_commit_request(struct wl_client *client, struct wl_resource *resource)
                 return;
         }
     }
+    if (surface->subsurface_resource && surface->parent) {
+        /* A subsurface commit lands in the parent's picture, at the offset
+         * set_position named, under/over its siblings in list order. The
+         * parent's callback fires once with the whole composition. */
+        composite_subsurface(surface->parent);
+        if (surface->server->callbacks.surface_committed)
+            surface->server->callbacks.surface_committed(
+                surface->server->userdata, surface->parent);
+        return;
+    }
     if (surface->server->callbacks.surface_committed)
         surface->server->callbacks.surface_committed(surface->server->userdata,
                                                      surface);
 }
 
+/* Layers a parent's subsurface children over its own pixels, in the
+ * stacking order place_above/place_below maintain. Children outside the
+ * parent's bounds are clipped, not trusted: a subsurface that names an
+ * offset past the edge draws nothing rather than writing out of bounds. */
 static void
-send_configure(FinnWaylandSurface *surface, int32_t width, int32_t height,
-               uint32_t states, uint32_t serial)
+composite_subsurface(FinnWaylandSurface *parent)
 {
-    struct wl_array state_array;
-    uint32_t *state;
-    wl_array_init(&state_array);
-    if (states & FINN_WAYLAND_CONFIGURE_ACTIVATED) {
-        state = wl_array_add(&state_array, sizeof(*state));
-        if (state)
-            *state = XDG_TOPLEVEL_STATE_ACTIVATED;
+    FinnWaylandSurface *child;
+    if (!parent || !parent->pixels || parent->width <= 0 ||
+        parent->height <= 0)
+        return;
+    wl_list_for_each(child, &parent->children, siblings) {
+        int x, y;
+        if (!child->pixels || child->width <= 0 || child->height <= 0)
+            continue;
+        for (y = 0; y < child->height; y++) {
+            int ty = child->subsurface_y + y;
+            uint32_t *dst;
+            const uint32_t *src;
+            int copy_w;
+            int sx = 0;
+            if (ty < 0 || ty >= parent->height)
+                continue;
+            if (child->subsurface_x < 0)
+                sx = -child->subsurface_x;
+            if (sx >= child->width)
+                continue;
+            copy_w = child->width - sx;
+            if (child->subsurface_x + sx + copy_w > parent->width)
+                copy_w = parent->width - child->subsurface_x - sx;
+            if (copy_w <= 0)
+                continue;
+            dst = parent->pixels + (size_t)ty * (size_t)parent->width +
+                  (size_t)(child->subsurface_x + sx);
+            src = child->pixels + (size_t)y * (size_t)child->width +
+                  (size_t)sx;
+            for (x = 0; x < copy_w; x++) {
+                uint32_t s = src[x];
+                unsigned a = (s >> 24) & 0xffu;
+                if (a == 0)
+                    continue;
+                if (a == 0xffu || (parent->format == FINN_WAYLAND_XRGB8888)) {
+                    dst[x] = s | 0xff000000u;
+                    continue;
+                }
+                unsigned sr = (s >> 16) & 0xffu;
+                unsigned sg = (s >> 8) & 0xffu;
+                unsigned sb = s & 0xffu;
+                uint32_t d = dst[x];
+                unsigned dr = (d >> 16) & 0xffu;
+                unsigned dg = (d >> 8) & 0xffu;
+                unsigned db = d & 0xffu;
+                unsigned inv = 255u - a;
+                unsigned r = (sr * a + dr * inv + 127u) / 255u;
+                unsigned g = (sg * a + dg * inv + 127u) / 255u;
+                unsigned b = (sb * a + db * inv + 127u) / 255u;
+                dst[x] = 0xff000000u |
+                         (r > 255u ? 255u : r) << 16 |
+                         (g > 255u ? 255u : g) << 8 |
+                         (b > 255u ? 255u : b);
+            }
+        }
     }
-    if (states & FINN_WAYLAND_CONFIGURE_MAXIMIZED) {
-        state = wl_array_add(&state_array, sizeof(*state));
-        if (state)
-            *state = XDG_TOPLEVEL_STATE_MAXIMIZED;
-    }
-    xdg_toplevel_send_configure(surface->toplevel_resource, width, height,
-                                &state_array);
-    xdg_surface_send_configure(surface->xdg_surface_resource, serial);
-    wl_array_release(&state_array);
-    surface->last_configure_serial = serial;
 }
 
 int
@@ -1502,15 +2612,22 @@ finn_wayland_configure(FinnWaylandSurface *surface, int32_t width,
         errno = EINVAL;
         return -1;
     }
-    if (surface->last_configure_serial != surface->acked_configure_serial) {
-        errno = EBUSY;
-        return -1;
-    }
-    serial = wl_display_next_serial(surface->server->display);
-    send_configure(surface, width, height, states, serial);
+    surface->cfg_width = width;
+    surface->cfg_height = height;
+    surface->cfg_activated = (states & FINN_WAYLAND_CONFIGURE_ACTIVATED) != 0;
+    surface->cfg_maximized = (states & FINN_WAYLAND_CONFIGURE_MAXIMIZED) != 0;
+    surface->cfg_states = states;
+
+    serial = send_pending_configure(surface->server, surface);
     if (serial_out)
         *serial_out = serial;
     return 0;
+}
+
+int
+finn_wayland_surface_server_decorated(const FinnWaylandSurface *surface)
+{
+    return surface && surface->server_decorated ? 1 : 0;
 }
 
 FinnWayland *
@@ -1575,6 +2692,8 @@ finn_wayland_create(const FinnWaylandConfig *config)
         goto fail;
     server->compositor_global = wl_global_create(server->display,
         &wl_compositor_interface, 6, server, bind_compositor);
+    server->subcompositor_global = wl_global_create(server->display,
+        &wl_subcompositor_interface, 1, server, bind_subcompositor);
     server->seat_global = wl_global_create(server->display,
         &wl_seat_interface, 7, server, bind_seat);
     server->output_global = wl_global_create(server->display,
@@ -1584,9 +2703,16 @@ finn_wayland_create(const FinnWaylandConfig *config)
     server->data_device_manager_global = wl_global_create(server->display,
         &wl_data_device_manager_interface, 3, server,
         bind_data_device_manager);
-    if (!server->compositor_global || !server->seat_global ||
-        !server->output_global || !server->xdg_global ||
-        !server->data_device_manager_global)
+    server->xdg_decoration_global = wl_global_create(server->display,
+        &zxdg_decoration_manager_v1_interface, 2, server,
+        bind_zxdg_decoration_manager_v1);
+    server->kde_decoration_global = wl_global_create(server->display,
+        &org_kde_kwin_server_decoration_manager_interface, 1, server,
+        bind_kde_server_decoration_manager);
+    if (!server->compositor_global || !server->subcompositor_global ||
+        !server->seat_global || !server->output_global ||
+        !server->xdg_global || !server->data_device_manager_global ||
+        !server->xdg_decoration_global || !server->kde_decoration_global)
         goto fail;
     if (create_listening_socket(server, config->socket_path) < 0)
         goto fail;
@@ -1688,6 +2814,47 @@ const char *
 finn_wayland_surface_title(const FinnWaylandSurface *surface)
 {
     return surface ? surface->title : NULL;
+}
+
+const char *
+finn_wayland_surface_app_id(const FinnWaylandSurface *surface)
+{
+    return surface ? surface->app_id : NULL;
+}
+
+void
+finn_wayland_popup_geometry(const FinnWaylandSurface *surface,
+                            int32_t *x, int32_t *y)
+{
+    if (x) *x = surface ? surface->popup_x : 0;
+    if (y) *y = surface ? surface->popup_y : 0;
+}
+
+int
+finn_wayland_surface_is_popup(const FinnWaylandSurface *surface)
+{
+    return surface && surface->is_popup ? 1 : 0;
+}
+
+void
+finn_wayland_popup_dismiss(FinnWaylandSurface *surface)
+{
+    if (!surface || !surface->is_popup || surface->destroying)
+        return;
+    surface->destroying = true;
+    if (surface->server->callbacks.popup_destroyed)
+        surface->server->callbacks.popup_destroyed(
+            surface->server->userdata, surface);
+    if (surface->popup_resource)
+        wl_resource_destroy(surface->popup_resource);
+    surface->popup_resource = NULL;
+    surface->is_popup = false;
+    surface->popup_grabbed = false;
+    surface->role_created = false;
+    surface->role_assigned = false;
+    surface->role = FINN_WL_ROLE_NONE;
+    surface->first_configure_serial = 0;
+    surface->destroying = false;
 }
 
 static void

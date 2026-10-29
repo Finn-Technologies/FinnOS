@@ -117,10 +117,11 @@ ssh "$HOST" "cd $REMOTE && $SUDO make install && \
              $SUDO install -Dm644 assets/wallpaper/setup.webp /usr/share/finn/wallpaper/setup.webp && \
              $SUDO install -d /var/lib/finnpkg && \
              if ! $SUDO test -f /var/lib/finnpkg/installed; then \
-                 for app in settings files store; do \
+                 for app in settings files store browser; do \
                      $SUDO /usr/local/bin/finnpkg install \$app; \
                  done; \
              fi && \
+             (grep -qx browser /var/lib/finnpkg/installed 2>/dev/null || echo browser | sudo tee -a /var/lib/finnpkg/installed >/dev/null) && \
              $SUDO chgrp -R finn /usr/share/finn /var/lib/finnpkg"
 
 # The units are installed now, and the binaries they start exist. Enabling

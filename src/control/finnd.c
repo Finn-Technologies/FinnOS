@@ -857,6 +857,24 @@ static const char *handle(char *line, int fd) {    /* work on a copy: the verb s
             return "ERR wine.run no runtime";
         }
 
+        /*
+         * Configure Wine driver and theme palette in the prefix registry before
+         * starting the application unit so the Wayland driver and dark/light
+         * colors are in place before Wine reads its user registry.
+         */
+        finn_state st;
+        finn_state_read(&st);
+        int dark = (st.dark == 1) ? 1 : 0;
+        if (finncompat_wine_configure_prefix(prefix, (unsigned)g_finn_uid,
+                                             (unsigned)g_finn_gid, dark,
+                                             why, sizeof why) != 0) {
+            char reply[320];
+            snprintf(reply, sizeof reply, "ERR %s\n",
+                     why[0] ? why : "Wine prefix could not be configured");
+            finn_write_str(fd, reply);
+            return "ERR wine.run prefix";
+        }
+
         if (++g_wine_run_sequence == 0) ++g_wine_run_sequence;
         char unit[128];
         snprintf(unit, sizeof unit, "finn-wine-%s-%lu-%lu", id,

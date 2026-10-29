@@ -17,6 +17,7 @@
 settings | Settings | settings-app.svg | /usr/local/bin/finn-settings | Settings
 files | Finn Files | files.svg | /usr/local/bin/finn-files | File manager
 store | Finn Store | store.svg | /usr/local/bin/finn-store | Applications
+browser | Finn Browser | browser.svg | /usr/local/bin/finn-browser | Web browser
 flatpak-gimp-x86_64 | GIMP | app-grid.svg |  | Image editor (Flatpak, x86_64) | flatpak
 flatpak-inkscape-arm64 | Inkscape | app-grid.svg |  | Vector editor (Flatpak, ARM64) | flatpak
 winget-notepadpp | Notepad++ | app-grid.svg |  | Text editor (Wine/winget) | winget

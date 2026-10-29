@@ -320,7 +320,7 @@ int finncompat_start_app(const char *systemd_run, const char *unit,
         "--setenv=LOGNAME=finn", "--setenv=SHELL=/bin/bash",
         "--setenv=PATH=/usr/local/bin:/usr/bin:/bin",
         runtime_arg, "--setenv=WAYLAND_DISPLAY=wayland-0",
-        "--setenv=XDG_SESSION_TYPE=wayland",
+        "--setenv=XDG_SESSION_TYPE=wayland", "--setenv=GTK_CSD=0",
         "--property=Restart=no", "--", (char *)command, NULL
     };
     uint8_t *output = NULL;
@@ -786,7 +786,7 @@ int finncompat_wine_run_wrapped(const char *systemd_run, const char *wine,
         return -1;
     }
 
-    char *argv[24];
+    char *argv[32];
     int a = 0;
     argv[a++] = (char *)systemd_run;
     argv[a++] = "--quiet";
@@ -804,6 +804,7 @@ int finncompat_wine_run_wrapped(const char *systemd_run, const char *wine,
     argv[a++] = "--setenv=WAYLAND_DISPLAY=wayland-0";
     argv[a++] = "--setenv=XDG_SESSION_TYPE=wayland";
     argv[a++] = prefix_arg;
+    argv[a++] = "--setenv=GTK_CSD=0";
     argv[a++] = "--property=Restart=no";
     argv[a++] = "--";
     if (wrapper && wrapper[0]) argv[a++] = (char *)wrapper;
@@ -827,6 +828,318 @@ int finncompat_wine_run(const char *systemd_run, const char *wine,
     return finncompat_wine_run_wrapped(systemd_run, wine, NULL, unit, home,
                                        executable, prefix, uid, gid,
                                        error, error_cap);
+}
+
+static const char WINE_REG_HEADER[] =
+    "WINE REGISTRY Version 2\n"
+    ";; All keys relative to \\User\\S-1-5-21-0-0-0-1000\n\n";
+
+static const char FINN_MANAGED_BEGIN[] = ";; FINNOS-MANAGED-BEGIN\n";
+static const char FINN_MANAGED_END[] = ";; FINNOS-MANAGED-END\n";
+
+/*
+ * Wine needs the Wayland driver and zero window metrics so Finn's compositor
+ * can manage titlebars and shadows without simulated Windows frame borders.
+ */
+static const char FINN_WINE_SETTINGS_COMMON[] =
+    "[Software\\Wine\\Drivers]\n"
+    "\"Graphics\"=\"wayland\"\n\n"
+    "[Software\\Wine\\Wayland Driver]\n"
+    "\"Decorated\"=\"N\"\n"
+    "\"Managed\"=\"Y\"\n\n"
+    "[Software\\Wine\\X11 Driver]\n"
+    "\"Decorated\"=\"N\"\n"
+    "\"Managed\"=\"Y\"\n\n"
+    "[Control Panel\\Desktop\\WindowMetrics]\n"
+    "\"BorderWidth\"=\"0\"\n"
+    "\"PaddedBorderWidth\"=\"0\"\n\n";
+
+/*
+ * Standard Win32 controls read system metrics from Control Panel\\Colors;
+ * populate both variants to match the active FinnOS dark/light theme palette.
+ */
+static const char FINN_WINE_COLORS_LIGHT[] =
+    "[Control Panel\\Colors]\n"
+    "\"ActiveBorder\"=\"249 249 249\"\n"
+    "\"ActiveTitle\"=\"249 249 249\"\n"
+    "\"AppWorkSpace\"=\"242 242 242\"\n"
+    "\"Background\"=\"249 249 249\"\n"
+    "\"ButtonDkShadow\"=\"160 160 160\"\n"
+    "\"ButtonFace\"=\"249 249 249\"\n"
+    "\"ButtonHilight\"=\"255 255 255\"\n"
+    "\"ButtonLight\"=\"255 255 255\"\n"
+    "\"ButtonShadow\"=\"215 215 215\"\n"
+    "\"ButtonText\"=\"0 0 0\"\n"
+    "\"Control\"=\"249 249 249\"\n"
+    "\"GrayText\"=\"150 150 150\"\n"
+    "\"Hilight\"=\"0 111 255\"\n"
+    "\"HilightText\"=\"255 255 255\"\n"
+    "\"InactiveBorder\"=\"249 249 249\"\n"
+    "\"InactiveTitle\"=\"242 242 242\"\n"
+    "\"InactiveTitleText\"=\"110 110 110\"\n"
+    "\"InfoText\"=\"0 0 0\"\n"
+    "\"InfoWindow\"=\"255 255 255\"\n"
+    "\"Menu\"=\"249 249 249\"\n"
+    "\"MenuBar\"=\"249 249 249\"\n"
+    "\"MenuHilight\"=\"0 111 255\"\n"
+    "\"MenuText\"=\"0 0 0\"\n"
+    "\"Scrollbar\"=\"242 242 242\"\n"
+    "\"TitleText\"=\"0 0 0\"\n"
+    "\"Window\"=\"255 255 255\"\n"
+    "\"WindowFrame\"=\"215 215 215\"\n"
+    "\"WindowText\"=\"0 0 0\"\n";
+
+static const char FINN_WINE_COLORS_DARK[] =
+    "[Control Panel\\Colors]\n"
+    "\"ActiveBorder\"=\"47 51 60\"\n"
+    "\"ActiveTitle\"=\"47 51 60\"\n"
+    "\"AppWorkSpace\"=\"26 28 35\"\n"
+    "\"Background\"=\"35 38 46\"\n"
+    "\"ButtonDkShadow\"=\"18 20 26\"\n"
+    "\"ButtonFace\"=\"47 51 60\"\n"
+    "\"ButtonHilight\"=\"68 74 86\"\n"
+    "\"ButtonLight\"=\"58 63 74\"\n"
+    "\"ButtonShadow\"=\"26 28 35\"\n"
+    "\"ButtonText\"=\"244 240 232\"\n"
+    "\"Control\"=\"47 51 60\"\n"
+    "\"GrayText\"=\"139 144 153\"\n"
+    "\"Hilight\"=\"0 111 255\"\n"
+    "\"HilightText\"=\"244 240 232\"\n"
+    "\"InactiveBorder\"=\"47 51 60\"\n"
+    "\"InactiveTitle\"=\"35 38 46\"\n"
+    "\"InactiveTitleText\"=\"139 144 153\"\n"
+    "\"InfoText\"=\"244 240 232\"\n"
+    "\"InfoWindow\"=\"47 51 60\"\n"
+    "\"Menu\"=\"47 51 60\"\n"
+    "\"MenuBar\"=\"47 51 60\"\n"
+    "\"MenuHilight\"=\"0 111 255\"\n"
+    "\"MenuText\"=\"244 240 232\"\n"
+    "\"Scrollbar\"=\"35 38 46\"\n"
+    "\"TitleText\"=\"244 240 232\"\n"
+    "\"Window\"=\"35 38 46\"\n"
+    "\"WindowFrame\"=\"58 63 74\"\n"
+    "\"WindowText\"=\"244 240 232\"\n";
+
+static int write_all(int fd, const char *data, size_t len) {
+    size_t total = 0;
+    while (total < len) {
+        ssize_t written = write(fd, data + total, len - total);
+        if (written > 0) {
+            total += (size_t)written;
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int finncompat_validate_wine_prefix(const char *prefix, unsigned uid,
+                                           char *error, size_t error_cap) {
+    if (!prefix || prefix[0] != '/' || strlen(prefix) >= PATH_MAX || uid == 0) {
+        set_error(error, error_cap, "invalid Wine prefix");
+        return 0;
+    }
+    for (const unsigned char *p = (const unsigned char *)prefix; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f) {
+            set_error(error, error_cap, "Wine prefix path contains a control character");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int finncompat_wine_configure_prefix(const char *prefix,
+                                     unsigned uid, unsigned gid,
+                                     int dark,
+                                     char *error, size_t error_cap) {
+    if (!finncompat_validate_wine_prefix(prefix, uid, error, error_cap)) {
+        return -1;
+    }
+    if (gid == 0) {
+        set_error(error, error_cap, "invalid Wine group id");
+        return -1;
+    }
+
+    int dir_fd = open(prefix, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dir_fd < 0) {
+        set_error(error, error_cap, "could not open Wine prefix directory");
+        return -1;
+    }
+
+    struct stat st;
+    if (fstat(dir_fd, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != (uid_t)uid || (st.st_mode & 0077) != 0) {
+        close(dir_fd);
+        set_error(error, error_cap, "Wine prefix is not private to Finn");
+        return -1;
+    }
+
+    char *existing = NULL;
+    size_t existing_len = 0;
+    int reg_fd = openat(dir_fd, "user.reg", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (reg_fd >= 0) {
+        struct stat reg_st;
+        if (fstat(reg_fd, &reg_st) != 0 || !S_ISREG(reg_st.st_mode)) {
+            close(reg_fd);
+            close(dir_fd);
+            set_error(error, error_cap, "invalid Wine user.reg file");
+            return -1;
+        }
+        if (reg_st.st_size > (off_t)(2 * 1024 * 1024)) {
+            close(reg_fd);
+            close(dir_fd);
+            set_error(error, error_cap, "Wine user.reg is too large");
+            return -1;
+        }
+        size_t cap = (size_t)reg_st.st_size;
+        existing = malloc(cap + 1);
+        if (!existing) {
+            close(reg_fd);
+            close(dir_fd);
+            set_error(error, error_cap, "could not allocate registry buffer");
+            return -1;
+        }
+        while (existing_len < cap) {
+            ssize_t got = read(reg_fd, existing + existing_len, cap - existing_len);
+            if (got > 0) {
+                existing_len += (size_t)got;
+            } else if (got < 0 && errno == EINTR) {
+                continue;
+            } else {
+                break;
+            }
+        }
+        close(reg_fd);
+        existing[existing_len] = '\0';
+    } else if (errno != ENOENT) {
+        close(dir_fd);
+        set_error(error, error_cap, "could not read Wine user.reg");
+        return -1;
+    }
+
+    /*
+     * Strip any previous Finn-managed block so new driver and theme keys overwrite
+     * cleanly while preserving user- or installer-generated keys in the prefix.
+     */
+    char *stripped = NULL;
+    size_t stripped_len = 0;
+    if (existing && existing_len > 0) {
+        stripped = malloc(existing_len + 1);
+        if (!stripped) {
+            free(existing);
+            close(dir_fd);
+            set_error(error, error_cap, "could not allocate registry buffer");
+            return -1;
+        }
+        const char *p = existing;
+        const char *end_buf = existing + existing_len;
+        const char *begin_tag = ";; FINNOS-MANAGED-BEGIN";
+        const char *end_tag = ";; FINNOS-MANAGED-END";
+        size_t end_tag_len = strlen(end_tag);
+
+        while (p < end_buf) {
+            const char *begin = strstr(p, begin_tag);
+            if (!begin) {
+                size_t tail = (size_t)(end_buf - p);
+                memcpy(stripped + stripped_len, p, tail);
+                stripped_len += tail;
+                break;
+            }
+            if (begin > p) {
+                size_t chunk = (size_t)(begin - p);
+                memcpy(stripped + stripped_len, p, chunk);
+                stripped_len += chunk;
+            }
+            const char *end = strstr(begin, end_tag);
+            if (!end) break;
+            p = end + end_tag_len;
+            while (p < end_buf && (*p == '\r' || *p == '\n')) {
+                p++;
+            }
+        }
+        while (stripped_len > 0 &&
+               (stripped[stripped_len - 1] == '\r' || stripped[stripped_len - 1] == '\n')) {
+            stripped_len--;
+        }
+        stripped[stripped_len] = '\0';
+    }
+
+    int tmp_fd = openat(dir_fd, "user.reg.finn.tmp",
+                        O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (tmp_fd < 0) {
+        free(existing);
+        free(stripped);
+        close(dir_fd);
+        set_error(error, error_cap, "could not create temporary Wine registry file");
+        return -1;
+    }
+
+    /*
+     * A valid Wine registry starts with the version header; ensure it appears
+     * first whether creating a fresh registry or updating an existing one.
+     */
+    int has_header = stripped && stripped_len >= 23 &&
+                     strncmp(stripped, "WINE REGISTRY Version 2", 23) == 0;
+    if (!has_header) {
+        if (write_all(tmp_fd, WINE_REG_HEADER, strlen(WINE_REG_HEADER)) != 0) {
+            goto write_err;
+        }
+    }
+    if (stripped && stripped_len > 0) {
+        if (write_all(tmp_fd, stripped, stripped_len) != 0) {
+            goto write_err;
+        }
+        if (write_all(tmp_fd, "\n\n", 2) != 0) {
+            goto write_err;
+        }
+    }
+
+    if (write_all(tmp_fd, FINN_MANAGED_BEGIN, strlen(FINN_MANAGED_BEGIN)) != 0 ||
+        write_all(tmp_fd, FINN_WINE_SETTINGS_COMMON, strlen(FINN_WINE_SETTINGS_COMMON)) != 0 ||
+        write_all(tmp_fd, dark ? FINN_WINE_COLORS_DARK : FINN_WINE_COLORS_LIGHT,
+                  strlen(dark ? FINN_WINE_COLORS_DARK : FINN_WINE_COLORS_LIGHT)) != 0 ||
+        write_all(tmp_fd, FINN_MANAGED_END, strlen(FINN_MANAGED_END)) != 0) {
+        goto write_err;
+    }
+
+    if (fchmod(tmp_fd, 0600) != 0) {
+        set_error(error, error_cap, "could not set Wine registry permissions");
+        goto clean_err;
+    }
+    if (fchown(tmp_fd, (uid_t)uid, (gid_t)gid) != 0) {
+        if (geteuid() == 0 || errno != EPERM) {
+            set_error(error, error_cap, "could not set Wine registry ownership");
+            goto clean_err;
+        }
+    }
+    if (close(tmp_fd) != 0) {
+        tmp_fd = -1;
+        set_error(error, error_cap, "could not flush Wine registry file");
+        goto clean_err;
+    }
+    tmp_fd = -1;
+
+    if (renameat(dir_fd, "user.reg.finn.tmp", dir_fd, "user.reg") != 0) {
+        set_error(error, error_cap, "could not install Wine registry file");
+        goto clean_err;
+    }
+
+    free(existing);
+    free(stripped);
+    close(dir_fd);
+    return 0;
+
+write_err:
+    set_error(error, error_cap, "could not write Wine registry file");
+clean_err:
+    if (tmp_fd >= 0) close(tmp_fd);
+    unlinkat(dir_fd, "user.reg.finn.tmp", 0);
+    close(dir_fd);
+    free(existing);
+    free(stripped);
+    return -1;
 }
 
 int finncompat_flatpak_run(const char *systemd_run, const char *flatpak,
@@ -861,9 +1174,11 @@ int finncompat_flatpak_run(const char *systemd_run, const char *flatpak,
         "--setenv=LOGNAME=finn", "--setenv=SHELL=/bin/bash",
         "--setenv=PATH=/usr/local/bin:/usr/bin:/bin",
         runtime_arg, "--setenv=WAYLAND_DISPLAY=wayland-0",
-        "--setenv=XDG_SESSION_TYPE=wayland", "--property=Restart=no", "--",
+        "--setenv=XDG_SESSION_TYPE=wayland", "--setenv=GTK_CSD=0",
+        "--property=Restart=no", "--",
         "/usr/bin/dbus-run-session", "--", (char *)flatpak, "run", "--system",
-        "--socket=wayland", "--socket=session-bus", (char *)app_id, NULL
+        "--env=GTK_CSD=0", "--socket=wayland", "--socket=session-bus",
+        (char *)app_id, NULL
     };
     uint8_t *output = NULL;
     size_t output_len = 0;

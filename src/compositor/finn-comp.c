@@ -63,6 +63,7 @@
 #include "finnwindow.h"
 #include "finnsettingsapp.h"
 #include "finnfilesapp.h"
+#include "finnbrowserapp.h"
 #include "finnsetup.h"
 #include "finnboot.h"
 #include "finnnotify.h"
@@ -465,15 +466,28 @@ typedef struct {
     int sent_active, sent_maximized;
 } finn_wayland_window;
 
+/* A popup owns no window slot of its own: the transient hangs off its
+ * parent's window id, and every surface of the same client maps through
+ * the same slot table. */
+typedef struct {
+    FinnWaylandSurface *popup;
+    int popup_id;
+    int parent_id;
+} finn_wayland_popup;
+
+#define FINN_WAYLAND_POPUP_MAX 16
+
 typedef struct {
     FinnWayland *server;
     ctl_ctx *control;
     finn_wayland_window windows[FINNWINDOW_MAX];
+    finn_wayland_popup popups[FINN_WAYLAND_POPUP_MAX];
     int default_width, default_height;
     int pointer_window;
     unsigned pointer_buttons;
     int keyboard_window;
     FinnWaylandSurface *pointer_surface;
+    FinnWaylandSurface *popup_surface;
 } finn_wayland_ctx;
 
 static uint32_t wayland_time_msec(void) {
@@ -532,6 +546,8 @@ static void wayland_surface_created(void *userdata,
     slot->sent_height = -1;
     slot->sent_active = -1;
     slot->sent_maximized = -1;
+    (void)finnwindow_external_set_ssd(
+        id, finn_wayland_surface_server_decorated(surface));
     ctx->control->dirty = 1;
 }
 
@@ -553,8 +569,8 @@ static void wayland_surface_destroyed(void *userdata,
 }
 
 static void wayland_title_changed(void *userdata,
-                                  FinnWaylandSurface *surface,
-                                  const char *title) {
+                                   FinnWaylandSurface *surface,
+                                   const char *title) {
     finn_wayland_ctx *ctx = userdata;
     finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
     if (window)
@@ -562,14 +578,91 @@ static void wayland_title_changed(void *userdata,
     if (ctx->control) ctx->control->dirty = 1;
 }
 
+static void wayland_app_id_changed(void *userdata,
+                                   FinnWaylandSurface *surface,
+                                   const char *app_id) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    /* Only toplevels own windows: a set_app_id on a popup or subsurface
+     * names a layer, not a taskbar tile. */
+    if (window)
+        (void)finnwindow_external_app_id(window->window_id, app_id);
+    if (ctx->control) ctx->control->dirty = 1;
+}
+
+static void wayland_decoration_changed(void *userdata,
+                                       FinnWaylandSurface *surface) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    if (window)
+        (void)finnwindow_external_set_ssd(
+            window->window_id, finn_wayland_surface_server_decorated(surface));
+    if (ctx && ctx->control) ctx->control->dirty = 1;
+}
+
+static finn_wayland_popup *wayland_popup_for_surface(finn_wayland_ctx *ctx,
+                                                     FinnWaylandSurface *popup) {
+    if (!ctx || !popup) return NULL;
+    for (int i = 0; i < FINN_WAYLAND_POPUP_MAX; i++)
+        if (ctx->popups[i].popup == popup) return &ctx->popups[i];
+    return NULL;
+}
+
+static void wayland_popup_created(void *userdata,
+                                  FinnWaylandSurface *popup,
+                                  FinnWaylandSurface *parent) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_window *window = wayland_window_for_surface(ctx, parent);
+    int32_t x = 0, y = 0;
+    int id;
+    if (!window) return;
+    finn_wayland_popup_geometry(popup, &x, &y);
+    id = finnwindow_popup_open(window->window_id, x, y,
+                               ctx->default_width / 2, ctx->default_height / 2);
+    if (id <= 0) {
+        finn_wayland_popup_dismiss(popup);
+        return;
+    }
+    for (int i = 0; i < FINN_WAYLAND_POPUP_MAX; i++) {
+        if (ctx->popups[i].popup) continue;
+        ctx->popups[i].popup = popup;
+        ctx->popups[i].popup_id = id;
+        ctx->popups[i].parent_id = window->window_id;
+        break;
+    }
+    if (ctx->control) ctx->control->dirty = 1;
+}
+
+static void wayland_popup_destroyed(void *userdata,
+                                    FinnWaylandSurface *popup) {
+    finn_wayland_ctx *ctx = userdata;
+    finn_wayland_popup *slot = wayland_popup_for_surface(ctx, popup);
+    if (!slot) return;
+    (void)finnwindow_popup_destroy(slot->popup_id);
+    if (ctx->popup_surface == popup) ctx->popup_surface = NULL;
+    memset(slot, 0, sizeof *slot);
+    if (ctx->control) ctx->control->dirty = 1;
+}
+
 static void wayland_surface_committed(void *userdata,
                                       FinnWaylandSurface *surface) {
     finn_wayland_ctx *ctx = userdata;
     finn_wayland_window *window = wayland_window_for_surface(ctx, surface);
+    finn_wayland_popup *popup = wayland_popup_for_surface(ctx, surface);
     int32_t width = 0, height = 0, stride = 0;
     FinnWaylandFormat format = FINN_WAYLAND_ARGB8888;
     const uint32_t *pixels = finn_wayland_surface_pixels(
         surface, &width, &height, &stride, &format);
+    if (popup) {
+        int opaque = format == FINN_WAYLAND_XRGB8888;
+        if (!pixels && width == 0 && height == 0)
+            (void)finnwindow_popup_commit(popup->popup_id, NULL, 0, 0, 0, 0);
+        else if (pixels && width > 0 && height > 0)
+            (void)finnwindow_popup_commit(popup->popup_id, pixels, width,
+                                          height, stride, opaque);
+        if (ctx->control) ctx->control->dirty = 1;
+        return;
+    }
     if (window && !pixels && width == 0 && height == 0) {
         (void)finnwindow_external_commit(window->window_id, NULL, 0, 0, 0, 0);
     } else if (window && pixels && width > 0 && height > 0) {
@@ -584,6 +677,34 @@ static void wayland_surface_committed(void *userdata,
         }
     }
     if (ctx->control) ctx->control->dirty = 1;
+}
+
+/* The popup under a screen point, if any: menus take the pointer before the
+ * window chrome does, and an outside press on a grabbed menu dismisses it. */
+static finn_wayland_popup *wayland_popup_at(finn_wayland_ctx *ctx, int px,
+                                            int py, int *sx, int *sy) {
+    int id = 0, lx = 0, ly = 0;
+    if (!ctx || !finnwindow_popup_hit(px, py, &id, &lx, &ly)) return NULL;
+    for (int i = 0; i < FINN_WAYLAND_POPUP_MAX; i++)
+        if (ctx->popups[i].popup && ctx->popups[i].popup_id == id) {
+            if (sx) *sx = lx;
+            if (sy) *sy = ly;
+            return &ctx->popups[i];
+        }
+    return NULL;
+}
+
+/* A press outside every popup dismisses the one that holds the grab, which
+ * is what a menu means: the press chose "not this". */
+static int wayland_popup_dismiss_all(finn_wayland_ctx *ctx) {
+    int dismissed = 0;
+    if (!ctx) return 0;
+    for (int i = 0; i < FINN_WAYLAND_POPUP_MAX; i++) {
+        if (!ctx->popups[i].popup) continue;
+        finn_wayland_popup_dismiss(ctx->popups[i].popup);
+        dismissed = 1;
+    }
+    return dismissed;
 }
 
 static void wayland_window_close_request(int id, void *userdata) {
@@ -619,7 +740,7 @@ static void wayland_sync_focus(finn_wayland_ctx *ctx) {
     }
     for (int i = 0; i < FINNWINDOW_MAX; i++) {
         finn_wayland_window *window = &ctx->windows[i];
-        if (!window->surface) continue;
+        if (!window->surface || window->sent_width < 0) continue;
         int width = 0, height = 0;
         if (finnwindow_external_get_size(window->window_id, &width, &height) != 0)
             continue;
@@ -666,6 +787,22 @@ static void wayland_sync_pointer(finn_wayland_ctx *ctx, int px, int py,
                   finnclock_is_open() || finnsetup_is_open();
     int dock = finndock_hit(px, py);
     int id = 0, sx = 0, sy = 0;
+    /* A menu owns the pointer while it is over it, even though it sits
+     * outside its parent's client rect. */
+    if (!blocked && dock == FINNDOCK_HIT_NONE) {
+        int msx = 0, msy = 0;
+        finn_wayland_popup *popup = wayland_popup_at(ctx, px, py, &msx, &msy);
+        if (popup) {
+            if (ctx->pointer_surface != popup->popup) {
+                finn_wayland_pointer_focus(ctx->server, popup->popup, msx, msy,
+                                           time_msec);
+                ctx->pointer_surface = popup->popup;
+            } else {
+                finn_wayland_pointer_motion(ctx->server, msx, msy, time_msec);
+            }
+            return;
+        }
+    }
     if (!blocked && dock == FINNDOCK_HIT_NONE &&
         finnwindow_external_hit(px, py, &id, &sx, &sy)) {
         FinnWaylandSurface *surface = wayland_surface_for_id(ctx, id);
@@ -691,6 +828,27 @@ static void wayland_send_button(finn_wayland_ctx *ctx, uint32_t button,
                                 int px, int py, uint32_t time_msec) {
     if (!ctx || !ctx->server) return;
     if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        int psx = 0, psy = 0;
+        finn_wayland_popup *popup = wayland_popup_at(ctx, px, py, &psx, &psy);
+        if (popup) {
+            ctx->pointer_surface = popup->popup;
+            ctx->pointer_window = 0;
+            ctx->popup_surface = popup->popup;
+            finn_wayland_pointer_focus(ctx->server, popup->popup, psx, psy,
+                                       time_msec);
+            finn_wayland_pointer_button(ctx->server, button,
+                                        WL_POINTER_BUTTON_STATE_PRESSED,
+                                        time_msec);
+            ctx->pointer_buttons |= mask;
+            return;
+        }
+        if (ctx->popup_surface) {
+            /* A press anywhere but the menu chooses "not this": the menu
+             * closes, and the press does not fall through to the window. */
+            (void)wayland_popup_dismiss_all(ctx);
+            ctx->popup_surface = NULL;
+            return;
+        }
         if (!ctx->pointer_window) {
             int sx = 0, sy = 0, hit_id = 0;
             if (!finnwindow_external_hit(px, py, &hit_id, &sx, &sy)) return;
@@ -2440,6 +2598,14 @@ static int key_action(const finn_key_event *e, const finn_state *st,
         return 0;
     }
 
+    /* Escape closes an open menu before any window sees it: the chord is the
+     * menu's, and the client that opened it already knows it may vanish. */
+    if (e->code == KEY_ESC && wayland && wayland->popup_surface) {
+        (void)wayland_popup_dismiss_all(wayland);
+        wayland->popup_surface = NULL;
+        return 1;
+    }
+
     /* The console chord is checked before anything else: it must work from a
      * setup screen, a menu and a frozen-looking session alike. While another
      * VT is active, no other key belongs to this session. */
@@ -2884,22 +3050,23 @@ static int boot_flip(uint32_t fbid, finngpu *gpu) {
     return landed;
 }
 
-static int ensure_user_runtime_dir(uid_t uid, gid_t gid,
-                                  char *path, size_t path_cap) {
-    int n = snprintf(path, path_cap, "/run/user/%u", (unsigned)uid);
-    if (n < 0 || (size_t)n >= path_cap) { errno = ENAMETOOLONG; return -1; }
-    int created = mkdir(path, 0700) == 0;
-    if (!created && errno != EEXIST) return -1;
-    if (created && (chown(path, uid, gid) != 0 || chmod(path, 0700) != 0))
-        return -1;
+/* A previous run that died uncleanly leaves its socket behind, and
+ * finn_wayland_create refuses to replace an existing path. Only a socket
+ * is ever removed here; anything else at the path is someone else's file
+ * and the server refuses to start instead. A live socket from a running
+ * compositor surfaces as EADDRINUSE from the bind, which is also a
+ * refusal — the old server owns the display until it exits. Ownership
+ * lands on the fresh bind itself (0660, group finn), which is how the
+ * finn user connects. */
+static int clear_stale_wayland_socket(void) {
     struct stat st;
-    if (lstat(path, &st) != 0) return -1;
-    if (!S_ISDIR(st.st_mode) || st.st_uid != uid) {
+    if (lstat(FINN_WAYLAND_SOCK, &st) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISSOCK(st.st_mode)) {
         errno = EPERM;
         return -1;
     }
-    if ((st.st_mode & 0777) != 0700 && chmod(path, 0700) != 0) return -1;
-    return 0;
+    return unlink(FINN_WAYLAND_SOCK);
 }
 
 int main(int argc, char **argv) {
@@ -3169,15 +3336,14 @@ int main(int argc, char **argv) {
     if (wayland.default_width > 1280) wayland.default_width = 1280;
     if (wayland.default_height > 800) wayland.default_height = 800;
     struct passwd *finn_user = getpwnam("finn");
-    char runtime_dir[PATH_MAX], wayland_socket[PATH_MAX];
+    char wayland_socket[PATH_MAX];
     if (!finn_user) {
         fprintf(stderr, "finn-comp: Wayland unavailable: user 'finn' not found\n");
-    } else if (ensure_user_runtime_dir(finn_user->pw_uid, finn_user->pw_gid,
-                                       runtime_dir, sizeof runtime_dir) != 0) {
-        fprintf(stderr, "finn-comp: Wayland runtime directory unavailable: %s\n",
+    } else if (clear_stale_wayland_socket() != 0) {
+        fprintf(stderr, "finn-comp: Wayland socket unavailable: %s\n",
                 strerror(errno));
     } else if (snprintf(wayland_socket, sizeof wayland_socket,
-                        "%s/wayland-0", runtime_dir) >=
+                        "%s", FINN_WAYLAND_SOCK) >=
                (int)sizeof wayland_socket) {
         fprintf(stderr, "finn-comp: Wayland socket path is too long\n");
     } else {
@@ -3185,7 +3351,11 @@ int main(int argc, char **argv) {
             .surface_created = wayland_surface_created,
             .surface_destroyed = wayland_surface_destroyed,
             .title_changed = wayland_title_changed,
-            .surface_committed = wayland_surface_committed
+            .surface_committed = wayland_surface_committed,
+            .app_id_changed = wayland_app_id_changed,
+            .popup_created = wayland_popup_created,
+            .popup_destroyed = wayland_popup_destroyed,
+            .decoration_changed = wayland_decoration_changed
         };
         FinnWaylandConfig config = {
             .socket_path = wayland_socket,
@@ -3334,7 +3504,7 @@ int main(int argc, char **argv) {
     int exit_code = 0;
 
     while (!g_stop) {
-        struct pollfd pf[FINN_PTR_MAX + FINN_KBD_MAX + 3 + MAX_CLIENTS];
+        struct pollfd pf[FINN_PTR_MAX + FINN_KBD_MAX + 5 + MAX_CLIENTS];
         int nf = 0, ictl = -1, cslot[MAX_CLIENTS];
         int pslot[FINN_PTR_MAX], kslot[FINN_KBD_MAX + 1];
 
@@ -3366,6 +3536,12 @@ int main(int argc, char **argv) {
                 nf++;
             }
         }
+        {
+            int blfd = finnbrowserapp_listen_fd();
+            int bcfd = finnbrowserapp_client_fd();
+            if (blfd >= 0) { pf[nf].fd = blfd; pf[nf].events = POLLIN; nf++; }
+            if (bcfd >= 0) { pf[nf].fd = bcfd; pf[nf].events = POLLIN; nf++; }
+        }
         for (int i = 0; i < MAX_CLIENTS; i++) {
             cslot[i] = -1;
             if (clients[i] >= 0) { pf[nf].fd = clients[i]; pf[nf].events = POLLIN; cslot[i] = nf++; }
@@ -3381,6 +3557,7 @@ int main(int argc, char **argv) {
         int pr = poll(pf, (nfds_t)nf, busy ? FRAME_MS : 400);
 
         (void)wayland_dispatch_now(&wayland);
+        if (finnbrowserapp_poll()) cx.dirty = 1;
         launch_poll();
 
         int moved = 0, key_changed = 0;

@@ -13,7 +13,8 @@ SAN    ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 CORE   = ../../src/core
 COMP   = ../../src/compositor
 CTRL   = ../../src/control
-BINS   = test_finnconn test_finnsettings test_finnvg test_finnblur test_finntaskbar test_finnfbin test_finncompat test_finnsettingsapp_pages test_finndraw
+BINS   = test_finnconn test_finnsettings test_finnvg test_finnblur test_finntaskbar test_finnfbin test_finncompat test_finnsettingsapp_pages test_finndraw \
+         test_finnbrowser
 
 # The Settings page test links only navigation metadata; macOS uses compile-only
 # shims for Linux headers and its native dead-section linker flag.
@@ -36,6 +37,10 @@ run: $(BINS)
 	./test_finncompat
 	./test_finnsettingsapp_pages
 	./test_finndraw
+	./test_finnbrowser
+
+test_finnbrowser: test_finnbrowser.c $(CORE)/finnbrowser.c $(CORE)/finnbrowser.h
+	$(CC) $(CFLAGS) $(SAN) -I$(CORE) -o $@ test_finnbrowser.c $(CORE)/finnbrowser.c
 
 test_finnconn: test_finnconn.c $(CORE)/finnconn.c $(CORE)/finnconn.h
 	$(CC) $(CFLAGS) $(SAN) -I$(CORE) -o $@ test_finnconn.c $(CORE)/finnconn.c

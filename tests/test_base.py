@@ -158,7 +158,7 @@ class BaseImageTest(unittest.TestCase):
                 for line in handle
                 if line.strip() and not line.lstrip().startswith("#")
             }
-        expected = {"settings", "files", "store"}
+        expected = {"settings", "files", "store", "browser"}
         self.assertTrue(expected.issubset(catalogue))
 
         writers = (
@@ -295,7 +295,7 @@ class BaseImageTest(unittest.TestCase):
                     continue
                 self.assertTrue(command, line)
                 native.add(app_id)
-        self.assertEqual(native, {"settings", "files", "store"})
+        self.assertEqual(native, {"settings", "files", "store", "browser"})
 
 
 if __name__ == "__main__":

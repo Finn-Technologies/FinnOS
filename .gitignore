@@ -3,6 +3,9 @@
 *.a
 *.so
 /src/compositor/finn-comp
+/src/compositor/finn-browser
+/src/compositor/*-server-protocol.c
+/src/compositor/*-server-protocol.h
 /src/control/finnd
 /src/control/finnctl
 /src/tools/vgtest
@@ -41,3 +44,4 @@ build/
 .vscode/
 /tests/c/test_finnvg
 /tests/c/test_finnblur
+/tests/c/test_finnbrowser

@@ -19,12 +19,13 @@ int main(int argc, char **argv) {
     if (strstr(prog, "settings")) app = "settings";
     else if (strstr(prog, "files")) app = "files";
     else if (strstr(prog, "store")) app = "store";
+    else if (strstr(prog, "browser")) app = "browser";
     else if (strstr(prog, "arc")) app = "arc";
 
     if (argc > 1 && argv[1][0]) {
         if (!strcmp(argv[1], "settings") || !strcmp(argv[1], "files") ||
-            !strcmp(argv[1], "store") || !strcmp(argv[1], "arc") ||
-            !strcmp(argv[1], "window")) {
+            !strcmp(argv[1], "store") || !strcmp(argv[1], "browser") ||
+            !strcmp(argv[1], "arc") || !strcmp(argv[1], "window")) {
             app = argv[1];
             if (argc > 2 && argv[2][0]) title = argv[2];
         } else {

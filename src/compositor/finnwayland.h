@@ -24,6 +24,20 @@ typedef struct {
     void (*title_changed)(void *userdata, FinnWaylandSurface *surface,
                           const char *title);
     void (*surface_committed)(void *userdata, FinnWaylandSurface *surface);
+    /* A client assigned (or re-assigned) its application id. The window
+     * already exists by then — get_toplevel fires surface_created first —
+     * so the compositor updates the grouping rather than reopening. */
+    void (*app_id_changed)(void *userdata, FinnWaylandSurface *surface,
+                           const char *app_id);
+    /* A popup (menu, combo, tooltip, dialog) arrived for a toplevel. The
+     * compositor draws it as a chromeless child of the parent's window;
+     * popups never take a window slot of their own. Dismissal (outside
+     * press, Escape, grab loss) is the compositor's job; the close call
+     * below reports it back to the client. */
+    void (*popup_created)(void *userdata, FinnWaylandSurface *popup,
+                          FinnWaylandSurface *parent);
+    void (*popup_destroyed)(void *userdata, FinnWaylandSurface *popup);
+    void (*decoration_changed)(void *userdata, FinnWaylandSurface *surface);
 } FinnWaylandCallbacks;
 
 typedef struct {
@@ -40,11 +54,12 @@ typedef struct {
  * listening socket. Returns NULL with errno set on failure. The finn group
  * must exist; an existing path is never removed or replaced.
  *
- * This is intentionally a small toplevel-only server: popup roles,
- * subsurfaces, linux-dmabuf, touch, clipboard transfers, drag-and-drop,
- * non-unit scale, and transformed buffers are not implemented. Window
- * move/resize/state requests and input/opaque regions are accepted as
- * no-ops; the compositor controls geometry through
+ * This is a small toplevel + popup + subsurface server: popups are realized
+ * as chromeless transients owned by their parent toplevel, and subsurfaces
+ * composite into their parent's pixels. linux-dmabuf, touch, clipboard
+ * transfers, drag-and-drop, non-unit scale, and transformed buffers are not
+ * implemented. Window move/resize/state requests and input/opaque regions
+ * are accepted as no-ops; the compositor controls geometry through
  * finn_wayland_configure(). Only ARGB8888 and XRGB8888 wl_shm buffers are
  * copied. The built-in wl_shm pool implementation still enforces pool bounds.
  * All API calls and callbacks belong on the compositor/event-loop thread;
@@ -73,6 +88,21 @@ const uint32_t *finn_wayland_surface_pixels(const FinnWaylandSurface *surface,
                                             int32_t *stride_bytes,
                                             FinnWaylandFormat *format);
 const char *finn_wayland_surface_title(const FinnWaylandSurface *surface);
+const char *finn_wayland_surface_app_id(const FinnWaylandSurface *surface);
+/* Returns non-zero when the surface negotiated server-side decorations through
+ * either zxdg_decoration_manager_v1 or org_kde_kwin_server_decoration_manager,
+ * so the compositor draws window chrome rather than assuming client borders. */
+int finn_wayland_surface_server_decorated(const FinnWaylandSurface *surface);
+/* A popup's parent-relative offset, resolved from the xdg_positioner at
+ * creation. The compositor places the transient relative to its parent
+ * window's client area. */
+void finn_wayland_popup_geometry(const FinnWaylandSurface *surface,
+                                 int32_t *x, int32_t *y);
+int finn_wayland_surface_is_popup(const FinnWaylandSurface *surface);
+/* Dismiss a popup as if the client destroyed it: sends no protocol event
+ * beyond the surface going away, which is exactly what an outside press or
+ * Escape means to a grabbed menu. */
+void finn_wayland_popup_dismiss(FinnWaylandSurface *surface);
 
 /* Seat events use Wayland's millisecond timestamps, Linux evdev button/key
  * codes, and WL_POINTER_BUTTON_STATE_* / WL_KEYBOARD_KEY_STATE_* values. A

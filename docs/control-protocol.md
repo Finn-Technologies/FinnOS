@@ -62,16 +62,23 @@ The capture is a PPM, so no image library is needed to take one.
 |---|---|---|---|
 | `/run/finn/control.sock` | `finnd` | `0660`, root and the `finn` group | the whole protocol |
 | `/run/finn/comp.sock` | `finn-comp` | `0600`, root only | the display, input and machine verbs |
+| `/run/finn/browser.sock` | `finn-comp` | `0660`, root and the `finn` group | internal browser frame streaming and control (`SO_PEERCRED`-checked) |
+| `/run/finn/wayland-0` | `finn-comp` | `0770`, root and the `finn` group | internal Wayland xdg-shell host for application surfaces |
 
-Both are unix sockets. There is no TCP listener in the system, and there will
+All are unix sockets. There is no TCP listener in the system, and there will
 not be one: remote control is an explicit decision by the user, not a default.
 `sshd` is installed but disabled on an installed machine.
 
-The compositor's socket is a provider, not a second door. `finn-comp` checks
-`SO_PEERCRED` on every connection as well as the file mode. `finnctl --direct`
-talks to it, prints on stderr that it is bypassing `finnd` and its audit log,
-and needs root. There is no automatic fallback: a device whose control plane is
-down is unreachable rather than quietly unaudited.
+The compositor's sockets (`/run/finn/comp.sock`, `/run/finn/browser.sock`,
+`/run/finn/wayland-0`) are internal providers, not doors into the system.
+`finn-comp` checks `SO_PEERCRED` on every accepted connection as well as the
+file mode. `/run/finn/browser.sock` (`FINN_BROWSER_SOCK`) is an internal provider
+socket (`0660`, `root:finn`, `SO_PEERCRED`-checked) between `finn-comp` and
+`/usr/local/bin/finn-browser`, streaming decoded frames and browser actions.
+`finnctl --direct` talks to `/run/finn/comp.sock`, prints on stderr that it is
+bypassing `finnd` and its audit log, and needs root. There is no automatic
+fallback: a device whose control plane is down is unreachable rather than
+quietly unaudited.
 
 ### Authentication
 
@@ -284,7 +291,7 @@ Provided by the compositor (`finnwindow`), proxied by the control plane.
 | Verb | Reply | What it does |
 |---|---|---|
 | `window.list` | `OK count=… [id\|app\|state\|title]…` | list open windows and their state (`normal`, `minimized`, `maximized`, `snapped`) |
-| `window.open [app=<id>\|title=<title>]` | `OK id=…` / `ERR window limit reached (8)` | open an empty window or an app window; the ninth is refused, never evicted |
+| `window.open [app=<id>\|title=<title>]` | `OK id=…` / `ERR window limit reached (8)` | open an empty window or an app window (`app=` can be `settings`, `files`, `store`, or `browser`); the ninth is refused, never evicted |
 | `window.close [id=<id>]` | `OK` | close the window, or the top visible window when `id` is omitted |
 | `window.focus [id=<id>]` | `OK` | unminimise and raise the window to the front |
 | `window.minimize [id=<id>]` | `OK` | toggle the window's minimised state |
