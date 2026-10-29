@@ -3,6 +3,7 @@
 *.a
 *.so
 /src/compositor/finn-comp
+/src/comp/finn-comp
 /src/control/finnd
 /src/control/finnctl
 /src/tools/vgtest

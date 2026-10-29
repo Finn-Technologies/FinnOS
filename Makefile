@@ -23,8 +23,8 @@ all: core compositor control tools
 core:
 	$(MAKE) -C src/core
 
-compositor: core
-	$(MAKE) -C src/compositor
+compositor:
+	$(MAKE) -C src/comp
 
 control: core
 	$(MAKE) -C src/control
@@ -53,7 +53,7 @@ lint:
 	@scripts/lint.sh
 
 install: all
-	$(MAKE) -C src/compositor install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
+	$(MAKE) -C src/comp install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/control install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m755 src/pkg/finnpkg $(DESTDIR)$(PREFIX)/bin/finnpkg

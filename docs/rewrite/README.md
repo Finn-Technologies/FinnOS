@@ -13,10 +13,17 @@ Read in this order:
 
 ## Status
 
-- M0: in progress. The contract exists, the legacy work is preserved, and
+- M0: done. The contract exists, the legacy work is preserved, and
   `src/session/app_registry.cpp` is the first new module.
+- M1: in progress. `src/comp` holds the wlroots 0.20 compositor. It builds
+  on the VM, starts with the headless backend, serves the expected globals
+  and maps/unmaps a real `xdg-shell` client. The DRM seat and input paths are
+  still open.
 - The old `src/compositor`, `src/control`, `src/core`, `src/pkg`, `apps/`,
   `sdk/`, `mcp/` and the C tests are still present on this branch. They are
   removed milestone by milestone as their replacements pass acceptance, not
   before. Deleting them first would leave nothing to build and nothing to
   compare against.
+- `src/comp` is the new compositor under a transitional directory name so the
+  old sources can keep the existing test suite alive. It becomes
+  `src/compositor` when the old tree is removed.

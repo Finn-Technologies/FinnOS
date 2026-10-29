@@ -13,11 +13,16 @@ acceptance line passed on the VM.
 
 ## M1 — a real compositor
 
-- [ ] `finn-comp` uses the wlroots 0.20 DRM backend and the headless backend.
-- [ ] An `xdg-shell` client maps, gets focus and closes.
+- [x] `finn-comp` uses wlroots 0.20 and builds on the VM.
+- [ ] The DRM backend and a logind/seatd session start it on tty1.
+- [x] The headless backend starts and serves the expected globals.
+- [x] An `xdg-shell` client maps, gets focus and closes without a protocol
+      assertion.
 - [ ] Pointer and keyboard input reach the focused toplevel.
 - [ ] The compositor survives a client crash and a backend restart.
-- [ ] `wayland-info` sees the expected globals.
+- [x] `wayland-info` sees the expected globals.
+- [ ] The session runtime directory is owned and exported by the unit, not
+      manufactured by the compositor.
 
 Acceptance: on the VM, `WLR_BACKENDS=headless WLR_RENDERER=pixman finn-comp`
 starts and serves `wayland-info`; on tty1 it paints a GTK window and the
