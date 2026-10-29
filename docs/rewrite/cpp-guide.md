@@ -75,15 +75,14 @@ One class per file pair, named after the class.
 
 These are small and self-contained. Pick one and say which you are taking.
 
-- [ ] `AppRegistry::load` currently skips a duplicate id silently. Decide
-      whether the catalogue should reject the file instead, write the test,
-      and make it so.
-- [ ] Add `AppRegistry::by_source(AppSource)` and a test that the Flatpak and
-      winget entries are discovery records, not launchable native apps.
-- [ ] Add a `src/session/registry_dump.cpp` tool that prints the catalogue as
-      `id installed name`, and a test for its output.
-- [ ] Add the `kCataloguePath` and `kInstalledPath` constants to
-      `src/common/paths.hpp`, use them in the tool, and update the contract
-      table.
-- [ ] Write the icon-existence check: an entry whose icon is missing must be
-      reported as missing, not drawn as an empty square.
+- [ ] `AppRegistry::load` currently keeps the first duplicate id silently.
+      Decide whether the catalogue should reject the file instead, write the
+      test, and make it so.
+- [ ] Extract the `APP.LIST` reply formatting from `src/session/main.cpp` into
+      a pure function and test it without a socket.
+- [ ] Add `finn-session --registry` that prints the whole catalogue with its
+      installed flag, and a test for its output.
+- [ ] Add a `Canvas` unit test for button press/release state using a fake
+      `Input`; it needs no display and no Wayland connection.
+- [ ] Add an input-injection test on the VM: uinput pointer and key events
+      reach the focused toplevel and the shell menu opens and closes.

@@ -1,180 +1,57 @@
-# FinnOS dev VM
+# The dev VM
 
-A working Arch Linux x86_64 install that boots FinnOS, running in VMware
-Workstation. It is the build machine: the compositor needs the DRM headers,
-GBM, EGL and FreeType, and this is where the shell is actually run.
-
-The machine is the distribution's until `base/setup.sh` has run on it: that
-is what makes it FinnOS's (the package set, the units, the assets, the
-branding), and it is the same directory the install medium is built from.
-
-## The VM
-
-| | |
-|---|---|
-| Name | `FinnOS-dev` |
-| Guest | Arch Linux x86_64 |
-| Resources | 4 GB RAM, 2 vCPU, 32 GB disk - the i3-4130 / 4 GB target |
-| Disk | `/dev/sda1` 512M EFI (vfat) + `/dev/sda2` 1M BIOS boot + `/dev/sda3` root (ext4, label `finnos`) |
-| Bootloader | GRUB: the BIOS boot code in the MBR, and an EFI loader on the partition |
-| Console | VMware console; `tty1` is the compositor, `Ctrl+Alt+F2` is a getty |
-| Network | VMware NAT, DHCP. The guest IP is assigned by VMware; read it with `ip addr` |
-| GPU | Intel HD Graphics (Mesa) - the accelerated path, GBM + EGL 1.5 |
-
-## Credentials
-
-There is **no default password**. An installed machine uses the password given
-to the installer (`FINN_PASSWORD`) or the one the chroot generated and printed
-once. `sudo` asks for it.
-
-A bare Arch rootfs prepared by `vm/deploy.sh` is different: the script creates
-`finn` with a locked password and passwordless sudo, so it is reached as `root`
-over SSH or with a key, never by guessing a password.
-
-- SSH: `ssh finn@<guest-ip>` once the account has a password or key.
-- Root SSH is publickey-only (the Arch default, `prohibit-password`).
-
-Override the address used by the scripts with `FINN_HOST`:
+The VM is the build machine: it has DRM, the GPU stack, `wayland-scanner`,
+`seatd`, the fonts and a real display. The host can be the editor.
 
 ```sh
-FINN_HOST=finn@192.168.44.128 vm/deploy.sh
+vm/deploy.sh              # sync, build, install, restart the session
+vm/deploy.sh --no-restart # build and install only
+vm/shot.sh out.png        # grim against /run/finn/wayland-0
 ```
 
-## The day-to-day loop
+`deploy.sh` sends the tree as a tar stream (the VM has no rsync), installs the
+build dependencies, builds in `~/finnos`, installs to `/usr/local`, installs
+the units, enables linger for `finn` and restarts
+`finn-comp`/`finn-session`/`finn-shell`.
+
+## The session it starts
+
+- `finn-comp` as root on tty1, `WLR_BACKENDS=drm`,
+  `LIBSEAT_BACKEND=seatd`, `XDG_RUNTIME_DIR=/run/finn`.
+- `finn-session` and `finn-shell` as `finn`, with
+  `XDG_RUNTIME_DIR=/run/user/1000` and
+  `WAYLAND_DISPLAY=/run/finn/wayland-0`.
+- The shell's layer surface is the dock, clock and app menu.
+
+The compositor's unit is the only one that needs the device. The session and
+the shell are normal clients and can be restarted without restarting the
+display.
+
+## Looking at it
+
+`vm/shot.sh` is the proof. A compositor change that compiles is not a change
+that works. The capture is taken as `finn` with grim against the compositor's
+screencopy and xdg-output globals.
+
+If you need to drive it by hand, the verbs are the session's:
 
 ```sh
-make deploy                  # build, install, restart
-vm/shot.sh /tmp/shot.png     # look at it
+sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --list
+sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --launch files
 ```
 
-`vm/deploy.sh` sends the tree over as a tar stream - the VM has no
-`rsync` - builds it in `~/finnos`, installs it to `/usr/local/bin`,
-copies both wallpapers to `/usr/share/finn/wallpaper/` and restarts
-`finn-comp` and `finnd`. Building a shell does not install the data it
-draws, so the wallpapers are copied here rather than left from an older
-deploy.
-
-On a bare Arch Linux ARM rootfs there is no `finn` user and no sudo.
-Connect as root and the script also initializes the pacman keyring,
-installs the build dependencies, creates `finn` and installs and enables
-the units:
-
-```sh
-FINN_HOST=root@<guest-ip> vm/deploy.sh
-```
-
-To put the rest of the base on the machine - the package set, the icons
-and the branding - run `sudo base/setup.sh` on it, which is what an
-install does.
-
-To drive the shell from a script:
-
-```sh
-ssh finn@<guest-ip> '
-  sudo finnctl pointer.move x=1196 y=1506
-  sudo finnctl pointer.click
-  sleep 1
-  sudo finnctl screen.shell
-'
-```
+Input injection is not implemented; pointer and keyboard paths are verified
+only by the fact that the device is opened and the seat exists. Treat an
+input change as unverified until a test drives it.
 
 ## Installing a fresh VM
 
-The FinnOS ISO is bootable: it is a live medium built from this tree -
-the profile, the package list, the live root and the disc's two boot
-menus (syslinux and systemd-boot) in `base/`, with the FinnOS sources
-inside it at `/opt/finnos`. One disc, no downloaded base image and no host
-HTTP server needed. The default entry is
-**Install FinnOS**, which boots the live environment and hands over to
-the installer, and **FinnOS live shell** is the way in without installing.
+The FinnOS ISO is built from `base/` and contains the sources at
+`/opt/finnos`. Boot it, choose **Install FinnOS**, and give the installer the
+disk explicitly; it has no default. `vm/finn-install.sh` partitions and
+pacstraps, and `vm/finn-chroot.sh` installs the assets, builds the session,
+enables the three units and the linger file, and verifies the binaries before
+claiming the install worked.
 
-1. Build the FinnOS ISO. On an Arch machine (or the OptiPlex once it
-   runs FinnOS), the native build writes the medium from `base/` alone:
-
-   ```sh
-   sudo base/mkfinniso finnos.iso
-   ```
-
-   It needs root, the `archiso` package, and the build-host tools named in
-   `base/README.md`. Where there is no Arch machine, CI builds the same
-   disc in a privileged Arch container — see `.github/workflows/iso.yml`.
-   Either way the tree is checked beforehand with
-   `base/mkfinniso --check`.
-
-2. Check that it boots, if you have QEMU:
-
-   ```sh
-   vm/test-boot.sh finnos.iso
-   ```
-
-   This boots the disc and waits for the guest to reach userspace: the
-   installer, or a multi-user target on the live shell.
-
-   To see the menu itself rather than the kernel's output, take a frame
-   of the console:
-
-   ```sh
-   vm/menu-shot.sh finnos.iso /tmp/menu
-   ```
-
-   It starts QEMU with the display off and asks the monitor for a picture
-   at a few moments, so the frames land in `/tmp/menu`; open the one that
-   shows the menu.
-
-3. Create the VMware VM:
-
-   ```sh
-   vm/create-dev-vm.sh
-   ```
-
-4. Boot the VM. The default entry, **Install FinnOS**, starts the
-   installer from the live shell after ten seconds; **FinnOS live shell**
-   leaves you at the prompt, where `finn-install` does the same thing.
-
-   `vm/finn-install.sh` takes the payload from `/opt/finnos` in the live
-   root, partitions, formats, pacstraps and runs `vm/finn-chroot.sh`,
-   which configures the machine, installs the fonts, both wallpapers and
-   every icon, sets up the bootloader, and builds the compositor and the
-   control plane from the sources on the disc — the machine the disc is
-   installed on is the one with the DRM headers and the toolchain.
-
-   A separate data disc labelled `FINNOS` still works, and if there is
-   no disc the installer falls back to the host HTTP server.
-
-5. On a machine that was installed before the installer built the shell,
-   or after a change to the sources, build and install it by hand:
-
-   ```sh
-   sudo pacman -S --needed base-devel pkgconf libdrm libwebp freetype2 alsa-lib mesa
-   cd /opt/finnos && make && sudo make install
-   sudo systemctl restart finn-comp finnd
-   ```
-
-## What is on the machine
-
-- `/usr/local/bin/finn-comp` - the compositor
-- `/usr/local/bin/finnd`, `finnctl` - the control plane and its client
-- `/usr/local/bin/finnpkg` - the package manager
-- `/usr/share/finn/wallpaper/default.webp` - the wallpaper `finn-comp` opens
-- `/usr/share/finn/wallpaper/setup.webp` - the wallpaper the first-run screen draws
-- `/usr/share/finn/icons/*.svg` - the icon set
-- `/usr/share/finn/apps.registry` - the catalogue of apps
-- `/usr/share/fonts/OTF/FixelDisplay-*.otf` - `fc-match "Fixel Display"` resolves
-- `/run/finn/` - the IPC namespace: `control.sock`, `comp.sock`, `state/`
-
-## The services
-
-```sh
-systemctl status finn-comp finnd
-sudo journalctl -u finn-comp -f
-sudo tail -f /var/log/finn/control.log
-```
-
-The compositor writes to the journal, never to the TTY it is painting on.
-Every control-plane call is audited with the peer uid.
-
-## Making one
-
-`vm/create-dev-vm.sh` creates an empty VMware VM with the right shape
-for the target. The FinnOS disc is attached by the script; pass an Arch
-ISO as the third argument for the two-disc fallback.
+There is no `finnd` and no package manager in v1; installing an app means its
+binary, its registry line and its id in `/var/lib/finnpkg/installed`.

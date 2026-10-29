@@ -65,6 +65,8 @@ install: libfinnui.a
 	install -m644 finn/ui.hpp $(DESTDIR)$(INCDIR)/finn/ui.hpp
 	install -d $(DESTDIR)$(LIBDIR)
 	install -m644 libfinnui.a $(DESTDIR)$(LIBDIR)/libfinnui.a
+	install -d $(DESTDIR)$(LIBDIR)/pkgconfig
+	install -m644 finnui.pc $(DESTDIR)$(LIBDIR)/pkgconfig/finnui.pc
 
 clean:
 	rm -rf $(BUILD) libfinnui.a

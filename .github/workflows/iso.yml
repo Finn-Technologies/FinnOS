@@ -101,11 +101,12 @@ jobs:
                    opt/finnos/base/airootfs/etc/motd \
                    opt/finnos/base/airootfs/etc/hostname \
                    opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
-                   opt/finnos/base/airootfs/etc/systemd/system/finnd.service \
+                   opt/finnos/base/airootfs/etc/systemd/system/finn-session.service \
+                   opt/finnos/base/airootfs/etc/systemd/system/finn-shell.service \
                    opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
                    opt/finnos/base/airootfs/usr/local/bin/finn-install \
                    usr/local/bin/finn-install etc/os-release etc/issue etc/motd etc/hostname \
-                   etc/systemd/system/finn-comp.service etc/systemd/system/finnd.service \
+                   etc/systemd/system/finn-comp.service etc/systemd/system/finn-session.service etc/systemd/system/finn-shell.service \
                    usr/lib/tmpfiles.d/finn.conf \
                    root/.zprofile root/.bash_profile; do
             unsquashfs -l /tmp/airootfs.sfs | grep -qx "squashfs-root/$p" || {
@@ -123,12 +124,13 @@ jobs:
             opt/finnos/base/airootfs/etc/motd \
             opt/finnos/base/airootfs/etc/hostname \
             opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
-            opt/finnos/base/airootfs/etc/systemd/system/finnd.service \
+            opt/finnos/base/airootfs/etc/systemd/system/finn-session.service \
+                   opt/finnos/base/airootfs/etc/systemd/system/finn-shell.service \
             opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
             opt/finnos/base/airootfs/usr/local/bin/finn-install \
             usr/local/bin/finn-install \
             etc/os-release etc/issue etc/motd etc/hostname \
-            etc/systemd/system/finn-comp.service etc/systemd/system/finnd.service \
+            etc/systemd/system/finn-comp.service etc/systemd/system/finn-session.service etc/systemd/system/finn-shell.service \
             usr/lib/tmpfiles.d/finn.conf \
             root/.zprofile root/.bash_profile
           # The installer is run, not read, so the mode is part of it.
@@ -155,7 +157,7 @@ jobs:
           fi
           for f in etc/issue etc/motd etc/hostname \
                    etc/systemd/system/finn-comp.service \
-                   etc/systemd/system/finnd.service \
+                   etc/systemd/system/finn-session.service etc/systemd/system/finn-shell.service \
                    usr/lib/tmpfiles.d/finn.conf \
                    usr/local/bin/finn-install; do
             if ! cmp "/tmp/live/$f" "/tmp/live/opt/finnos/base/airootfs/$f"; then

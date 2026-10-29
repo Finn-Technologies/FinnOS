@@ -10,15 +10,15 @@ Arch Linux: the kernel, firmware, systemd, pacman, mesa, libdrm, libinput and
 Wayland. The installer, the ISO build and the package list in `base/` stay.
 Everything above the session is rewritten.
 
-## Five programs
+## The programs
 
 | Program | Owns | Runs as |
 |---|---|---|
 | `finn-comp` | outputs, seats, toplevels, window management, effects | root (DRM) |
 | `libfinnui` | the UI runtime: layout, widgets, text, vector, tokens | library |
-| `finn-shell` | dock, Control Center, clock page, Start Menu, notifications | `finn` |
-| `finn-session` | registry, installed list, launch, sandbox | `finn` |
-| `finnd` | power, state, packages, updates, audit | root |
+| `finn-shell` | dock, clock, app menu | `finn` |
+| `finn-session` | registry, installed list, launch | `finn` |
+| `finnd` | power, state, packages, updates, audit | root — not written in v1 |
 
 `libfinnui` is not a daemon. The shell and the first-party apps link it.
 
@@ -32,8 +32,8 @@ Two sockets, two owners.
 
 | Socket | Owner | Mode | Serves |
 |---|---|---|---|
-| `/run/finn/control.sock` | `finnd` | `0660 root:finn-authority` | machine authority |
 | `$XDG_RUNTIME_DIR/finn/session.sock` | `finn-session` | `0600 finn` | app launch |
+| `/run/finn/control.sock` | `finnd` (reserved) | `0660 root:finn-authority` | machine authority, not written in v1 |
 
 Apps join neither group and never talk to `finnd`. The shell asks
 `finn-session` to launch. There is no TCP listener and no second door.
@@ -65,29 +65,28 @@ unmodified GTK, Qt, Flatpak or Wine programs.
 
 Adding an app changes two things: its registry line and its own directory.
 CI enforces this with a test that fails if a first-party app id appears under
-`src/compositor`.
+`src/comp`.
 
 ## Display
 
 wlroots 0.20. One output and one scale in v1. `xdg-shell` for apps,
-`layer-shell` for shell surfaces, `xdg-decoration` server-side for toplevels.
-The compositor never crops or guesses a client's own headerbar; a client that
-draws client-side decorations keeps them.
+`layer-shell` for shell surfaces. There is no server-side decoration: the
+compositor draws no titlebar, a native app draws the frame `libfinnui`
+provides, and a foreign toolkit keeps its own header bar. There is exactly one
+chrome per window.
 
 All rendering goes through `wlr_renderer` and the scene graph. There is no
 second software path to keep in step with the accelerated one.
 
 ## Sandbox
 
-Every app runs in its own transient systemd user unit. The baseline is
-`NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`,
-`ProtectHome=read-only` with an explicit writable state directory, and no
-access to `/run/finn`.
-
-An app that needs a file uses the XDG directories. An app that needs the
-machine asks `finn-session`, and only the shell is allowed to ask. Sandbox
-rules are defaults, not suggestions: a launch that cannot be sandboxed is a
-launch that does not happen.
+The sandbox is the next change, not the current state. In v1 an app runs as
+`finn` with the user's full authority; `finn-session` spawns it, and the
+session has no machine authority. The target is a transient systemd user unit
+per app with `NoNewPrivileges=yes`, `PrivateTmp=yes`,
+`ProtectSystem=strict`, an explicit writable state directory and no access to
+`/run/finn`. An app that needs the machine will ask the shell, and the shell
+will ask `finnd`.
 
 ## Honesty
 

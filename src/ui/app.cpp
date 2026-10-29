@@ -914,7 +914,7 @@ int Client::run() {
         pollfd descriptor{};
         descriptor.fd = fd;
         descriptor.events = POLLIN;
-        const int timeout = tick_ms_ > 0 ? tick_ms_ : -1;
+        const int timeout = tick_ms_ > 0 ? tick_ms_ : 1000;
         const int ready = poll(&descriptor, 1, timeout);
         if (ready < 0) {
             if (errno == EINTR) continue;
@@ -922,8 +922,11 @@ int Client::run() {
             break;
         }
         if (ready == 0) {
+            const Theme next = pick_theme();
+            const bool theme_changed = next.dark != theme_.dark;
+            if (theme_changed) theme_ = next;
             if (tick_) tick_();
-            request_frame();
+            if (tick_ || theme_changed) request_frame();
             continue;
         }
         if ((descriptor.revents & POLLIN) != 0) {

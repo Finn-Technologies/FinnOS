@@ -265,7 +265,8 @@ EOF
   # only shows up after an install, so they are compared here.
   local pair
   for pair in "finn-comp.service:etc/systemd/system/finn-comp.service" \
-              "finnd.service:etc/systemd/system/finnd.service" \
+              "finn-session.service:etc/systemd/system/finn-session.service" \
+              "finn-shell.service:etc/systemd/system/finn-shell.service" \
               "finn-failure.service:etc/systemd/system/finn-failure.service" \
               "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"

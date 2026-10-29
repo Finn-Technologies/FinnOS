@@ -1,29 +1,30 @@
 # The rewrite
 
-The C userland is preserved on the `pre-rewrite` tag and on the
-`legacy/browser-session` branch. This branch is the new system.
+The C userland is preserved on the `pre-rewrite` tag. This tree is the
+replacement; the old sources are gone.
 
 Read in this order:
 
-1. [contract.md](contract.md) — the five programs, authority, the app
-   contract, the sandbox rules, what v1 does not do.
+1. [contract.md](contract.md) — the programs, authority, the app contract,
+   the current sandbox position and what v1 does not do.
 2. [milestones.md](milestones.md) — what each step must boot and pass.
-3. [cpp-guide.md](cpp-guide.md) — the small C++ subset, ownership rules, and
+3. [cpp-guide.md](cpp-guide.md) — the small C++ subset, ownership rules and
    hands-on tasks for a first contribution.
 
 ## Status
 
-- M0: done. The contract exists, the legacy work is preserved, and
-  `src/session/app_registry.cpp` is the first new module.
-- M1: in progress. `src/comp` holds the wlroots 0.20 compositor. It builds
-  on the VM, starts with the headless backend, serves the expected globals
-  and maps/unmaps a real `xdg-shell` client. The DRM seat and input paths are
-  still open.
-- The old `src/compositor`, `src/control`, `src/core`, `src/pkg`, `apps/`,
-  `sdk/`, `mcp/` and the C tests are still present on this branch. They are
-  removed milestone by milestone as their replacements pass acceptance, not
-  before. Deleting them first would leave nothing to build and nothing to
-  compare against.
-- `src/comp` is the new compositor under a transitional directory name so the
-  old sources can keep the existing test suite alive. It becomes
-  `src/compositor` when the old tree is removed.
+- M0–M5 (the platform scope): done and verified on the VM. The compositor
+  runs on DRM through seatd; the session, shell and apps run as `finn`; the
+  session launches apps; the shell draws a dock, clock and menu; Finn Files
+  and Settings are native apps on `libfinnui`.
+- Open from M1: automated pointer/keyboard input, and a Figma comparison for
+  the new dock. The input paths are implemented; they were not driven by a
+  test.
+- Open from M4: popups (xdg-shell popups are not handled), a Control Center,
+  notifications, snap and restore, and server-side decoration. v1 is
+  client-side chrome.
+- M6 (packages/OTA) and M7 (finnd and the sandbox) are not done. The old
+  `finnd`, `finnpkg`, `.fui` compiler, SDK and MCP adapter were removed with
+  the old tree; [docs/roadmap.md](../roadmap.md) says what replaces them.
+- `src/comp` is the compositor's directory. It is not a transitional name any
+  more; the old `src/compositor` is only on the tag.

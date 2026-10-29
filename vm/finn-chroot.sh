@@ -153,12 +153,12 @@ fc-cache -f >/dev/null 2>&1 || true
 fc-match "Fixel Display" || true
 post
 
-step "the payload: wallpaper, icons, registry, the package manager"
+step "the payload: wallpaper, icons, registry"
 mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/local/bin
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\n' > /var/lib/finnpkg/installed
 # Every icon, when the payload is the tree. A list of names is a second
 # place to forget one, and an icon the shell cannot find is a tile drawn
 # as an empty square. The list below is only for the host-server flow,
@@ -170,8 +170,8 @@ if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
     done
 else
     for icon in avatar battery bluetooth boot-mark chevron-right cursor \
-                display edit-01 expand home-09 info internet minus-sign moon \
-                paint-brush power refresh search-01 settings-02 sun-01 \
+                display edit-01 expand folder home-09 info internet minus-sign \
+                moon paint-brush power refresh search-01 settings-02 sun-01 \
                 sun-03 view-open-windows volume-02 wifi-02 x; do
         get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
     done
@@ -180,21 +180,13 @@ else
         get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
     done
 fi
-get /usr/local/bin/finnpkg src/pkg/finnpkg
-chmod +x /usr/local/bin/finnpkg
-if [ -x /usr/bin/flatpak ]; then
-    if ! /usr/local/bin/finnpkg flatpak init; then
-        echo "WARN: Flathub could not be configured; Flatpak search will be unavailable"
-    fi
-else
-    echo "WARN: Flatpak is not packaged for this target; Flatpak apps are unavailable"
-fi
 chown -R root:finn /usr/share/finn /var/lib/finnpkg
 ls /usr/share/finn/icons/
 
 step "the system units"
 get /etc/systemd/system/finn-comp.service base/finn-comp.service
-get /etc/systemd/system/finnd.service base/finnd.service
+get /etc/systemd/system/finn-session.service base/finn-session.service
+get /etc/systemd/system/finn-shell.service base/finn-shell.service
 get /etc/systemd/system/finn-failure.service base/finn-failure.service
 get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
 # A chroot has no systemd of its own to reload, and the target's systemd
@@ -221,7 +213,7 @@ else
     fi
 fi
 
-step "build the shell and the control plane"
+step "build the session"
 # The disc carries the sources; the machine they land on is the one that
 # has the DRM headers and the toolchain, so the build happens here. Without
 # it the machine would boot with no compositor to start.
@@ -233,7 +225,8 @@ if [ -d /opt/finnos ]; then
     if [ "$rc" -eq 0 ]; then
         make install >>/tmp/finn-build.log 2>&1 || rc=$?
     fi
-    if [ "$rc" -eq 0 ] && [ -x /usr/local/bin/finn-comp ]; then
+    if [ "$rc" -eq 0 ] && [ -x /usr/local/bin/finn-comp ] &&
+       [ -x /usr/local/bin/finn-session ] && [ -x /usr/local/bin/finn-shell ]; then
         SHELL_STATE=installed
         echo "SHELL=installed"
     else
@@ -247,20 +240,23 @@ chown -R finn:finn /opt/finnos
 
 # The session is turned on only now, when there is something to turn on.
 # A machine that reaches this point without a compositor keeps its console:
-# tty2 has a getty either way.
+# tty2 has a getty either way. The linger file is what makes logind create
+# /run/user/1000 for finn before anyone logs in.
 if [ "$SHELL_STATE" = installed ]; then
-    systemctl enable finn-comp finnd
+    mkdir -p /var/lib/systemd/linger
+    touch /var/lib/systemd/linger/finn
+    systemctl enable finn-comp finn-session finn-shell
     systemctl set-default graphical.target
     # Enabled is a file on disk, so it is checked as one: a session that was
     # never enabled is a machine that boots to a console after saying the
     # install worked.
-    [ -e /etc/systemd/system/graphical.target.wants/finn-comp.service ] ||
-        { echo "error: finn-comp was not enabled for graphical.target" >&2; exit 1; }
-    [ -e /etc/systemd/system/graphical.target.wants/finnd.service ] ||
-        { echo "error: finnd was not enabled for graphical.target" >&2; exit 1; }
+    for unit in finn-comp finn-session finn-shell; do
+        [ -e "/etc/systemd/system/graphical.target.wants/$unit.service" ] ||
+            { echo "error: $unit was not enabled for graphical.target" >&2; exit 1; }
+    done
     echo "SESSION=enabled"
 else
-    echo "SESSION=not-enabled: /usr/local/bin/finn-comp is missing"
+    echo "SESSION=not-enabled: the session binaries are missing"
 fi
 post
 

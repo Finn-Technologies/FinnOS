@@ -1,3 +1,4 @@
+CC       ?= cc
 CXX      ?= c++
 CXXFLAGS ?= -std=c++20 -O2 -g -Wall -Wextra -Wpedantic -Werror
 SAN      ?= -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -13,6 +14,7 @@ test_app_registry: test_app_registry.cpp $(REGISTRY_SRC) $(REGISTRY_HDR)
 
 run: $(BINS)
 	./test_app_registry
+	python3 test_tokens.py
 
 clean:
 	rm -f $(BINS)

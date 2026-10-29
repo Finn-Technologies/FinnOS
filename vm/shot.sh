@@ -1,32 +1,19 @@
 #!/bin/bash
-# Capture the FinnOS desktop from the dev VM.
+# Capture the FinnOS desktop from the dev VM with wlroots screencopy.
 #
-#   vm/shot.sh out.png          a full-resolution capture
-#   vm/shot.sh out.png 2        every second pixel (half resolution)
+#   vm/shot.sh out.png
 #
-# The capture comes back as a binary PPM over the control plane and is
-# converted here, so nothing has to be installed on the device for a
-# screenshot to work. Pillow does the conversion; without it the raw PPM is
-# left where it was and its path is printed.
+# The capture is taken by grim as the finn user against the compositor's
+# display socket, then copied back. It works whether the compositor is on
+# DRM or headless: both advertise zwlr_screencopy_manager_v1.
 set -euo pipefail
 
 HOST="${FINN_HOST:-finn@10.211.55.6}"
 OUT="${1:-/tmp/finn-shot.png}"
-STEP="${2:-1}"
+REMOTE="/tmp/finn-shot-$$.png"
 
-TMP="$(mktemp -t finnshot).ppm"
-ssh "$HOST" "finnctl screen.capture step=$STEP" > "$TMP"
-
-if python3 -c "import PIL" >/dev/null 2>&1; then
-    python3 - "$TMP" "$OUT" <<'PY'
-import sys
-from PIL import Image
-src, dst = sys.argv[1], sys.argv[2]
-Image.open(src).save(dst)
-print(dst)
-PY
-    rm -f "$TMP"
-else
-    echo "no Pillow on this host: leaving the PPM at $TMP"
-    exit 1
-fi
+ssh "$HOST" "sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 \
+    WAYLAND_DISPLAY=/run/finn/wayland-0 grim '$REMOTE'" >/dev/null
+scp -q -o BatchMode=yes "$HOST:$REMOTE" "$OUT"
+ssh "$HOST" "rm -f '$REMOTE'"
+echo "$OUT"

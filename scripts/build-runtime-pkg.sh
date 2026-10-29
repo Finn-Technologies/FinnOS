@@ -54,12 +54,14 @@ tar -C "$ROOT" -cf - \
     --exclude='dist' \
     --exclude='*.o' \
     --exclude='*.a' \
-    --exclude='src/compositor/finn-comp' \
-    --exclude='src/control/finnd' \
-    --exclude='src/control/finnctl' \
-    --exclude='src/control/finn-window' \
-    --exclude='src/tools/vgtest' \
-    --exclude='src/tools/dockprev' \
+    --exclude='src/comp/finn-comp' \
+    --exclude='src/comp/build' \
+    --exclude='src/session/finn-session' \
+    --exclude='src/shell/finn-shell' \
+    --exclude='src/ui/libfinnui.a' \
+    --exclude='src/ui/build' \
+    --exclude='apps/files/finn-files' \
+    --exclude='apps/settings/finn-settings' \
     . | tar -C "$BUILD" -xf -
 
 # makepkg builds from its srcdir, not from the directory the PKGBUILD sits
@@ -73,18 +75,15 @@ cat > "$BUILD/PKGBUILD" <<EOF
 pkgname=finnos-runtime
 pkgver=$VERSION
 pkgrel=1
-pkgdesc="The FinnOS shell, control plane and package manager"
+pkgdesc="The FinnOS compositor, app runtime, session and shell"
 arch=('$ARCH')
 url="https://github.com/Finn-Technologies/FinnOS"
 license=('MIT')
 source=('finnos-runtime.tar.gz')
 sha256sums=('SKIP')
-depends=('glibc' 'freetype2' 'fontconfig' 'libwebp' 'libdrm' 'libinput'
-         'mesa' 'libglvnd' 'wayland' 'libxkbcommon' 'alsa-lib'
-         'curl' 'jq' 'zstd')
-optdepends=('flatpak: Linux applications'
-            'wine: Windows applications'
-            'winetricks: Windows application dependencies')
+depends=('glibc' 'wlroots0.20' 'systemd-libs' 'freetype2' 'fontconfig'
+         'libdrm' 'libinput' 'libxkbcommon' 'wayland' 'mesa' 'libglvnd' 'seatd')
+makedepends=('base-devel' 'pkgconf' 'wayland')
 options=(!strip)
 
 build() {
@@ -100,21 +99,16 @@ package() {
 
     install -Dm644 base/airootfs/etc/systemd/system/finn-comp.service \\
         "\$pkgdir/usr/lib/systemd/system/finn-comp.service"
-    install -Dm644 base/airootfs/etc/systemd/system/finnd.service \\
-        "\$pkgdir/usr/lib/systemd/system/finnd.service"
+    install -Dm644 base/airootfs/etc/systemd/system/finn-session.service \\
+        "\$pkgdir/usr/lib/systemd/system/finn-session.service"
+    install -Dm644 base/airootfs/etc/systemd/system/finn-shell.service \\
+        "\$pkgdir/usr/lib/systemd/system/finn-shell.service"
     install -Dm644 base/airootfs/etc/systemd/system/finn-failure.service \\
         "\$pkgdir/usr/lib/systemd/system/finn-failure.service"
     install -Dm644 base/airootfs/usr/lib/sysusers.d/finn.conf \\
         "\$pkgdir/usr/lib/sysusers.d/finn.conf"
     install -Dm644 base/airootfs/usr/lib/tmpfiles.d/finn.conf \\
         "\$pkgdir/usr/lib/tmpfiles.d/finn.conf"
-
-    for helper in src/pkg/finn-winget-install scripts/finn-winget-install; do
-        if [ -f "\$helper" ]; then
-            install -Dm755 "\$helper" \\
-                "\$pkgdir/usr/local/lib/finn/\${helper##*/}"
-        fi
-    done
 }
 EOF
 

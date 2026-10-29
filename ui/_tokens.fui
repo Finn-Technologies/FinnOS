@@ -1,10 +1,8 @@
 // FinnOS Theme Tokens — the shell's tokens.
 //
-// This file is the design system's statement of intent. The compositor
-// carries the same palette in src/compositor/finndraw.c and the same
-// timings in src/compositor/finnmotion.h. The C is the truth; this file
-// is kept in step with it by hand, which is a debt the compiler will
-// eventually pay.
+// This file is the only source of the palette. tools/tokens.py writes
+// src/ui/generated_tokens.hpp from it, and libfinnui consumes that header.
+// make lint fails when the generated file is stale.
 //
 // A colour is one name with two halves, the light one and the dark one,
 // because the appearance switch is a property of the whole theme and

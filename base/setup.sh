@@ -107,9 +107,11 @@ systemctl enable systemd-timesyncd 2>/dev/null || true
 rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
 rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
 install -Dm644 "$HERE/finn-comp.service"    /etc/systemd/system/finn-comp.service
-install -Dm644 "$HERE/finnd.service"        /etc/systemd/system/finnd.service
+install -Dm644 "$HERE/finn-session.service" /etc/systemd/system/finn-session.service
+install -Dm644 "$HERE/finn-shell.service"   /etc/systemd/system/finn-shell.service
 install -Dm644 "$HERE/finn-failure.service" /etc/systemd/system/finn-failure.service
 install -Dm644 "$HERE/finn-tmpfiles.conf"   /usr/lib/tmpfiles.d/finn.conf
+rm -f /etc/systemd/system/finnd.service
 systemctl daemon-reload
 
 # tty2 is the rescue console: the compositor owns tty1, so tty1 is not a way
@@ -122,16 +124,21 @@ systemctl enable getty@tty2.service 2>/dev/null ||
 #    turned on once the session actually exists. Until then the machine
 #    boots to a login console and the script says what is missing.
 missing=""
-[ -x /usr/local/bin/finn-comp ] || missing="$missing finn-comp"
-[ -x /usr/local/bin/finnd ]     || missing="$missing finnd"
+[ -x /usr/local/bin/finn-comp ]    || missing="$missing finn-comp"
+[ -x /usr/local/bin/finn-session ] || missing="$missing finn-session"
+[ -x /usr/local/bin/finn-shell ]   || missing="$missing finn-shell"
 if [ -z "$missing" ]; then
-    systemctl enable finn-comp finnd
+    # The session runs as finn and needs /run/user/1000 to exist before the
+    # units start; linger is what tells logind to create it without a login.
+    loginctl enable-linger finn 2>/dev/null ||
+        echo "WARN: could not enable linger for finn; the session needs /run/user/1000"
+    systemctl enable finn-comp finn-session finn-shell
     systemctl set-default graphical.target
-    echo "session enabled: finn-comp on tty1, finnd behind it"
+    echo "session enabled: finn-comp on tty1, finn-session and finn-shell behind it"
 else
     echo "not enabled, missing:$missing"
     echo "build it: cd /opt/finnos && make && sudo make install"
-    echo "then enable it: sudo systemctl enable --now finn-comp finnd"
+    echo "then enable it: sudo systemctl enable --now finn-comp finn-session finn-shell"
     echo "and:            sudo systemctl set-default graphical.target"
 fi
 
@@ -144,16 +151,8 @@ cp "$ROOT"/assets/fonts/FixelDisplay/*.otf /usr/share/fonts/OTF/
 install -m644 "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
 install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/setup.webp
 cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
-install -m755 "$ROOT/src/pkg/finnpkg" /usr/local/bin/finnpkg
-if [ -x /usr/bin/flatpak ]; then
-    if ! /usr/local/bin/finnpkg flatpak init; then
-        echo "WARN: Flathub could not be configured; Flatpak search will be unavailable"
-    fi
-else
-    echo "Flatpak is not packaged for $ARCH; Flatpak apps are unavailable on this image"
-fi
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-printf 'settings\nfiles\nstore\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\n' > /var/lib/finnpkg/installed
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l
@@ -193,7 +192,9 @@ chown -R finn:finn /opt/finnos
 
 echo
 echo "FinnOS base ready on $ARCH."
-echo "  session    /usr/local/bin/finn-comp on tty1, finnd behind it"
+echo "  session    /usr/local/bin/finn-comp on tty1"
+echo "  broker     finn-session as finn, Wayland at /run/finn/wayland-0"
+echo "  shell      finn-shell as a layer-shell client"
 echo "  rescue     Ctrl+Alt+F2, a getty on tty2"
 echo "  sshd       installed, not enabled"
 echo "  accounts   finn (wheel, passwordless sudo here), root"

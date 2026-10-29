@@ -2,23 +2,19 @@
 *.o
 *.a
 *.so
-/src/compositor/finn-comp
 /src/comp/finn-comp
-/src/control/finnd
-/src/control/finnctl
-/src/tools/vgtest
-/src/tools/dockprev
-/tests/c/test_finnconn
-/tests/c/test_finnsettings
-/tests/c/test_finncompat
-/tests/c/test_finndraw
-/tests/c/test_finnfbin
-/tests/c/test_finntaskbar
-/tests/c/test_finnsettingsapp_pages
+/src/comp/build/
+/src/session/finn-session
+/src/shell/finn-shell
+/src/ui/libfinnui.a
+/src/ui/build/
+/apps/files/finn-files
+/apps/settings/finn-settings
+/sdk/template/finn-counter
+/tests/rewrite/test_app_registry
 *.dSYM/
 
-# Captures. The compositor writes PPM frames while it is being worked on;
-# they are artefacts of a session, not part of the OS.
+# Captures. A session's PPM and PNG files are artefacts, not the OS.
 *.ppm
 *.pgm
 /.finnos-*.png
@@ -40,7 +36,6 @@ build/
 *~
 .idea/
 .vscode/
-/tests/c/test_finnvg
-/tests/c/test_finnblur
-/tests/c/test_finnbrowser
-/tests/rewrite/test_app_registry
+
+# The agent's local state (taste files and scratch data), not the tree.
+.commandcode/

@@ -553,15 +553,21 @@ arch-chroot /mnt /root/finn-chroot.sh ||
 post
 
 # 8. the install is a claim, so it is checked on the disk that was written:
-#    a runnable compositor, a runnable control plane and a boot entry that
+#    a runnable compositor, a session broker and a shell, and a boot entry that
 #    names the root by UUID. Anything less is not an install.
 step "[8/8] VERIFY"
 [ -x /mnt/usr/local/bin/finn-comp ] ||
     die "the compositor was not installed: /usr/local/bin/finn-comp is missing or not executable"
-[ -x /mnt/usr/local/bin/finnd ] ||
-    die "the control plane was not installed: /usr/local/bin/finnd is missing or not executable"
+[ -x /mnt/usr/local/bin/finn-session ] ||
+    die "the session broker was not installed: /usr/local/bin/finn-session is missing or not executable"
+[ -x /mnt/usr/local/bin/finn-shell ] ||
+    die "the shell was not installed: /usr/local/bin/finn-shell is missing or not executable"
 [ -e /mnt/etc/systemd/system/graphical.target.wants/finn-comp.service ] ||
     die "finn-comp is installed but not enabled, so the machine would boot to a console"
+[ -e /mnt/etc/systemd/system/graphical.target.wants/finn-session.service ] ||
+    die "finn-session is installed but not enabled"
+[ -e /mnt/etc/systemd/system/graphical.target.wants/finn-shell.service ] ||
+    die "finn-shell is installed but not enabled"
 
 # The hardware stack is checked on the disk rather than inferred from the
 # list that was requested: the list is a file on the disc, and the disk is

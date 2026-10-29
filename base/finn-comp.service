@@ -45,7 +45,7 @@ ProtectHome=read-only
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictRealtime=yes
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=graphical.target

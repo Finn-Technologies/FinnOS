@@ -76,6 +76,7 @@ private:
     void process_cursor_resize();
     void reset_cursor_mode();
     void pointer_motion(uint32_t time_msec);
+    void update_background_theme();
     wlr_surface* surface_at(double lx, double ly, double* sx, double* sy);
     Toplevel* toplevel_at(double lx, double ly, wlr_surface** surface,
                           double* sx, double* sy);
@@ -130,6 +131,8 @@ private:
     wlr_seat* seat_ = nullptr;
     wlr_cursor* cursor_ = nullptr;
     wlr_xcursor_manager* cursor_manager_ = nullptr;
+    wl_event_source* watchdog_ = nullptr;
+    wl_event_source* theme_source_ = nullptr;
 
     wl_listener new_output_{};
     wl_listener new_input_{};
@@ -164,7 +167,6 @@ private:
     int usable_y_ = 0;
     int usable_w_ = 0;
     int usable_h_ = 0;
-    int theme_counter_ = 0;
 };
 
 }  // namespace finn

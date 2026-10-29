@@ -1,10 +1,8 @@
-"""Every icon the shell loads at runtime ships in the repo's assets.
+"""The icon set the shell and apps draw from.
 
-The compositor draws tiles and glyphs from /usr/share/finn/icons, and both
-the dev-VM deploy (`make install`) and the ISO installer (`base/setup.sh`)
-fill that directory from assets/icons. An icon the C code loads but the
-repo does not carry is a tile drawn as an empty square, so the load sites
-and the asset directories must agree.
+The runtime chooses icons from the registry, so the static check is that every
+icon named in the catalogue ships, that the installers copy the asset
+directories, and that the chroot fallback lists names that exist.
 """
 
 import os
@@ -13,35 +11,11 @@ import unittest
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-COMPOSITOR = os.path.join(ROOT, "src", "compositor")
 SHELL_ICONS = os.path.join(ROOT, "assets", "icons", "shell")
 APPS_ICONS = os.path.join(ROOT, "assets", "icons", "apps")
 
-LOAD_PATTERNS = (
-    re.compile(r'"%s/([^"]+\.svg)"'),
-    re.compile(r'ICON_DIR\s*"/([^"]+\.svg)"'),
-    re.compile(r'load_nav_icon\([^,]+,\s*"([^"]+)"\)'),
-)
 
-
-def loaded_icons():
-    names = set()
-    for leaf in sorted(os.listdir(COMPOSITOR)):
-        if not leaf.endswith((".c", ".h")):
-            continue
-        with open(os.path.join(COMPOSITOR, leaf), "r", encoding="utf-8") as handle:
-            text = handle.read()
-        for pattern in LOAD_PATTERNS:
-            names.update(pattern.findall(text))
-    return names
-
-
-class ShellIconsTest(unittest.TestCase):
-
-    def test_every_loaded_icon_ships_in_assets(self):
-        shipped = set(os.listdir(SHELL_ICONS)) | set(os.listdir(APPS_ICONS))
-        missing = sorted(name for name in loaded_icons() if name not in shipped)
-        self.assertEqual(missing, [])
+class IconAssetsTest(unittest.TestCase):
 
     def test_installers_fill_icons_from_assets(self):
         for path in (
@@ -59,34 +33,17 @@ class ShellIconsTest(unittest.TestCase):
             chroot = handle.read()
         self.assertNotIn("src/compositor/icons", chroot)
 
-    def test_vgtest_sheet_names_icons_that_exist(self):
-        """vgtest is the host-side view of the icon set. A name it cannot
-        resolve is an empty cell on the sheet, and the app icons moved out
-        of assets/icons/shell."""
-        with open(os.path.join(ROOT, "src", "tools", "vgtest.c"), "r",
-                  encoding="utf-8") as handle:
-            source = handle.read()
-        arrays = re.findall(
-            r"static const char \*const (shell|app)_icons\[\] = \{(.*?)\};",
-            source,
-            re.S,
-        )
-        self.assertEqual({name for name, _ in arrays}, {"shell", "app"})
-        shipped = set(os.listdir(SHELL_ICONS)) | set(os.listdir(APPS_ICONS))
-        for _, body in arrays:
-            for name in re.findall(r'"([^"]+)"', body):
-                self.assertIn(name + ".svg", shipped, name)
-
-    def test_development_docs_name_the_icon_root(self):
-        with open(os.path.join(ROOT, "docs", "development.md"), "r",
-                  encoding="utf-8") as handle:
-            docs = handle.read()
-        self.assertNotIn("src/compositor/icons", docs)
-        self.assertIn("src/tools/vgtest assets/icons", docs)
+    def test_the_catalogue_icons_exist(self):
+        with open(os.path.join(ROOT, "assets", "apps.registry"), "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                fields = [field.strip() for field in line.split("|")]
+                icon = fields[2]
+                shipped = os.path.join(APPS_ICONS, icon)
+                self.assertTrue(os.path.isfile(shipped), shipped)
 
     def test_chroot_fallback_icons_name_files_that_exist(self):
-        """The host-server flow has no tree to glob, so it lists the names.
-        A name that moved is an icon the installed shell cannot draw."""
         with open(os.path.join(ROOT, "vm", "finn-chroot.sh"), "r", encoding="utf-8") as handle:
             script = handle.read()
         blocks = re.findall(

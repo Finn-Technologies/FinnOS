@@ -5,6 +5,33 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### The userland is a C++/wlroots rewrite
+
+The C userland before this change is preserved on the `pre-rewrite` tag; the
+entries below it describe that tree, not this one.
+
+- `finn-comp` is now a small wlroots 0.20 compositor instead of a hand-written
+  display server. It serves xdg-shell, layer-shell in ordered scene trees,
+  screencopy and xdg-output, and it runs as root through `seatd` with the
+  display socket at `/run/finn/wayland-0`.
+- `libfinnui` is the app runtime: a software canvas with rounded shapes, Fixel
+  text, SVG icons and widgets, plus the Wayland client, buffers and input. An
+  app is one class with a `draw` method.
+- `finn-session` owns the catalogue, the installed list and app launch as the
+  user. It replaces app launch from the root daemon; there is no `finnd` in
+  v1.
+- `finn-shell` is a layer-shell overlay with a dock, clock and app menu.
+- Finn Files and Settings are rebuilt on `libfinnui`. Settings writes the
+  appearance to the user's config; the shell, apps and compositor pick it up
+  without a restart.
+- The palette is generated from `ui/_tokens.fui`; `make lint` fails when the
+  checked-in header is stale. The compositor no longer contains app ids and
+  `make lint` enforces it.
+- Removed with the old tree: `finnd`/`finnctl`, `finnpkg`, the `.fui`
+  compiler and `.fbin` runtime, the Python SDK, the MCP adapter, the browser,
+  Flatpak/Wine/winget paths, and their tests. [docs/roadmap.md](docs/roadmap.md)
+  lists what replaces them.
+
 ### The shell is drawn at one scale, from the Figma frames
 
 - `finn_ui_scale()` is now the one density factor for every surface:

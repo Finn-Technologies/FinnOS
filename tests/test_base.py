@@ -130,21 +130,20 @@ class BaseImageTest(unittest.TestCase):
         self.assertIn('cat "$SRC/base/pacman.multilib.conf" >> /etc/pacman.conf', installer_text)
         self.assertIn('get "$MULTILIB_CONF" base/pacman.multilib.conf', chroot_text)
 
-    def test_setup_bootstraps_flathub_through_finnpkg_when_installed(self):
+    def test_setup_ships_no_package_manager(self):
         setup = os.path.join(ROOT, "base", "setup.sh")
         with open(setup, "r", encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn("if [ -x /usr/bin/flatpak ]; then", script)
-        self.assertIn("/usr/local/bin/finnpkg flatpak init", script)
-        self.assertIn("WARN: Flathub could not be configured", script)
+        self.assertNotIn("/usr/local/bin/finnpkg", script)
+        self.assertNotIn("flatpak init", script)
+        self.assertIn("loginctl enable-linger finn", script)
 
-    def test_disk_installer_bootstraps_flathub_in_the_installed_system(self):
+    def test_disk_installer_does_not_install_the_old_package_manager(self):
         chroot = os.path.join(ROOT, "vm", "finn-chroot.sh")
         with open(chroot, "r", encoding="utf-8") as handle:
             script = handle.read()
-        self.assertIn("if [ -x /usr/bin/flatpak ]; then", script)
-        self.assertIn("/usr/local/bin/finnpkg flatpak init", script)
-        self.assertIn("WARN: Flathub could not be configured", script)
+        self.assertNotIn("/usr/local/bin/finnpkg", script)
+        self.assertNotIn("flatpak init", script)
 
     def test_every_writer_of_the_installed_list_names_catalogue_apps(self):
         """The shell draws a tile as installed only when the package
@@ -158,7 +157,7 @@ class BaseImageTest(unittest.TestCase):
                 for line in handle
                 if line.strip() and not line.lstrip().startswith("#")
             }
-        expected = {"settings", "files", "store"}
+        expected = {"settings", "files"}
         self.assertTrue(expected.issubset(catalogue))
 
         writers = (
@@ -295,7 +294,7 @@ class BaseImageTest(unittest.TestCase):
                     continue
                 self.assertTrue(command, line)
                 native.add(app_id)
-        self.assertEqual(native, {"settings", "files", "store"})
+        self.assertEqual(native, {"settings", "files"})
 
 
 if __name__ == "__main__":

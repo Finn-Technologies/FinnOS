@@ -257,12 +257,25 @@ bool Server::init() {
                 "has nowhere to live");
         return false;
     }
+    const std::string socket_path = std::string(runtime) + "/wayland-0";
+    struct stat socket_status{};
+    if (lstat(socket_path.c_str(), &socket_status) == 0) {
+        if (!S_ISSOCK(socket_status.st_mode)) {
+            wlr_log(WLR_ERROR, "finn-comp: %s exists and is not a socket",
+                    socket_path.c_str());
+            return false;
+        }
+        if (unlink(socket_path.c_str()) != 0) {
+            wlr_log(WLR_ERROR, "finn-comp: cannot remove a stale socket: %s",
+                    std::strerror(errno));
+            return false;
+        }
+    }
     if (wl_display_add_socket(display_, "wayland-0") != 0) {
         wlr_log(WLR_ERROR, "finn-comp: cannot bind wayland-0: %s",
                 std::strerror(errno));
         return false;
     }
-    const std::string socket_path = std::string(runtime) + "/wayland-0";
     if (chmod(socket_path.c_str(), 0660) != 0) {
         wlr_log(WLR_ERROR, "finn-comp: cannot chmod %s: %s", socket_path.c_str(),
                 std::strerror(errno));
@@ -281,8 +294,41 @@ bool Server::init() {
     }
 
     wlr_log(WLR_INFO, "finn-comp: listening on WAYLAND_DISPLAY=wayland-0");
+    wl_event_loop* loop = wl_display_get_event_loop(display_);
+    watchdog_ = wl_event_loop_add_timer(
+        loop,
+        [](void* data) -> int {
+            Server* server = static_cast<Server*>(data);
+            sd_notify(0, "WATCHDOG=1");
+            wl_event_source_timer_update(server->watchdog_, 5000);
+            return 0;
+        },
+        this);
+    if (watchdog_ != nullptr) wl_event_source_timer_update(watchdog_, 5000);
+    theme_source_ = wl_event_loop_add_timer(
+        loop,
+        [](void* data) -> int {
+            Server* server = static_cast<Server*>(data);
+            server->update_background_theme();
+            wl_event_source_timer_update(server->theme_source_, 1000);
+            return 0;
+        },
+        this);
+    if (theme_source_ != nullptr) wl_event_source_timer_update(theme_source_, 1000);
     sd_notify(0, "READY=1");
     return true;
+}
+
+void Server::update_background_theme() {
+    if (background_ == nullptr) return;
+    const bool dark = prefers_dark();
+    float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
+    if (dark) {
+        color[0] = 0.086f;
+        color[1] = 0.094f;
+        color[2] = 0.114f;
+    }
+    wlr_scene_rect_set_color(background_, color);
 }
 
 void Server::shutdown() {
@@ -309,6 +355,14 @@ void Server::shutdown() {
     remove_listener(request_set_selection_);
 
     if (scene_ != nullptr) wlr_scene_node_destroy(&scene_->tree.node);
+    if (watchdog_ != nullptr) {
+        wl_event_source_remove(watchdog_);
+        watchdog_ = nullptr;
+    }
+    if (theme_source_ != nullptr) {
+        wl_event_source_remove(theme_source_);
+        theme_source_ = nullptr;
+    }
     if (cursor_manager_ != nullptr) wlr_xcursor_manager_destroy(cursor_manager_);
     if (cursor_ != nullptr) wlr_cursor_destroy(cursor_);
     if (allocator_ != nullptr) wlr_allocator_destroy(allocator_);
@@ -811,17 +865,6 @@ void Server::on_output_frame(wl_listener* listener, void* data) {
 
     wlr_scene_output_commit(scene_output, nullptr);
     sd_notify(0, "WATCHDOG=1");
-
-    if (++output->server->theme_counter_ % 60 == 0 && output->server->background_ != nullptr) {
-        const bool dark = prefers_dark();
-        float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
-        if (dark) {
-            color[0] = 0.086f;
-            color[1] = 0.094f;
-            color[2] = 0.114f;
-        }
-        wlr_scene_rect_set_color(output->server->background_, color);
-    }
 
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);

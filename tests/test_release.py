@@ -39,7 +39,8 @@ class RuntimeReleaseTest(unittest.TestCase):
         for path in (
             "usr/share/finn/version",
             "usr/lib/systemd/system/finn-comp.service",
-            "usr/lib/systemd/system/finnd.service",
+            "usr/lib/systemd/system/finn-session.service",
+            "usr/lib/systemd/system/finn-shell.service",
             "usr/lib/sysusers.d/finn.conf",
             "usr/lib/tmpfiles.d/finn.conf",
         ):
@@ -58,9 +59,8 @@ class RuntimeReleaseTest(unittest.TestCase):
 
     def test_the_hardware_page_names_the_reference_machine(self):
         body = self.read("docs", "hardware.md")
-        self.assertIn("OptiPlex 3020", body)
-        self.assertIn("i3-4130", body)
-        self.assertIn("does not ship a runtime it cannot support", body)
+        self.assertIn("aarch64 development VM", body)
+        self.assertIn("Not verified", body)
 
 
 if __name__ == "__main__":
