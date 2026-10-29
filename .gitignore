@@ -41,3 +41,5 @@ build/
 .vscode/
 /tests/c/test_finnvg
 /tests/c/test_finnblur
+/tests/c/test_finnbrowser
+/tests/rewrite/test_app_registry

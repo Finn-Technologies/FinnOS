@@ -15,7 +15,7 @@ PREFIX  ?= /usr/local
 DESTDIR ?=
 VM      ?= finn@10.211.55.6
 
-.PHONY: all core compositor control tools test test-c check lint install clean deploy \
+.PHONY: all core compositor control tools test test-c test-rewrite check lint install clean deploy \
         docs help
 
 all: core compositor control tools
@@ -42,7 +42,12 @@ test:
 test-c:
 	$(MAKE) -C tests/c run
 
-check: test test-c
+# The rewrite's own tests: the modules that are already C++ and need no
+# display. They build with the host compiler, so they run before the VM.
+test-rewrite:
+	$(MAKE) -C tests/rewrite run
+
+check: test test-c test-rewrite
 
 lint:
 	@scripts/lint.sh
