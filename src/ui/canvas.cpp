@@ -112,6 +112,9 @@ std::string resolve_icon(std::string_view name) {
         "/usr/share/finn/icons/",
         "assets/icons/apps/",
         "assets/icons/shell/",
+        "assets/figma/icons/",
+        "/usr/share/finn/icons/shell/",
+        "/home/finn/finnos/assets/figma/icons/",
     };
     for (const char* root : roots) {
         const std::string candidate = std::string(root) + std::string(name);
@@ -185,6 +188,7 @@ struct Canvas::Impl {
     std::unordered_map<std::string, Icon> icons;
     std::unordered_map<std::string, Image> images;
     std::unordered_map<std::string, std::vector<std::uint32_t>> blur_cache;
+    std::vector<Rect> interactive_rects;
     double screen_w = 0;
     double screen_h = 0;
     double surface_x = 0;
@@ -630,6 +634,7 @@ void Canvas::begin(std::uint32_t* pixels, int width, int height, double scale,
     impl_->clips.clear();
     impl_->clips.push_back(Rect{0, 0, static_cast<double>(width),
                                 static_cast<double>(height)});
+    impl_->interactive_rects.clear();
 
     const double now = std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -647,7 +652,9 @@ void Canvas::end() {
     impl_->clips.clear();
 }
 
-void Canvas::clear_transient() {}
+void Canvas::clear_transient() {
+    impl_->interactive_rects.clear();
+}
 
 void Canvas::clear(Color color) {
     if (impl_->pixels == nullptr) return;
@@ -792,11 +799,13 @@ double Canvas::height() const {
 }
 double Canvas::delta_time() const { return impl_->delta; }
 bool Canvas::animating() const { return impl_->animating; }
+const std::vector<Rect>& Canvas::interactive_rects() const { return impl_->interactive_rects; }
 
 // Tracks pointer press, hover, and release states to trigger clicks on button-up,
 // animating subtle scale and accent color changes through approach tracking.
 bool Canvas::button(std::string_view id, Rect rect, std::string_view label,
                     bool enabled) {
+    impl_->interactive_rects.push_back(rect);
     Impl::WidgetState& state = impl_->state_for(id);
     const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
     if (enabled && hovered && impl_->input->pointer_pressed) state.active = true;
@@ -823,31 +832,33 @@ bool Canvas::button(std::string_view id, Rect rect, std::string_view label,
 }
 
 bool Canvas::icon_button(std::string_view id, Rect rect, std::string_view icon_name,
-                         Color ink) {
+                         Color ink, bool enabled) {
+    impl_->interactive_rects.push_back(rect);
     Impl::WidgetState& state = impl_->state_for(id);
-    const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
-    if (hovered && impl_->input->pointer_pressed) state.active = true;
+    const bool hovered = enabled && rect.contains(impl_->input->x, impl_->input->y);
+    if (enabled && hovered && impl_->input->pointer_pressed) state.active = true;
     bool clicked = false;
     if (state.active && impl_->input->pointer_released) {
-        clicked = hovered;
+        clicked = enabled && hovered;
         state.active = false;
     }
-    impl_->track(state.hover, hovered ? 1.0 : 0.0, kMotionFast);
+    impl_->track(state.hover, enabled && hovered ? 1.0 : 0.0, kMotionFast);
     impl_->track(state.press, state.active ? 1.0 : 0.0, kMotionFast);
     const double amount = std::max(state.hover, state.press);
-    if (amount > 0.01) {
+    if (enabled && amount > 0.01) {
         fill(rect, impl_->theme->tile_on.with_alpha(
                        static_cast<std::uint8_t>(225 * amount)), 8);
     }
     const double inset = std::min(rect.w, rect.h) * 0.22;
     Rect glyph = rect.inset(inset);
-    glyph.y -= state.hover * 1.0;
-    icon(icon_name, glyph, ink);
+    if (enabled) glyph.y -= state.hover * 1.0;
+    icon(icon_name, glyph, enabled ? ink : impl_->theme->mute);
     return clicked;
 }
 
 bool Canvas::app_icon_button(std::string_view id, Rect rect,
                              std::string_view icon_name) {
+    impl_->interactive_rects.push_back(rect);
     Impl::WidgetState& state = impl_->state_for(id);
     const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
     if (hovered && impl_->input->pointer_pressed) state.active = true;
@@ -874,6 +885,7 @@ bool Canvas::app_icon_button(std::string_view id, Rect rect,
 // state flips rather than snapping instantly between boolean values.
 bool Canvas::toggle(std::string_view id, Rect rect, std::string_view label,
                     bool& value) {
+    impl_->interactive_rects.push_back(rect);
     Impl::WidgetState& state = impl_->state_for(id);
     const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
     if (hovered && impl_->input->pointer_pressed) state.active = true;
@@ -914,6 +926,7 @@ bool Canvas::toggle(std::string_view id, Rect rect, std::string_view label,
 
 bool Canvas::slider(std::string_view id, Rect rect, double& value, double min,
                     double max) {
+    impl_->interactive_rects.push_back(rect);
     Impl::WidgetState& state = impl_->state_for(id);
     const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
     if (hovered && impl_->input->pointer_pressed) state.active = true;
@@ -949,6 +962,7 @@ bool Canvas::slider(std::string_view id, Rect rect, double& value, double min,
 
 bool Canvas::text_field(std::string_view id, Rect rect, std::string& value,
                         std::string_view placeholder) {
+    impl_->interactive_rects.push_back(rect);
     const std::string key(id);
     Impl::WidgetState& state = impl_->state_for(id);
     const bool hovered = rect.contains(impl_->input->x, impl_->input->y);
@@ -1073,6 +1087,32 @@ bool Canvas::app_list_item(std::string_view id, Rect rect, std::string_view icon
          enabled ? impl_->theme->ink : impl_->theme->mute);
     if (!detail.empty()) {
         text(rect.x + 56, rect.y + 42, detail, 10, impl_->theme->mute);
+    }
+    return clicked;
+}
+
+bool Canvas::sidebar_item(std::string_view id, Rect rect, std::string_view icon_name,
+                          std::string_view label, bool selected, bool enabled) {
+    impl_->interactive_rects.push_back(rect);
+    Impl::WidgetState& state = impl_->state_for(id);
+    const bool hovered = enabled && rect.contains(impl_->input->x, impl_->input->y);
+    if (enabled && hovered && impl_->input->pointer_pressed) state.active = true;
+    bool clicked = false;
+    if (state.active && impl_->input->pointer_released) {
+        clicked = enabled && hovered;
+        state.active = false;
+    }
+    // Per Figma node 244:394: "Sidebar list items should NOT have hover effect or mouse pointer change"
+    if (selected) {
+        fill(rect, impl_->theme->tile, 6);
+    }
+    const Color ink = enabled ? (selected ? impl_->theme->ink : impl_->theme->ink.with_alpha(200))
+                              : impl_->theme->mute;
+    if (!icon_name.empty()) {
+        icon(icon_name, Rect{rect.x + 8, rect.y + (rect.h - 16) / 2.0, 16, 16}, ink);
+        text(rect.x + 32, rect.y + (rect.h + 8) / 2.0, label, 12, ink);
+    } else {
+        text(rect.x + 12, rect.y + (rect.h + 8) / 2.0, label, 12, ink);
     }
     return clicked;
 }

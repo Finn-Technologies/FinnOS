@@ -1,8 +1,10 @@
 // Finn Files file manager application.
 // Provides directory navigation, item sizing, and basic file inspection
-// within the user's home directory using native libfinnui widgets.
+// within the user's home directory per Figma window specification.
 
 #include <finn/ui.hpp>
+
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,6 +17,7 @@ namespace {
 
 using finn::ui::App;
 using finn::ui::Canvas;
+using finn::ui::Color;
 using finn::ui::Rect;
 
 struct Entry {
@@ -23,8 +26,12 @@ struct Entry {
     std::uintmax_t size = 0;
 };
 
-// Scales byte counts to human-readable units (B, KB, MB, GB) to fit compactly
-// in file list detail columns without text truncation.
+struct Place {
+    std::string name;
+    std::string icon;
+    std::filesystem::path path;
+};
+
 std::string format_size(std::uintmax_t bytes) {
     if (bytes < 1024) return std::to_string(bytes) + " B";
     if (bytes < 1024 * 1024) return std::to_string(bytes / 1024) + " KB";
@@ -36,75 +43,132 @@ std::string format_size(std::uintmax_t bytes) {
 
 class Files final : public App {
 public:
-    Files() : App("Finn Files", 920, 620) {
+    Files() : App("Finn Files", 900, 500, "files") {
         const char* home = std::getenv("HOME");
-        path_ = home != nullptr && *home != '\0' ? std::filesystem::path(home)
-                                                  : std::filesystem::path("/home/finn");
+        home_path_ = home != nullptr && *home != '\0' ? std::filesystem::path(home)
+                                                      : std::filesystem::path("/home/finn");
+        path_ = home_path_;
+        load_places();
         refresh();
+        const char* col_env = std::getenv("FINN_FILES_COLLAPSED");
+        if (col_env != nullptr && std::string_view(col_env) == "1") {
+            sidebar_open_ = false;
+        }
     }
 
     void draw(Canvas& canvas) override {
         const auto& theme = canvas.theme();
-        const Rect content = content_rect();
-        canvas.fill(content, theme.tile, 0);
+        const double win_w = canvas.width();
+        const double win_h = canvas.height();
 
-        const double top = content.y + 18;
-        double x = content.x + 18;
-        if (canvas.icon_button("back", Rect{x, top, 34, 34}, "chevron-left.svg",
-                               path_.has_parent_path() ? theme.ink : theme.mute) &&
-            path_.has_parent_path()) {
+        const double sidebar_w = sidebar_open_ ? 200.0 : 0.0;
+        const double content_x = sidebar_w;
+        const double content_w = win_w - sidebar_w;
+
+        // 1. Content background card drawn first
+        const Rect content_rect{content_x, 0, content_w, win_h};
+        canvas.fill(content_rect, theme.tile, sidebar_open_ ? 8 : 0);
+
+        // 2. Sidebar on the left (translucent glass per Figma specification)
+        if (sidebar_open_) {
+            const Rect sidebar_rect{0, 0, sidebar_w, win_h};
+            const Color tint = theme.bone.with_alpha(theme.dark ? 214 : 178);
+            canvas.glass(sidebar_rect, 8, tint, 15);
+            canvas.line(content_x, 0, content_x, win_h, theme.hair, 1);
+
+            // Sidebar toggle button to collapse (x: sidebar_w - 36, y: 12)
+            if (canvas.icon_button("sidebar_toggle", Rect{sidebar_w - 36, 12, 24, 24},
+                                   "Sidebar_Toggle.svg", theme.ink)) {
+                sidebar_open_ = false;
+                request_frame();
+            }
+
+            // Places header
+            canvas.text(18, 72, "PLACES", 10, theme.mute);
+
+            double py = 84;
+            for (const auto& place : places_) {
+                const bool selected = (path_ == place.path);
+                if (canvas.sidebar_item("place:" + place.name, Rect{12, py, sidebar_w - 24, 32},
+                                        place.icon, place.name, selected)) {
+                    path_ = place.path;
+                    refresh();
+                    request_frame();
+                }
+                py += 36;
+            }
+        } else {
+            // When collapsed, expand toggle button sits next to top-left App Name area
+            if (canvas.icon_button("sidebar_toggle", Rect{100, 12, 24, 24},
+                                   "Sidebar_Toggle.svg", theme.ink)) {
+                sidebar_open_ = true;
+                request_frame();
+            }
+        }
+
+        // 3. Navigation Toolbar
+        const double tb_top = 10;
+        double bx = sidebar_open_ ? (content_x + 18.0) : 138.0;
+
+        const bool can_go_back = path_.has_parent_path() && path_ != "/";
+        if (canvas.icon_button("back", Rect{bx, tb_top, 28, 28}, "chevron-left.svg",
+                               can_go_back ? theme.ink : theme.mute, can_go_back)) {
             path_ = path_.parent_path();
             refresh();
+            request_frame();
         }
-        x += 42;
-        if (canvas.icon_button("home", Rect{x, top, 34, 34}, "home-09.svg",
-                               theme.ink)) {
-            const char* home = std::getenv("HOME");
-            path_ = home != nullptr && *home != '\0' ? home : "/home/finn";
-            refresh();
-        }
-        x += 42;
+        bx += 34;
 
-        canvas.push_clip(Rect{x, top, content.w - (x - content.x) - 140, 34});
-        canvas.text(x, top + 22, path_.string(), 14, theme.ink);
+        if (canvas.icon_button("home", Rect{bx, tb_top, 28, 28}, "home-09.svg", theme.ink)) {
+            path_ = home_path_;
+            refresh();
+            request_frame();
+        }
+        bx += 34;
+
+        if (canvas.icon_button("refresh", Rect{bx, tb_top, 28, 28}, "refresh.svg", theme.ink)) {
+            refresh();
+            request_frame();
+        }
+        bx += 38;
+
+        // Path breadcrumb text
+        canvas.push_clip(Rect{bx, tb_top, std::max(20.0, content_w - (bx - content_x) - 100), 28});
+        canvas.text(bx, tb_top + 19, path_.string(), 13, theme.ink);
         canvas.pop_clip();
 
-        if (canvas.icon_button("refresh", Rect{content.x + content.w - 52, top, 34, 34},
-                               "refresh.svg", theme.ink)) {
-            refresh();
-        }
-        canvas.line(content.x + 18, top + 44, content.x + content.w - 18,
-                    top + 44, theme.hair, 1);
+        canvas.line(content_x, 46, content_x + content_w, 46, theme.hair, 1);
 
-        const Rect list_area{content.x + 12, top + 54, content.w - 24,
-                             content.h - (top - content.y) - 74};
+        // 4. File items list
+        const Rect list_area{content_x + 12, 52, content_w - 24, win_h - 82};
         canvas.push_clip(list_area);
-        const double row_h = 46;
-        const double max_scroll = std::max(
-            0.0, entries_.size() * row_h - list_area.h);
-        scroll_ = std::clamp(scroll_ + canvas.input().scroll_y * 36.0, 0.0,
-                             max_scroll);
+        const double row_h = 42;
+        const double max_scroll = std::max(0.0, entries_.size() * row_h - list_area.h);
+        scroll_ = std::clamp(scroll_ + canvas.input().scroll_y * 36.0, 0.0, max_scroll);
         double y = list_area.y - scroll_;
+
         for (std::size_t i = 0; i < entries_.size(); ++i) {
             const Entry& entry = entries_[i];
             const Rect row{list_area.x, y, list_area.w, row_h - 2};
             if (row.y + row.h >= list_area.y && row.y <= list_area.y + list_area.h) {
                 const std::string id = "entry:" + std::to_string(i) + ":" + entry.name;
-                const std::string detail =
-                    entry.directory ? "Folder" : format_size(entry.size);
+                const std::string detail = entry.directory ? "Folder" : format_size(entry.size);
                 const std::string icon = entry.directory ? "folder.svg" : "edit-01.svg";
                 if (canvas.list_item_icon(id, row, icon, entry.name, detail,
                                           selected_ == entry.name)) {
                     if (entry.directory) {
                         path_ /= entry.name;
                         refresh();
+                        request_frame();
                     } else {
                         selected_ = entry.name;
+                        request_frame();
                     }
                 }
             }
             y += row_h;
         }
+
         if (entries_.empty()) {
             canvas.text(list_area.x + 16, list_area.y + 34,
                         error_.empty() ? "This folder is empty" : error_, 13,
@@ -112,17 +176,43 @@ public:
         }
         canvas.pop_clip();
 
-        canvas.text(content.x + 20, content.y + content.h - 18,
+        // 5. Status bar footer
+        canvas.line(content_x, win_h - 26, content_x + content_w, win_h - 26, theme.hair, 1);
+        canvas.text(content_x + 20, win_h - 10,
                     std::to_string(entries_.size()) + " items", 10, theme.mute);
         if (!selected_.empty()) {
-            canvas.text(content.x + 100, content.y + content.h - 18,
-                        selected_, 10, theme.mute);
+            canvas.text(content_x + 100, win_h - 10, selected_, 10, theme.mute);
         }
     }
 
 private:
-    // Enumerates filesystem entries while filtering out hidden dotfiles and sorting
-    // directories ahead of files to ensure standard file manager ordering.
+    void load_places() {
+        places_.clear();
+
+        struct Candidate {
+            const char* name;
+            const char* icon;
+            std::filesystem::path path;
+        };
+
+        const Candidate candidates[] = {
+            {"Home", "home-09.svg", home_path_},
+            {"Documents", "folder.svg", home_path_ / "Documents"},
+            {"Downloads", "folder.svg", home_path_ / "Downloads"},
+            {"Pictures", "folder.svg", home_path_ / "Pictures"},
+            {"Music", "folder.svg", home_path_ / "Music"},
+            {"Videos", "folder.svg", home_path_ / "Videos"},
+            {"Desktop", "folder.svg", home_path_ / "Desktop"},
+        };
+
+        for (const auto& c : candidates) {
+            struct stat st{};
+            if (stat(c.path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+                places_.push_back({c.name, c.icon, c.path});
+            }
+        }
+    }
+
     void refresh() {
         entries_.clear();
         error_.clear();
@@ -147,18 +237,20 @@ private:
             }
             entries_.push_back(std::move(entry));
         }
-        std::sort(entries_.begin(), entries_.end(), [](const Entry& a,
-                                                        const Entry& b) {
+        std::sort(entries_.begin(), entries_.end(), [](const Entry& a, const Entry& b) {
             if (a.directory != b.directory) return a.directory;
             return a.name < b.name;
         });
     }
 
+    std::filesystem::path home_path_;
     std::filesystem::path path_;
+    std::vector<Place> places_;
     std::vector<Entry> entries_;
     std::string error_;
     std::string selected_;
     double scroll_ = 0;
+    bool sidebar_open_ = true;
 };
 
 }  // namespace

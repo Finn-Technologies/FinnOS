@@ -91,6 +91,26 @@ struct ShmBuffer {
     void* owner = nullptr;
 };
 
+std::string lowercase_hyphenated(std::string_view str) {
+    std::string result;
+    bool last_was_dash = false;
+    for (char c : str) {
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+            result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            last_was_dash = false;
+        } else if (c == ' ' || c == '-' || c == '_') {
+            if (!result.empty() && !last_was_dash) {
+                result.push_back('-');
+                last_was_dash = true;
+            }
+        }
+    }
+    while (!result.empty() && result.back() == '-') {
+        result.pop_back();
+    }
+    return result.empty() ? "finn.app" : result;
+}
+
 }  // namespace
 
 class Client {
@@ -111,7 +131,7 @@ public:
     Client(const Client&) = delete;
     Client& operator=(const Client&) = delete;
 
-    bool init_xdg(int width, int height, std::string title);
+    bool init_xdg(int width, int height, std::string title, std::string app_id = {});
     bool init_layer(std::string name, int width, int height, std::uint32_t anchor,
                     Layer layer, KeyboardMode keyboard);
     int run();
@@ -248,6 +268,7 @@ private:
     Theme theme_;
     Canvas canvas_;
     std::string title_;
+    std::string app_id_;
     std::function<void(Canvas&)> draw_;
     std::function<void()> tick_;
     std::function<void()> close_;
@@ -540,7 +561,7 @@ void Client::create_surface() {
         toplevel_listener_.close = toplevel_close;
         xdg_toplevel_add_listener(toplevel_, &toplevel_listener_, this);
         xdg_toplevel_set_title(toplevel_, title_.c_str());
-        xdg_toplevel_set_app_id(toplevel_, !title_.empty() ? title_.c_str() : "finn.app");
+        xdg_toplevel_set_app_id(toplevel_, !app_id_.empty() ? app_id_.c_str() : "finn.app");
     } else {
         if (layer_shell_ == nullptr) {
             std::fprintf(stderr, "libfinnui: zwlr_layer_shell_v1 missing\n");
@@ -565,11 +586,16 @@ void Client::create_surface() {
     wl_surface_commit(surface_);
 }
 
-bool Client::init_xdg(int width, int height, std::string title) {
+bool Client::init_xdg(int width, int height, std::string title, std::string app_id) {
     mode_ = Mode::xdg;
     requested_width_ = width > 0 ? width : 900;
     requested_height_ = height > 0 ? height : 600;
     title_ = std::move(title);
+    if (!app_id.empty()) {
+        app_id_ = std::move(app_id);
+    } else {
+        app_id_ = lowercase_hyphenated(title_);
+    }
     theme_ = pick_theme();
     connect_display();
     if (failed_) return false;
@@ -706,6 +732,12 @@ void Client::handle_pointer_press(std::uint32_t button, std::uint32_t serial) {
         }
         if (pill.contains(input_.x, input_.y)) {
             return;
+        }
+        for (const auto& r : canvas_.interactive_rects()) {
+            if (r.contains(input_.x, input_.y)) {
+                request_frame();
+                return;
+            }
         }
         if (input_.y < 44) {
             const double now = now_seconds();
@@ -1236,7 +1268,10 @@ void Client::set_title(std::string title) {
     title_ = std::move(title);
     if (toplevel_ != nullptr) {
         xdg_toplevel_set_title(toplevel_, title_.c_str());
-        if (!title_.empty()) xdg_toplevel_set_app_id(toplevel_, title_.c_str());
+        if (app_id_.empty() && !title_.empty()) {
+            app_id_ = lowercase_hyphenated(title_);
+            xdg_toplevel_set_app_id(toplevel_, app_id_.c_str());
+        }
     }
     request_frame();
 }
@@ -1357,10 +1392,10 @@ struct App::Impl {
     App& app;
     Client client;
 
-    Impl(App& app_ref, std::string title, int width, int height) : app(app_ref) {
+    Impl(App& app_ref, std::string title, int width, int height, std::string app_id) : app(app_ref) {
         client.set_draw([this](Canvas& canvas) { app.draw(canvas); });
         client.set_close([this] { app.on_close(); });
-        if (!client.init_xdg(width, height, std::move(title))) {
+        if (!client.init_xdg(width, height, std::move(title), std::move(app_id))) {
             failed = true;
         }
     }
@@ -1374,7 +1409,10 @@ struct App::Impl {
 };
 
 App::App(std::string title, int width, int height)
-    : impl_(std::make_unique<Impl>(*this, std::move(title), width, height)) {}
+    : impl_(std::make_unique<Impl>(*this, std::move(title), width, height, "")) {}
+
+App::App(std::string title, int width, int height, std::string app_id)
+    : impl_(std::make_unique<Impl>(*this, std::move(title), width, height, std::move(app_id))) {}
 
 App::~App() = default;
 

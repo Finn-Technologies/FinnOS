@@ -2,8 +2,7 @@
 #
 # The catalogue of apps the OS knows about. It ships with the OS and says what
 # each app is called, what it looks like and what runs it — never whether it
-# is on this machine. That belongs to the package manager, which keeps its
-# own list in /var/lib/finn/installed.
+# is on this machine. The installer writes /var/lib/finn/installed.
 #
 # Format: id | Name | icon | command | note | source
 #

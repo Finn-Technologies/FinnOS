@@ -150,7 +150,7 @@ public:
     bool button(std::string_view id, Rect rect, std::string_view label,
                 bool enabled = true);
     bool icon_button(std::string_view id, Rect rect, std::string_view icon,
-                     Color ink);
+                     Color ink, bool enabled = true);
     bool app_icon_button(std::string_view id, Rect rect, std::string_view icon);
     bool toggle(std::string_view id, Rect rect, std::string_view label,
                 bool& value);
@@ -166,6 +166,8 @@ public:
     bool app_list_item(std::string_view id, Rect rect, std::string_view icon,
                        std::string_view title, std::string_view detail,
                        bool enabled = true);
+    bool sidebar_item(std::string_view id, Rect rect, std::string_view icon,
+                      std::string_view label, bool selected = false, bool enabled = true);
 
     const Input& input() const;
     const Theme& theme() const;
@@ -175,6 +177,7 @@ public:
     /* True when a widget or an explicit animation in this canvas still has
      * work to do; App/Client uses it to request the next frame. */
     bool animating() const;
+    const std::vector<Rect>& interactive_rects() const;
 
 private:
     struct Impl;
@@ -195,6 +198,7 @@ private:
 class App {
 public:
     App(std::string title, int width, int height);
+    App(std::string title, int width, int height, std::string app_id);
     virtual ~App();
     App(const App&) = delete;
     App& operator=(const App&) = delete;

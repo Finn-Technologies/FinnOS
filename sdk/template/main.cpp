@@ -4,7 +4,8 @@
 
 class Counter final : public finn::ui::App {
 public:
-    Counter() : App("Counter", 640, 420) {}
+    // Passes title, default window dimensions, and the catalogue/registry app id.
+    Counter() : App("Counter", 640, 420, "counter") {}
 
     void draw(finn::ui::Canvas& canvas) override {
         const auto& theme = canvas.theme();

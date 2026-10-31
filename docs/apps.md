@@ -11,7 +11,7 @@ callbacks and the input; you write `draw`.
 
 class Hello final : public finn::ui::App {
 public:
-    Hello() : App("Hello", 640, 420) {}
+    Hello() : App("Hello", 640, 420, "hello") {}
 
     void draw(finn::ui::Canvas& canvas) override {
         const auto& theme = canvas.theme();
@@ -27,9 +27,11 @@ int main() {
 }
 ```
 
-`App` draws a 44 pixel frame with the title and a close button. `content_rect()`
-is the area under it. Apps that want the whole surface call
-`set_framed(false)` and draw everything themselves.
+`App` takes the window title, default width, default height, and the app's
+catalogue registry id (`"hello"`). When `app_id` is omitted, it falls back to
+a lowercase-hyphenated form of the title. `App` draws window chrome per Figma
+specifications; `content_rect()` is the area under the top header. Apps that want
+the whole surface call `set_framed(false)` and draw everything themselves.
 
 ## Build
 

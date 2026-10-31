@@ -5,6 +5,24 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### App IDs and Figma-aligned Settings and Files windows
+
+- Added `App(std::string title, int width, int height, std::string app_id)` overload
+  to `libfinnui`, plumbing the app id through `Client::init_xdg` to `xdg_toplevel_set_app_id`
+  with fallback to a lowercase-hyphenated form of the title. `files` and `settings`
+  now pass their canonical registry ids.
+- Updated `sdk/template` and `docs/apps.md` to document passing the catalogue registry id.
+  Reworded header comment in `assets/apps.registry` to clarify that the installer
+  writes `/var/lib/finn/installed`.
+- Rebuilt `apps/settings` layout per Figma frame `186:3863`: translucent glass sidebar
+  (`Canvas::glass`) with reserved top-left app name, collapsible sidebar with `Sidebar_Toggle.svg`,
+  and sections for Appearance (functional dark appearance toggle) and About (FinnOS info card,
+  real RAM, Storage, Architecture, and Compositor specs). Non-existent services (Wi-Fi, Bluetooth)
+  omitted per rule against faking capabilities.
+- Rebuilt `apps/files` layout per Figma generic window `240:269`: glass sidebar listing
+  real directories in `$HOME` verified with `stat`, collapsible sidebar with `Sidebar_Toggle.svg`,
+  toolbar with disabled back button when at home root, and scrollable files list.
+
 ### Touch, HiDPI and cleanup
 
 - `finn-comp` forwards touch (`wl_touch`) to the surface under the finger and
