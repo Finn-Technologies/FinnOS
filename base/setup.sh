@@ -109,9 +109,9 @@ rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
 install -Dm644 "$HERE/finn-comp.service"    /etc/systemd/system/finn-comp.service
 install -Dm644 "$HERE/finn-session.service" /etc/systemd/system/finn-session.service
 install -Dm644 "$HERE/finn-shell.service"   /etc/systemd/system/finn-shell.service
+install -Dm644 "$HERE/finn-wallpaper.service" /etc/systemd/system/finn-wallpaper.service
 install -Dm644 "$HERE/finn-failure.service" /etc/systemd/system/finn-failure.service
 install -Dm644 "$HERE/finn-tmpfiles.conf"   /usr/lib/tmpfiles.d/finn.conf
-rm -f /etc/systemd/system/finnd.service
 systemctl daemon-reload
 
 # tty2 is the rescue console: the compositor owns tty1, so tty1 is not a way
@@ -133,6 +133,11 @@ if [ -z "$missing" ]; then
     loginctl enable-linger finn 2>/dev/null ||
         echo "WARN: could not enable linger for finn; the session needs /run/user/1000"
     systemctl enable finn-comp finn-session finn-shell
+    if [ -x /usr/local/bin/finn-wallpaper ]; then
+        systemctl enable finn-wallpaper
+    else
+        echo "WARN: finn-wallpaper is missing; the desktop will use the solid theme background"
+    fi
     systemctl set-default graphical.target
     echo "session enabled: finn-comp on tty1, finn-session and finn-shell behind it"
 else
@@ -146,13 +151,13 @@ fi
 #    registry the shell draws its tiles from. The compositor starts with
 #    default.webp; setup.webp is the wallpaper the first-run screen shows,
 #    and it is installed beside it so that screen has one on any machine.
-mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg
+mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn
 cp "$ROOT"/assets/fonts/FixelDisplay/*.otf /usr/share/fonts/OTF/
 install -m644 "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
 install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/setup.webp
 cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-printf 'settings\nfiles\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\n' > /var/lib/finn/installed
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l

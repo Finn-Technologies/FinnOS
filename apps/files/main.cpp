@@ -1,3 +1,7 @@
+// Finn Files file manager application.
+// Provides directory navigation, item sizing, and basic file inspection
+// within the user's home directory using native libfinnui widgets.
+
 #include <finn/ui.hpp>
 
 #include <algorithm>
@@ -19,6 +23,8 @@ struct Entry {
     std::uintmax_t size = 0;
 };
 
+// Scales byte counts to human-readable units (B, KB, MB, GB) to fit compactly
+// in file list detail columns without text truncation.
 std::string format_size(std::uintmax_t bytes) {
     if (bytes < 1024) return std::to_string(bytes) + " B";
     if (bytes < 1024 * 1024) return std::to_string(bytes / 1024) + " KB";
@@ -115,6 +121,8 @@ public:
     }
 
 private:
+    // Enumerates filesystem entries while filtering out hidden dotfiles and sorting
+    // directories ahead of files to ensure standard file manager ordering.
     void refresh() {
         entries_.clear();
         error_.clear();

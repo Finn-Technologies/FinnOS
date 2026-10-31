@@ -1,12 +1,12 @@
 # The base image
 
-`base/` is the Arch Linux base FinnOS installs onto. The rewrite replaces the
-session above it, not the distribution.
+`base/` is the Arch Linux base FinnOS installs onto: the packages, units and
+installer that sit beneath the session.
 
 - `packages.*` — the package lists, one name per line.
 - `pacman.conf`, `pacman.multilib.conf` — the repository configuration.
 - `finn-comp.service`, `finn-session.service`, `finn-shell.service`,
-  `finn-failure.service` — the session units.
+  `finn-wallpaper.service`, `finn-failure.service` — the session units.
 - `finn-tmpfiles.conf` — `/run/finn`, the shared IPC directory.
 - `airootfs/` — the live installation medium's root.
 - `installed/` — the branding an installed machine gets.
@@ -24,8 +24,8 @@ watchdog. `finn-session` and `finn-shell` run as `finn`; the broker listens on
 so `/run/user/1000` exists before the first login.
 
 There is no `finnd` in v1. App launch is the session broker's job and the
-broker has no machine authority. The old `finnpkg`, `.fui` compiler, SDK and
-MCP adapter were removed with the old tree; see `docs/roadmap.md`.
+broker has no machine authority. Package management and the SDK are planned
+for future milestones; see `docs/roadmap.md`.
 
 ## Building the disc
 

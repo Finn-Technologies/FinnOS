@@ -18,7 +18,7 @@ jobs:
       - name: the Python tests
         run: make test
       - name: the C++ unit tests
-        run: make test-rewrite
+        run: make test-unit
       - name: the style checks
         run: make lint
 
@@ -36,6 +36,6 @@ jobs:
       - name: build
         run: make -j"$(nproc)"
       - name: the runtime tests
-        run: make test-rewrite
+        run: make test-unit
       - name: the tree is clean
         run: git diff --exit-code

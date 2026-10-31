@@ -7,7 +7,7 @@ fits the shape of what is there; it does not need to be the largest change.
 
 1. [AGENTS.md](AGENTS.md) — the working agreement, for people and agents.
 2. [NAMING.md](NAMING.md) — the naming family.
-3. [docs/rewrite/contract.md](docs/rewrite/contract.md) — the five programs,
+3. [docs/design/contract.md](docs/design/contract.md) — the five programs,
    authority, the app contract and the v1 non-goals.
 4. [docs/architecture.md](docs/architecture.md) — what exists and what does
    not.
@@ -22,7 +22,7 @@ sudo pacman -S base-devel pkgconf wlroots0.20 libsystemd wayland \
     mesa seatd grim
 make
 make test
-make test-rewrite
+make test-unit
 make lint
 ```
 
@@ -32,7 +32,7 @@ captures it.
 ## What "done" means
 
 1. It builds with no new warnings.
-2. `make test`, `make test-rewrite` and `make lint` pass.
+2. `make test`, `make test-unit` and `make lint` pass.
 3. You looked at the pixels if the change touches them: a capture is the proof.
 4. The page that describes the behaviour changed in the same commit.
 5. The commit body says why.
@@ -44,7 +44,7 @@ C++20, and a deliberately small subset: classes, `std::string`, `std::vector`,
 `std::optional`, `std::unique_ptr`, `std::string_view`. No owning raw
 pointers, no `new`/`delete`, no template metaprogramming, no exceptions across
 module boundaries. One class per file pair. See
-[docs/rewrite/cpp-guide.md](docs/rewrite/cpp-guide.md).
+[docs/design/cpp-guide.md](docs/design/cpp-guide.md).
 
 - Four spaces, braces on the same line, `snake_case` names, `PascalCase`
   types, namespace `finn`.
@@ -69,7 +69,7 @@ launch into a root process.
 ## Adding an app
 
 Put it in `apps/<id>/`, add its registry line, and add the id to
-`/var/lib/finnpkg/installed` for the image. It must link `libfinnui` or be a
+`/var/lib/finn/installed` for the image. It must link `libfinnui` or be a
 normal foreign Wayland client; both are first class.
 
 ## Documentation

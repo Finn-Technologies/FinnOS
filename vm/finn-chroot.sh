@@ -154,11 +154,11 @@ fc-match "Fixel Display" || true
 post
 
 step "the payload: wallpaper, icons, registry"
-mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finnpkg /usr/local/bin
+mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn /usr/local/bin
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\n' > /var/lib/finnpkg/installed
+printf 'settings\nfiles\n' > /var/lib/finn/installed
 # Every icon, when the payload is the tree. A list of names is a second
 # place to forget one, and an icon the shell cannot find is a tile drawn
 # as an empty square. The list below is only for the host-server flow,
@@ -180,13 +180,14 @@ else
         get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
     done
 fi
-chown -R root:finn /usr/share/finn /var/lib/finnpkg
+chown -R root:finn /usr/share/finn /var/lib/finn
 ls /usr/share/finn/icons/
 
 step "the system units"
 get /etc/systemd/system/finn-comp.service base/finn-comp.service
 get /etc/systemd/system/finn-session.service base/finn-session.service
 get /etc/systemd/system/finn-shell.service base/finn-shell.service
+get /etc/systemd/system/finn-wallpaper.service base/finn-wallpaper.service
 get /etc/systemd/system/finn-failure.service base/finn-failure.service
 get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
 # A chroot has no systemd of its own to reload, and the target's systemd
@@ -226,7 +227,8 @@ if [ -d /opt/finnos ]; then
         make install >>/tmp/finn-build.log 2>&1 || rc=$?
     fi
     if [ "$rc" -eq 0 ] && [ -x /usr/local/bin/finn-comp ] &&
-       [ -x /usr/local/bin/finn-session ] && [ -x /usr/local/bin/finn-shell ]; then
+       [ -x /usr/local/bin/finn-session ] && [ -x /usr/local/bin/finn-shell ] &&
+       [ -x /usr/local/bin/finn-wallpaper ]; then
         SHELL_STATE=installed
         echo "SHELL=installed"
     else
@@ -245,12 +247,12 @@ chown -R finn:finn /opt/finnos
 if [ "$SHELL_STATE" = installed ]; then
     mkdir -p /var/lib/systemd/linger
     touch /var/lib/systemd/linger/finn
-    systemctl enable finn-comp finn-session finn-shell
+    systemctl enable finn-comp finn-session finn-shell finn-wallpaper
     systemctl set-default graphical.target
     # Enabled is a file on disk, so it is checked as one: a session that was
     # never enabled is a machine that boots to a console after saying the
     # install worked.
-    for unit in finn-comp finn-session finn-shell; do
+    for unit in finn-comp finn-session finn-shell finn-wallpaper; do
         [ -e "/etc/systemd/system/graphical.target.wants/$unit.service" ] ||
             { echo "error: $unit was not enabled for graphical.target" >&2; exit 1; }
     done

@@ -1,3 +1,7 @@
+// Wayland client and surface management engine for libfinnui.
+// Implements event loops, shared-memory double buffering, xdg-shell toplevels,
+// layer-shell surfaces, and keyboard/pointer input dispatching.
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -30,6 +34,8 @@
 namespace finn::ui {
 namespace {
 
+// Re-evaluates appearance settings periodically during event loop idle ticks so
+// theme toggles take immediate effect without restarting running client apps.
 Theme pick_theme() {
     const char* dark = std::getenv("FINN_DARK");
     if (dark != nullptr) {
@@ -89,6 +95,15 @@ struct ShmBuffer {
 
 class Client {
 public:
+    struct OutputEntry {
+        Client* client = nullptr;
+        wl_output* output = nullptr;
+        std::uint32_t name = 0;
+        std::int32_t scale = 1;
+        std::int32_t mode_width = 0;
+        std::int32_t mode_height = 0;
+    };
+
     enum class Mode { xdg, layer };
 
     Client() = default;
@@ -167,6 +182,29 @@ private:
     static void layer_closed(void* data, zwlr_layer_surface_v1* surface);
     static void buffer_release(void* data, wl_buffer* buffer);
     static void frame_done(void* data, wl_callback* callback, std::uint32_t time);
+    static void output_geometry(void* data, wl_output* output, int32_t x, int32_t y,
+                                int32_t physical_width, int32_t physical_height,
+                                int32_t subpixel, const char* make, const char* model,
+                                int32_t transform);
+    static void output_mode(void* data, wl_output* output, uint32_t flags,
+                            int32_t width, int32_t height, int32_t refresh);
+    static void output_done(void* data, wl_output* output);
+    static void output_scale(void* data, wl_output* output, int32_t factor);
+    static void output_name(void* data, wl_output* output, const char* name);
+    static void output_description(void* data, wl_output* output, const char* description);
+    static void touch_down(void* data, wl_touch* touch, std::uint32_t serial,
+                           std::uint32_t time, wl_surface* surface,
+                           int32_t id, wl_fixed_t x, wl_fixed_t y);
+    static void touch_up(void* data, wl_touch* touch, std::uint32_t serial,
+                         std::uint32_t time, int32_t id);
+    static void touch_motion(void* data, wl_touch* touch, std::uint32_t time,
+                             int32_t id, wl_fixed_t x, wl_fixed_t y);
+    static void touch_frame(void* data, wl_touch* touch);
+    static void touch_cancel(void* data, wl_touch* touch);
+    static void touch_shape(void* data, wl_touch* touch, int32_t id,
+                            wl_fixed_t major, wl_fixed_t minor);
+    static void touch_orientation(void* data, wl_touch* touch, int32_t id,
+                                  wl_fixed_t orientation);
 
     void connect_display();
     void create_surface();
@@ -179,6 +217,10 @@ private:
     void request_close();
     void destroy();
     void focus_from_pointer();
+    void update_scale();
+    void handle_pointer_motion(double x, double y);
+    void handle_pointer_press(std::uint32_t button, std::uint32_t serial);
+    void handle_pointer_release();
 
     Mode mode_ = Mode::xdg;
     wl_display* display_ = nullptr;
@@ -187,6 +229,8 @@ private:
     wl_shm* shm_ = nullptr;
     wl_seat* seat_ = nullptr;
     wl_pointer* pointer_ = nullptr;
+    wl_touch* touch_ = nullptr;
+    int32_t touch_id_ = -1;
     wl_keyboard* keyboard_ = nullptr;
     xdg_wm_base* wm_base_ = nullptr;
     zwlr_layer_shell_v1* layer_shell_ = nullptr;
@@ -197,6 +241,8 @@ private:
     wl_callback* frame_callback_ = nullptr;
     int tick_ms_ = 0;
 
+    std::vector<std::unique_ptr<OutputEntry>> outputs_;
+    std::int32_t scale_ = 1;
     std::vector<std::unique_ptr<ShmBuffer>> buffers_;
     Input input_;
     Theme theme_;
@@ -230,8 +276,10 @@ private:
     bool input_region_set_ = false;
 
     wl_registry_listener registry_listener_{};
+    wl_output_listener output_listener_{};
     wl_seat_listener seat_listener_{};
     wl_pointer_listener pointer_listener_{};
+    wl_touch_listener touch_listener_{};
     wl_keyboard_listener keyboard_listener_{};
     wl_buffer_listener buffer_listener_{};
     xdg_wm_base_listener wm_base_listener_{};
@@ -263,13 +311,108 @@ void Client::registry_global(void* data, wl_registry* registry, std::uint32_t na
     } else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         client->layer_shell_ = static_cast<zwlr_layer_shell_v1*>(wl_registry_bind(
             registry, name, &zwlr_layer_shell_v1_interface, std::min(version, 4u)));
+    } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
+        auto entry = std::make_unique<OutputEntry>();
+        entry->client = client;
+        entry->name = name;
+        entry->output = static_cast<wl_output*>(
+            wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 3u)));
+        wl_output_add_listener(entry->output, &client->output_listener_, entry.get());
+        client->outputs_.push_back(std::move(entry));
     }
 }
 
 void Client::registry_remove(void* data, wl_registry* registry, std::uint32_t name) {
-    (void)data;
     (void)registry;
+    Client* client = static_cast<Client*>(data);
+    for (auto it = client->outputs_.begin(); it != client->outputs_.end(); ++it) {
+        if ((*it)->name == name) {
+            if ((*it)->output != nullptr) {
+                wl_output_destroy((*it)->output);
+            }
+            client->outputs_.erase(it);
+            client->update_scale();
+            break;
+        }
+    }
+}
+
+void Client::output_geometry(void* data, wl_output* output, int32_t x, int32_t y,
+                             int32_t physical_width, int32_t physical_height,
+                             int32_t subpixel, const char* make, const char* model,
+                             int32_t transform) {
+    (void)data;
+    (void)output;
+    (void)x;
+    (void)y;
+    (void)physical_width;
+    (void)physical_height;
+    (void)subpixel;
+    (void)make;
+    (void)model;
+    (void)transform;
+}
+
+void Client::output_mode(void* data, wl_output* output, uint32_t flags,
+                         int32_t width, int32_t height, int32_t refresh) {
+    (void)output;
+    (void)refresh;
+    auto* entry = static_cast<OutputEntry*>(data);
+    if (entry != nullptr && (flags & WL_OUTPUT_MODE_CURRENT) != 0) {
+        entry->mode_width = width;
+        entry->mode_height = height;
+    }
+}
+
+void Client::output_done(void* data, wl_output* output) {
+    (void)data;
+    (void)output;
+}
+
+void Client::output_scale(void* data, wl_output* output, int32_t factor) {
+    (void)output;
+    auto* entry = static_cast<OutputEntry*>(data);
+    if (entry != nullptr) {
+        entry->scale = factor;
+        if (entry->client != nullptr) {
+            entry->client->update_scale();
+        }
+    }
+}
+
+void Client::output_name(void* data, wl_output* output, const char* name) {
+    (void)data;
+    (void)output;
     (void)name;
+}
+
+void Client::output_description(void* data, wl_output* output, const char* description) {
+    (void)data;
+    (void)output;
+    (void)description;
+}
+
+// Recomputes maximum scale factor across all bound outputs and recreates buffer pools
+// when the display scale changes at runtime so content matches screen DPI.
+void Client::update_scale() {
+    std::int32_t max_scale = 1;
+    for (const auto& out : outputs_) {
+        if (out->scale > max_scale) {
+            max_scale = out->scale;
+        }
+    }
+    if (max_scale < 1) max_scale = 1;
+    if (scale_ != max_scale) {
+        scale_ = max_scale;
+        if (surface_ != nullptr) {
+            wl_surface_set_buffer_scale(surface_, scale_);
+        }
+        if (configured_) {
+            destroy_buffers();
+            create_buffers();
+            request_frame();
+        }
+    }
 }
 
 void Client::connect_display() {
@@ -279,6 +422,24 @@ void Client::connect_display() {
         failed_ = true;
         return;
     }
+
+    output_listener_ = {};
+    output_listener_.geometry = output_geometry;
+    output_listener_.mode = output_mode;
+    output_listener_.done = output_done;
+    output_listener_.scale = output_scale;
+    output_listener_.name = output_name;
+    output_listener_.description = output_description;
+
+    touch_listener_ = {};
+    touch_listener_.down = touch_down;
+    touch_listener_.up = touch_up;
+    touch_listener_.motion = touch_motion;
+    touch_listener_.frame = touch_frame;
+    touch_listener_.cancel = touch_cancel;
+    touch_listener_.shape = touch_shape;
+    touch_listener_.orientation = touch_orientation;
+
     registry_ = wl_display_get_registry(display_);
     registry_listener_.global = registry_global;
     registry_listener_.global_remove = registry_remove;
@@ -323,6 +484,9 @@ void Client::seat_capabilities(void* data, wl_seat* seat, std::uint32_t capabili
         client->pointer_listener_.axis_stop = pointer_axis_stop;
         client->pointer_listener_.axis_discrete = pointer_axis_discrete;
         wl_pointer_add_listener(client->pointer_, &client->pointer_listener_, client);
+    } else if ((capabilities & WL_SEAT_CAPABILITY_POINTER) == 0 && client->pointer_ != nullptr) {
+        wl_pointer_destroy(client->pointer_);
+        client->pointer_ = nullptr;
     }
     if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) != 0 &&
         client->keyboard_ == nullptr) {
@@ -335,6 +499,17 @@ void Client::seat_capabilities(void* data, wl_seat* seat, std::uint32_t capabili
         client->keyboard_listener_.modifiers = keyboard_modifiers;
         client->keyboard_listener_.repeat_info = keyboard_repeat;
         wl_keyboard_add_listener(client->keyboard_, &client->keyboard_listener_, client);
+    } else if ((capabilities & WL_SEAT_CAPABILITY_KEYBOARD) == 0 && client->keyboard_ != nullptr) {
+        wl_keyboard_destroy(client->keyboard_);
+        client->keyboard_ = nullptr;
+    }
+    if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) != 0 && client->touch_ == nullptr) {
+        client->touch_ = wl_seat_get_touch(seat);
+        wl_touch_add_listener(client->touch_, &client->touch_listener_, client);
+    } else if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) == 0 && client->touch_ != nullptr) {
+        wl_touch_destroy(client->touch_);
+        client->touch_ = nullptr;
+        client->touch_id_ = -1;
     }
 }
 
@@ -344,6 +519,7 @@ void Client::create_surface() {
         failed_ = true;
         return;
     }
+    wl_surface_set_buffer_scale(surface_, scale_);
 
     if (mode_ == Mode::xdg) {
         if (wm_base_ == nullptr) {
@@ -364,7 +540,7 @@ void Client::create_surface() {
         toplevel_listener_.close = toplevel_close;
         xdg_toplevel_add_listener(toplevel_, &toplevel_listener_, this);
         xdg_toplevel_set_title(toplevel_, title_.c_str());
-        xdg_toplevel_set_app_id(toplevel_, "finn.app");
+        xdg_toplevel_set_app_id(toplevel_, !title_.empty() ? title_.c_str() : "finn.app");
     } else {
         if (layer_shell_ == nullptr) {
             std::fprintf(stderr, "libfinnui: zwlr_layer_shell_v1 missing\n");
@@ -492,15 +668,76 @@ void Client::focus_from_pointer() {
     // Pointer focus is the compositor's decision; nothing to request.
 }
 
+void Client::handle_pointer_motion(double x, double y) {
+    input_.x = x;
+    input_.y = y;
+    request_frame();
+}
+
+void Client::handle_pointer_press(std::uint32_t button, std::uint32_t serial) {
+    input_.pointer_down = true;
+    input_.pointer_pressed = true;
+    input_.button = button;
+
+    if (mode_ == Mode::xdg && framed_ && button == BTN_LEFT && toplevel_ != nullptr) {
+        const Rect pill{static_cast<double>(width_ - 83 - 8), 8.0, 83.0, 24.0};
+        const Rect min_btn{pill.x + 2, pill.y + 2, 25, 20};
+        const Rect max_btn{pill.x + 29, pill.y + 2, 25, 20};
+        const Rect close_btn{pill.x + 56, pill.y + 2, 25, 20};
+
+        if (close_btn.contains(input_.x, input_.y)) {
+            request_close();
+            return;
+        }
+        if (max_btn.contains(input_.x, input_.y)) {
+            maximized_ = !maximized_;
+            if (maximized_) {
+                xdg_toplevel_set_maximized(toplevel_);
+            } else {
+                xdg_toplevel_unset_maximized(toplevel_);
+            }
+            request_frame();
+            return;
+        }
+        if (min_btn.contains(input_.x, input_.y)) {
+            // Compositor does not implement request_minimize in v1.
+            // Button is disabled per AGENTS.md / contract.md: refuse presses.
+            return;
+        }
+        if (pill.contains(input_.x, input_.y)) {
+            return;
+        }
+        if (input_.y < 44) {
+            const double now = now_seconds();
+            if (now - last_title_press_ < 0.35) {
+                maximized_ = !maximized_;
+                if (maximized_) {
+                    xdg_toplevel_set_maximized(toplevel_);
+                } else {
+                    xdg_toplevel_unset_maximized(toplevel_);
+                }
+            } else if (seat_ != nullptr) {
+                xdg_toplevel_move(toplevel_, seat_, serial);
+            }
+            last_title_press_ = now;
+        }
+    }
+    request_frame();
+}
+
+void Client::handle_pointer_release() {
+    input_.pointer_down = false;
+    input_.pointer_released = true;
+    request_frame();
+}
+
 void Client::pointer_enter(void* data, wl_pointer* pointer, std::uint32_t serial,
                            wl_surface* surface, wl_fixed_t sx, wl_fixed_t sy) {
     (void)pointer;
     (void)serial;
     (void)surface;
-    Client* client = static_cast<Client*>(data);
-    client->input_.x = wl_fixed_to_double(sx);
-    client->input_.y = wl_fixed_to_double(sy);
-    client->request_frame();
+    static_cast<Client*>(data)->handle_pointer_motion(wl_fixed_to_double(sx),
+                                                      wl_fixed_to_double(sy));
 }
 
 void Client::pointer_leave(void* data, wl_pointer* pointer, std::uint32_t serial,
@@ -518,10 +755,8 @@ void Client::pointer_motion(void* data, wl_pointer* pointer, std::uint32_t time,
                             wl_fixed_t sx, wl_fixed_t sy) {
     (void)pointer;
     (void)time;
-    Client* client = static_cast<Client*>(data);
-    client->input_.x = wl_fixed_to_double(sx);
-    client->input_.y = wl_fixed_to_double(sy);
-    client->request_frame();
+    static_cast<Client*>(data)->handle_pointer_motion(wl_fixed_to_double(sx),
+                                                      wl_fixed_to_double(sy));
 }
 
 void Client::pointer_button(void* data, wl_pointer* pointer, std::uint32_t serial,
@@ -531,35 +766,84 @@ void Client::pointer_button(void* data, wl_pointer* pointer, std::uint32_t seria
     (void)time;
     Client* client = static_cast<Client*>(data);
     if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
-        client->input_.pointer_down = true;
-        client->input_.pointer_pressed = true;
-        client->input_.button = button;
-
-        if (client->mode_ == Mode::xdg && client->framed_ && button == BTN_LEFT &&
-            client->input_.y < 44 && client->toplevel_ != nullptr) {
-            const double w = static_cast<double>(client->width_);
-            if (client->input_.x > w - 44) {
-                client->request_close();
-                return;
-            }
-            const double now = now_seconds();
-            if (now - client->last_title_press_ < 0.35) {
-                client->maximized_ = !client->maximized_;
-                if (client->maximized_) {
-                    xdg_toplevel_set_maximized(client->toplevel_);
-                } else {
-                    xdg_toplevel_unset_maximized(client->toplevel_);
-                }
-            } else if (client->seat_ != nullptr) {
-                xdg_toplevel_move(client->toplevel_, client->seat_, serial);
-            }
-            client->last_title_press_ = now;
-        }
+        client->handle_pointer_press(button, serial);
     } else {
-        client->input_.pointer_down = false;
-        client->input_.pointer_released = true;
+        client->handle_pointer_release();
     }
-    client->request_frame();
+}
+
+void Client::touch_down(void* data, wl_touch* touch, std::uint32_t serial,
+                        std::uint32_t time, wl_surface* surface,
+                        int32_t id, wl_fixed_t x, wl_fixed_t y) {
+    (void)touch;
+    (void)time;
+    (void)surface;
+    Client* client = static_cast<Client*>(data);
+    // Maps the primary touch contact to mouse button press semantics.
+    if (client->touch_id_ < 0) {
+        client->touch_id_ = id;
+        client->handle_pointer_motion(wl_fixed_to_double(x), wl_fixed_to_double(y));
+        client->handle_pointer_press(BTN_LEFT, serial);
+    }
+}
+
+void Client::touch_up(void* data, wl_touch* touch, std::uint32_t serial,
+                      std::uint32_t time, int32_t id) {
+    (void)touch;
+    (void)serial;
+    (void)time;
+    Client* client = static_cast<Client*>(data);
+    if (client->touch_id_ == id) {
+        client->touch_id_ = -1;
+        client->handle_pointer_release();
+    }
+}
+
+void Client::touch_motion(void* data, wl_touch* touch, std::uint32_t time,
+                          int32_t id, wl_fixed_t x, wl_fixed_t y) {
+    (void)touch;
+    (void)time;
+    Client* client = static_cast<Client*>(data);
+    if (client->touch_id_ == id) {
+        client->handle_pointer_motion(wl_fixed_to_double(x), wl_fixed_to_double(y));
+    }
+}
+
+void Client::touch_frame(void* data, wl_touch* touch) {
+    (void)touch;
+    static_cast<Client*>(data)->request_frame();
+}
+
+void Client::touch_cancel(void* data, wl_touch* touch) {
+    (void)touch;
+    Client* client = static_cast<Client*>(data);
+    // Compositor cancelled touch gesture; reset touch state without firing clicks.
+    if (client->touch_id_ >= 0) {
+        client->touch_id_ = -1;
+        client->input_.pointer_down = false;
+        client->input_.pointer_pressed = false;
+        client->input_.pointer_released = false;
+        client->input_.x = -1;
+        client->input_.y = -1;
+        client->request_frame();
+    }
+}
+
+void Client::touch_shape(void* data, wl_touch* touch, int32_t id,
+                         wl_fixed_t major, wl_fixed_t minor) {
+    (void)data;
+    (void)touch;
+    (void)id;
+    (void)major;
+    (void)minor;
+}
+
+void Client::touch_orientation(void* data, wl_touch* touch, int32_t id,
+                               wl_fixed_t orientation) {
+    (void)data;
+    (void)touch;
+    (void)id;
+    (void)orientation;
 }
 
 void Client::pointer_axis(void* data, wl_pointer* pointer, std::uint32_t time,
@@ -692,34 +976,50 @@ void Client::keyboard_repeat(void* data, wl_keyboard* keyboard, std::int32_t rat
     (void)delay;
 }
 
+// Allocates anonymous memory files via memfd_create for zero-copy Wayland shm
+// buffer sharing between client render loops and the compositor.
 bool Client::create_buffers() {
     destroy_buffers();
     if (width_ <= 0 || height_ <= 0 || shm_ == nullptr) return false;
-    if (width_ > 16384 || height_ > 16384) {
-        std::fprintf(stderr, "libfinnui: window is too large: %dx%d\n", width_, height_);
+    const int buf_width = width_ * scale_;
+    const int buf_height = height_ * scale_;
+    if (buf_width > 16384 || buf_height > 16384) {
+        std::fprintf(stderr, "libfinnui: window is too large: %dx%d\n", buf_width, buf_height);
         return false;
     }
-    const std::size_t stride = static_cast<std::size_t>(width_) * 4;
-    const std::size_t bytes = stride * static_cast<std::size_t>(height_);
+    const std::size_t stride = static_cast<std::size_t>(buf_width) * 4;
+    const std::size_t bytes = stride * static_cast<std::size_t>(buf_height);
     for (int i = 0; i < 2; ++i) {
         const int fd = memfd_create("finn-ui", MFD_CLOEXEC);
-        if (fd < 0) return false;
+        if (fd < 0) {
+            std::fprintf(stderr, "libfinnui: memfd_create failed: %s\n", std::strerror(errno));
+            return false;
+        }
         if (ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+            std::fprintf(stderr, "libfinnui: ftruncate failed: %s\n", std::strerror(errno));
             close(fd);
             return false;
         }
         void* map = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (map == MAP_FAILED) {
+            std::fprintf(stderr, "libfinnui: mmap failed: %s\n", std::strerror(errno));
             close(fd);
             return false;
         }
         wl_shm_pool* pool = wl_shm_create_pool(shm_, fd, static_cast<std::int32_t>(bytes));
+        if (pool == nullptr) {
+            std::fprintf(stderr, "libfinnui: wl_shm_create_pool failed\n");
+            munmap(map, bytes);
+            close(fd);
+            return false;
+        }
         wl_buffer* buffer = wl_shm_pool_create_buffer(
-            pool, 0, width_, height_, static_cast<std::int32_t>(stride),
+            pool, 0, buf_width, buf_height, static_cast<std::int32_t>(stride),
             WL_SHM_FORMAT_ARGB8888);
         wl_shm_pool_destroy(pool);
         close(fd);
         if (buffer == nullptr) {
+            std::fprintf(stderr, "libfinnui: create_buffer failed\n");
             munmap(map, bytes);
             return false;
         }
@@ -796,19 +1096,53 @@ void Client::render_frame() {
         needs_frame_ = true;
         return;
     }
+    const int buf_width = width_ * scale_;
+    const int buf_height = height_ * scale_;
     target->busy = true;
     in_draw_ = true;
     if (theme_counter_++ % 5 == 0) theme_ = pick_theme();
-    canvas_.begin(target->pixels, width_, height_, 1.0, input_, theme_);
+
+    int screen_mode_w = 0;
+    int screen_mode_h = 0;
+    for (const auto& out : outputs_) {
+        if (out->mode_width > screen_mode_w) {
+            screen_mode_w = out->mode_width;
+            screen_mode_h = out->mode_height;
+        }
+    }
+    const double screen_w = screen_mode_w > 0
+        ? (screen_mode_w / static_cast<double>(scale_))
+        : static_cast<double>(width_);
+    const double screen_h = screen_mode_h > 0
+        ? (screen_mode_h / static_cast<double>(scale_))
+        : static_cast<double>(height_);
+    double surface_x = 0;
+    double surface_y = 0;
+    if (mode_ == Mode::layer) {
+        if (width_ < screen_w) {
+            surface_x = (screen_w - width_) / 2.0;
+        }
+        if (height_ < screen_h) {
+            surface_y = screen_h - height_;
+        }
+    }
+    canvas_.set_screen_geometry(screen_w, screen_h, surface_x, surface_y);
+
+    canvas_.begin(target->pixels, buf_width, buf_height, static_cast<double>(scale_), input_, theme_);
     draw_frame();
+    if (canvas_.animating()) needs_frame_ = true;
     canvas_.end();
     in_draw_ = false;
+    wl_surface_set_buffer_scale(surface_, scale_);
     wl_surface_attach(surface_, target->buffer, 0, 0);
-    wl_surface_damage_buffer(surface_, 0, 0, width_, height_);
+    wl_surface_damage_buffer(surface_, 0, 0, buf_width, buf_height);
     wl_surface_commit(surface_);
     reset_input();
 }
 
+// Synthesizes client-side window chrome per Figma design specification:
+// borderless rounded rectangle, floating top-right window controls pill,
+// and top-left reserved application title without a titlebar dividing strip.
 void Client::draw_frame() {
     if (mode_ == Mode::layer) {
         canvas_.clear(Color::rgba(0));
@@ -822,21 +1156,63 @@ void Client::draw_frame() {
     }
     canvas_.clear(Color::rgba(0));
     const Rect window{0, 0, static_cast<double>(width_), static_cast<double>(height_)};
-    canvas_.fill(window, theme_.bone, 10);
-    canvas_.stroke(window, theme_.hair, 10, 1);
-    canvas_.line(0, 44, width_, 44, theme_.hair, 1);
-
-    const double close_w = 44;
-    const Rect close{width_ - close_w, 0, close_w, 44};
-    if (close.contains(input_.x, input_.y)) {
-        canvas_.fill(close.inset(8), theme_.tile_on, 14);
-    }
-    const double cx = width_ - 28;
-    canvas_.line(cx - 5, 17, cx + 5, 27, theme_.mute, 1.6);
-    canvas_.line(cx + 5, 17, cx - 5, 27, theme_.mute, 1.6);
-    canvas_.text(16, 28, title_, 15, theme_.ink);
+    const Color tint = theme_.bone.with_alpha(theme_.dark ? 214 : 178);
+    canvas_.glass(window, 8, tint, 15);
+    canvas_.stroke(window, theme_.hair, 8, 1);
 
     if (draw_) draw_(canvas_);
+
+    // Floating window controls pill (Figma node 240:352 / SPEC.md Section 5)
+    // 83x24 positioned top-right at margin top 8, margin right 8
+    const Rect pill{static_cast<double>(width_ - 83 - 8), 8.0, 83.0, 24.0};
+
+    // Soft drop shadow (Figma drop shadow: radius 20, rgba(0, 0, 0, 0.10), offset y 4)
+    canvas_.fill(Rect{pill.x, pill.y + 2, pill.w, pill.h}, Color::rgba(0x14000000), 6);
+    canvas_.fill(Rect{pill.x, pill.y + 4, pill.w, pill.h}, Color::rgba(0x0A000000), 8);
+    // Container background (Figma: solid white, radius 4)
+    canvas_.fill(pill, Color::rgb(0xFFFFFF), 4);
+
+    // Three 25x20 buttons with padding 2 and item spacing 2
+    const Rect min_btn{pill.x + 2, pill.y + 2, 25, 20};
+    const Rect max_btn{pill.x + 29, pill.y + 2, 25, 20};
+    const Rect close_btn{pill.x + 56, pill.y + 2, 25, 20};
+
+    // Button 1: Minimize (DISABLED: compositor does not implement request_minimize)
+    canvas_.fill(min_btn, Color::rgb(0xFFFFFF), 2);
+    // Glyph: minus-sign (node 240:185), width 9.33, disabled color theme_.mute
+    canvas_.line(min_btn.x + 7.83, min_btn.y + 10.0, min_btn.x + 17.17, min_btn.y + 10.0,
+                 theme_.mute, 1.17);
+
+    // Button 2: Maximize
+    const bool max_hover = max_btn.contains(input_.x, input_.y);
+    canvas_.fill(max_btn, Color::rgb(0xFFFFFF), 2);
+    if (max_hover) {
+        canvas_.fill(max_btn, Color::rgba(0x08000000), 2);
+    }
+    // Glyph: expand (node 240:181/209), two opposing corner brackets 4.08x4.08, stroke #141B34
+    const Color max_glyph = Color::rgb(0x141B34);
+    canvas_.line(max_btn.x + 8.42, max_btn.y + 5.92, max_btn.x + 12.50, max_btn.y + 5.92,
+                 max_glyph, 1.17);
+    canvas_.line(max_btn.x + 8.42, max_btn.y + 5.92, max_btn.x + 8.42, max_btn.y + 10.00,
+                 max_glyph, 1.17);
+    canvas_.line(max_btn.x + 12.50, max_btn.y + 14.08, max_btn.x + 16.58, max_btn.y + 14.08,
+                 max_glyph, 1.17);
+    canvas_.line(max_btn.x + 16.58, max_btn.y + 10.00, max_btn.x + 16.58, max_btn.y + 14.08,
+                 max_glyph, 1.17);
+
+    // Button 3: Close
+    const bool close_hover = close_btn.contains(input_.x, input_.y);
+    const Color close_bg = close_hover ? Color::rgb(0xFF0202) : Color::rgb(0xFFFFFF);
+    const Color close_glyph = close_hover ? Color::rgb(0xFFFFFF) : Color::rgb(0x141B34);
+    canvas_.fill(close_btn, close_bg, 2);
+    // Glyph: close-button (node 240:179/224), 7x7 X
+    canvas_.line(close_btn.x + 9.0, close_btn.y + 6.5, close_btn.x + 16.0, close_btn.y + 13.5,
+                 close_glyph, 1.17);
+    canvas_.line(close_btn.x + 16.0, close_btn.y + 6.5, close_btn.x + 9.0, close_btn.y + 13.5,
+                 close_glyph, 1.17);
+
+    // Top left area reserved for App's name (SPEC.md Section 6: x: 22, y: 18, size 16)
+    canvas_.text(22, 29, title_, 16, theme_.ink);
 }
 
 void Client::reset_input() {
@@ -858,7 +1234,10 @@ void Client::request_close() {
 
 void Client::set_title(std::string title) {
     title_ = std::move(title);
-    if (toplevel_ != nullptr) xdg_toplevel_set_title(toplevel_, title_.c_str());
+    if (toplevel_ != nullptr) {
+        xdg_toplevel_set_title(toplevel_, title_.c_str());
+        if (!title_.empty()) xdg_toplevel_set_app_id(toplevel_, title_.c_str());
+    }
     request_frame();
 }
 
@@ -945,6 +1324,10 @@ int Client::run() {
 void Client::destroy() {
     if (display_ == nullptr) return;
     destroy_buffers();
+    for (auto& out : outputs_) {
+        if (out->output != nullptr) wl_output_destroy(out->output);
+    }
+    outputs_.clear();
     if (frame_callback_ != nullptr) {
         wl_callback_destroy(frame_callback_);
         frame_callback_ = nullptr;
@@ -954,6 +1337,8 @@ void Client::destroy() {
     if (layer_surface_ != nullptr) zwlr_layer_surface_v1_destroy(layer_surface_);
     if (surface_ != nullptr) wl_surface_destroy(surface_);
     if (pointer_ != nullptr) wl_pointer_destroy(pointer_);
+    if (touch_ != nullptr) wl_touch_destroy(touch_);
+    touch_id_ = -1;
     if (keyboard_ != nullptr) wl_keyboard_destroy(keyboard_);
     if (seat_ != nullptr) wl_seat_destroy(seat_);
     if (xkb_state_ != nullptr) xkb_state_unref(xkb_state_);

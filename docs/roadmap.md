@@ -1,13 +1,12 @@
 # Roadmap
 
-The rewrite is a platform, not a finished distribution. These are the gaps in
+FinnOS is a platform in active development. These are the roadmap goals in
 the order they should close.
 
 ## 1. The root authority — `finnd`
 
 There is no audited door for power, brightness, volume, wireless, packages or
-updates. The old `finnd` was root-equivalent and tied to the old tree; it is
-on `pre-rewrite`. The new one should be small:
+updates yet. When implemented, `finnd` should be small:
 
 - a unix socket at `/run/finn/control.sock`, `0660 root:finn-authority`;
 - `SO_PEERCRED` on every connection;
@@ -32,14 +31,25 @@ brightness actuator behind `finnd` first.
 
 ## 3. Packages and updates
 
-`finnpkg` and the OTA frontend were removed with the old tree. The new
-package manager should keep the old rules: the catalogue and the installed
+Package management and the OTA frontend are planned. The package manager
+should maintain clean architectural boundaries: the catalogue and the installed
 list are separate, the package manager is the only writer of the latter, and
 a lit tile means the launcher exists. A/B slots and package signatures are
 separate, larger decisions.
 
 ## 4. The desktop grows
 
+- The Control Center and the full Home/All Apps view from the Figma file.
+  v1 has the dock, the status pill and the app menu.
+- A taskbar and a minimize/restore surface. v1 has maximize and close only;
+  the window chrome draws a disabled minimize control that refuses clicks
+  rather than stranding the window without a restore surface.
+- Full-scene compositor backdrop blur. `libfinnui` implements client-side
+  wallpaper backdrop blur (`Canvas::glass()`) with a 3-pass box blur and
+  key-based caching; compositor-level blurring of windows behind other windows
+  remains future work.
+- A visible reduced-motion switch in Settings. `FINN_REDUCED_MOTION=1` is
+  honoured today; the setting is not yet written by the UI.
 - Server-side decoration or a protocol for a consistent header bar, if the
   client-side chrome proves inconsistent across toolkits.
 - Multi-monitor and per-output scale.

@@ -54,4 +54,4 @@ enables the three units and the linger file, and verifies the binaries before
 claiming the install worked.
 
 There is no `finnd` and no package manager in v1; installing an app means its
-binary, its registry line and its id in `/var/lib/finnpkg/installed`.
+binary, its registry line and its id in `/var/lib/finn/installed`.

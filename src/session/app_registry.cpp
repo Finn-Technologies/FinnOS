@@ -1,3 +1,7 @@
+// Parser for apps.registry and the installed application list.
+// Separates catalogue discovery metadata from machine installation states,
+// ensuring only validated native applications are marked as launchable.
+
 #include "session/app_registry.hpp"
 
 #include <array>
@@ -28,6 +32,8 @@ std::string_view trim(std::string_view text) {
     return text;
 }
 
+// Splits pipe-delimited fields while trimming whitespace to protect against
+// formatting variance in manually edited or package-generated registry files.
 LineFields split_fields(std::string_view line) {
     LineFields fields;
     while (fields.count < kMaxFields) {
@@ -46,6 +52,8 @@ AppSource parse_source(std::string_view text) {
     return AppSource::kUnknown;
 }
 
+// Reads installed IDs line by line; non-existent files indicate no packages
+// have been installed yet rather than an operational failure.
 void mark_installed(std::vector<App>& apps, std::string_view path) {
     std::ifstream list{std::string(path)};
     if (!list) return;

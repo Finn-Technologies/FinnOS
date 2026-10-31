@@ -1,10 +1,8 @@
 FinnOS.
 
-One display server, one control plane, and no AI in the image.
+One display server, and no AI in the image.
 
   finn-install          install FinnOS onto a disk you name
-  finnctl --help        the control plane's client, on an installed machine
-  finnpkg list          what is installed, on an installed machine
 
 The live medium is a console. The shell is built on the machine the disc
 is installed on, from the sources the disc carries at /opt/finnos.

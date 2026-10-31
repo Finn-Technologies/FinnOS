@@ -2,7 +2,7 @@
 """Generate the C++ colour tokens from ui/_tokens.fui.
 
 The design file is the source. The generated header is committed so the tree
-builds without Python, and tests/rewrite/test_tokens.py fails when the two
+builds without Python, and tests/unit/test_tokens.py fails when the two
 disagree.
 """
 

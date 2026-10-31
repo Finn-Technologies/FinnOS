@@ -3,7 +3,10 @@
 | Page | Answers |
 |---|---|
 | [architecture.md](architecture.md) | what runs, what owns what, and what is missing |
+| [code-map.md](code-map.md) | the ten-minute tour, the flows, and where to change what |
+| [design.md](design.md) | the Figma frames, their measurements, and Figwright |
 | [apps.md](apps.md) | how to write a native app |
+| [motion.md](motion.md) | the durations, curves and what moves |
 | [session-protocol.md](session-protocol.md) | the launch socket and its verbs |
 | [development.md](development.md) | build, deploy and look at the result |
 | [testing.md](testing.md) | the host tests, the VM tests and the gaps |
@@ -12,7 +15,4 @@
 | [hardware.md](hardware.md) | the reference machine and its limits |
 | [troubleshooting.md](troubleshooting.md) | when the session does not come up |
 | [roadmap.md](roadmap.md) | what is next, and what "done" means |
-| [rewrite/](rewrite/) | the rewrite contract, milestones and C++ guide |
-
-The old system's pages were removed with the old tree. They remain on the
-`pre-rewrite` tag.
+| [design/](design/) | the architecture contract, milestones and C++ guide |

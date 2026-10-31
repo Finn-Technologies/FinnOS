@@ -1,3 +1,7 @@
+// Color palette and theme definition mapping for libfinnui.
+// Populates light and dark theme structures from generated design tokens
+// to ensure color consistency across all native system applications.
+
 #include "finn/ui.hpp"
 
 #include "generated_tokens.hpp"

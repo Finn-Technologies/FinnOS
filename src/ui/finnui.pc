@@ -7,4 +7,4 @@ Description: The FinnOS app runtime
 Version: 0.2.0
 Cflags: -I${includedir}
 Libs: -L${libdir} -lfinnui
-Libs.private: -lwayland-client -lxkbcommon -lfreetype -lm
+Libs.private: -lwayland-client -lxkbcommon -lfreetype -lwebp -lm

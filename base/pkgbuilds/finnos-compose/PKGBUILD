@@ -21,7 +21,7 @@ arch=('x86_64' 'aarch64')
 url='https://finnos.org'
 license=('MIT')
 depends=('glibc' 'wlroots0.20' 'systemd-libs' 'libdrm' 'libinput' 'libxkbcommon'
-         'wayland' 'freetype2' 'fontconfig' 'mesa' 'libglvnd' 'seatd')
+         'wayland' 'freetype2' 'fontconfig' 'libwebp' 'mesa' 'libglvnd' 'seatd')
 makedepends=('base-devel' 'pkgconf' 'wayland')
 options=('!strip')
 
@@ -40,6 +40,8 @@ package() {
     "$pkgdir/usr/lib/systemd/system/finn-session.service"
   install -Dm644 "$_src/base/finn-shell.service" \
     "$pkgdir/usr/lib/systemd/system/finn-shell.service"
+  install -Dm644 "$_src/base/finn-wallpaper.service" \
+    "$pkgdir/usr/lib/systemd/system/finn-wallpaper.service"
   install -Dm644 "$_src/base/finn-failure.service" \
     "$pkgdir/usr/lib/systemd/system/finn-failure.service"
   install -Dm644 "$_src/base/finn-tmpfiles.conf" \

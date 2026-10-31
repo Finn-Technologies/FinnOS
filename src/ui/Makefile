@@ -1,4 +1,4 @@
-PKGS     = wayland-client xkbcommon freetype2
+PKGS     = wayland-client xkbcommon freetype2 libwebp
 CC       ?= cc
 CXX      ?= c++
 CFLAGS   ?= -O2 -g -Wall -Wextra -Wpedantic -Werror -std=c11
@@ -62,7 +62,7 @@ LIBDIR ?= $(PREFIX)/lib
 
 install: libfinnui.a
 	install -d $(DESTDIR)$(INCDIR)/finn
-	install -m644 finn/ui.hpp $(DESTDIR)$(INCDIR)/finn/ui.hpp
+	install -m644 finn/ui.hpp finn/animation.hpp $(DESTDIR)$(INCDIR)/finn/
 	install -d $(DESTDIR)$(LIBDIR)
 	install -m644 libfinnui.a $(DESTDIR)$(LIBDIR)/libfinnui.a
 	install -d $(DESTDIR)$(LIBDIR)/pkgconfig

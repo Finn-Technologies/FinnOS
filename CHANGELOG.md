@@ -5,10 +5,49 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Touch, HiDPI and cleanup
+
+- `finn-comp` forwards touch (`wl_touch`) to the surface under the finger and
+  advertises the capability when a touch device exists. Not tested: the VM
+  has no touch device.
+- Integer output scale: 2x for panels 2400 px wide or more, forced with
+  `FINN_OUTPUT_SCALE`. `libfinnui` binds `wl_output`, sets the buffer scale and
+  draws in logical units; checked in the VM at 1x and a forced 2x.
+- `libfinnui` maps the first touch point to the pointer path.
+- The installed list moved to `/var/lib/finn/installed`; `docs/rewrite/` is
+  `docs/design/` and `tests/rewrite` is `tests/unit`. The removed `finnd`,
+  `finnctl` and `finnpkg` appear only as roadmap items.
+- Figma exports and measured values are in `assets/figma/`.
+
+### Motion, wallpaper and the Figma source
+
+- One motion language in `src/ui/finn/animation.hpp`: 140 ms for controls,
+  220 ms for surfaces, 320 ms for the dock, `ease_out_cubic` for entrances
+  and an interruptible `approach` for state. `FINN_REDUCED_MOTION=1` makes it
+  instant.
+- Widgets animate hover, press, toggle and slider state; text fields animate
+  their focus border; the dock and status pill enter from below; the app menu
+  slides; app windows enter with a 220 ms slide. The shell requests frames
+  while a timeline is running, so motion is smooth without a fixed frame rate.
+- `finn-wallpaper` is a `layer-shell` background client: it decodes the WebP
+  in the userland, dims it in the dark appearance and takes no input. The
+  compositor's solid background remains the fallback.
+- The dock/status geometry follows the Figma file: 42 px glass pills, 8 px
+  radius, 26 px task icons, a 139 px status pill. Windows gained a functional
+  maximize button and restore path.
+- Figma access is documented in [docs/design.md](docs/design.md); Figwright
+  is configured as a local MCP server. The file has no baked Figma Motion
+  timelines, so the presets (`Position`, `Scale`, `Opacity`, `OUT_CUBIC`)
+  were translated to the shorter durations above.
+- Fixed the session client reusing a socket after the one-request broker
+  closed it, which made the shell's app list disappear; the shell now retries
+  the list and the menu keeps its empty state inside the panel.
+- Added a code map and a motion spec so a new developer can follow a click
+  from the dock to a window and from a key to the focused surface.
+
 ### The userland is a C++/wlroots rewrite
 
-The C userland before this change is preserved on the `pre-rewrite` tag; the
-entries below it describe that tree, not this one.
+The previous C userland entries below describe the earlier architecture.
 
 - `finn-comp` is now a small wlroots 0.20 compositor instead of a hand-written
   display server. It serves xdg-shell, layer-shell in ordered scene trees,

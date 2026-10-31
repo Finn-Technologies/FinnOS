@@ -11,7 +11,7 @@
 # depends on the machine.
 #
 # The frames are left next to each other; pick the one with the menu and
-# look at it, instead of assuming the rewrite produced what was intended.
+# look at it, instead of assuming the build produced what was intended.
 set -euo pipefail
 
 ISO="${1:?usage: menu-shot.sh <iso> [out-dir]}"

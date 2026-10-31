@@ -1,7 +1,7 @@
 name: Runtime package
 
-# The OTA frontend reads GitHub Releases. This job builds the package that
-# `finnpkg update` installs, so a tag is the one place where the version in
+# The OTA frontend reads GitHub Releases. This job builds the package for
+# updates, so a tag is the one place where the version in
 # the tree, the release tag and the asset name have to agree.
 on:
   workflow_dispatch:

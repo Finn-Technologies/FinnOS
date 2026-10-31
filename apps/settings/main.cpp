@@ -1,3 +1,7 @@
+// FinnOS system Settings application.
+// Manages desktop appearance preferences and displays operating system
+// version information and runtime session details.
+
 #include <finn/ui.hpp>
 
 #include <cstdlib>
@@ -20,6 +24,8 @@ std::filesystem::path user_settings_path() {
     return base / ".config" / "finn" / "settings";
 }
 
+// Checks user-specific configuration first before falling back to system defaults,
+// ensuring personal appearance preferences override OS defaults.
 bool read_dark() {
     const std::filesystem::path user = user_settings_path();
     for (const std::filesystem::path& path :
@@ -34,6 +40,8 @@ bool read_dark() {
     return false;
 }
 
+// Performs an atomic write using a temporary file and rename to avoid corrupting
+// user settings if power or process termination occurs during disk flush.
 bool write_dark(bool dark) {
     const std::filesystem::path path = user_settings_path();
     std::error_code error;

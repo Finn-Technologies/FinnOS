@@ -1,7 +1,4 @@
-# The rewrite
-
-The C userland is preserved on the `pre-rewrite` tag. This tree is the
-replacement; the old sources are gone.
+# System Design
 
 Read in this order:
 
@@ -23,8 +20,6 @@ Read in this order:
 - Open from M4: popups (xdg-shell popups are not handled), a Control Center,
   notifications, snap and restore, and server-side decoration. v1 is
   client-side chrome.
-- M6 (packages/OTA) and M7 (finnd and the sandbox) are not done. The old
-  `finnd`, `finnpkg`, `.fui` compiler, SDK and MCP adapter were removed with
-  the old tree; [docs/roadmap.md](../roadmap.md) says what replaces them.
-- `src/comp` is the compositor's directory. It is not a transitional name any
-  more; the old `src/compositor` is only on the tag.
+- M6 (packages/OTA) and M7 (finnd and the sandbox) are not done.
+  [docs/roadmap.md](../roadmap.md) says what replaces them.
+- `src/comp` is the compositor's directory.

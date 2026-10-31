@@ -63,8 +63,7 @@ curl
 # Linux desktop apps use Flatpak; setup.sh initializes the system Flathub.
 flatpak
 
-# jq and zstd, as on x86_64: finnpkg's winget path parses JSON with jq, and
-# zstd is what pacman and the live squashfs use.
+# jq and zstd, as on x86_64: zstd is what pacman and the live squashfs use.
 jq
 zstd
 

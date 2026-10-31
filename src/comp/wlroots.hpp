@@ -1,3 +1,7 @@
+// C compatibility shim for wlroots headers in C++ translation units.
+// Bridges C99 array parameters and reserved keyword conflicts by pre-including
+// standard library headers before safely undefining macro overrides.
+
 #ifndef FINN_COMP_WLROOTS_HPP
 #define FINN_COMP_WLROOTS_HPP
 
@@ -45,6 +49,7 @@ extern "C" {
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_touch.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>

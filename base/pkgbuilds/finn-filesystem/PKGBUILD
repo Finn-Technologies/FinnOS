@@ -1,8 +1,8 @@
 # finn-filesystem — the directories FinnOS owns.
 #
 # A package for three directories is not ceremony: /usr/share/finn is where
-# the shell's data lives and /var/lib/finnpkg is where the package manager
-# writes what is installed, and something has to own them so that a
+# the shell's data lives and /var/lib/finn is where the installed-list
+# lives, and something has to own them so that a
 # removal takes them with it and an upgrade does not depend on a script
 # having run first.
 #
@@ -29,8 +29,8 @@ _src="${FINNOS_SRC:-$(realpath "$startdir/../../..")}"
 package() {
   install -d "$pkgdir/usr/share/finn/wallpaper"
   install -d "$pkgdir/usr/share/finn/icons"
-  install -d "$pkgdir/var/lib/finnpkg"
-  printf 'settings\nfiles\n' > "$pkgdir/var/lib/finnpkg/installed"
+  install -d "$pkgdir/var/lib/finn"
+  printf 'settings\nfiles\n' > "$pkgdir/var/lib/finn/installed"
 
   # /run/finn: the IPC namespace, created by tmpfiles rather than by a
   # unit's RuntimeDirectory, so that restarting one service does not

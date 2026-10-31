@@ -24,7 +24,7 @@ sudo make -C src/ui install
 - One program, one `xdg_toplevel`.
 - Metadata in `assets/apps.registry`:
   `id | Name | icon | command | note | source`.
-- Installed state in `/var/lib/finnpkg/installed` (one id per line).
+- Installed state in `/var/lib/finn/installed` (one id per line).
 - Launch through `finn-session`, never by starting the app from the
   compositor.
 

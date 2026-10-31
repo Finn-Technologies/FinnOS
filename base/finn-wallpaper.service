@@ -1,0 +1,22 @@
+[Unit]
+Description=FinnOS wallpaper (finn-wallpaper)
+Documentation=man:finn-wallpaper(1)
+After=finn-comp.service user-runtime-dir@1000.service
+Wants=finn-comp.service user-runtime-dir@1000.service
+OnFailure=finn-failure.service
+
+[Service]
+Type=simple
+User=finn
+Group=finn
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=/run/finn/wayland-0
+Environment=FINN_ICON_DIR=/usr/share/finn/icons
+ExecStart=/usr/local/bin/finn-wallpaper
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=graphical.target

@@ -1,3 +1,7 @@
+// App registry definitions representing discoverable and installed applications.
+// Parses static system catalogues and correlates them with installed package states
+// to inform application menus and validate launch requests.
+
 #ifndef FINN_SESSION_APP_REGISTRY_HPP
 #define FINN_SESSION_APP_REGISTRY_HPP
 

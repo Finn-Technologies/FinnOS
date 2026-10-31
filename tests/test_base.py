@@ -134,15 +134,13 @@ class BaseImageTest(unittest.TestCase):
         setup = os.path.join(ROOT, "base", "setup.sh")
         with open(setup, "r", encoding="utf-8") as handle:
             script = handle.read()
-        self.assertNotIn("/usr/local/bin/finnpkg", script)
         self.assertNotIn("flatpak init", script)
         self.assertIn("loginctl enable-linger finn", script)
 
-    def test_disk_installer_does_not_install_the_old_package_manager(self):
+    def test_disk_installer_does_not_init_flatpak(self):
         chroot = os.path.join(ROOT, "vm", "finn-chroot.sh")
         with open(chroot, "r", encoding="utf-8") as handle:
             script = handle.read()
-        self.assertNotIn("/usr/local/bin/finnpkg", script)
         self.assertNotIn("flatpak init", script)
 
     def test_every_writer_of_the_installed_list_names_catalogue_apps(self):
@@ -170,7 +168,7 @@ class BaseImageTest(unittest.TestCase):
                 with open(path, "r", encoding="utf-8") as handle:
                     script = handle.read()
                 match = re.search(
-                    r"printf '([^']*)' > [^\n]*/var/lib/finnpkg/installed",
+                    r"printf '([^']*)' > [^\n]*/var/lib/finn/installed",
                     script,
                 )
                 self.assertIsNotNone(match, path)

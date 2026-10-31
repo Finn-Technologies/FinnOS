@@ -6,8 +6,7 @@ pacman, mesa and the firmware alone.
 
 ![The desktop](docs/images/desktop-light.png)
 
-The userland is a clean rewrite. The previous implementation remains on the
-`pre-rewrite` tag for reference, not as a fallback.
+The userland is written in C++ with a custom compositor and UI runtime.
 
 ## What is here
 
@@ -21,6 +20,8 @@ The userland is a clean rewrite. The previous implementation remains on the
   launch, and nothing else.
 - **finn-shell** — a layer-shell overlay with a dock, clock and app menu.
 - **Finn Files** and **Settings** — the first native apps.
+- **finn-wallpaper** — the background layer, decoding the WebP in the
+  userland and dimming it in the dark appearance.
 - **finnd** — not written yet. Power, state, packages, updates and the audit
   trail are in [docs/roadmap.md](docs/roadmap.md), not in the tree.
 
@@ -32,7 +33,7 @@ needs the DRM, Wayland, FreeType and wlroots headers.
 ```sh
 make                 # runtime, compositor, session, shell, apps
 make test            # host tests: registry, tokens, base wiring
-make test-rewrite    # the C++ unit tests
+make test-unit    # the C++ unit tests
 make lint
 vm/deploy.sh         # build, install and restart on the VM
 vm/shot.sh out.png   # capture the VM desktop
@@ -71,7 +72,10 @@ app is a normal Wayland client. The compositor never learns its name. See
 
 - [docs/architecture.md](docs/architecture.md) — the processes, the display,
   the app model and the honest gaps.
+- [docs/code-map.md](docs/code-map.md) — the ten-minute tour and the flows.
+- [docs/design.md](docs/design.md) — the Figma frames, measurements and Figwright.
 - [docs/apps.md](docs/apps.md) — the app contract and the runtime API.
+- [docs/motion.md](docs/motion.md) — durations, curves and what moves.
 - [docs/session-protocol.md](docs/session-protocol.md) — the launch socket.
 - [docs/development.md](docs/development.md) — the dev loop and the VM.
 - [docs/testing.md](docs/testing.md) — what is tested and what is not.
@@ -80,7 +84,7 @@ app is a normal Wayland client. The compositor never learns its name. See
 - [docs/hardware.md](docs/hardware.md) — what was verified on hardware.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — when it does not come up.
 - [docs/roadmap.md](docs/roadmap.md) — what is next.
-- [docs/rewrite/](docs/rewrite/) — the rewrite contract, milestones and C++
+- [docs/design/](docs/design/) — the architecture contract, milestones and C++
   guide.
 
 ## Licence

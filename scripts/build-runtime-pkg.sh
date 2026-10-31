@@ -81,7 +81,7 @@ url="https://github.com/Finn-Technologies/FinnOS"
 license=('MIT')
 source=('finnos-runtime.tar.gz')
 sha256sums=('SKIP')
-depends=('glibc' 'wlroots0.20' 'systemd-libs' 'freetype2' 'fontconfig'
+depends=('glibc' 'wlroots0.20' 'systemd-libs' 'freetype2' 'fontconfig' 'libwebp'
          'libdrm' 'libinput' 'libxkbcommon' 'wayland' 'mesa' 'libglvnd' 'seatd')
 makedepends=('base-devel' 'pkgconf' 'wayland')
 options=(!strip)
@@ -103,6 +103,8 @@ package() {
         "\$pkgdir/usr/lib/systemd/system/finn-session.service"
     install -Dm644 base/airootfs/etc/systemd/system/finn-shell.service \\
         "\$pkgdir/usr/lib/systemd/system/finn-shell.service"
+    install -Dm644 base/airootfs/etc/systemd/system/finn-wallpaper.service \\
+        "\$pkgdir/usr/lib/systemd/system/finn-wallpaper.service"
     install -Dm644 base/airootfs/etc/systemd/system/finn-failure.service \\
         "\$pkgdir/usr/lib/systemd/system/finn-failure.service"
     install -Dm644 base/airootfs/usr/lib/sysusers.d/finn.conf \\

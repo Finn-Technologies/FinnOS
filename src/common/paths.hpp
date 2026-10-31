@@ -1,3 +1,7 @@
+// Common filesystem paths shared across FinnOS daemons and applications.
+// Centralizing standard sockets, asset directories, and system file locations
+// prevents path drift between the compositor, session broker, and clients.
+
 #ifndef FINN_COMMON_PATHS_HPP
 #define FINN_COMMON_PATHS_HPP
 
@@ -6,7 +10,7 @@ namespace finn {
 /* One copy of every path the system shares. A path repeated in two modules is
  * a bug in one of them. */
 inline constexpr const char* kCataloguePath = "/usr/share/finn/apps.registry";
-inline constexpr const char* kInstalledPath = "/var/lib/finnpkg/installed";
+inline constexpr const char* kInstalledPath = "/var/lib/finn/installed";
 inline constexpr const char* kSettingsPath = "/var/lib/finn/settings";
 inline constexpr const char* kIconDir = "/usr/share/finn/icons";
 inline constexpr const char* kFontPath =

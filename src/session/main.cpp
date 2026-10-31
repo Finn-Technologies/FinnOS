@@ -1,3 +1,7 @@
+// Daemon and CLI entry point for finn-session, the user application broker.
+// Manages application execution with sanitized environment blocks and enforces
+// user credential boundaries using SO_PEERCRED on UNIX domain sockets.
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -99,6 +103,8 @@ std::string app_list_reply() {
     return reply;
 }
 
+// Constructs a strictly filtered environment and redirects standard streams
+// to /dev/null so launched applications cannot pollute or block session daemon IO.
 std::string launch_reply(std::string_view id) {
     const auto registry = AppRegistry::load(catalogue_path(), installed_path());
     if (!registry.has_value()) return "ERR catalogue unavailable\n";
@@ -171,6 +177,8 @@ std::string handle_request(std::string_view request) {
 
 std::string socket_path() { return session_socket_path(); }
 
+// Ensures parent directory permissions are restricted to user-only (0700)
+// and unlinks dangling sockets from unclean previous shutdowns before binding.
 bool prepare_socket(const std::string& path, std::string* error) {
     const std::filesystem::path parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) {
@@ -256,6 +264,8 @@ int run_server() {
             break;
         }
 #ifdef SO_PEERCRED
+        // Rejects connections from processes running under a different UID to prevent
+        // unauthorized users from spawning applications within this user's session.
         ucred credentials{};
         socklen_t length = sizeof credentials;
         if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0 &&
@@ -319,7 +329,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 1 && std::strcmp(argv[1], "--version") == 0) {
-        std::puts("finn-session (rewrite)");
+        std::puts("finn-session");
         return 0;
     }
     if (argc == 2 && std::strcmp(argv[1], "--list") == 0) return finn::client_list();

@@ -41,6 +41,7 @@ class RuntimeReleaseTest(unittest.TestCase):
             "usr/lib/systemd/system/finn-comp.service",
             "usr/lib/systemd/system/finn-session.service",
             "usr/lib/systemd/system/finn-shell.service",
+            "usr/lib/systemd/system/finn-wallpaper.service",
             "usr/lib/sysusers.d/finn.conf",
             "usr/lib/tmpfiles.d/finn.conf",
         ):

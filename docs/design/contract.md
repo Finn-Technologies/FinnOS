@@ -1,14 +1,13 @@
-# The FinnOS rewrite contract
+# The FinnOS design contract
 
-This page is the rule for the rewrite. The C userland before it is preserved
-on the `pre-rewrite` tag. A change that makes the code and this page disagree
-is not finished.
+This page is the rule for the system architecture. A change that makes the
+code and this page disagree is not finished.
 
 ## The base stays
 
 Arch Linux: the kernel, firmware, systemd, pacman, mesa, libdrm, libinput and
 Wayland. The installer, the ISO build and the package list in `base/` stay.
-Everything above the session is rewritten.
+The session and userland are built on top of this base.
 
 ## The programs
 
@@ -56,7 +55,7 @@ Metadata lives in `assets/apps.registry`:
 id | Name | icon | command | note | source
 ```
 
-The OS ships the catalogue. `finn-session` reads `/var/lib/finnpkg/installed`
+The OS ships the catalogue. `finn-session` reads `/var/lib/finn/installed`
 for what is on the machine. The catalogue never says whether an app is
 installed, and the installed list never carries metadata.
 

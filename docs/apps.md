@@ -55,7 +55,7 @@ Add one line to `/usr/share/finn/apps.registry`:
 hello | Hello | app-grid.svg | /usr/local/bin/finn-hello | A native app
 ```
 
-Mark it installed in `/var/lib/finnpkg/installed` while there is no package
+Mark it installed in `/var/lib/finn/installed` while there is no package
 manager:
 
 ```
@@ -82,13 +82,15 @@ Canvas:
 | Call | What it does |
 |---|---|
 | `clear`, `fill`, `stroke`, `line` | shapes, with a radius for rounded corners |
+| `glass` | backdrop blur with tint and corner radius |
 | `text`, `text_centered`, `text_width` | Fixel Display text |
 | `icon`, `app_icon` | monochrome or full-colour SVG |
 | `button`, `icon_button`, `app_icon_button` | returns true on a click |
 | `toggle`, `slider`, `text_field` | form controls |
 | `list_item`, `list_item_icon`, `app_list_item` | rows |
 | `push_clip`, `pop_clip` | clipping |
-| `input()`, `theme()`, `width()`, `height()` | the frame's context |
+| `input()`, `theme()`, `width()`, `height()`, `delta_time()` | the frame's context |
+| `animating()` | true while a widget still has motion to finish |
 
 Every widget takes a stable string id. The canvas keeps hover and pressed
 state per id, so a widget keeps its state across frames without a class for

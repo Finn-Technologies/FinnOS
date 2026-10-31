@@ -103,7 +103,7 @@ winetricks
 wine-mono
 wine-gecko
 
-# jq is what finnpkg's winget path parses the API with; zstd is what pacman
+# jq and zstd: zstd is what pacman
 # writes and the live medium's squashfs is compressed with. Both are on the
 # disc so an installed machine has them without a network.
 jq

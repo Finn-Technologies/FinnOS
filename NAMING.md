@@ -29,14 +29,13 @@
 |---|---|
 | `finn-comp` | The wlroots compositor: DRM or headless, xdg-shell, layer-shell, window management |
 | `finn-session` | The user broker: catalogue, installed list, launch |
-| `finn-shell` | The dock, clock and app menu as a layer-shell client |
+| `finn-shell` | The dock, status and app menu as a layer-shell client |
+| `finn-wallpaper` | The background layer and its WebP wallpaper |
 | `finn-files` | Finn Files |
 | `finn-settings` | Settings |
 | `libfinnui` | The app runtime library (not a binary) |
 
-`finnd`, `finnctl`, `finnpkg`, `finn-mcp` and `finndock`/`finncontrol`/
-`finnclock`/`finnmenu`/`finnwindow` belong to the previous tree. They are not
-in the rewrite; the first three are reserved for the roadmap in
+`finnd`, `finnctl` and `finnpkg` are reserved for the roadmap in
 [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Modules

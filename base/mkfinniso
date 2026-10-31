@@ -267,6 +267,7 @@ EOF
   for pair in "finn-comp.service:etc/systemd/system/finn-comp.service" \
               "finn-session.service:etc/systemd/system/finn-session.service" \
               "finn-shell.service:etc/systemd/system/finn-shell.service" \
+              "finn-wallpaper.service:etc/systemd/system/finn-wallpaper.service" \
               "finn-failure.service:etc/systemd/system/finn-failure.service" \
               "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
@@ -350,11 +351,6 @@ stage_sources() {
       --exclude='*.a' \
       --exclude='*.iso' \
       --exclude='*.ppm' \
-      --exclude='src/compositor/finn-comp' \
-      --exclude='src/control/finnd' \
-      --exclude='src/control/finnctl' \
-      --exclude='src/tools/vgtest' \
-      --exclude='src/tools/dockprev' \
       . | tar -C "$dest" -xf -
   # A checkout on a machine that does not keep the executable bit (Windows,
   # some archive tools) leaves the installer flat, and then the install

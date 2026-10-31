@@ -44,7 +44,7 @@ The menu lists the catalogue and filters by the installed list:
 
 ```sh
 grep '^hello' /usr/share/finn/apps.registry
-grep -x hello /var/lib/finnpkg/installed
+grep -x hello /var/lib/finn/installed
 test -x /usr/local/bin/finn-hello && echo executable
 ```
 
@@ -80,8 +80,3 @@ setting.
 `XDG_RUNTIME_DIR=/run/user/1000` and
 `WAYLAND_DISPLAY=/run/finn/wayland-0`. The compositor advertises
 screencopy and xdg-output; a compositor that does not is not the current one.
-
-## Old units
-
-`finnd.service` from the previous tree is removed by the installer. If an
-old drop-in is still starting it, disable and remove it; v1 has no `finnd`.

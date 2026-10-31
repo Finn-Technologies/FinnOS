@@ -1,3 +1,7 @@
+// Implementation of finn-comp display server using wlroots.
+// Dispatches seat input, orders scene trees across shell layers and toplevels,
+// and enforces security boundaries by isolating socket permissions to group finn.
+
 #include "comp/server.hpp"
 #include "comp/wlroots.hpp"
 
@@ -20,6 +24,25 @@
 namespace finn {
 namespace {
 
+int64_t monotonic_ms() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<int64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+}
+
+double ease_out_cubic(double t) {
+    t = std::max(0.0, std::min(1.0, t));
+    const double left = 1.0 - t;
+    return 1.0 - left * left * left;
+}
+
+bool reduced_motion() {
+    const char* value = std::getenv("FINN_REDUCED_MOTION");
+    return value != nullptr && *value != '\0' && *value != '0';
+}
+
+// Checks environment overrides followed by user settings to ensure dark theme
+// is respected on startup before any layer-shell surfaces or windows map.
 bool prefers_dark() {
     if (const char* value = std::getenv("FINN_DARK"); value != nullptr) {
         const std::string text(value);
@@ -80,6 +103,16 @@ struct Server::Toplevel {
     wl_listener request_move{};
     wl_listener request_resize{};
     wl_listener request_maximize{};
+    bool opened_once = false;
+    bool opening = false;
+    int64_t open_start_ms = 0;
+    int open_from_y = 0;
+    int open_to_y = 0;
+    bool maximized = false;
+    int restore_x = 0;
+    int restore_y = 0;
+    int restore_w = 0;
+    int restore_h = 0;
 
     ~Toplevel() {
         detach(map);
@@ -232,6 +265,16 @@ bool Server::init() {
     wl_signal_add(&cursor_->events.axis, &cursor_axis_);
     cursor_frame_.notify = on_cursor_frame;
     wl_signal_add(&cursor_->events.frame, &cursor_frame_);
+    touch_down_.notify = on_touch_down;
+    wl_signal_add(&cursor_->events.touch_down, &touch_down_);
+    touch_up_.notify = on_touch_up;
+    wl_signal_add(&cursor_->events.touch_up, &touch_up_);
+    touch_motion_.notify = on_touch_motion;
+    wl_signal_add(&cursor_->events.touch_motion, &touch_motion_);
+    touch_cancel_.notify = on_touch_cancel;
+    wl_signal_add(&cursor_->events.touch_cancel, &touch_cancel_);
+    touch_frame_.notify = on_touch_frame;
+    wl_signal_add(&cursor_->events.touch_frame, &touch_frame_);
 
     seat_ = wlr_seat_create(display_, "seat0");
     if (seat_ == nullptr) {
@@ -315,8 +358,60 @@ bool Server::init() {
         },
         this);
     if (theme_source_ != nullptr) wl_event_source_timer_update(theme_source_, 1000);
+    anim_source_ = wl_event_loop_add_timer(loop, on_animation, this);
     sd_notify(0, "READY=1");
     return true;
+}
+
+// Offsets newly mapped windows slightly downwards and animates them to rest,
+// giving visual feedback of window instantiation unless reduced motion is set.
+void Server::begin_open_animation(Toplevel* toplevel) {
+    if (toplevel == nullptr || toplevel->opened_once || reduced_motion()) {
+        if (toplevel != nullptr) toplevel->opened_once = true;
+        return;
+    }
+    toplevel->opened_once = true;
+    toplevel->opening = true;
+    toplevel->open_start_ms = monotonic_ms();
+    toplevel->open_to_y = toplevel->scene_tree->node.y;
+    toplevel->open_from_y = toplevel->open_to_y + 14;
+    wlr_scene_node_set_position(&toplevel->scene_tree->node,
+                                toplevel->scene_tree->node.x,
+                                toplevel->open_from_y);
+    if (anim_source_ != nullptr) wl_event_source_timer_update(anim_source_, 16);
+}
+
+void Server::animate_windows() {
+    const int64_t now = monotonic_ms();
+    bool active = false;
+    for (auto& entry : toplevels_) {
+        Toplevel* toplevel = entry.get();
+        if (!toplevel->opening) continue;
+        const double k = std::min(
+            1.0, static_cast<double>(now - toplevel->open_start_ms) / 220.0);
+        const double eased = ease_out_cubic(k);
+        const int y = toplevel->open_from_y +
+                      static_cast<int>((toplevel->open_to_y - toplevel->open_from_y) *
+                                       eased + 0.5);
+        wlr_scene_node_set_position(&toplevel->scene_tree->node,
+                                    toplevel->scene_tree->node.x, y);
+        if (k >= 1.0) {
+            toplevel->opening = false;
+            wlr_scene_node_set_position(&toplevel->scene_tree->node,
+                                        toplevel->scene_tree->node.x,
+                                        toplevel->open_to_y);
+        } else {
+            active = true;
+        }
+    }
+    if (anim_source_ != nullptr) {
+        wl_event_source_timer_update(anim_source_, active ? 16 : 0);
+    }
+}
+
+int Server::on_animation(void* data) {
+    static_cast<Server*>(data)->animate_windows();
+    return 0;
 }
 
 void Server::update_background_theme() {
@@ -350,6 +445,11 @@ void Server::shutdown() {
     remove_listener(cursor_button_);
     remove_listener(cursor_axis_);
     remove_listener(cursor_frame_);
+    remove_listener(touch_down_);
+    remove_listener(touch_up_);
+    remove_listener(touch_motion_);
+    remove_listener(touch_cancel_);
+    remove_listener(touch_frame_);
     remove_listener(request_cursor_);
     remove_listener(pointer_focus_change_);
     remove_listener(request_set_selection_);
@@ -362,6 +462,10 @@ void Server::shutdown() {
     if (theme_source_ != nullptr) {
         wl_event_source_remove(theme_source_);
         theme_source_ = nullptr;
+    }
+    if (anim_source_ != nullptr) {
+        wl_event_source_remove(anim_source_);
+        anim_source_ = nullptr;
     }
     if (cursor_manager_ != nullptr) wlr_xcursor_manager_destroy(cursor_manager_);
     if (cursor_ != nullptr) wlr_cursor_destroy(cursor_);
@@ -386,6 +490,17 @@ void Server::shutdown() {
     focused_ = nullptr;
 }
 
+// One output, one integer scale. A panel at least 2400 px wide is a HiDPI
+// panel: at 2x its logical size is near the 1280-wide frames in the design.
+// FINN_OUTPUT_SCALE overrides the guess for panels that report badly.
+static float choose_output_scale(const wlr_output_mode* mode) {
+    if (const char* forced = std::getenv("FINN_OUTPUT_SCALE")) {
+        const int value = std::atoi(forced);
+        if (value >= 1 && value <= 4) return static_cast<float>(value);
+    }
+    return (mode != nullptr && mode->width >= 2400) ? 2.0f : 1.0f;
+}
+
 void Server::add_output(wlr_output* output) {
     wlr_output_init_render(output, allocator_, renderer_);
 
@@ -394,8 +509,13 @@ void Server::add_output(wlr_output* output) {
     wlr_output_state_set_enabled(&state, true);
     wlr_output_mode* mode = wlr_output_preferred_mode(output);
     if (mode != nullptr) wlr_output_state_set_mode(&state, mode);
+    const float scale = choose_output_scale(mode);
+    wlr_output_state_set_scale(&state, scale);
     wlr_output_commit_state(output, &state);
     wlr_output_state_finish(&state);
+    // The cursor theme must exist at the output's scale or the arrow is not
+    // drawn at all.
+    if (cursor_manager_ != nullptr) wlr_xcursor_manager_load(cursor_manager_, scale);
 
     auto entry = std::make_unique<Output>();
     entry->server = this;
@@ -414,12 +534,27 @@ void Server::add_output(wlr_output* output) {
         wlr_scene_output_create(scene_, output);
     wlr_scene_output_layout_add_output(scene_layout_, layout_output,
                                        scene_output);
+    // Start the pointer in the middle of the screen with an arrow, so it is
+    // visible before the first motion event.
+    if (cursor_ != nullptr && outputs_.empty()) {
+        wlr_box box{};
+        wlr_output_layout_get_box(output_layout_, output, &box);
+        wlr_cursor_warp(cursor_, nullptr, box.x + box.width / 2.0,
+                        box.y + box.height / 2.0);
+        if (cursor_manager_ != nullptr) {
+            wlr_cursor_set_xcursor(cursor_, cursor_manager_, "default");
+        }
+    }
 
     if (usable_w_ == 0 || usable_h_ == 0) {
         usable_x_ = 0;
         usable_y_ = 0;
-        usable_w_ = output->width;
-        usable_h_ = output->height;
+        // Logical size: at scale 2 the output has twice as many pixels as
+        // the layout has units.
+        wlr_box logical{};
+        wlr_output_layout_get_box(output_layout_, output, &logical);
+        usable_w_ = logical.width;
+        usable_h_ = logical.height;
     }
 
     const bool dark = prefers_dark();
@@ -430,7 +565,10 @@ void Server::add_output(wlr_output* output) {
         color[2] = 0.114f;
     }
     if (background_ != nullptr) {
-        wlr_scene_rect_set_size(background_, output->width, output->height);
+        int logical_w = 0;
+        int logical_h = 0;
+        wlr_output_effective_resolution(output, &logical_w, &logical_h);
+        wlr_scene_rect_set_size(background_, logical_w, logical_h);
         wlr_scene_rect_set_color(background_, color);
         wlr_scene_node_set_position(&background_->node, 0, 0);
         wlr_scene_node_lower_to_bottom(&background_->node);
@@ -462,11 +600,18 @@ void Server::add_input(wlr_input_device* device) {
         case WLR_INPUT_DEVICE_POINTER:
             wlr_cursor_attach_input_device(cursor_, device);
             break;
+        case WLR_INPUT_DEVICE_TOUCH:
+            // The cursor maps touch coordinates onto the output layout and
+            // re-emits them as touch_* signals.
+            wlr_cursor_attach_input_device(cursor_, device);
+            ++touch_devices_;
+            break;
         default:
             break;
     }
 
     uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+    if (touch_devices_ > 0) caps |= WL_SEAT_CAPABILITY_TOUCH;
     if (!keyboards_.empty()) caps |= WL_SEAT_CAPABILITY_KEYBOARD;
     wlr_seat_set_capabilities(seat_, caps);
 }
@@ -605,8 +750,8 @@ void Server::configure_layer(Layer* layer) {
     wlr_box full{};
     wlr_output_layout_get_box(output_layout_, layer->layer->output, &full);
     if (full.width <= 0 || full.height <= 0) {
-        full = wlr_box{0, 0, layer->layer->output->width,
-                       layer->layer->output->height};
+        wlr_output_effective_resolution(layer->layer->output, &full.width,
+                                        &full.height);
     }
     wlr_box usable = full;
     wlr_scene_layer_surface_v1_configure(layer->scene, &full, &usable);
@@ -634,8 +779,10 @@ void Server::focus_layer(Layer* layer) {
     focused_layer_ = layer;
 }
 
+// Preserves unmaximized window geometry before constraining to usable screen area,
+// allowing clean restoration when unmaximize is requested by the client.
 void Server::maximize(Toplevel* toplevel) {
-    if (toplevel == nullptr) return;
+    if (toplevel == nullptr || toplevel->maximized) return;
     int x = usable_x_;
     int y = usable_y_;
     int w = usable_w_;
@@ -644,12 +791,31 @@ void Server::maximize(Toplevel* toplevel) {
         if (outputs_.empty()) return;
         x = 0;
         y = 0;
-        w = outputs_.front()->output->width;
-        h = outputs_.front()->output->height;
+        wlr_output_effective_resolution(outputs_.front()->output, &w, &h);
     }
+    toplevel->restore_x = toplevel->scene_tree->node.x;
+    toplevel->restore_y = toplevel->scene_tree->node.y;
+    toplevel->restore_w = toplevel->xdg_toplevel->base->geometry.width;
+    toplevel->restore_h = toplevel->xdg_toplevel->base->geometry.height;
+    toplevel->maximized = true;
+    toplevel->opening = false;
     wlr_scene_node_set_position(&toplevel->scene_tree->node, x, y);
     wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, w, h);
     wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
+    focus(toplevel);
+}
+
+void Server::unmaximize(Toplevel* toplevel) {
+    if (toplevel == nullptr || !toplevel->maximized) return;
+    toplevel->maximized = false;
+    toplevel->opening = false;
+    wlr_scene_node_set_position(&toplevel->scene_tree->node,
+                                toplevel->restore_x, toplevel->restore_y);
+    if (toplevel->restore_w > 0 && toplevel->restore_h > 0) {
+        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, toplevel->restore_w,
+                                  toplevel->restore_h);
+    }
+    wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, false);
     focus(toplevel);
 }
 
@@ -760,6 +926,8 @@ void Server::focus(Toplevel* toplevel) {
     focused_layer_ = nullptr;
 }
 
+// Handles compositor-level shortcuts (F1 window cycling, Escape shutdown)
+// before passing keystrokes down to focused client surfaces.
 bool Server::handle_keybinding(uint32_t keysym) {
     switch (keysym) {
         case XKB_KEY_Escape:
@@ -891,6 +1059,7 @@ void Server::on_toplevel_map(wl_listener* listener, void* data) {
     toplevel = wl_container_of(listener, toplevel, map);
     wlr_log(WLR_INFO, "finn-comp: toplevel mapped (%zu open)",
             toplevel->server->toplevels_.size());
+    toplevel->server->begin_open_animation(toplevel);
     toplevel->server->focus(toplevel);
 }
 
@@ -898,6 +1067,7 @@ void Server::on_toplevel_unmap(wl_listener* listener, void* data) {
     (void)data;
     Toplevel* toplevel = nullptr;
     toplevel = wl_container_of(listener, toplevel, unmap);
+    toplevel->opening = false;
     wlr_log(WLR_INFO, "finn-comp: toplevel unmapped");
     if (toplevel->server->focused_ == toplevel) {
         toplevel->server->focused_ = nullptr;
@@ -939,8 +1109,11 @@ void Server::on_toplevel_request_maximize(wl_listener* listener, void* data) {
     (void)data;
     Toplevel* toplevel = nullptr;
     toplevel = wl_container_of(listener, toplevel, request_maximize);
-    if (toplevel->xdg_toplevel->base->initialized) {
+    if (!toplevel->xdg_toplevel->base->initialized) return;
+    if (toplevel->xdg_toplevel->requested.maximized) {
         toplevel->server->maximize(toplevel);
+    } else {
+        toplevel->server->unmaximize(toplevel);
     }
 }
 
@@ -953,6 +1126,8 @@ void Server::on_layer_map(wl_listener* listener, void* data) {
     }
 }
 
+// Reconfigures layer surfaces dynamically so adjustments to panel dimensions
+// immediately recalculate usable space for maximized application windows.
 void Server::on_layer_commit(wl_listener* listener, void* data) {
     (void)data;
     Layer* layer = nullptr;
@@ -1077,6 +1252,80 @@ void Server::on_cursor_frame(wl_listener* listener, void* data) {
     wlr_seat_pointer_notify_frame(server->seat_);
 }
 
+// Touch goes straight to the surface under the finger. Unlike the pointer it
+// has no hover state, so a touch-down also focuses the toplevel it landed on.
+void Server::on_touch_down(wl_listener* listener, void* data) {
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, touch_down_);
+    auto* event = static_cast<wlr_touch_down_event*>(data);
+    double lx = 0;
+    double ly = 0;
+    wlr_cursor_absolute_to_layout_coords(server->cursor_, &event->touch->base,
+                                         event->x, event->y, &lx, &ly);
+    double sx = 0;
+    double sy = 0;
+    wlr_surface* surface = nullptr;
+    Toplevel* toplevel = server->toplevel_at(lx, ly, &surface, &sx, &sy);
+    if (toplevel != nullptr) {
+        server->focus(toplevel);
+    } else {
+        surface = server->surface_at(lx, ly, &sx, &sy);
+    }
+    if (surface == nullptr) return;
+    wlr_seat_touch_notify_down(server->seat_, surface, event->time_msec,
+                               event->touch_id, sx, sy);
+}
+
+void Server::on_touch_up(wl_listener* listener, void* data) {
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, touch_up_);
+    auto* event = static_cast<wlr_touch_up_event*>(data);
+    wlr_seat_touch_notify_up(server->seat_, event->time_msec, event->touch_id);
+}
+
+void Server::on_touch_motion(wl_listener* listener, void* data) {
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, touch_motion_);
+    auto* event = static_cast<wlr_touch_motion_event*>(data);
+    // A point that never reached a surface has nothing to move.
+    if (wlr_seat_touch_get_point(server->seat_, event->touch_id) == nullptr) return;
+    double lx = 0;
+    double ly = 0;
+    wlr_cursor_absolute_to_layout_coords(server->cursor_, &event->touch->base,
+                                         event->x, event->y, &lx, &ly);
+    double sx = 0;
+    double sy = 0;
+    wlr_surface* surface = server->surface_at(lx, ly, &sx, &sy);
+    if (surface == nullptr) return;
+    wlr_seat_touch_notify_motion(server->seat_, event->time_msec,
+                                 event->touch_id, sx, sy);
+}
+
+void Server::on_touch_cancel(wl_listener* listener, void* data) {
+    (void)data;
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, touch_cancel_);
+    // Cancelling removes points from the list, so collect the clients first.
+    std::vector<wlr_seat_client*> clients;
+    wlr_touch_point* point = nullptr;
+    wl_list_for_each(point, &server->seat_->touch_state.touch_points, link) {
+        if (point->client != nullptr &&
+            std::find(clients.begin(), clients.end(), point->client) == clients.end()) {
+            clients.push_back(point->client);
+        }
+    }
+    for (wlr_seat_client* client : clients) {
+        wlr_seat_touch_notify_cancel(server->seat_, client);
+    }
+}
+
+void Server::on_touch_frame(wl_listener* listener, void* data) {
+    (void)data;
+    Server* server = nullptr;
+    server = wl_container_of(listener, server, touch_frame_);
+    wlr_seat_touch_notify_frame(server->seat_);
+}
+
 void Server::on_request_cursor(wl_listener* listener, void* data) {
     Server* server = nullptr;
     server = wl_container_of(listener, server, request_cursor_);
@@ -1091,8 +1340,12 @@ void Server::on_request_cursor(wl_listener* listener, void* data) {
 void Server::on_pointer_focus_change(wl_listener* listener, void* data) {
     Server* server = nullptr;
     server = wl_container_of(listener, server, pointer_focus_change_);
-    auto* event = static_cast<wlr_seat_pointer_focus_change_event*>(data);
-    if (event->new_surface == nullptr && server->cursor_manager_ != nullptr) {
+    (void)data;
+    // Every focus change starts from the default arrow. A client that wants
+    // another image asks for it after the enter, which replaces this one.
+    // Without this, a client that never calls set_cursor (libfinnui) leaves
+    // the pointer invisible.
+    if (server->cursor_manager_ != nullptr) {
         wlr_cursor_set_xcursor(server->cursor_, server->cursor_manager_,
                                "default");
     }

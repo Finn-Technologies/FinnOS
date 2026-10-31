@@ -1,3 +1,7 @@
+// IPC client library for interacting with finn-session over a UNIX socket.
+// Provides type-safe requests for listing installed applications and requesting
+// launches through the user-level session broker.
+
 #ifndef FINN_SESSION_CLIENT_HPP
 #define FINN_SESSION_CLIENT_HPP
 

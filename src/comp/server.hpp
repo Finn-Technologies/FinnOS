@@ -1,3 +1,6 @@
+// Compositor server header managing Wayland protocol globals, output displays,
+// input devices, and window hierarchy trees for xdg-shell and layer-shell.
+
 #ifndef FINN_COMP_SERVER_HPP
 #define FINN_COMP_SERVER_HPP
 
@@ -69,6 +72,7 @@ private:
     void focus(Toplevel* toplevel);
     void focus_layer(Layer* layer);
     void maximize(Toplevel* toplevel);
+    void unmaximize(Toplevel* toplevel);
     bool handle_keybinding(uint32_t keysym);
     void begin_interactive(Toplevel* toplevel, CursorMode mode, uint32_t edges);
     void process_cursor_motion(uint32_t time_msec);
@@ -77,6 +81,9 @@ private:
     void reset_cursor_mode();
     void pointer_motion(uint32_t time_msec);
     void update_background_theme();
+    void begin_open_animation(Toplevel* toplevel);
+    void animate_windows();
+    static int on_animation(void* data);
     wlr_surface* surface_at(double lx, double ly, double* sx, double* sy);
     Toplevel* toplevel_at(double lx, double ly, wlr_surface** surface,
                           double* sx, double* sy);
@@ -111,6 +118,11 @@ private:
     static void on_cursor_button(wl_listener* listener, void* data);
     static void on_cursor_axis(wl_listener* listener, void* data);
     static void on_cursor_frame(wl_listener* listener, void* data);
+    static void on_touch_down(wl_listener* listener, void* data);
+    static void on_touch_up(wl_listener* listener, void* data);
+    static void on_touch_motion(wl_listener* listener, void* data);
+    static void on_touch_cancel(wl_listener* listener, void* data);
+    static void on_touch_frame(wl_listener* listener, void* data);
 
     static void on_request_cursor(wl_listener* listener, void* data);
     static void on_pointer_focus_change(wl_listener* listener, void* data);
@@ -133,6 +145,7 @@ private:
     wlr_xcursor_manager* cursor_manager_ = nullptr;
     wl_event_source* watchdog_ = nullptr;
     wl_event_source* theme_source_ = nullptr;
+    wl_event_source* anim_source_ = nullptr;
 
     wl_listener new_output_{};
     wl_listener new_input_{};
@@ -143,6 +156,11 @@ private:
     wl_listener cursor_button_{};
     wl_listener cursor_axis_{};
     wl_listener cursor_frame_{};
+    wl_listener touch_down_{};
+    wl_listener touch_up_{};
+    wl_listener touch_motion_{};
+    wl_listener touch_cancel_{};
+    wl_listener touch_frame_{};
     wl_listener request_cursor_{};
     wl_listener pointer_focus_change_{};
     wl_listener request_set_selection_{};
@@ -150,6 +168,7 @@ private:
     std::vector<std::unique_ptr<Output>> outputs_;
     std::vector<std::unique_ptr<Toplevel>> toplevels_;
     std::vector<std::unique_ptr<Keyboard>> keyboards_;
+    int touch_devices_ = 0;
     std::vector<std::unique_ptr<Layer>> layers_;
     Toplevel* focused_ = nullptr;
     Toplevel* last_focused_ = nullptr;
@@ -158,11 +177,15 @@ private:
     Toplevel* grabbed_ = nullptr;
     double grab_x_ = 0;
     double grab_y_ = 0;
+    // Geometry snapshot and cursor delta recorded at the beginning of an
+    // interactive move or resize to avoid cumulative rounding errors during motion.
     int grab_gx_ = 0;
     int grab_gy_ = 0;
     int grab_gw_ = 0;
     int grab_gh_ = 0;
     uint32_t resize_edges_ = 0;
+    // Usable desktop geometry remaining after reserving screen regions for anchored
+    // layer-shell panels (dock, status) so maximized windows do not cover them.
     int usable_x_ = 0;
     int usable_y_ = 0;
     int usable_w_ = 0;

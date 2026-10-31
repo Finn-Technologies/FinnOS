@@ -36,7 +36,7 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/session/finn-session' \
     --exclude='src/shell/finn-shell' \
     --exclude='apps/*/finn-*' \
-    --exclude='tests/rewrite/test_app_registry' \
+    --exclude='tests/unit/test_app_registry' \
     . | ssh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 
 echo "==> preparing the build environment"
@@ -48,7 +48,7 @@ ssh "$HOST" "
     fi
     $SUDO pacman -S --needed --noconfirm --ignore=systemd --ignore=systemd-libs \
         base-devel pkgconf wlroots0.20 wayland wayland-protocols \
-        libxkbcommon freetype2 fontconfig libdrm libinput mesa seatd grim
+        libxkbcommon freetype2 fontconfig libwebp libdrm libinput mesa seatd grim
 "
 
 echo "==> preparing the dev user"
@@ -72,28 +72,28 @@ ssh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail
 
 echo "==> installing"
 ssh "$HOST" "cd $REMOTE && $SUDO make install && \
-             $SUDO install -d /var/lib/finnpkg && \
-             printf 'settings\\nfiles\\n' | $SUDO tee /var/lib/finnpkg/installed >/dev/null && \
-             $SUDO chgrp -R finn /usr/share/finn /var/lib/finnpkg"
+             $SUDO install -d /var/lib/finn && \
+             printf 'settings\\nfiles\\n' | $SUDO tee /var/lib/finn/installed >/dev/null && \
+             $SUDO chgrp -R finn /usr/share/finn /var/lib/finn"
 
 echo "==> installing the session units"
 ssh "$HOST" "cd $REMOTE && \
              $SUDO install -Dm644 base/finn-comp.service /etc/systemd/system/finn-comp.service && \
              $SUDO install -Dm644 base/finn-session.service /etc/systemd/system/finn-session.service && \
              $SUDO install -Dm644 base/finn-shell.service /etc/systemd/system/finn-shell.service && \
+             $SUDO install -Dm644 base/finn-wallpaper.service /etc/systemd/system/finn-wallpaper.service && \
              $SUDO install -Dm644 base/finn-failure.service /etc/systemd/system/finn-failure.service && \
              $SUDO install -Dm644 base/finn-tmpfiles.conf /usr/lib/tmpfiles.d/finn.conf && \
              $SUDO systemd-tmpfiles --create /usr/lib/tmpfiles.d/finn.conf && \
              $SUDO systemctl daemon-reload && \
-             $SUDO rm -f /etc/systemd/system/finnd.service && \
-             $SUDO systemctl enable finn-comp finn-session finn-shell getty@tty2.service && \
+             $SUDO systemctl enable finn-comp finn-session finn-shell finn-wallpaper getty@tty2.service && \
              $SUDO systemctl set-default graphical.target"
 
 if [ "$RESTART" = "1" ]; then
     echo "==> restarting the session"
     ssh "$HOST" "$SUDO systemctl restart finn-comp && sleep 2 && \
-                 $SUDO systemctl restart finn-session finn-shell && sleep 1 && \
-                 systemctl is-active finn-comp finn-session finn-shell && \
+                 $SUDO systemctl restart finn-session finn-shell finn-wallpaper && sleep 1 && \
+                 systemctl is-active finn-comp finn-session finn-shell finn-wallpaper && \
                  $SUDO journalctl -u finn-comp -n 8 --no-pager -o cat"
 fi
 

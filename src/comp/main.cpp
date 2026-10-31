@@ -1,3 +1,7 @@
+// Entry point for finn-comp, the FinnOS Wayland display server.
+// Parses command-line arguments and hands control to the Server event loop
+// which manages outputs, seats, and window hierarchies.
+
 #include "comp/server.hpp"
 
 #include <cstdio>
@@ -6,7 +10,7 @@
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
-            std::puts("finn-comp (rewrite)");
+            std::puts("finn-comp");
             return 0;
         }
         if (std::strcmp(argv[i], "--help") == 0) {
@@ -23,6 +27,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // Server manages the entire wlroots backend lifecycle, blocking until
+    // display termination or fatal compositor error.
     finn::Server server;
     return server.run();
 }

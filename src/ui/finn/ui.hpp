@@ -1,3 +1,7 @@
+// Main public interface header for libfinnui application runtime.
+// Exposes Canvas drawing APIs, widget controls, Color/Rect geometry types,
+// and App / LayerApp lifecycle abstractions for Wayland clients.
+
 #ifndef FINN_UI_UI_HPP
 #define FINN_UI_UI_HPP
 
@@ -6,6 +10,8 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "animation.hpp"
 
 /*
  * libfinnui — the FinnOS app runtime.
@@ -123,6 +129,9 @@ public:
     void stroke(Rect rect, Color color, double radius = 0, double width = 1);
     void line(double x1, double y1, double x2, double y2, Color color,
               double width = 1);
+    void glass(Rect rect, double radius, Color tint, double blur_radius = 15);
+    void set_screen_geometry(double screen_w, double screen_h, double surface_x = 0,
+                             double surface_y = 0);
 
     void text(double x, double baseline, std::string_view value, double px,
               Color color);
@@ -131,6 +140,9 @@ public:
     double text_width(std::string_view value, double px) const;
     void icon(std::string_view path, Rect rect, Color color);
     void app_icon(std::string_view path, Rect rect);
+    /* Decodes a WebP and covers rect (or fits it when cover is false).
+     * Returns false and draws nothing when the file is missing or invalid. */
+    bool image(std::string_view path, Rect rect, bool cover = true);
 
     void push_clip(Rect rect);
     void pop_clip();
@@ -159,6 +171,10 @@ public:
     const Theme& theme() const;
     double width() const;
     double height() const;
+    double delta_time() const;
+    /* True when a widget or an explicit animation in this canvas still has
+     * work to do; App/Client uses it to request the next frame. */
+    bool animating() const;
 
 private:
     struct Impl;

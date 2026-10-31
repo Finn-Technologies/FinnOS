@@ -1,3 +1,7 @@
+// SessionClient implementation for socket communication with finn-session.
+// Executes line-oriented IPC transactions with connection-per-request semantics
+// to prevent stale socket states across process operations.
+
 #include "session/client.hpp"
 
 #include <sys/socket.h>
@@ -5,6 +9,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +34,8 @@ bool write_all(int fd, std::string_view text) {
     return true;
 }
 
+// Reads byte-by-byte from the stream socket to avoid buffer overshoot into
+// subsequent protocol response lines on shared connection channels.
 bool read_line(int fd, std::string* line) {
     line->clear();
     char buffer[1];
@@ -69,6 +76,8 @@ void set_error(std::string* error, std::string text) {
 
 }  // namespace
 
+// Respects test environment overrides first, falling back to standard user runtime
+// directories to isolate socket permissions per login session.
 std::string session_socket_path() {
     if (const char* path = std::getenv("FINN_SESSION_SOCK"); path && *path) {
         return path;
@@ -97,11 +106,18 @@ bool SessionClient::connect(std::string* error) {
         set_error(error, "session socket path is too long");
         return false;
     }
-    fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    fd_ = ::socket(AF_UNIX, SOCK_STREAM
+#ifdef SOCK_CLOEXEC
+                              | SOCK_CLOEXEC
+#endif
+                              , 0);
     if (fd_ < 0) {
         set_error(error, std::string("cannot create socket: ") + std::strerror(errno));
         return false;
     }
+#ifndef SOCK_CLOEXEC
+    (void)fcntl(fd_, F_SETFD, FD_CLOEXEC);
+#endif
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.c_str(), path.size());
@@ -115,24 +131,31 @@ bool SessionClient::connect(std::string* error) {
 }
 
 bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
-    if (fd_ < 0 && !connect(error)) return false;
+    /* The broker serves one request per connection and closes it. Reusing a
+     * socket after that is a write to a closed peer, not a request. */
+    close();
+    if (!connect(error)) return false;
     if (!write_all(fd_, "APP.LIST\n")) {
         set_error(error, "cannot send APP.LIST");
+        close();
         return false;
     }
     std::string line;
     if (!read_line(fd_, &line)) {
         set_error(error, "no reply from finn-session");
+        close();
         return false;
     }
     if (line.rfind("OK count=", 0) != 0) {
         set_error(error, line.rfind("ERR ", 0) == 0 ? line.substr(4) : line);
+        close();
         return false;
     }
     int count = 0;
     if (std::sscanf(line.c_str(), "OK count=%d", &count) != 1 || count < 0 ||
         count > 4096) {
         set_error(error, "malformed APP.LIST reply");
+        close();
         return false;
     }
     std::vector<SessionApp> result;
@@ -140,6 +163,7 @@ bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
     for (int i = 0; i < count; ++i) {
         if (!read_line(fd_, &line)) {
             set_error(error, "APP.LIST ended early");
+            close();
             return false;
         }
         const std::vector<std::string> fields = split(line, '|');
@@ -151,24 +175,29 @@ bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
         app.icon = fields[3];
         result.push_back(std::move(app));
     }
+    close();
     if (apps != nullptr) *apps = std::move(result);
     return true;
 }
 
 bool SessionClient::launch(std::string_view id, std::string* error) {
-    if (fd_ < 0 && !connect(error)) return false;
+    close();
+    if (!connect(error)) return false;
     std::string request = "APP.LAUNCH ";
     request += id;
     request += "\n";
     if (!write_all(fd_, request)) {
         set_error(error, "cannot send APP.LAUNCH");
+        close();
         return false;
     }
     std::string line;
     if (!read_line(fd_, &line)) {
         set_error(error, "no reply from finn-session");
+        close();
         return false;
     }
+    close();
     if (line.rfind("OK", 0) != 0) {
         set_error(error, line.rfind("ERR ", 0) == 0 ? line.substr(4) : line);
         return false;

@@ -10,8 +10,11 @@
 /src/ui/build/
 /apps/files/finn-files
 /apps/settings/finn-settings
+/apps/wallpaper/finn-wallpaper
 /sdk/template/finn-counter
-/tests/rewrite/test_app_registry
+/tests/unit/test_app_registry
+/tests/unit/test_animation
+/tests/unit/test_session_client
 *.dSYM/
 
 # Captures. A session's PPM and PNG files are artefacts, not the OS.

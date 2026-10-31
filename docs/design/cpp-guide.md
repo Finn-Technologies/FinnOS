@@ -66,8 +66,8 @@ One class per file pair, named after the class.
 1. Create `src/<module>/<name>.hpp` with the interface and a short comment
    saying what it owns.
 2. Create `src/<module>/<name>.cpp` with the implementation.
-3. Add a test under `tests/rewrite/` and a target in its `Makefile`.
-4. Run `make test-rewrite`.
+3. Add a test under `tests/unit/` and a target in its `Makefile`.
+4. Run `make test-unit`.
 5. If it needs a constant another module also needs, put that constant in
    `src/common`, not in both.
 

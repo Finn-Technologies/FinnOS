@@ -1,4 +1,4 @@
-PKGS     = wayland-client xkbcommon freetype2
+PKGS     = wayland-client xkbcommon freetype2 libwebp
 CXX      ?= c++
 CXXFLAGS ?= -O2 -g -Wall -Wextra -Wpedantic -Werror -std=c++20
 CXXFLAGS += -I../../src -I../../src/ui

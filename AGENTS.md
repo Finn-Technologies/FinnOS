@@ -9,7 +9,7 @@ If you are a person, [CONTRIBUTING.md](CONTRIBUTING.md) is the shorter version.
 ## Before you change anything
 
 1. Read [`NAMING.md`](NAMING.md).
-2. Read [`docs/rewrite/contract.md`](docs/rewrite/contract.md) and
+2. Read [`docs/design/contract.md`](docs/design/contract.md) and
    [`docs/architecture.md`](docs/architecture.md). The "what is not here yet"
    section is part of the product.
 3. Read the code you are about to change. A comment explains *why*, never
@@ -27,6 +27,7 @@ src/shell        finn-shell: dock, clock, app menu (layer-shell)
 src/common       paths shared by two modules, and only that
 apps/files       Finn Files
 apps/settings    Settings
+apps/wallpaper   the background layer and its WebP
 ui/_tokens.fui   the only source of the palette
 tools/tokens.py  ui/_tokens.fui -> src/ui/generated_tokens.hpp
 sdk/template     the app a contributor starts from
@@ -34,11 +35,8 @@ base             the Arch base, units, installer, ISO builder
 vm               the dev VM: deploy, capture
 assets           fonts, icons, wallpapers, apps.registry
 docs             the product documentation
-tests            the host suite and tests/rewrite
+tests            the host suite and tests/unit
 ```
-
-The old C userland is on the `pre-rewrite` tag. It is not a fallback and it is
-not built.
 
 ## The rules
 
@@ -124,7 +122,7 @@ The build machine is the VM, not the host.
 ```sh
 make                 # runtime, compositor, session, shell, apps
 make test            # Python: base, catalogue, tokens
-make test-rewrite    # C++ unit tests under ASan/UBSan
+make test-unit    # C++ unit tests under ASan/UBSan
 make lint            # style, stale tokens, no app ids in src/comp
 vm/deploy.sh         # build, install, restart the session on the VM
 vm/shot.sh out.png   # capture with grim
@@ -137,7 +135,7 @@ input, say so; [`docs/testing.md`](docs/testing.md) keeps that list.
 ## Tests
 
 `make test` runs the Python suite: the base-image wiring, the catalogue and the
-generated tokens. `make test-rewrite` builds the registry test with
+generated tokens. `make test-unit` builds the registry test with
 AddressSanitizer and UndefinedBehaviorSanitizer. There is no `tests/c` any
 more; the compositor is verified on the VM.
 
@@ -167,9 +165,9 @@ cannot, say so in the change rather than leaving it implicit.
 - **The token header is generated.** Run `make lint` after touching
   `ui/_tokens.fui`.
 - **The two copies of a unit must not drift.** `finn-comp.service`,
-  `finn-session.service`, `finn-shell.service`, `finn-failure.service` and
-  `finn-tmpfiles.conf` exist in `base/` and `base/airootfs/`; `mkfinniso
-  --check` compares them.
+  `finn-session.service`, `finn-shell.service`, `finn-wallpaper.service`,
+  `finn-failure.service` and `finn-tmpfiles.conf` exist in `base/` and
+  `base/airootfs/`; `mkfinniso --check` compares them.
 - **A unit whose binary is missing fails at every boot.** `base/setup.sh`
   enables the session only when all three binaries exist. Keep that order.
 - **The install medium and the installed machine are different machines.**
