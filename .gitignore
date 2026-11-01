@@ -40,5 +40,9 @@ build/
 .idea/
 .vscode/
 
+# ISO and archive artifacts
+*.iso
+*.zip
+
 # The agent's local state (taste files and scratch data), not the tree.
 .commandcode/
