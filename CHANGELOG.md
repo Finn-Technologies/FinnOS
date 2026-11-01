@@ -5,6 +5,21 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Figma Desktop design refresh and HiDPI output resolution
+
+- Integrated the updated Figma design export (`finnos_-_abhi_20261101-181515.zip`):
+  - Converted the new high-resolution wallpaper asset (`image_9b926d601e27c4a5c897d2df2e024cc13d5da006.png`) to `/usr/share/finn/wallpaper/default.webp` and updated `Desktop.jpg`.
+  - Rebuilt the bottom taskbar with 4 glass pills: Apps pill (254x44, 6 app slots with active indicators and click-to-launch), Home Buttons pill (130x44: Search, Home, and View-open-windows), Hardware Options pill (130x44: Volume, Wi-Fi, and Battery indicators with active selection toggle), and Time pill (154x44 with live formatted date and time `%a %d %b  %H:%M`).
+  - Implemented the Home Menu popover (585x460) with "Your favorite apps" grid (10 slots), category cards in "All Apps", "Recent activity" grid, and bottom profile bar with user avatar ("Abhi"), restart, and power controls.
+  - Implemented the Spotlight Search overlay (300x44 search bar with interactive input and 350x228 recommendations card with recommended apps and recent queries).
+  - Implemented the Control Center popover (444x300) with Wi-Fi, Bluetooth, Media player card (progress bar and timestamp), interactive Brightness and Volume sliders, and functional Dark Appearance toggle.
+- Upgraded compositor output resolution in `src/comp/server.cpp`:
+  - Added support for `FINN_OUTPUT_MODE`, `FINN_OUTPUT_WIDTH`, and `FINN_OUTPUT_HEIGHT`.
+  - Defaults headless and virtual displays to 2560x1664 HiDPI (1280x832 logical at 2x scale), matching the native MacBook Air Figma canvas, eliminating blurry low-resolution rendering.
+  - Automatically selects the highest available resolution mode on DRM outputs.
+- Updated `assets/figma/SPEC.md` with complete design measurements and layout specifications.
+
+
 ### App IDs and Figma-aligned Settings and Files windows
 
 - Added `App(std::string title, int width, int height, std::string app_id)` overload

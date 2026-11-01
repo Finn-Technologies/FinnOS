@@ -493,12 +493,13 @@ void Server::shutdown() {
 // One output, one integer scale. A panel at least 2400 px wide is a HiDPI
 // panel: at 2x its logical size is near the 1280-wide frames in the design.
 // FINN_OUTPUT_SCALE overrides the guess for panels that report badly.
-static float choose_output_scale(const wlr_output_mode* mode) {
+static float choose_output_scale(const wlr_output_mode* mode, int eff_w = 0) {
     if (const char* forced = std::getenv("FINN_OUTPUT_SCALE")) {
         const int value = std::atoi(forced);
         if (value >= 1 && value <= 4) return static_cast<float>(value);
     }
-    return (mode != nullptr && mode->width >= 2400) ? 2.0f : 1.0f;
+    const int w = (mode != nullptr) ? mode->width : eff_w;
+    return (w >= 2400) ? 2.0f : 1.0f;
 }
 
 void Server::add_output(wlr_output* output) {
@@ -507,9 +508,56 @@ void Server::add_output(wlr_output* output) {
     wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_mode* mode = wlr_output_preferred_mode(output);
-    if (mode != nullptr) wlr_output_state_set_mode(&state, mode);
-    const float scale = choose_output_scale(mode);
+
+    int target_w = 0;
+    int target_h = 0;
+    if (const char* mode_env = std::getenv("FINN_OUTPUT_MODE")) {
+        std::sscanf(mode_env, "%dx%d", &target_w, &target_h);
+    }
+    if (target_w <= 0 || target_h <= 0) {
+        if (const char* w_env = std::getenv("FINN_OUTPUT_WIDTH")) {
+            target_w = std::atoi(w_env);
+        }
+        if (const char* h_env = std::getenv("FINN_OUTPUT_HEIGHT")) {
+            target_h = std::atoi(h_env);
+        }
+    }
+
+    wlr_output_mode* mode = nullptr;
+    if (target_w > 0 && target_h > 0) {
+        wlr_output_mode* m;
+        wl_list_for_each(m, &output->modes, link) {
+            if (m->width == target_w && m->height == target_h) {
+                mode = m;
+                break;
+            }
+        }
+        if (mode != nullptr) {
+            wlr_output_state_set_mode(&state, mode);
+        } else {
+            wlr_output_state_set_custom_mode(&state, target_w, target_h, 60000);
+        }
+    } else if (!wl_list_empty(&output->modes)) {
+        mode = wlr_output_preferred_mode(output);
+        // Prefer highest available resolution if preferred mode is low-res
+        wlr_output_mode* m;
+        wl_list_for_each(m, &output->modes, link) {
+            if (mode == nullptr || (m->width * m->height > mode->width * mode->height)) {
+                mode = m;
+            }
+        }
+        if (mode != nullptr) {
+            wlr_output_state_set_mode(&state, mode);
+        }
+    } else {
+        // Headless or virtual output with no modes: default to 2560x1664 HiDPI (1280x832 @ 2x)
+        target_w = 2560;
+        target_h = 1664;
+        wlr_output_state_set_custom_mode(&state, target_w, target_h, 60000);
+    }
+
+    const int effective_w = (mode != nullptr) ? mode->width : target_w;
+    const float scale = choose_output_scale(mode, effective_w);
     wlr_output_state_set_scale(&state, scale);
     wlr_output_commit_state(output, &state);
     wlr_output_state_finish(&state);
