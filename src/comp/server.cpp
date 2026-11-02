@@ -353,6 +353,7 @@ bool Server::init() {
         [](void* data) -> int {
             Server* server = static_cast<Server*>(data);
             server->update_background_theme();
+            server->update_display_settings();
             wl_event_source_timer_update(server->theme_source_, 1000);
             return 0;
         },
@@ -493,77 +494,161 @@ void Server::shutdown() {
 // One output, one integer scale. A panel at least 2400 px wide is a HiDPI
 // panel: at 2x its logical size is near the 1280-wide frames in the design.
 // FINN_OUTPUT_SCALE overrides the guess for panels that report badly.
-static float choose_output_scale(const wlr_output_mode* mode, int eff_w = 0) {
-    if (const char* forced = std::getenv("FINN_OUTPUT_SCALE")) {
-        const int value = std::atoi(forced);
-        if (value >= 1 && value <= 4) return static_cast<float>(value);
+Server::DisplayConfig Server::read_display_config() {
+    DisplayConfig cfg{};
+
+    // 1. Environment variables
+    if (const char* mode_env = std::getenv("FINN_OUTPUT_MODE")) {
+        std::sscanf(mode_env, "%dx%d", &cfg.width, &cfg.height);
     }
-    const int w = (mode != nullptr) ? mode->width : eff_w;
-    return (w >= 2400) ? 2.0f : 1.0f;
+    if (cfg.width <= 0 || cfg.height <= 0) {
+        if (const char* w_env = std::getenv("FINN_OUTPUT_WIDTH")) {
+            cfg.width = std::atoi(w_env);
+        }
+        if (const char* h_env = std::getenv("FINN_OUTPUT_HEIGHT")) {
+            cfg.height = std::atoi(h_env);
+        }
+    }
+    if (const char* scale_env = std::getenv("FINN_OUTPUT_SCALE")) {
+        cfg.scale = std::strtof(scale_env, nullptr);
+    }
+
+    // 2. User settings files
+    const char* home = std::getenv("HOME");
+    const std::string user_path =
+        home != nullptr && *home != '\0'
+            ? std::string(home) + "/.config/finn/settings"
+            : "/home/finn/.config/finn/settings";
+    for (const std::string& path :
+         {user_path, std::string("/home/finn/.config/finn/settings"),
+          std::string("/var/lib/finn/settings")}) {
+        std::ifstream file(path);
+        if (!file.is_open()) continue;
+        std::string line;
+        while (std::getline(file, line)) {
+            if (cfg.width <= 0 && line.rfind("resolution=", 0) == 0) {
+                int w = 0, h = 0;
+                if (std::sscanf(line.c_str() + 11, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+                    cfg.width = w;
+                    cfg.height = h;
+                }
+            } else if (cfg.width <= 0 && line.rfind("width=", 0) == 0) {
+                cfg.width = std::atoi(line.c_str() + 6);
+            } else if (cfg.height <= 0 && line.rfind("height=", 0) == 0) {
+                cfg.height = std::atoi(line.c_str() + 7);
+            }
+            if (cfg.scale <= 0.0f && line.rfind("scale=", 0) == 0) {
+                cfg.scale = std::strtof(line.c_str() + 6, nullptr);
+            }
+        }
+    }
+
+    // 3. Fallback default resolution: 1440x900 @ 1.0x (fits nicely on Mac screens)
+    if (cfg.width <= 0 || cfg.height <= 0) {
+        cfg.width = 1440;
+        cfg.height = 900;
+    }
+    if (cfg.scale <= 0.1f) {
+        cfg.scale = (cfg.width >= 2400) ? 2.0f : 1.0f;
+    }
+    return cfg;
 }
 
-void Server::add_output(wlr_output* output) {
-    wlr_output_init_render(output, allocator_, renderer_);
+void Server::apply_output_config(Output* entry, const DisplayConfig& cfg) {
+    if (entry == nullptr || entry->output == nullptr) return;
+    wlr_output* output = entry->output;
 
     wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
 
-    int target_w = 0;
-    int target_h = 0;
-    if (const char* mode_env = std::getenv("FINN_OUTPUT_MODE")) {
-        std::sscanf(mode_env, "%dx%d", &target_w, &target_h);
-    }
-    if (target_w <= 0 || target_h <= 0) {
-        if (const char* w_env = std::getenv("FINN_OUTPUT_WIDTH")) {
-            target_w = std::atoi(w_env);
-        }
-        if (const char* h_env = std::getenv("FINN_OUTPUT_HEIGHT")) {
-            target_h = std::atoi(h_env);
-        }
-    }
-
     wlr_output_mode* mode = nullptr;
-    if (target_w > 0 && target_h > 0) {
-        wlr_output_mode* m;
-        wl_list_for_each(m, &output->modes, link) {
-            if (m->width == target_w && m->height == target_h) {
-                mode = m;
-                break;
-            }
+    wlr_output_mode* m;
+    wl_list_for_each(m, &output->modes, link) {
+        if (m->width == cfg.width && m->height == cfg.height) {
+            mode = m;
+            break;
         }
-        if (mode != nullptr) {
-            wlr_output_state_set_mode(&state, mode);
-        } else {
-            wlr_output_state_set_custom_mode(&state, target_w, target_h, 60000);
-        }
-    } else if (!wl_list_empty(&output->modes)) {
-        mode = wlr_output_preferred_mode(output);
-        // Prefer highest available resolution if preferred mode is low-res
-        wlr_output_mode* m;
-        wl_list_for_each(m, &output->modes, link) {
-            if (mode == nullptr || (m->width * m->height > mode->width * mode->height)) {
-                mode = m;
-            }
-        }
-        if (mode != nullptr) {
-            wlr_output_state_set_mode(&state, mode);
-        }
+    }
+    if (mode != nullptr) {
+        wlr_output_state_set_mode(&state, mode);
     } else {
-        // Headless or virtual output with no modes: default to 2560x1664 HiDPI (1280x832 @ 2x)
-        target_w = 2560;
-        target_h = 1664;
-        wlr_output_state_set_custom_mode(&state, target_w, target_h, 60000);
+        wlr_output_state_set_custom_mode(&state, cfg.width, cfg.height, 60000);
     }
 
-    const int effective_w = (mode != nullptr) ? mode->width : target_w;
-    const float scale = choose_output_scale(mode, effective_w);
-    wlr_output_state_set_scale(&state, scale);
-    wlr_output_commit_state(output, &state);
+    wlr_output_state_set_scale(&state, cfg.scale);
+    if (!wlr_output_commit_state(output, &state)) {
+        wlr_log(WLR_ERROR, "finn-comp: failed to commit output mode %dx%d @ scale %.1f",
+                cfg.width, cfg.height, cfg.scale);
+        wlr_output_state_finish(&state);
+        return;
+    }
     wlr_output_state_finish(&state);
-    // The cursor theme must exist at the output's scale or the arrow is not
-    // drawn at all.
-    if (cursor_manager_ != nullptr) wlr_xcursor_manager_load(cursor_manager_, scale);
+
+    if (cursor_manager_ != nullptr) {
+        wlr_xcursor_manager_load(cursor_manager_, cfg.scale);
+    }
+
+    wlr_box box{};
+    wlr_output_layout_get_box(output_layout_, output, &box);
+    usable_x_ = box.x;
+    usable_y_ = box.y;
+    usable_w_ = box.width;
+    usable_h_ = box.height;
+
+    if (background_ != nullptr) {
+        int logical_w = 0;
+        int logical_h = 0;
+        wlr_output_effective_resolution(output, &logical_w, &logical_h);
+        wlr_scene_rect_set_size(background_, logical_w, logical_h);
+        wlr_scene_node_set_position(&background_->node, 0, 0);
+        wlr_scene_node_lower_to_bottom(&background_->node);
+    }
+
+    for (auto& layer : layers_) {
+        configure_layer(layer.get());
+    }
+
+    for (auto& toplevel : toplevels_) {
+        if (toplevel->maximized) {
+            wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, usable_w_, usable_h_);
+            wlr_scene_node_set_position(&toplevel->scene_tree->node, usable_x_, usable_y_);
+        } else if (toplevel->scene_tree != nullptr) {
+            int cur_x = toplevel->scene_tree->node.x;
+            int cur_y = toplevel->scene_tree->node.y;
+            if (cur_x > usable_w_ - 80) cur_x = std::max(0, usable_w_ - 200);
+            if (cur_y > usable_h_ - 80) cur_y = std::max(0, usable_h_ - 200);
+            wlr_scene_node_set_position(&toplevel->scene_tree->node, cur_x, cur_y);
+        }
+    }
+}
+
+void Server::update_display_settings() {
+    DisplayConfig cfg = read_display_config();
+    if (cfg.width == configured_w_ && cfg.height == configured_h_ &&
+        std::abs(cfg.scale - configured_scale_) < 0.01f) {
+        return;
+    }
+    wlr_log(WLR_INFO, "finn-comp: display settings changed: %dx%d @ %.1fx (was %dx%d @ %.1fx)",
+            cfg.width, cfg.height, cfg.scale, configured_w_, configured_h_, configured_scale_);
+    configured_w_ = cfg.width;
+    configured_h_ = cfg.height;
+    configured_scale_ = cfg.scale;
+
+    for (auto& entry : outputs_) {
+        apply_output_config(entry.get(), cfg);
+    }
+}
+
+void Server::add_output(wlr_output* output) {
+    wlr_output_init_render(output, allocator_, renderer_);
+
+    if (configured_w_ <= 0 || configured_h_ <= 0) {
+        DisplayConfig cfg = read_display_config();
+        configured_w_ = cfg.width;
+        configured_h_ = cfg.height;
+        configured_scale_ = cfg.scale;
+    }
 
     auto entry = std::make_unique<Output>();
     entry->server = this;
@@ -582,6 +667,9 @@ void Server::add_output(wlr_output* output) {
         wlr_scene_output_create(scene_, output);
     wlr_scene_output_layout_add_output(scene_layout_, layout_output,
                                        scene_output);
+
+    DisplayConfig cfg{configured_w_, configured_h_, configured_scale_};
+    apply_output_config(entry.get(), cfg);
     // Start the pointer in the middle of the screen with an arrow, so it is
     // visible before the first motion event.
     if (cursor_ != nullptr && outputs_.empty()) {

@@ -81,6 +81,14 @@ private:
     void reset_cursor_mode();
     void pointer_motion(uint32_t time_msec);
     void update_background_theme();
+    struct DisplayConfig {
+        int width = 0;
+        int height = 0;
+        float scale = 0.0f;
+    };
+    DisplayConfig read_display_config();
+    void apply_output_config(Output* entry, const DisplayConfig& cfg);
+    void update_display_settings();
     void begin_open_animation(Toplevel* toplevel);
     void animate_windows();
     static int on_animation(void* data);
@@ -190,6 +198,9 @@ private:
     int usable_y_ = 0;
     int usable_w_ = 0;
     int usable_h_ = 0;
+    int configured_w_ = 0;
+    int configured_h_ = 0;
+    float configured_scale_ = 0.0f;
 };
 
 }  // namespace finn

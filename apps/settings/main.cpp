@@ -77,6 +77,77 @@ bool write_dark(bool dark) {
     return !error;
 }
 
+std::string read_resolution() {
+    const std::filesystem::path user = user_settings_path();
+    for (const std::filesystem::path& path :
+         {user, std::filesystem::path("/var/lib/finn/settings")}) {
+        std::ifstream file(path);
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.rfind("resolution=", 0) == 0) return line.substr(11);
+        }
+    }
+    return "1440x900";
+}
+
+float read_scale() {
+    const std::filesystem::path user = user_settings_path();
+    for (const std::filesystem::path& path :
+         {user, std::filesystem::path("/var/lib/finn/settings")}) {
+        std::ifstream file(path);
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.rfind("scale=", 0) == 0) {
+                return std::strtof(line.c_str() + 6, nullptr);
+            }
+        }
+    }
+    return 1.0f;
+}
+
+bool write_display_setting(const std::string& res, float scale) {
+    const std::filesystem::path path = user_settings_path();
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) return false;
+
+    std::vector<std::string> lines;
+    {
+        std::ifstream existing(path);
+        std::string line;
+        while (std::getline(existing, line)) lines.push_back(line);
+    }
+    bool res_set = false;
+    bool scale_set = false;
+    for (std::string& line : lines) {
+        if (line.rfind("resolution=", 0) == 0) {
+            line = "resolution=" + res;
+            res_set = true;
+        } else if (line.rfind("scale=", 0) == 0) {
+            char buf[32];
+            std::snprintf(buf, sizeof buf, "scale=%.1f", scale);
+            line = buf;
+            scale_set = true;
+        }
+    }
+    if (!res_set) lines.push_back("resolution=" + res);
+    if (!scale_set) {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "scale=%.1f", scale);
+        lines.push_back(buf);
+    }
+
+    const std::filesystem::path temporary = path.string() + ".tmp";
+    {
+        std::ofstream out(temporary, std::ios::trunc);
+        if (!out) return false;
+        for (const std::string& line : lines) out << line << '\n';
+        if (!out) return false;
+    }
+    std::filesystem::rename(temporary, path, error);
+    return !error;
+}
+
 std::string read_version() {
     std::ifstream file("/usr/share/finn/version");
     std::string version;
@@ -132,15 +203,24 @@ void draw_finn_logo(Canvas& canvas, double x, double y, Color color) {
 
 enum class SettingsPage {
     Appearance,
+    Displays,
     About
 };
 
 class Settings final : public App {
 public:
-    Settings() : App("Settings", 900, 500, "settings"), dark_(read_dark()) {
+    Settings()
+        : App("Settings", 900, 520, "settings"),
+          dark_(read_dark()),
+          current_res_(read_resolution()),
+          current_scale_(read_scale()) {
         const char* page_env = std::getenv("FINN_SETTINGS_PAGE");
-        if (page_env != nullptr && std::string_view(page_env) == "about") {
-            page_ = SettingsPage::About;
+        if (page_env != nullptr) {
+            if (std::string_view(page_env) == "about") {
+                page_ = SettingsPage::About;
+            } else if (std::string_view(page_env) == "displays") {
+                page_ = SettingsPage::Displays;
+            }
         }
         const char* col_env = std::getenv("FINN_SETTINGS_COLLAPSED");
         if (col_env != nullptr && std::string_view(col_env) == "1") {
@@ -175,7 +255,7 @@ public:
                 request_frame();
             }
 
-            // Section items (only sections that actually exist in v1: Appearance, About)
+            // Section items (Appearance, Displays, About)
             canvas.text(18, 72, "SETTINGS", 10, theme.mute);
 
             if (canvas.sidebar_item("nav_appearance", Rect{12, 84, sidebar_w - 24, 34},
@@ -185,7 +265,14 @@ public:
                 request_frame();
             }
 
-            if (canvas.sidebar_item("nav_about", Rect{12, 124, sidebar_w - 24, 34},
+            if (canvas.sidebar_item("nav_displays", Rect{12, 124, sidebar_w - 24, 34},
+                                    "display.svg", "Displays",
+                                    page_ == SettingsPage::Displays)) {
+                page_ = SettingsPage::Displays;
+                request_frame();
+            }
+
+            if (canvas.sidebar_item("nav_about", Rect{12, 164, sidebar_w - 24, 34},
                                     "info.svg", "About",
                                     page_ == SettingsPage::About)) {
                 page_ = SettingsPage::About;
@@ -222,6 +309,68 @@ public:
 
             canvas.text(content_x + 36, page_body_y + 70,
                         error_.empty() ? "Apps and the shell pick this up on their next frame."
+                                       : error_,
+                        11, error_.empty() ? theme.mute : theme.dim);
+        } else if (page_ == SettingsPage::Displays) {
+            canvas.text(content_x + 36, page_head_y, "Displays", 16, theme.ink);
+            canvas.text(content_x + 36, page_head_y + 20,
+                        "Select a screen resolution that fits your Mac display", 11, theme.mute);
+
+            const struct ResolutionOption {
+                const char* label;
+                const char* note;
+                const char* res;
+                float default_scale;
+            } options[] = {
+                {"1440 × 900", "MacBook Air & 13\" Pro (Best fit)", "1440x900", 1.0f},
+                {"1600 × 900", "Standard 16:9 laptop display", "1600x900", 1.0f},
+                {"1920 × 1080", "Full HD monitor (1080p)", "1920x1080", 1.0f},
+                {"1920 × 1200", "16:10 Widescreen display", "1920x1200", 1.0f},
+                {"2560 × 1440", "2K Quad HD (Scaled 2.0x)", "2560x1440", 2.0f},
+                {"2560 × 1664", "Retina HiDPI (Scaled 2.0x)", "2560x1664", 2.0f},
+            };
+
+            double opt_y = page_body_y + 12;
+            const double opt_w = std::min(480.0, content_w - 72);
+            const double opt_h = 38;
+
+            for (size_t i = 0; i < sizeof(options) / sizeof(options[0]); ++i) {
+                const auto& opt = options[i];
+                const bool selected = (current_res_ == opt.res);
+
+                char item_id[32];
+                std::snprintf(item_id, sizeof item_id, "res_%zu", i);
+                const Rect card{content_x + 36, opt_y, opt_w, opt_h};
+
+                if (canvas.sidebar_item(item_id, card, "display.svg", opt.label, selected)) {
+                    current_res_ = opt.res;
+                    current_scale_ = opt.default_scale;
+                    if (!write_display_setting(current_res_, current_scale_)) {
+                        error_ = "Could not write display setting";
+                    } else {
+                        error_.clear();
+                    }
+                    request_frame();
+                }
+
+                canvas.text(card.x + 160, card.y + (card.h + 8) / 2.0, opt.note, 10, theme.mute);
+                if (selected) {
+                    canvas.text(card.x + card.w - 55, card.y + (card.h + 8) / 2.0, "Active", 11, theme.accent);
+                }
+
+                opt_y += opt_h + 6;
+            }
+
+            opt_y += 6;
+            bool is_2x = (current_scale_ >= 1.8f);
+            if (canvas.toggle("hidpi_toggle", Rect{content_x + 36, opt_y, 220, 34}, "2x HiDPI Scaling", is_2x)) {
+                current_scale_ = is_2x ? 2.0f : 1.0f;
+                write_display_setting(current_res_, current_scale_);
+                request_frame();
+            }
+
+            canvas.text(content_x + 36, opt_y + 46,
+                        error_.empty() ? "Changes apply dynamically within 1 second."
                                        : error_,
                         11, error_.empty() ? theme.mute : theme.dim);
         } else if (page_ == SettingsPage::About) {
@@ -279,6 +428,8 @@ public:
 
 private:
     bool dark_ = false;
+    std::string current_res_ = "1440x900";
+    float current_scale_ = 1.0f;
     bool sidebar_open_ = true;
     SettingsPage page_ = SettingsPage::Appearance;
     std::string error_;

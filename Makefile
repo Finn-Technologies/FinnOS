@@ -58,6 +58,8 @@ install: all
 		$(DESTDIR)/usr/share/finn/wallpaper/
 	install -d $(DESTDIR)/usr/share/fonts/OTF
 	install -m644 assets/fonts/FixelDisplay/*.otf $(DESTDIR)/usr/share/fonts/OTF/
+	install -d $(DESTDIR)/usr/bin
+	install -m755 tools/finn-display $(DESTDIR)/usr/bin/finn-display
 
 deploy:
 	FINN_HOST=$(VM) vm/deploy.sh

@@ -1,0 +1,57 @@
+#!/bin/sh
+# finn-display: inspect or change the display resolution and scale
+
+SETTING_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/finn/settings"
+mkdir -p "$(dirname "$SETTING_FILE")"
+touch "$SETTING_FILE"
+
+if [ $# -eq 0 ]; then
+    echo "FinnOS Display Manager"
+    echo "======================"
+    echo "Current settings in $SETTING_FILE:"
+    grep -E '^(resolution|scale)=' "$SETTING_FILE" 2>/dev/null || echo "  (default: 1440x900 @ 1.0x)"
+    echo ""
+    echo "Usage: finn-display <WIDTHxHEIGHT> [SCALE]"
+    echo "   or: finn-display <WIDTH> <HEIGHT> [SCALE]"
+    echo ""
+    echo "Presets:"
+    echo "  1440x900   (MacBook Air / 13\" Pro - best fit)"
+    echo "  1600x900   (Standard laptop 16:9)"
+    echo "  1920x1080  (Full HD 1080p)"
+    echo "  1920x1200  (16:10 widescreen)"
+    echo "  2560x1440  (2K Quad HD)"
+    echo "  2560x1664  (Retina HiDPI)"
+    echo ""
+    echo "Scale:"
+    echo "  1.0        (Standard 1:1)"
+    echo "  2.0        (HiDPI 2x)"
+    exit 0
+fi
+
+RES=""
+SCALE=""
+
+case "$1" in
+    *x*)
+        RES="$1"
+        SCALE="${2:-1.0}"
+        ;;
+    *)
+        if [ -n "$2" ]; then
+            RES="${1}x${2}"
+            SCALE="${3:-1.0}"
+        else
+            echo "Error: invalid resolution format '$1'. Use WIDTHxHEIGHT or WIDTH HEIGHT." >&2
+            exit 1
+        fi
+        ;;
+esac
+
+TMP_FILE="$(mktemp "${SETTING_FILE}.tmp.XXXXXX")"
+grep -v -E '^(resolution|scale)=' "$SETTING_FILE" 2>/dev/null > "$TMP_FILE" || true
+echo "resolution=$RES" >> "$TMP_FILE"
+echo "scale=$SCALE" >> "$TMP_FILE"
+mv -f "$TMP_FILE" "$SETTING_FILE"
+
+echo "Display updated to $RES @ ${SCALE}x"
+echo "Compositor will apply changes dynamically within 1 second."
