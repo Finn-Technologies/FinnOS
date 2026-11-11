@@ -11,7 +11,9 @@ make lint
 `make test` runs the Python tests that need no display: the base-image wiring,
 the catalogue and the generated tokens. `make test-unit` builds
 `tests/unit/test_app_registry.cpp` with AddressSanitizer and
-UndefinedBehaviorSanitizer and checks the registry rules. `make lint` fails on
+UndefinedBehaviorSanitizer and checks the registry rules, and
+`tests/unit/test_search.cpp` the same way for what a search query finds and
+how the field is edited. `make lint` fails on
 trailing whitespace, a stale generated token header and an app id under
 `src/comp`.
 
@@ -39,14 +41,21 @@ evidence. `vm/shot.sh` is the tool.
 Pointer input is now exercised on the VM with a virtual pointer
 (`ydotool` + `uinput`): the launcher click opens the app menu, a menu row
 launches Finn Files, and the window's maximize and restore controls resize
-it. Keyboard input is still not driven by a test; the keymap, modifiers and
-key forwarding are implemented but unverified. The window entrance was
+it. Keyboard input was driven by hand on a QEMU VM through its virtio
+keyboard, into the shell's search field: letters, Shift for a capital,
+Backspace, Enter to launch the first result and Escape to close. That is the
+keymap, one modifier and key forwarding to a layer surface; keys to an app
+window, and Ctrl and Alt, are still unverified, and nothing drives keys
+automatically. The window entrance was
 captured as a frame sequence (top edge 43 → 42 → 41 px), so the 220 ms slide
 is moving, not just declared.
 
 ## What is not tested
 
-- Keyboard input: keymap, modifiers, text and the Escape menu close.
+- Keyboard input to an app window, Ctrl and Alt, and any layout but the
+  default one.
+- Search with more results than fit: the VM has two installed apps, so the
+  five-row limit was never reached on screen.
 - Launch failure races: the session checks the command before `posix_spawn`,
   but a file removed between the check and the exec becomes an app that exits.
 - Multi-output, HiDPI, suspend/resume, screen lock and audio.

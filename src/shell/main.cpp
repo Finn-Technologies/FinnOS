@@ -22,6 +22,7 @@
 
 #include "common/paths.hpp"
 #include "session/client.hpp"
+#include "shell/search.hpp"
 
 namespace {
 
@@ -209,6 +210,7 @@ public:
 
         draw_dock(canvas, width, height);
         if (m_visible) draw_home_menu(canvas, width);
+        if (search_open_) edit_search(canvas.input());
         if (s_visible) draw_search(canvas, width, height);
         if (cc_visible) draw_control_center(canvas);
 
@@ -277,6 +279,7 @@ private:
         refresh();
         close_menu();
         close_control_center();
+        search_query_.clear();
         search_open_ = true;
         search_visible_ = true;
         search_anim_.to(1.0, finn::ui::kMotionStandard);
@@ -642,6 +645,77 @@ private:
         }
     }
 
+    // The keys are taken one event at a time, in the order they were pressed,
+    // so "f", Backspace, "s", Enter launches what "s" finds and not what "f"
+    // did. Escape is not handled here: it closes whichever panel is open.
+    void edit_search(const finn::ui::Input& input) {
+        for (const finn::ui::KeyEvent& event : input.keys) {
+            if (event.key == finn::ui::Key::backspace) {
+                finn::search_backspace(search_query_);
+            } else if (event.key == finn::ui::Key::enter) {
+                const auto found = finn::search_apps(apps_, search_query_);
+                if (!found.empty()) {
+                    launch_by_id(found.front().id, found.front().name,
+                                 found.front().icon);
+                    return;
+                }
+            } else if (event.key == finn::ui::Key::none && !event.ctrl &&
+                       !event.alt && !event.text.empty() &&
+                       static_cast<unsigned char>(event.text.front()) >= 0x20 &&
+                       static_cast<unsigned char>(event.text.front()) != 0x7f) {
+                finn::search_type(search_query_, event.text);
+            }
+        }
+    }
+
+    // What the query finds, in place of the recommendations: one row per
+    // installed app, the first one marked because Enter launches it. A query
+    // that finds nothing says so; it does not fall back to a suggestion.
+    void draw_search_results(Canvas& canvas, Rect bar, double base_y, double width,
+                             Color glass_tint) {
+        const auto& theme = canvas.theme();
+        const auto found = finn::search_apps(apps_, search_query_);
+        const std::size_t shown = std::min<std::size_t>(found.size(), 5);
+
+        const double row_h = 40.0;
+        const double card_w = 350.0;
+        const double card_h = 20.0 + row_h * static_cast<double>(std::max<std::size_t>(shown, 1));
+        const double card_x = (width - card_w) / 2.0;
+        search_rec_rect_ = Rect{card_x, base_y + bar.h + 15.0, card_w, card_h};
+        const Rect card{card_x, bar.y + bar.h + 15.0, card_w, card_h};
+        canvas.glass(card, 12.0, glass_tint, 35.0);
+
+        if (shown == 0) {
+            canvas.text(card.x + 18.0, card.y + 35.0, "No installed app matches", 12.0,
+                        theme.mute);
+            return;
+        }
+
+        const double px = canvas.input().x;
+        const double py = canvas.input().y;
+        for (std::size_t i = 0; i < shown; ++i) {
+            const Rect row{card.x + 10.0, card.y + 10.0 + row_h * static_cast<double>(i),
+                           card_w - 20.0, row_h - 4.0};
+            const bool hovered = row.contains(px, py);
+            if (i == 0 || hovered) {
+                const Color mark = dark_ ? Color::rgb(0x3B4048).with_alpha(150)
+                                         : Color::rgb(0xFFFFFF).with_alpha(170);
+                canvas.fill(row, mark, 8.0);
+            }
+            canvas.app_icon(found[i].icon, Rect{row.x + 8.0, row.y + 6.0, 24.0, 24.0});
+            canvas.text(row.x + 42.0, row.y + 23.0, found[i].name, 13.0, theme.ink);
+            if (i == 0) {
+                const std::string_view hint = "Enter";
+                canvas.text(row.x + row.w - 12.0 - canvas.text_width(hint, 10.0),
+                            row.y + 22.0, hint, 10.0, theme.mute);
+            }
+            if (canvas.input().pointer_released && hovered) {
+                launch_by_id(found[i].id, found[i].name, found[i].icon);
+                return;
+            }
+        }
+    }
+
     // Renders the Search Overlay matching Figma frame (4:226).
     void draw_search(Canvas& canvas, double width, double height) {
         const auto& theme = canvas.theme();
@@ -664,6 +738,8 @@ private:
             canvas.text(bar.x + 44.0, bar.y + 27.0, "Search or ask anything", 13.0, theme.mute);
         } else {
             canvas.text(bar.x + 44.0, bar.y + 27.0, search_query_, 13.0, theme.ink);
+            draw_search_results(canvas, bar, base_y, width, glass_tint);
+            return;
         }
 
         // Recommendations Card (350x228, centered)

@@ -5,7 +5,7 @@ SAN      ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 
 REGISTRY_SRC = ../../src/session/app_registry.cpp
 REGISTRY_HDR = ../../src/session/app_registry.hpp
-BINS         = test_app_registry test_animation test_session_client
+BINS         = test_app_registry test_animation test_session_client test_search
 
 all: $(BINS)
 
@@ -20,10 +20,16 @@ test_session_client: test_session_client.cpp ../../src/session/client.cpp \
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_session_client.cpp \
 		../../src/session/client.cpp
 
+test_search: test_search.cpp ../../src/shell/search.cpp \
+		../../src/shell/search.hpp ../../src/session/client.hpp
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_search.cpp \
+		../../src/shell/search.cpp
+
 run: $(BINS)
 	./test_app_registry
 	./test_animation
 	./test_session_client
+	./test_search
 	python3 test_tokens.py
 
 clean:
