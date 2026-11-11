@@ -21,6 +21,22 @@ and the changes to it are worth reading.
 - `docs/hardware.md` records what was seen there: the session on
   `virtio-gpu`, the stale blocks the GLES2-on-llvmpipe renderer shows in the
   QEMU window (Pixman does not), a pointer click, and the Escape key.
+### Search finds installed apps
+
+- Typing in the shell's search field now does something. The field showed a
+  placeholder and ignored the keyboard; the query was never written.
+- A query lists the installed apps it matches, best first (a name that starts
+  with it, then a word that does, then a name or id that contains it), up to
+  five rows. Enter launches the first row; a click launches any row.
+  Backspace removes one character. A query that matches nothing says
+  "No installed app matches" instead of suggesting something else.
+- Only installed apps are results: a row that can be pressed is one
+  `finn-session` can launch.
+- The matching and editing rules are in `src/shell/search.cpp`, with
+  `tests/unit/test_search.cpp`.
+- Not changed: the card shown before anything is typed. Its "Recommendations"
+  and "Recently asked" entries are still fixed, and three of them (Arc,
+  Terminal, Notes) name apps that are not in the catalogue.
 
 ### Figma Desktop design refresh and HiDPI output resolution
 
