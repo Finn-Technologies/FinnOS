@@ -5,6 +5,22 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### A dev VM on an Apple Silicon Mac
+
+- Added `vm/lima-setup.sh` and `vm/lima.yaml`: one command creates an Arch
+  Linux ARM VM under Lima and QEMU, upgrades the 2022 cloud image, deploys the
+  tree and starts the session in a window.
+- `vm/deploy.sh`, `vm/shot.sh` and `vm/restart-compositor.sh` take
+  `FINN_SSH_OPTS`, extra options for `ssh` and `scp`, so they can reach a VM
+  through an ssh config file instead of an address.
+- `vm/shot.sh` removes its capture as `finn`; it failed on a VM whose ssh
+  user is not `finn`, because the file is `finn`'s in a sticky `/tmp`.
+- `vm/restart-compositor.sh` restarts the compositor. It named `finnd`, a
+  unit that does not exist, and systemd refuses the whole request when one
+  unit in it is missing, so nothing was restarted.
+- `docs/hardware.md` records what was seen there: the session on
+  `virtio-gpu`, the stale blocks the GLES2-on-llvmpipe renderer shows in the
+  QEMU window (Pixman does not), a pointer click, and the Escape key.
 ### Search finds installed apps
 
 - Typing in the shell's search field now does something. The field showed a

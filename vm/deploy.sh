@@ -10,15 +10,22 @@
 set -euo pipefail
 
 HOST="${FINN_HOST:-finn@10.211.55.6}"
+
+# FINN_SSH_OPTS is extra options for ssh and scp, for a VM that is reached
+# through a config file rather than an address: vm/lima-setup.sh sets it to
+# "-F <the instance's ssh.config>". It is split on spaces, so a path in it
+# cannot contain one.
+# shellcheck disable=SC2086
+rsh() { ssh ${FINN_SSH_OPTS:-} "$@"; }
 REMOTE="${FINN_REMOTE:-~/finnos}"
 RESTART=1
 [ "${1:-}" = "--no-restart" ] && RESTART=0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if ssh "$HOST" 'test "$(id -u)" -eq 0' 2>/dev/null; then
+if rsh "$HOST" 'test "$(id -u)" -eq 0' 2>/dev/null; then
     SUDO=""
-elif ssh "$HOST" 'sudo -n true' 2>/dev/null; then
+elif rsh "$HOST" 'sudo -n true' 2>/dev/null; then
     SUDO="sudo"
 else
     echo "error: $HOST is not reachable, is not root, or has no passwordless sudo" >&2
@@ -37,10 +44,10 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/shell/finn-shell' \
     --exclude='apps/*/finn-*' \
     --exclude='tests/unit/test_app_registry' \
-    . | ssh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
+    . | rsh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 
 echo "==> preparing the build environment"
-ssh "$HOST" "
+rsh "$HOST" "
     set -e
     if [ -z \"\$($SUDO pacman-key --list-keys 2>/dev/null)\" ]; then
         $SUDO pacman-key --init
@@ -52,7 +59,7 @@ ssh "$HOST" "
 "
 
 echo "==> preparing the dev user"
-ssh "$HOST" "
+rsh "$HOST" "
     set -e
     if ! id -u finn >/dev/null 2>&1; then
         $SUDO useradd -m -G wheel,input,video,render -s /bin/bash finn
@@ -68,16 +75,16 @@ ssh "$HOST" "
 "
 
 echo "==> building"
-ssh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
+rsh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail -40"
 
 echo "==> installing"
-ssh "$HOST" "cd $REMOTE && $SUDO make install && \
+rsh "$HOST" "cd $REMOTE && $SUDO make install && \
              $SUDO install -d /var/lib/finn && \
              printf 'settings\\nfiles\\n' | $SUDO tee /var/lib/finn/installed >/dev/null && \
              $SUDO chgrp -R finn /usr/share/finn /var/lib/finn"
 
 echo "==> installing the session units"
-ssh "$HOST" "cd $REMOTE && \
+rsh "$HOST" "cd $REMOTE && \
              $SUDO install -Dm644 base/finn-comp.service /etc/systemd/system/finn-comp.service && \
              $SUDO install -Dm644 base/finn-session.service /etc/systemd/system/finn-session.service && \
              $SUDO install -Dm644 base/finn-shell.service /etc/systemd/system/finn-shell.service && \
@@ -91,7 +98,7 @@ ssh "$HOST" "cd $REMOTE && \
 
 if [ "$RESTART" = "1" ]; then
     echo "==> restarting the session"
-    ssh "$HOST" "$SUDO systemctl restart finn-comp && sleep 2 && \
+    rsh "$HOST" "$SUDO systemctl restart finn-comp && sleep 2 && \
                  $SUDO systemctl restart finn-session finn-shell finn-wallpaper && sleep 1 && \
                  systemctl is-active finn-comp finn-session finn-shell finn-wallpaper && \
                  $SUDO journalctl -u finn-comp -n 8 --no-pager -o cat"
