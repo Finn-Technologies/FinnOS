@@ -1062,13 +1062,12 @@ void Server::focus(Toplevel* toplevel) {
     focused_layer_ = nullptr;
 }
 
-// Handles compositor-level shortcuts (F1 window cycling, Escape shutdown)
-// before passing keystrokes down to focused client surfaces.
+// Handles compositor-level shortcuts before passing keystrokes down to
+// focused client surfaces. There is no quit chord: Alt+Escape is easy to hit
+// next to Alt+Tab and would close every open window, and a developer can
+// restart the compositor with `systemctl restart finn-comp`.
 bool Server::handle_keybinding(uint32_t keysym) {
     switch (keysym) {
-        case XKB_KEY_Escape:
-            wl_display_terminate(display_);
-            return true;
         case XKB_KEY_F1: {
             if (toplevels_.empty()) return true;
             const auto current = std::find_if(

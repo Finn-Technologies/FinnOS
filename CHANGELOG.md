@@ -5,6 +5,16 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Alt+Escape no longer quits the session
+
+- Removed the compositor's `Alt+Escape` binding. It was the tinywl example's
+  shutdown chord, sat next to `Alt+Tab`, and ended `finn-comp` and every open
+  window without a prompt. Restarting the compositor is now a deliberate
+  `systemctl restart finn-comp` (or `vm/restart-compositor.sh`); `Alt+F1`
+  still cycles windows.
+- `docs/architecture.md` says which window-management keys exist, and which
+  do not.
+
 ### A dev VM on an Apple Silicon Mac
 
 - Added `vm/lima-setup.sh` and `vm/lima.yaml`: one command creates an Arch

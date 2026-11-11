@@ -39,9 +39,10 @@ bar, and a native app draws the frame `libfinnui` provides. There is exactly
 one chrome per window.
 
 Window management is in the compositor: move and resize requests from the
-client, maximize to the usable box, focus on click, `Alt+F1` to cycle and
-`Alt+Escape` to quit. A `wlr_scene` commit happens only when something
-changed.
+client, maximize to the usable box, focus on click and `Alt+F1` to cycle
+windows. There is no quit chord; a developer restarts the compositor with
+`systemctl restart finn-comp`, and `Ctrl+Alt+F2` gives a login. A
+`wlr_scene` commit happens only when something changed.
 
 ## Authority
 
