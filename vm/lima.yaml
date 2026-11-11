@@ -1,0 +1,28 @@
+# The FinnOS dev VM on an Apple Silicon Mac, as a Lima instance.
+#
+#   vm/lima-setup.sh        creates it from this file and deploys into it
+#
+# QEMU, not Apple's Virtualization.framework: the only published Arch Linux
+# ARM cloud image (2022) stops within a second of starting under vz, with or
+# without a display. Under QEMU it boots, and HVF still runs it natively.
+minimumLimaVersion: 2.0.0
+vmType: qemu
+arch: aarch64
+cpus: 4
+memory: 6GiB
+disk: 30GiB
+images:
+- location: https://github.com/mcginty/arch-boxes-arm/releases/download/v20220323/Arch-Linux-aarch64-cloudimg-20220323.0.qcow2
+  arch: aarch64
+  digest: sha512:27524910bf41cb9b3223c8749c6e67fd2f2fdb8b70d40648708e64d6b03c0b4a01b3c5e72d51fefd3e0c3f58487dbb400a79ca378cde2da341a3a19873612be8
+# No host mounts: vm/deploy.sh sends the tree as a tar stream, the same way
+# it does for every other VM, so the guest never builds in a shared folder.
+mounts: []
+# The window is the display: QEMU's virtio-gpu is the DRM device finn-comp
+# drives on tty1. Lima adds that device only when there is a display, so
+# "none" here is a VM with no /dev/dri and a compositor that cannot start.
+video:
+  display: cocoa
+containerd:
+  system: false
+  user: false

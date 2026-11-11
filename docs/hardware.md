@@ -18,6 +18,23 @@ virtual GPU, a virtual keyboard and mouse, a 1280x800-class DRM output, and
 - Pointer input was driven with `ydotool`/`uinput`: the app menu opened, a
   row launched Finn Files, and the maximize/restore controls resized it.
 
+A second environment is the same tree in QEMU on an Apple Silicon Mac,
+created by `vm/lima-setup.sh`: a `virtio-gpu` DRM output at 1440x900, a
+virtio keyboard and mouse, and the Pixman renderer.
+
+- `finn-comp` starts on the DRM backend through `seatd`, and the session,
+  shell, wallpaper, Finn Files and Settings run against it.
+- With the default renderer there (GLES2 on llvmpipe) the QEMU window shows
+  stale blocks near the top-left corner while a `grim` capture of the same
+  frame is clean. `WLR_RENDERER=pixman` does not show them; the setup script
+  sets it. Why the GLES2 path does this on `virtio-gpu` was not found.
+- Pointer input was driven through QEMU's virtio mouse: a click on a dock
+  icon launched Settings, and a click on the search button opened the search
+  overlay.
+- Keyboard input was driven through QEMU's virtio keyboard: Escape closed
+  the search overlay. That is one key reaching a layer surface; text entry
+  and modifiers were not driven.
+
 ## Not verified
 
 - Physical x86_64 hardware: bare-metal testing has not been run on reference
@@ -25,8 +42,9 @@ virtual GPU, a virtual keyboard and mouse, a 1280x800-class DRM output, and
 - Pointer input through libinput/seatd: exercised with a virtual pointer on
   the VM (menu, launch, maximize, restore). The physical Parallels pointer was
   not separately driven.
-- Keyboard input through libinput/seatd. The devices exist and the keymap and
-  forwarding code are in place, but no test has driven keys through them.
+- Keyboard input through libinput/seatd beyond Escape on a layer surface
+  (see above): keys to an app window, text and modifiers have not been
+  driven.
 - Multi-monitor, per-output scale, rotation, tablets and input methods.
 - HiDPI: integer output scale (2x at 2400 px wide or more, or
   `FINN_OUTPUT_SCALE`) was checked in the VM by forcing 2x and reading the

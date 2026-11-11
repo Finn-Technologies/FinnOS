@@ -32,6 +32,9 @@ in `~/finnos`, installs it, installs the units, enables linger for `finn` and
 restarts the session. `vm/shot.sh` captures with grim against
 `/run/finn/wayland-0`.
 
+On an Apple Silicon Mac, `vm/lima-setup.sh` creates the VM and deploys to
+it; see [vm/README.md](../vm/README.md).
+
 ## Run it by hand
 
 The compositor is the only program that needs the display device. The session,

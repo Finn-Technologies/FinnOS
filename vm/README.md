@@ -14,6 +14,39 @@ build dependencies, builds in `~/finnos`, installs to `/usr/local`, installs
 the units, enables linger for `finn` and restarts
 `finn-comp`/`finn-session`/`finn-shell`.
 
+## On an Apple Silicon Mac
+
+```sh
+brew install lima qemu
+vm/lima-setup.sh          # create the VM, upgrade it, deploy, start the session
+```
+
+`vm/lima-setup.sh` creates a Lima instance called `finnos` from
+`vm/lima.yaml` (Arch Linux ARM under QEMU, with a window), brings the 2022
+cloud image up to date, and runs `vm/deploy.sh` against it. The desktop
+appears in the QEMU window. Running it again only redeploys.
+
+It prints the two variables the other scripts need to reach a Lima VM, since
+it has no fixed address:
+
+```sh
+export FINN_HOST=lima-finnos FINN_SSH_OPTS="-F $HOME/.lima/finnos/ssh.config"
+vm/deploy.sh
+vm/shot.sh out.png
+```
+
+What is different about this VM, and why:
+
+- QEMU, not Apple's Virtualization.framework: the Arch Linux ARM cloud image
+  stops within a second of starting under `vz`.
+- `/boot` is 200 MB, so the kernel's device trees and `Image.gz` are not
+  extracted (`NoExtract` in `/etc/pacman.conf`); QEMU supplies its own tree.
+- The kernel command line carries `net.ifnames=0`, because the image's
+  network configuration is written for `eth0`.
+- `finn-comp` runs with `WLR_RENDERER=pixman` (a drop-in under
+  `finn-comp.service.d`). With no host GPU wlroots picks GLES2 on llvmpipe,
+  and the QEMU window then shows stale blocks that a `grim` capture does not.
+
 ## The session it starts
 
 - `finn-comp` as root on tty1, `WLR_BACKENDS=drm`,
