@@ -27,10 +27,15 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:base-devel
     steps:
+      # git goes in before the checkout: without it actions/checkout falls
+      # back to a tarball with no .git, and "the tree is clean" has nothing
+      # to compare against.
+      - name: git
+        run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@v4
       - name: the dependencies
         run: |
-          pacman -Syu --noconfirm --needed git wlroots0.20 wayland \
+          pacman -S --noconfirm --needed wlroots0.20 wayland \
             wayland-protocols libxkbcommon freetype2 fontconfig libdrm \
             libinput mesa seatd grim
       - name: build
@@ -38,4 +43,8 @@ jobs:
       - name: the runtime tests
         run: make test-unit
       - name: the tree is clean
-        run: git diff --exit-code
+        # The checkout belongs to the runner's user and the container runs
+        # as root, so git refuses the directory until it is marked safe.
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git diff --exit-code
