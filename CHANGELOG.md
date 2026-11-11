@@ -15,6 +15,9 @@ and the changes to it are worth reading.
   through an ssh config file instead of an address.
 - `vm/shot.sh` removes its capture as `finn`; it failed on a VM whose ssh
   user is not `finn`, because the file is `finn`'s in a sticky `/tmp`.
+- `vm/restart-compositor.sh` restarts the compositor. It named `finnd`, a
+  unit that does not exist, and systemd refuses the whole request when one
+  unit in it is missing, so nothing was restarted.
 - `docs/hardware.md` records what was seen there: the session on
   `virtio-gpu`, the stale blocks the GLES2-on-llvmpipe renderer shows in the
   QEMU window (Pixman does not), a pointer click, and the Escape key.

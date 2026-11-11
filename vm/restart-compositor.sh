@@ -22,6 +22,6 @@ else
 fi
 
 echo "==> restarting the compositor"
-    rsh "$HOST" "$SUDO systemctl restart finnd finn-comp"
+    rsh "$HOST" "$SUDO systemctl restart finn-comp"
 
 echo "==> done"
