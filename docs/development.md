@@ -1,23 +1,27 @@
 # Development
 
-The host is an editor. The build machine is an Arch machine or the dev VM; it
-has the DRM, Wayland, wlroots, FreeType and input headers the compositor needs.
+The host can run pure C++20 unit tests and Python checks. Full Wayland, Qt6,
+and compositor builds run on an Arch Linux machine or the dev VM.
 
 ## Build and test
 
 ```sh
-make                 # libfinnui, finn-comp, finn-session, finn-shell, apps
-make test            # host tests: registry, tokens, base wiring
-make test-unit    # the C++ unit test, under ASan and UBSan
-make lint            # style, generated tokens, no app ids in the compositor
+make              # finn-comp, finn-session, libfinnui, qtplugins, finn-shell, apps, tools
+make test         # host Python tests: base wiring, catalogue, tokens, icons
+make test-unit    # C++20 unit tests under ASan and UBSan
+make lint         # style, generated tokens check, no app ids in src/comp
+make install      # installs binaries, libfinnui, FinnSDK CMake config, Qt6 plugins, assets
 ```
 
-Dependencies:
+Arch dependencies (matching `base/packages.*`):
 
 ```sh
-sudo pacman -S base-devel pkgconf wlroots0.20 libsystemd wayland \
-    wayland-protocols libxkbcommon freetype2 fontconfig libdrm libinput \
-    mesa seatd grim
+sudo pacman -S base-devel cmake ninja pkgconf wlroots0.20 libsystemd wayland \
+    wayland-protocols libxkbcommon libdrm libinput seatd grim mesa \
+    qt6-base qt6-wayland qt6-svg qt6-imageformats qt6-tools qt6-declarative layer-shell-qt \
+    xorg-xwayland xdg-desktop-portal xdg-desktop-portal-wlr \
+    desktop-file-utils shared-mime-info upower flatpak \
+    pipewire pipewire-pulse networkmanager bluez
 ```
 
 ## Deploy to the VM
@@ -27,18 +31,21 @@ vm/deploy.sh
 vm/shot.sh /tmp/shot.png
 ```
 
-`vm/deploy.sh` sends the tree as a tar stream (the VM has no rsync), builds it
-in `~/finnos`, installs it, installs the units, enables linger for `finn` and
-restarts the session. `vm/shot.sh` captures with grim against
-`/run/finn/wayland-0`.
+On Apple Silicon using Lima (`vm/lima-setup.sh`), pass the Lima connection
+variables printed by setup:
 
-On an Apple Silicon Mac, `vm/lima-setup.sh` creates the VM and deploys to
-it; see [vm/README.md](../vm/README.md).
+```sh
+export FINN_HOST=lima-finnos FINN_SSH_OPTS="-F $HOME/.lima/finnos/ssh.config"
+vm/deploy.sh
+vm/shot.sh /tmp/shot.png
+```
+
+`vm/deploy.sh` streams the source tree over tar to `~/finnos`, installs any
+missing Arch packages, runs `make` and `sudo make install`, runs `ldconfig`,
+updates `/var/lib/finn/installed`, installs the units, enables linger for
+`finn`, and restarts the session.
 
 ## Run it by hand
-
-The compositor is the only program that needs the display device. The session,
-the shell and the apps are clients and can be started one at a time.
 
 Headless, in a private runtime directory:
 
@@ -52,49 +59,41 @@ XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
 WAYLAND_DISPLAY=wayland-0 src/session/finn-session &
 
 XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-WAYLAND_DISPLAY=wayland-0 src/shell/finn-shell &
+WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland \
+QT_QPA_PLATFORMTHEME=finn QT_STYLE_OVERRIDE=finn \
+build/src/shell/finn-shell &
 
 XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
 WAYLAND_DISPLAY=wayland-0 src/session/finn-session --launch files
 ```
 
-Capture it:
+Capture a frame:
 
 ```sh
 XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" WAYLAND_DISPLAY=wayland-0 grim /tmp/shot.png
 ```
 
-DRM needs a seat. On a machine with `seatd` running, the compositor opens the
-GPU through it; the display socket is `/run/finn/wayland-0`, so the clients
-use an absolute `WAYLAND_DISPLAY` and the user's own `XDG_RUNTIME_DIR`:
-
-```sh
-export XDG_RUNTIME_DIR=/run/finn
-WLR_BACKENDS=drm,libinput LIBSEAT_BACKEND=seatd src/comp/finn-comp
-
-sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 \
-    WAYLAND_DISPLAY=/run/finn/wayland-0 src/session/finn-session
-```
-
-The unit files in `base/` are the canonical version of those environments.
-
-## Looking at a change
-
-A compositor change that compiles is not a compositor change that works.
-Capture the frame and read it: use `vm/shot.sh` or grim.
+On DRM (`seatd`), `finn-comp` exports `/run/finn/wayland-0` (`0660 root:finn`)
+and clients run as `finn` with `WAYLAND_DISPLAY=/run/finn/wayland-0`.
+See the systemd unit files under `base/` for canonical environments.
 
 ## Logs
 
 - `journalctl -u finn-comp -b`
 - `journalctl -u finn-session -b`
 - `journalctl -u finn-shell -b`
-- a headless run logs to stderr.
+- `journalctl -u finn-wallpaper -b`
 
-The compositor logs the layer-surface names and the toplevel map/unmap
-events at `INFO`; a missing map is the first thing to look for.
+## App development with FinnSDK
 
-## App development
+Check your environment and scaffold an app inside FinnOS:
 
-Use [sdk/template](../sdk/template), link against the installed
-`libfinnui.a`, and keep the app in its own directory. See
-[apps.md](apps.md).
+```sh
+finn-sdk check
+finn-sdk new hello --name "Hello FinnOS"
+finn-sdk build hello
+finn-sdk run hello
+```
+
+Or copy [`sdk/template`](../sdk/template) and link `FinnSDK::FinnUI` in CMake.
+See [sdk.md](sdk.md) and [apps.md](apps.md).

@@ -1,18 +1,16 @@
-CXX      ?= c++
-CXXFLAGS ?= -std=c++20 -O2 -g -Wall -Wextra -Wpedantic
-FINNUI_CFLAGS ?= $(shell pkg-config --cflags finnui 2>/dev/null || echo -I/usr/local/include)
-FINNUI_LIBS   ?= $(shell pkg-config --libs --static finnui 2>/dev/null || \
-                   echo /usr/local/lib/libfinnui.a -lwayland-client -lxkbcommon -lfreetype -lwebp -lm)
+BUILD_DIR ?= build
 
-BIN = finn-counter
+.PHONY: all run clean
 
-$(BIN): main.cpp
-	$(CXX) $(CXXFLAGS) $(FINNUI_CFLAGS) -o $@ main.cpp $(FINNUI_LIBS)
+all:
+	cmake -B $(BUILD_DIR) -G Ninja
+	cmake --build $(BUILD_DIR)
 
-install: $(BIN)
-	install -Dm755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+run: all
+	WAYLAND_DISPLAY=$${WAYLAND_DISPLAY:-/run/finn/wayland-0} \
+	QT_QPA_PLATFORMTHEME=$${QT_QPA_PLATFORMTHEME:-finn} \
+	QT_STYLE_OVERRIDE=$${QT_STYLE_OVERRIDE:-finn} \
+	./$(BUILD_DIR)/finn-counter
 
 clean:
-	rm -f $(BIN)
-
-.PHONY: install clean
+	rm -rf $(BUILD_DIR)

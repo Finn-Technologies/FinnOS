@@ -58,10 +58,13 @@ tar -C "$ROOT" -cf - \
     --exclude='src/comp/build' \
     --exclude='src/session/finn-session' \
     --exclude='src/shell/finn-shell' \
-    --exclude='src/ui/libfinnui.a' \
-    --exclude='src/ui/build' \
-    --exclude='apps/files/finn-files' \
-    --exclude='apps/settings/finn-settings' \
+    --exclude='build' \
+    --exclude='tests/unit/test_app_registry' \
+    --exclude='tests/unit/test_animation' \
+    --exclude='tests/unit/test_session_client' \
+    --exclude='tests/unit/test_search' \
+    --exclude='tests/unit/test_compat' \
+    --exclude='tests/unit/test_sys_files' \
     . | tar -C "$BUILD" -xf -
 
 # makepkg builds from its srcdir, not from the directory the PKGBUILD sits
@@ -82,8 +85,10 @@ license=('MIT')
 source=('finnos-runtime.tar.gz')
 sha256sums=('SKIP')
 depends=('glibc' 'wlroots0.20' 'systemd-libs' 'freetype2' 'fontconfig' 'libwebp'
-         'libdrm' 'libinput' 'libxkbcommon' 'wayland' 'mesa' 'libglvnd' 'seatd')
-makedepends=('base-devel' 'pkgconf' 'wayland')
+         'libdrm' 'libinput' 'libxkbcommon' 'wayland' 'mesa' 'libglvnd' 'seatd'
+         'qt6-base' 'qt6-wayland' 'qt6-svg' 'layer-shell-qt' 'xorg-xwayland')
+makedepends=('base-devel' 'cmake' 'ninja' 'pkgconf' 'wayland' 'wayland-protocols'
+             'qt6-tools' 'qt6-declarative')
 options=(!strip)
 
 build() {

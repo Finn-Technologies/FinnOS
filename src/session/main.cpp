@@ -1,60 +1,93 @@
-// Daemon and CLI entry point for finn-session, the user application broker.
-// Manages application execution with sanitized environment blocks and enforces
-// user credential boundaries using SO_PEERCRED on UNIX domain sockets.
+// finn-session: FinnOS user-level session broker & application launcher.
+// Unifies native FinnOS Qt6 apps, Linux/Flatpak .desktop applications,
+// FinnSDK developer apps, and Windows (Wine) executables behind a single
+// SO_PEERCRED-protected UNIX socket with posix_spawn process isolation.
 
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
+#include "common/paths.hpp"
+#include "compat/desktop_entry.hpp"
+#include "compat/wine_runner.hpp"
+#include "session/app_registry.hpp"
+#include "session/client.hpp"
+#include "system/sys_files.hpp"
+
+#include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <cerrno>
-#include <csignal>
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <spawn.h>
-
-#include "common/paths.hpp"
-#include "session/app_registry.hpp"
-#include "session/client.hpp"
-
 extern char** environ;
 
-namespace finn {
+namespace fs = std::filesystem;
+
 namespace {
 
-volatile std::sig_atomic_t g_running = 1;
+volatile sig_atomic_t g_quit = 0;
 
-void stop_handler(int) { g_running = 0; }
+void handle_signal(int) { g_quit = 1; }
 
-std::string catalogue_path() {
-    const char* value = std::getenv("FINN_APPS");
-    return value != nullptr && *value != '\0' ? value : kCataloguePath;
+void reap_children() {
+    while (waitpid(-1, nullptr, WNOHANG) > 0) {
+    }
 }
 
-std::string installed_path() {
-    const char* value = std::getenv("FINN_INSTALLED");
-    return value != nullptr && *value != '\0' ? value : kInstalledPath;
+std::string sanitize(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (char c : text) {
+        out.push_back((c == '|' || c == '\n' || c == '\r') ? ' ' : c);
+    }
+    return out;
+}
+
+std::string ascii_lower(std::string_view s) {
+    std::string out(s);
+    for (char& c : out) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
+bool ends_with_ci(std::string_view s, std::string_view ext) {
+    if (s.size() < ext.size()) return false;
+    return ascii_lower(s.substr(s.size() - ext.size())) == ext;
+}
+
+std::string read_xdisplay() {
+    std::ifstream in(finn::kXwaylandDisplayFile);
+    std::string line;
+    if (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+            line.pop_back();
+        }
+        return line;
+    }
+    const char* env_disp = std::getenv("DISPLAY");
+    return env_disp ? std::string(env_disp) : std::string{};
 }
 
 bool write_all(int fd, std::string_view text) {
-    std::size_t done = 0;
-    while (done < text.size()) {
-        const ssize_t count = write(fd, text.data() + done, text.size() - done);
-        if (count > 0) {
-            done += static_cast<std::size_t>(count);
-        } else if (count < 0 && errno == EINTR) {
+    std::size_t off = 0;
+    while (off < text.size()) {
+        const ssize_t n = ::write(fd, text.data() + off, text.size() - off);
+        if (n > 0) {
+            off += static_cast<std::size_t>(n);
+        } else if (n < 0 && errno == EINTR) {
             continue;
         } else {
             return false;
@@ -65,14 +98,14 @@ bool write_all(int fd, std::string_view text) {
 
 bool read_line(int fd, std::string* line) {
     line->clear();
-    char byte = 0;
+    char ch = 0;
     while (true) {
-        const ssize_t count = read(fd, &byte, 1);
-        if (count == 1) {
-            if (byte == '\n') return true;
+        const ssize_t n = ::read(fd, &ch, 1);
+        if (n == 1) {
+            if (ch == '\n') return true;
             if (line->size() >= 4096) return false;
-            line->push_back(byte);
-        } else if (count == 0) {
+            line->push_back(ch);
+        } else if (n == 0) {
             return !line->empty();
         } else if (errno == EINTR) {
             continue;
@@ -82,263 +115,410 @@ bool read_line(int fd, std::string* line) {
     }
 }
 
-std::string sanitise(std::string_view value) {
-    std::string out(value);
-    for (char& c : out) {
-        if (c == '|' || c == '\n' || c == '\r') c = ' ';
+bool spawn_argv(const std::vector<std::string>& argv,
+                const std::vector<std::pair<std::string, std::string>>& extra_env,
+                std::string* error) {
+    if (argv.empty()) {
+        if (error) *error = "empty launch command";
+        return false;
     }
-    return out;
-}
-
-std::string app_list_reply() {
-    const auto registry = AppRegistry::load(catalogue_path(), installed_path());
-    if (!registry.has_value()) {
-        return "ERR catalogue unavailable\n";
+    if (!finn::compat::executable_exists(argv[0])) {
+        if (error) *error = "executable not found: " + argv[0];
+        return false;
     }
-    std::string reply = "OK count=" + std::to_string(registry->size()) + "\n";
-    for (const App& app : registry->apps()) {
-        reply += app.id + "|" + (app.installed ? "1" : "0") + "|" +
-                 sanitise(app.name) + "|" + sanitise(app.icon) + "\n";
-    }
-    return reply;
-}
 
-// Constructs a strictly filtered environment and redirects standard streams
-// to /dev/null so launched applications cannot pollute or block session daemon IO.
-std::string launch_reply(std::string_view id) {
-    const auto registry = AppRegistry::load(catalogue_path(), installed_path());
-    if (!registry.has_value()) return "ERR catalogue unavailable\n";
-    const App* app = registry->find(id);
-    if (app == nullptr) return "ERR unknown app\n";
-    if (!app->installed) return "ERR not installed\n";
-    if (!app->launchable()) return "ERR not a native launch\n";
-    if (access(app->command.c_str(), X_OK) != 0) return "ERR command not executable\n";
+    // Build merged child environment preserving user session + Qt FinnOS theme.
+    std::vector<std::pair<std::string, std::string>> overrides = {
+        {"WAYLAND_DISPLAY", finn::kWaylandPath},
+        {"QT_QPA_PLATFORM", "wayland;xcb"},
+        {"QT_QPA_PLATFORMTHEME", "finn"},
+        {"QT_STYLE_OVERRIDE", "finn"},
+        {"XDG_CURRENT_DESKTOP", "FinnOS"},
+        {"XDG_SESSION_TYPE", "wayland"},
+        {"GDK_BACKEND", "wayland,x11"},
+        {"SDL_VIDEODRIVER", "wayland,x11"},
+    };
+    const std::string xdisp = read_xdisplay();
+    if (!xdisp.empty()) overrides.emplace_back("DISPLAY", xdisp);
+    for (const auto& kv : extra_env) overrides.push_back(kv);
 
-    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
-    if (runtime == nullptr || *runtime == '\0') return "ERR XDG_RUNTIME_DIR is unset\n";
-
-    std::vector<std::string> envs;
-    envs.push_back(std::string("WAYLAND_DISPLAY=") + kWaylandPath);
-    envs.push_back(std::string("XDG_RUNTIME_DIR=") + runtime);
-    envs.push_back("XDG_SESSION_TYPE=wayland");
-    envs.push_back("XDG_CURRENT_DESKTOP=FinnOS");
-    envs.push_back("PATH=/usr/local/bin:/usr/bin:/bin");
-    envs.push_back("FINN_SESSION=1");
-    if (const char* dark = std::getenv("FINN_DARK"); dark != nullptr && *dark != '\0') {
-        envs.push_back(std::string("FINN_DARK=") + dark);
-    }
-    if (const char* icons = std::getenv("FINN_ICON_DIR");
-        icons != nullptr && *icons != '\0') {
-        envs.push_back(std::string("FINN_ICON_DIR=") + icons);
-    }
-    if (const char* font = std::getenv("FINN_FONT"); font != nullptr && *font != '\0') {
-        envs.push_back(std::string("FINN_FONT=") + font);
-    }
-    const char* home = std::getenv("HOME");
-    if (home != nullptr && *home != '\0') envs.push_back(std::string("HOME=") + home);
-    std::vector<char*> envp;
-    envp.reserve(envs.size() + 1);
-    for (std::string& value : envs) envp.push_back(value.data());
-    envp.push_back(nullptr);
-
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
-
-    std::vector<char*> argv;
-    argv.push_back(const_cast<char*>(app->command.c_str()));
-    argv.push_back(nullptr);
-
-    pid_t pid = -1;
-    const int result = posix_spawn(&pid, app->command.c_str(), &actions, nullptr,
-                                   argv.data(), envp.data());
-    posix_spawn_file_actions_destroy(&actions);
-    if (result != 0) {
-        return "ERR could not start " + app->id + ": " + std::strerror(result) + "\n";
-    }
-    return "OK pid=" + std::to_string(static_cast<long>(pid)) + "\n";
-}
-
-std::string handle_request(std::string_view request) {
-    if (request == "PING") return "OK finn-session 1\n";
-    if (request == "APP.LIST") return app_list_reply();
-    if (request.rfind("APP.LAUNCH ", 0) == 0) {
-        const std::string_view id = request.substr(11);
-        if (id.empty() || id.find(' ') != std::string_view::npos) {
-            return "ERR APP.LAUNCH takes one app id\n";
-        }
-        return launch_reply(id);
-    }
-    if (request == "QUIT") return "OK\n";
-    return "ERR unknown request\n";
-}
-
-std::string socket_path() { return session_socket_path(); }
-
-// Ensures parent directory permissions are restricted to user-only (0700)
-// and unlinks dangling sockets from unclean previous shutdowns before binding.
-bool prepare_socket(const std::string& path, std::string* error) {
-    const std::filesystem::path parent = std::filesystem::path(path).parent_path();
-    if (!parent.empty()) {
-        std::error_code code;
-        std::filesystem::create_directories(parent, code);
-        if (code) {
-            *error = "cannot create " + parent.string() + ": " + code.message();
-            return false;
-        }
-        if (chmod(parent.c_str(), 0700) != 0 && errno != EPERM) {
-            *error = std::string("cannot chmod ") + parent.string() + ": " +
-                     std::strerror(errno);
-            return false;
+    std::vector<std::string> env_storage;
+    if (environ != nullptr) {
+        for (char** ep = environ; *ep != nullptr; ++ep) {
+            const std::string entry(*ep);
+            const std::size_t eq = entry.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string key = entry.substr(0, eq);
+            bool replaced = false;
+            for (const auto& [ok, _] : overrides) {
+                if (ok == key) {
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) env_storage.push_back(entry);
         }
     }
-    struct stat status{};
-    if (lstat(path.c_str(), &status) == 0) {
-        if (!S_ISSOCK(status.st_mode)) {
-            *error = path + " exists and is not a socket";
-            return false;
-        }
-        if (unlink(path.c_str()) != 0) {
-            *error = std::string("cannot remove stale socket: ") + std::strerror(errno);
-            return false;
-        }
+    for (const auto& [k, v] : overrides) {
+        env_storage.push_back(k + "=" + v);
+    }
+
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(argv.size() + 1);
+    for (const std::string& a : argv) argv_ptrs.push_back(const_cast<char*>(a.c_str()));
+    argv_ptrs.push_back(nullptr);
+
+    std::vector<char*> env_ptrs;
+    env_ptrs.reserve(env_storage.size() + 1);
+    for (std::string& e : env_storage) env_ptrs.push_back(const_cast<char*>(e.c_str()));
+    env_ptrs.push_back(nullptr);
+
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+
+    pid_t pid = 0;
+    const int rc = ::posix_spawnp(&pid, argv[0].c_str(), nullptr, &attr,
+                                  argv_ptrs.data(), env_ptrs.data());
+    posix_spawnattr_destroy(&attr);
+    if (rc != 0) {
+        if (error) *error = std::string("spawn failed: ") + std::strerror(rc);
+        return false;
     }
     return true;
 }
 
-int run_server() {
-    const std::string path = socket_path();
-    std::string error;
-    if (!prepare_socket(path, &error)) {
-        std::fprintf(stderr, "finn-session: %s\n", error.c_str());
-        return 1;
-    }
-    if (path.size() >= sizeof(sockaddr_un::sun_path)) {
-        std::fprintf(stderr, "finn-session: socket path is too long\n");
-        return 1;
+bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
+    if (!app.installed || !app.launchable()) {
+        if (error) *error = "app is not installed or launchable: " + app.id;
+        return false;
     }
 
-    const int listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (listen_fd < 0) {
-        std::fprintf(stderr, "finn-session: socket: %s\n", std::strerror(errno));
-        return 1;
-    }
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    std::memcpy(address.sun_path, path.c_str(), path.size());
-    if (bind(listen_fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0) {
-        std::fprintf(stderr, "finn-session: bind %s: %s\n", path.c_str(),
-                     std::strerror(errno));
-        close(listen_fd);
-        return 1;
-    }
-    chmod(path.c_str(), 0600);
-    if (listen(listen_fd, 16) != 0) {
-        std::fprintf(stderr, "finn-session: listen: %s\n", std::strerror(errno));
-        close(listen_fd);
-        return 1;
-    }
-
-    struct sigaction action{};
-    action.sa_handler = stop_handler;
-    sigaction(SIGINT, &action, nullptr);
-    sigaction(SIGTERM, &action, nullptr);
-    std::signal(SIGCHLD, SIG_IGN);
-
-    std::fprintf(stderr, "finn-session: listening on %s\n", path.c_str());
-    while (g_running != 0) {
-        pollfd poll_fd{};
-        poll_fd.fd = listen_fd;
-        poll_fd.events = POLLIN;
-        const int ready = poll(&poll_fd, 1, 500);
-        if (ready < 0) {
-            if (errno == EINTR) continue;
-            break;
+    if (app.source == finn::AppSource::kWindows) {
+        std::vector<std::string> extra;
+        if (!arg.empty()) extra.emplace_back(arg);
+        const auto plan = finn::compat::build_wine_launch(
+            app.command, extra, app.desktop_file, read_xdisplay());
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
         }
-        if (ready == 0) continue;
-        const int fd = accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC);
-        if (fd < 0) {
-            if (errno == EINTR) continue;
-            break;
+        if (!spawn_argv(plan.argv, plan.env, error)) return false;
+        finn::sys::record_recent_app(app.id);
+        return true;
+    }
+
+    std::vector<std::string> argv;
+    if (app.source == finn::AppSource::kDesktop ||
+        app.source == finn::AppSource::kFlatpak) {
+        argv = finn::compat::expand_desktop_exec(app.command, app.icon, app.name,
+                                                 app.desktop_file, arg);
+        if (app.terminal && !argv.empty()) {
+            std::vector<std::string> wrapped = {"/usr/local/bin/finn-terminal", "-e"};
+            wrapped.insert(wrapped.end(), argv.begin(), argv.end());
+            argv = std::move(wrapped);
         }
+    } else {
+        argv = finn::compat::expand_desktop_exec(app.command, {}, {}, {}, arg);
+    }
+
+    if (!spawn_argv(argv, {}, error)) return false;
+    finn::sys::record_recent_app(app.id);
+    return true;
+}
+
+bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
+                      std::string* error) {
+    const std::string t(target);
+    if (t.empty()) {
+        if (error) *error = "empty target";
+        return false;
+    }
+    if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0) {
+        // Launch first installed Linux browser (.desktop Internet app) or xdg-open.
+        for (const auto& app : reg.apps()) {
+            if (app.installed && app.source != finn::AppSource::kNative &&
+                app.category == "Internet") {
+                return spawn_app(app, t, error);
+            }
+        }
+        return spawn_argv({"xdg-open", t}, {}, error);
+    }
+
+    std::error_code ec;
+    if (fs::is_directory(t, ec)) {
+        if (const finn::App* files = reg.find("files")) return spawn_app(*files, t, error);
+    }
+    if (ends_with_ci(t, ".exe") || ends_with_ci(t, ".msi")) {
+        const auto plan =
+            finn::compat::build_wine_launch(t, {}, {}, read_xdisplay());
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        return spawn_argv(plan.argv, plan.env, error);
+    }
+    if (ends_with_ci(t, ".png") || ends_with_ci(t, ".jpg") || ends_with_ci(t, ".jpeg") ||
+        ends_with_ci(t, ".webp") || ends_with_ci(t, ".svg") || ends_with_ci(t, ".bmp") ||
+        ends_with_ci(t, ".gif")) {
+        if (const finn::App* viewer = reg.find("viewer")) return spawn_app(*viewer, t, error);
+    }
+    if (ends_with_ci(t, ".txt") || ends_with_ci(t, ".md") || ends_with_ci(t, ".cpp") ||
+        ends_with_ci(t, ".hpp") || ends_with_ci(t, ".c") || ends_with_ci(t, ".h") ||
+        ends_with_ci(t, ".py") || ends_with_ci(t, ".sh") || ends_with_ci(t, ".json") ||
+        ends_with_ci(t, ".conf") || ends_with_ci(t, ".ini") || ends_with_ci(t, ".log")) {
+        if (const finn::App* notes = reg.find("notes")) return spawn_app(*notes, t, error);
+    }
+    if (ends_with_ci(t, ".desktop")) {
+        const auto entry = finn::compat::parse_desktop_file(t, "desktop", false);
+        if (entry.has_value()) {
+            const auto argv = finn::compat::expand_desktop_exec(
+                entry->exec, entry->icon, entry->name, entry->desktop_file, {});
+            return spawn_argv(argv, {}, error);
+        }
+    }
+    return spawn_argv({"xdg-open", t}, {}, error);
+}
+
+bool check_peer_cred(int client_fd) {
 #ifdef SO_PEERCRED
-        // Rejects connections from processes running under a different UID to prevent
-        // unauthorized users from spawning applications within this user's session.
-        ucred credentials{};
-        socklen_t length = sizeof credentials;
-        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &credentials, &length) == 0 &&
-            credentials.uid != getuid()) {
-            close(fd);
-            continue;
-        }
+    struct ucred cred{};
+    socklen_t len = sizeof cred;
+    if (::getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
+        return false;
+    }
+    return cred.uid == ::getuid() || cred.uid == 0;
+#else
+    (void)client_fd;
+    return true;
 #endif
-        std::string request;
-        if (read_line(fd, &request)) {
-            const std::string reply = handle_request(request);
-            write_all(fd, reply);
-            if (request == "QUIT") g_running = 0;
+}
+
+std::string build_compat_reply() {
+    const auto wine = finn::compat::probe_wine_runtime();
+    const std::string xdisp = read_xdisplay();
+    const bool has_xwayland = wine.xwayland_available || !xdisp.empty();
+    const bool has_flatpak = finn::compat::executable_exists("flatpak");
+    return "OK arch=" + wine.host_arch + "|wayland=" + finn::kWaylandPath +
+           "|display=" + xdisp + "|xwayland=" + (has_xwayland ? "1" : "0") +
+           "|wine=" + (wine.ready ? "1" : "0") +
+           "|flatpak=" + (has_flatpak ? "1" : "0") +
+           "|wine_summary=" + sanitize(wine.summary) + "\n";
+}
+
+void handle_client(int fd) {
+    if (!check_peer_cred(fd)) {
+        (void)write_all(fd, "ERR permission denied\n");
+        return;
+    }
+    std::string line;
+    if (!read_line(fd, &line)) return;
+
+    if (line == "PING") {
+        (void)write_all(fd, "OK pong\n");
+        return;
+    }
+    if (line == "QUIT") {
+        (void)write_all(fd, "OK bye\n");
+        g_quit = 1;
+        return;
+    }
+    if (line == "COMPAT.STATUS") {
+        (void)write_all(fd, build_compat_reply());
+        return;
+    }
+
+    const finn::AppRegistry reg =
+        finn::AppRegistry::load_all(finn::kCataloguePath, finn::kInstalledPath);
+
+    if (line == "APP.LIST") {
+        std::string reply = "OK count=" + std::to_string(reg.size()) + "\n";
+        for (const finn::App& app : reg.apps()) {
+            reply += sanitize(app.id) + "|" + (app.installed ? "1" : "0") + "|" +
+                     sanitize(app.name) + "|" + sanitize(app.icon) + "|" +
+                     finn::app_source_name(app.source) + "|" +
+                     sanitize(app.category) + "|" + sanitize(app.note) + "\n";
         }
-        close(fd);
+        (void)write_all(fd, reply);
+        return;
     }
 
-    close(listen_fd);
-    unlink(path.c_str());
-    return 0;
-}
+    if (line.rfind("APP.LAUNCH ", 0) == 0) {
+        std::string payload = line.substr(11);
+        std::string id = payload;
+        std::string arg;
+        const std::size_t tab = payload.find('\t');
+        if (tab != std::string::npos) {
+            id = payload.substr(0, tab);
+            arg = payload.substr(tab + 1);
+        }
+        const finn::App* app = reg.find(id);
+        if (!app) {
+            (void)write_all(fd, "ERR unknown app: " + sanitize(id) + "\n");
+            return;
+        }
+        std::string err;
+        if (!spawn_app(*app, arg, &err)) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK launched\n");
+        return;
+    }
 
-int client_list() {
-    SessionClient client;
-    std::string error;
-    std::vector<SessionApp> apps;
-    if (!client.list(&apps, &error)) {
-        std::fprintf(stderr, "finn-session: %s\n", error.c_str());
-        return 1;
+    if (line.rfind("APP.OPEN ", 0) == 0) {
+        std::string err;
+        if (!open_path_or_url(reg, line.substr(9), &err)) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK opened\n");
+        return;
     }
-    for (const SessionApp& app : apps) {
-        std::printf("%s\t%s\t%s\n", app.id.c_str(),
-                    app.installed ? "installed" : "available", app.name.c_str());
-    }
-    return 0;
-}
 
-int client_launch(std::string_view id) {
-    SessionClient client;
-    std::string error;
-    if (!client.launch(id, &error)) {
-        std::fprintf(stderr, "finn-session: %s\n", error.c_str());
-        return 1;
+    if (line.rfind("WIN.RUN ", 0) == 0) {
+        const std::string payload = line.substr(8);
+        const std::size_t bar = payload.find('|');
+        const std::string exe = bar == std::string::npos ? payload : payload.substr(0, bar);
+        const std::string prefix = bar == std::string::npos ? "" : payload.substr(bar + 1);
+        const auto plan = finn::compat::build_wine_launch(exe, {}, prefix, read_xdisplay());
+        if (!plan.ok) {
+            (void)write_all(fd, "ERR " + sanitize(plan.error) + "\n");
+            return;
+        }
+        std::string err;
+        if (!spawn_argv(plan.argv, plan.env, &err)) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK launched\n");
+        return;
     }
-    return 0;
+
+    if (line.rfind("POWER.ACTION ", 0) == 0) {
+        const std::string action = line.substr(13);
+        std::string err;
+        bool ok = false;
+        if (action == "reboot") {
+            ok = spawn_argv({"systemctl", "reboot"}, {}, &err);
+        } else if (action == "poweroff") {
+            ok = spawn_argv({"systemctl", "poweroff"}, {}, &err);
+        } else if (action == "suspend") {
+            ok = spawn_argv({"systemctl", "suspend"}, {}, &err);
+        } else {
+            err = "unsupported power action: " + action;
+        }
+        if (!ok) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK done\n");
+        return;
+    }
+
+    (void)write_all(fd, "ERR unknown command\n");
 }
 
 }  // namespace
-}  // namespace finn
 
 int main(int argc, char** argv) {
-    if (argc > 1 && std::strcmp(argv[1], "--help") == 0) {
-        std::puts(
-            "usage: finn-session [--list | --launch <id>]\n"
-            "\n"
-            "With no arguments it runs the session broker. The broker owns the\n"
-            "catalogue, the installed list and app launch for this user.\n"
-            "\n"
-            "Environment: XDG_RUNTIME_DIR, FINN_APPS, FINN_INSTALLED,\n"
-            "             FINN_SESSION_SOCK (tests).");
-        return 0;
-    }
-    if (argc > 1 && std::strcmp(argv[1], "--version") == 0) {
-        std::puts("finn-session");
-        return 0;
-    }
-    if (argc == 2 && std::strcmp(argv[1], "--list") == 0) return finn::client_list();
-    if (argc == 3 && std::strcmp(argv[1], "--launch") == 0) {
-        return finn::client_launch(argv[2]);
-    }
-    if (argc != 1) {
-        std::fprintf(stderr, "finn-session: unknown arguments\n");
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--version") == 0) {
+            std::puts("finn-session");
+            return 0;
+        }
+        if (std::strcmp(argv[i], "--help") == 0) {
+            std::puts("usage: finn-session [--list | --launch <id>]\n"
+                      "  no argument: run the session broker\n"
+                      "  --list:      ask the running broker for the catalogue\n"
+                      "  --launch:    ask the running broker to launch an app");
+            return 0;
+        }
+        if (std::strcmp(argv[i], "--list") == 0 ||
+            std::strcmp(argv[i], "--launch") == 0) {
+            // A client of the running broker, not a second broker.
+            const bool launch = std::strcmp(argv[i], "--launch") == 0;
+            if (launch && i + 1 >= argc) {
+                std::fputs("finn-session: --launch needs an app id\n", stderr);
+                return 2;
+            }
+            finn::SessionClient client;
+            std::string err;
+            if (!client.connect(&err)) {
+                std::fprintf(stderr, "finn-session: %s\n", err.c_str());
+                return 1;
+            }
+            if (launch) {
+                if (!client.launch(argv[i + 1], &err)) {
+                    std::fprintf(stderr, "finn-session: %s\n", err.c_str());
+                    return 1;
+                }
+                std::puts("OK");
+                return 0;
+            }
+            std::vector<finn::SessionApp> apps;
+            if (!client.list(&apps, &err)) {
+                std::fprintf(stderr, "finn-session: %s\n", err.c_str());
+                return 1;
+            }
+            for (const auto& a : apps)
+                std::printf("%s\t%s\t%s\t%s\n", a.id.c_str(),
+                            a.installed ? "installed" : "not-installed",
+                            a.source.c_str(), a.name.c_str());
+            return 0;
+        }
+        std::fprintf(stderr, "finn-session: unknown argument: %s\n", argv[i]);
         return 2;
     }
-    return finn::run_server();
+
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    const std::string sock_path = finn::session_socket_path();
+    std::error_code ec;
+    fs::create_directories(fs::path(sock_path).parent_path(), ec);
+    ::unlink(sock_path.c_str());
+
+    const int server_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (server_fd < 0) {
+        std::perror("finn-session: socket");
+        return 1;
+    }
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    if (sock_path.size() >= sizeof(addr.sun_path)) {
+        std::fprintf(stderr, "finn-session: socket path too long: %s\n",
+                     sock_path.c_str());
+        ::close(server_fd);
+        return 1;
+    }
+    std::memcpy(addr.sun_path, sock_path.c_str(), sock_path.size());
+    if (::bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
+        std::perror("finn-session: bind");
+        ::close(server_fd);
+        return 1;
+    }
+    ::chmod(sock_path.c_str(), 0660);
+    if (::listen(server_fd, 32) != 0) {
+        std::perror("finn-session: listen");
+        ::close(server_fd);
+        return 1;
+    }
+    std::fprintf(stderr, "finn-session: listening on %s\n", sock_path.c_str());
+
+    while (!g_quit) {
+        reap_children();
+        const int client_fd = ::accept(server_fd, nullptr, nullptr);
+        if (client_fd < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        handle_client(client_fd);
+        ::close(client_fd);
+    }
+
+    ::close(server_fd);
+    ::unlink(sock_path.c_str());
+    return 0;
 }

@@ -1,16 +1,26 @@
-SUBDIRS = src/ui src/comp src/session src/shell apps/files apps/settings apps/wallpaper
+BUILD_DIR ?= build
+PREFIX    ?= /usr/local
+DESTDIR   ?=
+VM        ?= finn@10.211.55.6
+CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 
-PREFIX  ?= /usr/local
-DESTDIR ?=
-VM      ?= finn@10.211.55.6
+.PHONY: all configure ui qtplugin compositor session shell apps tools \
+        test test-unit check lint install clean deploy help
 
-.PHONY: all ui compositor session shell apps test test-unit check lint \
-        install clean deploy help
+all: compositor session configure
+	cmake --build $(BUILD_DIR)
 
-all: ui compositor session shell apps
+configure: $(BUILD_DIR)/CMakeCache.txt
 
-ui:
-	$(MAKE) -C src/ui
+$(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt src/ui/CMakeLists.txt src/qtplugin/CMakeLists.txt \
+		src/shell/CMakeLists.txt apps/CMakeLists.txt tools/CMakeLists.txt
+	cmake -S . -B $(BUILD_DIR) -G Ninja -DCMAKE_INSTALL_PREFIX=$(PREFIX) $(CMAKE_FLAGS)
+
+ui: configure
+	cmake --build $(BUILD_DIR) --target finnui
+
+qtplugin: configure
+	cmake --build $(BUILD_DIR) --target finnplatformtheme finnstyle
 
 compositor:
 	$(MAKE) -C src/comp
@@ -18,13 +28,16 @@ compositor:
 session:
 	$(MAKE) -C src/session
 
-shell: ui
-	$(MAKE) -C src/shell
+shell: configure
+	cmake --build $(BUILD_DIR) --target finn-shell
 
-apps: ui
-	$(MAKE) -C apps/files
-	$(MAKE) -C apps/settings
-	$(MAKE) -C apps/wallpaper
+apps: configure
+	cmake --build $(BUILD_DIR) --target \
+		finn-wallpaper finn-files finn-settings finn-terminal \
+		finn-notes finn-store finn-viewer finn-monitor
+
+tools: configure
+	cmake --build $(BUILD_DIR) --target finn-open finn-cursors
 
 # The host suite: the registry, the tokens and the base image wiring. It needs
 # no display and no device.
@@ -40,34 +53,48 @@ lint:
 	@scripts/lint.sh
 
 install: all
-	$(MAKE) -C src/ui install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/comp install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/session install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
-	$(MAKE) -C src/shell install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
-	$(MAKE) -C apps/files install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
-	$(MAKE) -C apps/settings install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
-	$(MAKE) -C apps/wallpaper install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
+	DESTDIR=$(DESTDIR) cmake --install $(BUILD_DIR) --prefix $(PREFIX)
 	install -d $(DESTDIR)/usr/share/finn
 	install -m644 assets/apps.registry $(DESTDIR)/usr/share/finn/apps.registry
 	install -m644 VERSION $(DESTDIR)/usr/share/finn/version
+	install -d $(DESTDIR)/usr/share/finn/sdk/template
+	cp -r sdk/template/. $(DESTDIR)/usr/share/finn/sdk/template/
 	install -d $(DESTDIR)/usr/share/finn/icons
 	install -m644 assets/icons/shell/*.svg assets/icons/apps/*.svg \
 		$(DESTDIR)/usr/share/finn/icons/
+	install -d $(DESTDIR)/usr/share/finn/pointers
+	install -m644 assets/pointers/*.svg $(DESTDIR)/usr/share/finn/pointers/
+	install -d $(DESTDIR)/usr/share/icons
+	QT_QPA_PLATFORM=offscreen $(BUILD_DIR)/tools/finn-cursors assets/pointers $(DESTDIR)/usr/share/icons
 	install -d $(DESTDIR)/usr/share/finn/wallpaper
 	install -m644 assets/wallpaper/default.webp assets/wallpaper/setup.webp \
 		$(DESTDIR)/usr/share/finn/wallpaper/
 	install -d $(DESTDIR)/usr/share/fonts/OTF
 	install -m644 assets/fonts/FixelDisplay/*.otf $(DESTDIR)/usr/share/fonts/OTF/
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m755 tools/finn-display $(DESTDIR)$(PREFIX)/bin/finn-display
+	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
 	install -d $(DESTDIR)/usr/bin
-	install -m755 tools/finn-display $(DESTDIR)/usr/bin/finn-display
+	ln -sf $(PREFIX)/bin/finn-display $(DESTDIR)/usr/bin/finn-display
+	ln -sf $(PREFIX)/bin/finn-sdk $(DESTDIR)/usr/bin/finn-sdk
+	ln -sf $(PREFIX)/bin/finn-open $(DESTDIR)/usr/bin/finn-open
+	ln -sf $(PREFIX)/bin/finn-cursors $(DESTDIR)/usr/bin/finn-cursors
+	@if [ -z "$(DESTDIR)" ] && [ -w /etc/ld.so.conf.d ]; then \
+		printf '%s\n' "$(PREFIX)/lib" > /etc/ld.so.conf.d/finn.conf; \
+		ldconfig 2>/dev/null || true; \
+	fi
 
 deploy:
 	FINN_HOST=$(VM) vm/deploy.sh
 
 clean:
-	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done
-	@$(MAKE) -C tests/unit clean
-	@rm -rf tests/__pycache__ tools/__pycache__
+	rm -rf $(BUILD_DIR)
+	$(MAKE) -C src/comp clean
+	$(MAKE) -C src/session clean
+	$(MAKE) -C tests/unit clean
+	rm -rf tests/__pycache__ tools/__pycache__
 
 help:
-	@echo "targets: all test test-unit lint install deploy clean"
+	@echo "targets: all ui qtplugin compositor session shell apps tools test test-unit lint install deploy clean"

@@ -5,6 +5,109 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### 1:1 Figma FinnUX & FinnUI Toolkit Parity, Accessibility, Store, Installer & OOBE
+
+- **Figma Design Sync & Asset Purge**: Replaced legacy `assets/figma/` assets with
+  normalized SVGs directly exported from `"FinnOS - Abhi"` via `figwright` MCP,
+  9 custom pointer SVGs (`assets/pointers/*.svg`), Hugeicons-matched fallbacks
+  (`stroke-width="1.5"`), and landscape-oriented `default.webp` wallpaper.
+- **FinnUI Toolkit (`libfinnui`)**: Added `ChromeMode::FigmaSplit`, `88×28` top-right
+  `FinnWindowControls`, `250px` `FinnSidebar` with `26×26` circular icon badges and
+  pill search bar, `FinnStatCard`, `FinnHeroCard`, `FinnNavRail`, `SpringValue`
+  physics-based animations, and expanded `FinnTokens` (`nav_sel`, `hero_tint`,
+  accessibility tokens, `pointerPixmap`).
+- **FinnUX Shell & Multi-User Lock Screen (`finn-shell`)**: Rebuilt 4-pill Dock,
+  Home Menu, Spotlight Search (`Recommendations` + `Recently asked`), Control Center,
+  `340×80` Notification cards, and macOS-inspired multi-user `LockScreenWindow`
+  with `/etc/passwd` user discovery and password verification.
+- **Settings & Accessibility Suite (`finn-settings`)**: Rebuilt with `FigmaSplit`
+  13-page navigation including `About` (`20:64` 1:1 parity) and Accessibility
+  (Screen Reader, High Contrast, Color Filters, Text Scale, Reduced Motion,
+  Sticky/Filter Keys, Pointer Size) + dynamic compositor `cursor_size` reload.
+- **Finn Store & App Compatibility**: Rebuilt `finn-store` with Windows 11-style
+  `FinnNavRail`, spotlight hero, app detail view, download/update manager, and
+  `android_runner` (Waydroid) alongside Linux (Flatpak/AppImage) and Windows (Wine).
+- **Standalone Installer & OOBE**: Added `finn-installer` (Bare-Metal GUI Installer)
+  and `finn-oobe` matching Figma **First Time Setup** (`36:2`: `"hi."` `Bumbbled`
+  script vector `36:37`, `"How do we talk?"` `36:53` with progressive bottom blur
+  `37:96`, `56×56` circular chevron navigation buttons, Wi-Fi, account, appearance,
+  and completion screen) plus `FinnRibbonAnimation` (6-ring 3D vortex-to-slinky
+  epitrochoid coil animation) shared by the `finn-shell` boot splash (`BootSplashWindow`)
+  and `finn-oobe`.
+
+### Qt6 + C++20 migration, FinnSDK and seven native apps
+
+- The UI, shell and apps moved from the software `Canvas`/FinnUX toolkit to
+  Qt6 + C++20. `libfinnui` is now `FinnSDK::FinnUI` (`FinnApplication`,
+  `FinnWindow`, `FinnLayerWindow`, `FinnThemeManager`, `FinnTokens` and the
+  `Finn*` widgets), with `libfinnplatformtheme.so` (`QT_QPA_PLATFORMTHEME=finn`)
+  and `libfinnstyle.so` (`QT_STYLE_OVERRIDE=finn`) so stock Qt apps follow the
+  palette in `ui/_tokens.fui` and Fixel Display.
+- Developer SDK: `find_package(FinnSDK)`, `<FinnSDK/FinnSDK.hpp>`, the
+  `finn-sdk` CLI (`new`, `build`, `run`, `register`, `check`), `sdk/template`
+  and `docs/sdk.md`.
+- Native apps: Settings, Finn Files, Finn Terminal, Finn Notes, Finn Store,
+  Finn Viewer, Finn Monitor, plus the `finn-wallpaper` layer. `finn-shell` has
+  the dock with running indicators, Spotlight search, Home menu, Control Center
+  and notifications; Wi-Fi, Bluetooth, battery and audio come from
+  NetworkManager, BlueZ, UPower and PipeWire, and are shown as absent when the
+  machine has none.
+- Compatibility: XDG `.desktop` and Flatpak discovery, `finn-open`, on-demand
+  Xwayland in `finn-comp`, PE inspection and per-app Wine prefixes. Wine is
+  reported as unavailable where it is not installed (no ARM64 package here).
+- `finn-session --list` and `--launch <id>` are clients of the running broker
+  again; the docs already described them.
+- Fixes found by looking at the VM: the installed icon directory is flat, so
+  shell glyphs were never found and drew nothing; monochrome glyphs are now
+  tinted with the theme ink and coloured icons keep their colours; the WebP
+  wallpaper needs `qt6-imageformats` (added to the package lists); the terminal
+  grid no longer trips `-Warray-bounds` on GCC 16; Finn Files links
+  `desktop_entry.cpp`.
+- Not done: `finnd`, the app sandbox, compositor-level backdrop blur,
+  multi-monitor, screen lock. Keyboard input into app windows is not driven by
+  any automated test.
+
+### Serious-OS polish: honest states, stagger, proper scaling
+
+- Shell honesty: dock slots, home-menu favorites and search recommendations
+  for apps that are not installed are drawn muted and refuse presses with
+  "<name> is not installed" instead of launching something missing. Only
+  installed rows launch; search results already filtered to installed.
+- Control Center honesty: Wi-Fi, Bluetooth, brightness, volume and media are
+  drawn as disabled "Not available" / "Nothing playing" indicators, matching
+  `docs/architecture.md` (no `finnd` in v1). Dark-appearance toggle still
+  works and writes the settings file. Same 444x300 layout.
+- More animation, same layout: `ease_out_back` overshoot helper plus
+  `stagger(progress, index, count)` in `src/ui/finn/animation.hpp`; home-menu
+  favorites arrive 60 ms apart; dock/menu/control-center/search timelines
+  unchanged otherwise. `FINN_REDUCED_MOTION=1` still makes everything instant.
+- Proper scaling: logical pixels already divide by the `wl_output` scale;
+  `src/finnux/shell.hpp` now also clamps the 713px dock group, 585px menu
+  and 444px control center so narrow surfaces never push chrome off-screen.
+  One output and one scale in v1 stays: no multi-monitor claim.
+- Not built here: browser, Store, sandbox, `finnd`, package manager, screen
+  lock, multi-monitor. The code, `docs/architecture.md` and `docs/roadmap.md`
+  all say so.
+
+### FinnUX: one Qt-derived toolkit for shell, apps and wallpaper
+
+- Added `src/finnux/` (`finnux.hpp`, `theme.hpp`, `widget.hpp`, `app.hpp`,
+  `shell.hpp`, `compositor.hpp`, `docs/design/finnux.md`): FinnUX is the
+  compositor adaptation, desktop and UI toolkit. API is Qt-derived
+  (`Object`, `Button`, `Toggle`, `Slider`, `App`, `LayerApp`) and adapted
+  for FinnOS; backend today is `libfinnui` `Canvas` so the tree builds
+  without Qt. A Qt6 backend keeps the same headers.
+- `finn-shell`, `finn-wallpaper`, Finn Files and Settings now derive from
+  `finnux::App` / `finnux::LayerApp` and use `finnux::shell` geometry +
+  `finnux::glass_tint()` + `finnux::Button` honesty rules. No behaviour
+  change: same Wayland sockets, same scene order, same tokens.
+- `src/comp/server.hpp` includes the FinnUX compositor boundary;
+  `tests/unit/test_finnux.cpp` covers theme, dock/menu/control-center
+  geometry and disabled-refuses-press without a display.
+- Not yet verified on hardware: full `make` + `vm/deploy.sh` +
+  `vm/shot.sh` light/dark + pointer/keyboard matrix on the Arch VM.
+  See `docs/design/finnux.md` and `docs/testing.md`.
+
 ### Alt+Escape no longer quits the session
 
 - Removed the compositor's `Alt+Escape` binding. It was the tinywl example's

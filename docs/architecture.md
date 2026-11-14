@@ -1,121 +1,68 @@
 # Architecture
 
-The programs and the library. There is no hidden fifth process.
+The processes and shared libraries that make up FinnOS.
 
-| Program | Owns | Runs as |
+| Component | Owns | Runs as |
 |---|---|---|
-| `finn-comp` | DRM/headless output, seats, xdg-shell, layer-shell, window management, screencopy | root |
-| `libfinnui` | the app runtime: canvas, text, vector, widgets, Wayland client | a library |
-| `finn-shell` | the dock, taskbar, clock, app menu and control center, as a layer-shell client | `finn` |
-| `finn-session` | the registry, the installed list and app launch | `finn` |
-| first-party apps | their own windows | `finn` |
+| `finn-comp` | DRM/headless output, seats, xdg-shell, layer-shell, foreign-toplevel, Xwayland bridge, screencopy | root |
+| `libfinnui` (`FinnSDK`) | Qt6 C++20 UI library: tokens, theme manager, custom CSD chrome (`FinnWindow`), LayerShell windows, custom widgets, `SessionClient` | shared library |
+| `libfinnplatformtheme` & `libfinnstyle` | Custom Qt6 `QPlatformTheme` and `QProxyStyle` injected via `QT_QPA_PLATFORMTHEME=finn` & `QT_STYLE_OVERRIDE=finn` | Qt6 plugins |
+| `finn-session` | Unified app catalogue, `.desktop`/Flatpak/Wine discovery, launch broker, runtime compat probe | `finn` |
+| `finn-shell` | Dock, active-window indicators, Home Menu, Spotlight Search, Control Center, notifications, lock screen | `finn` |
+| `finn-wallpaper` | Background WebP wallpaper surface (`background` layer) | `finn` |
+| First-party apps | `finn-settings`, `finn-files`, `finn-terminal`, `finn-notes`, `finn-store`, `finn-viewer`, `finn-monitor` | `finn` |
 
-`finnd` — the root authority for power, state, packages and updates — is not
-written yet. [roadmap.md](roadmap.md) says what that means for v1.
+`finnd` — a bespoke privileged system daemon — is not written. Instead, FinnOS integrates directly with standard upstream Linux mechanisms (systemd `logind`, `NetworkManager`, `BlueZ`, `PipeWire`/`wpctl`, `UPower`, and sysfs) when present, and marks missing hardware/services honestly disabled when absent.
 
 ## The display
 
-`finn-comp` uses wlroots 0.20. The backend is `drm` in a session or `headless`
-for tests. It advertises `wl_compositor`, `wl_shm`, `wl_subcompositor`,
-`wl_data_device_manager`, `xdg_wm_base`, `zwlr_layer_shell_v1`,
-`zwlr_screencopy_manager_v1` and `zxdg_output_manager_v1`.
+`finn-comp` uses wlroots 0.20. The backend is `drm` in a hardware session or `headless` for VM/automated verification. It advertises `wl_compositor`, `wl_shm`, `wl_subcompositor`, `wl_data_device_manager`, `xdg_wm_base`, `zwlr_layer_shell_v1`, `zwlr_foreign_toplevel_manager_v1`, `zwlr_screencopy_manager_v1`, `zxdg_output_manager_v1`, and Xwayland on demand when X11 support is enabled.
 
-The scene graph is ordered once:
+The scene graph has one fixed stacking order:
 
 ```
 background → background layer → bottom layer → app toplevels → top layer → overlay
 ```
 
-The background is a layer-shell client, `finn-wallpaper`, in the
-`background` layer. It decodes `/usr/share/finn/wallpaper/default.webp`
-through `libfinnui`, dims it in the dark appearance and takes no input. The
-compositor's own scene rectangle is the fallback for a machine without the
-image. The theme is re-read once a second so a settings change is visible
-without a restart.
+`finn-wallpaper` binds to the `background` layer, decodes `/usr/share/finn/wallpaper/default.webp` through Qt, and applies theme dimming. `finn-shell` surfaces bind to `top` (dock) and `overlay` (popovers, toasts, lock screen) with strict pointer input masks so transparent overlay regions pass clicks cleanly to apps beneath.
 
-There is no server-side decoration. The compositor does not draw a titlebar
-and does not advertise a decoration protocol; a GTK app keeps its own header
-bar, and a native app draws the frame `libfinnui` provides. There is exactly
-one chrome per window.
+There is no server-side decoration. Native `FinnSDK` apps use `FinnWindow` (custom frameless client-side decoration with Figma window controls, collapsible sidebar slot, edge resize, and drag-move via Wayland `startSystemMove`/`startSystemResize`). Foreign Wayland/Qt/GTK/X11 clients keep their native decorations or window frames cleanly.
 
-Window management is in the compositor: move and resize requests from the
-client, maximize to the usable box, focus on click and `Alt+F1` to cycle
-windows. There is no quit chord; a developer restarts the compositor with
-`systemctl restart finn-comp`, and `Ctrl+Alt+F2` gives a login. A
-`wlr_scene` commit happens only when something changed.
+Window management keys:
+- `Alt+F1`: cycle focus across app toplevels
+- `Super` / `Meta` (or Dock Home button): Home Menu
+- `Alt+Space`: Spotlight Search
+- `Ctrl+Alt+F2`: rescue console (`getty@tty2`)
+
+A developer restarts the compositor deliberately with `systemctl restart finn-comp`.
 
 ## Authority
 
-- The display socket is `/run/finn/wayland-0`, `0660`, group `finn`. It is in
-  the shared runtime directory because the compositor is root and the apps are
-  `finn`; root's `$XDG_RUNTIME_DIR` is not reachable by an app. Clients use
-  the absolute path in `WAYLAND_DISPLAY`.
-- Apps are started by `finn-session`, which runs as `finn` and listens on
-  `$XDG_RUNTIME_DIR/finn/session.sock`, `0600`. The protocol is in
-  [session-protocol.md](session-protocol.md).
-- The session never asks root for anything. It reads the catalogue and the
-  installed list and calls `posix_spawn`. The app inherits the user's
-  authority and nothing more.
-- There is no TCP listener and no second door.
+- The Wayland display socket lives at `/run/finn/wayland-0` (`0660`, group `finn`), and Xwayland sockets live under `/tmp/.X11-unix` (`1777 root:root`) because `finn-comp` runs as root (using `seatd` via `LIBSEAT_BACKEND=seatd`) while all user services and apps run as user `finn`. Services omit `PrivateTmp=yes` so Xwayland and Wine/X11 clients share `/tmp/.X11-unix`.
+- `finn-session` runs as `finn` on `$XDG_RUNTIME_DIR/finn/session.sock` (`0600`), checks `SO_PEERCRED`, and spawns launched apps via `posix_spawn`.
+- There is no TCP listener and no hidden second door.
 
-## The app model
+## The app model & compatibility
 
-An app is a program that opens an `xdg_toplevel`. That is the contract. The
-registry carries the metadata:
+An app in FinnOS is a program opening an `xdg_toplevel` (Wayland) or Xwayland surface bridged into the scene. Nothing under `src/comp` knows any app id (`make lint` enforces this).
 
-```
-id | Name | icon | command | note | source
-```
+`finn-session` aggregates four real sources into one launcher model:
+1. **First-party native apps** from `/usr/share/finn/apps.registry` + `/var/lib/finn/installed`.
+2. **Third-party `FinnSDK` apps** registered in `~/.local/share/finn/apps/`.
+3. **Linux applications** discovered from Freedesktop `.desktop` directories and Flatpak exports.
+4. **Windows executables** registered in `~/.local/share/finn/windows.conf` and launched via Wine when available on `x86_64`.
 
-The OS ships `/usr/share/finn/apps.registry`; the package manager owns
-`/var/lib/finn/installed`. `finn-session` combines them. Adding an app
-changes its registry line and its own directory; nothing under `src/comp` may
-contain an app id, and `make lint` fails if it does.
+## Custom Qt6 stack & theming
 
-First-party apps link `libfinnui`. Foreign apps are unmodified toolkits and
-read the same display socket.
-
-## Rendering and performance
-
-An app draws into a shared-memory ARGB buffer through `Canvas`; `App` owns the
-`wl_surface`, the buffer pool, the frame callback and the input translation.
-It draws on input, on a resize and when it asks for another frame. The shell
-ticks once a second for the clock, not sixty times.
-
-`Canvas` caches glyphs per size and icons per (path, size, tint). A frame is
-therefore a blend pass, not a text layout pass. The compositor composites the
-app surfaces, the shell layers and the background through the wlroots renderer
-and only commits damaged output.
-
-## The launch path
-
-```
-shell / script → finn-session (as finn) → posix_spawn → app → xdg_toplevel
-```
-
-The app gets `WAYLAND_DISPLAY=/run/finn/wayland-0`, the user's
-`XDG_RUNTIME_DIR`, `HOME`, `PATH`, `XDG_SESSION_TYPE=wayland`,
-`XDG_CURRENT_DESKTOP=FinnOS` and any `FINN_DARK`, `FINN_ICON_DIR` or
-`FINN_FONT` the session was given.
+FinnOS does not leave Qt6 with stock desktop widgets. Both `FinnSDK` apps and unpatched third-party Qt6 apps run with:
+- `QT_QPA_PLATFORMTHEME=finn` (`libfinnplatformtheme.so`): applies FinnOS palette generated from `ui/_tokens.fui`, loads `Fixel Display` fonts, maps semantic icons from `/usr/share/finn/icons/`, and watches `/var/lib/finn/settings` + `~/.config/finn/settings` for live dark/light and accent updates without restarting apps.
+- `QT_STYLE_OVERRIDE=finn` (`libfinnstyle.so`): custom `QProxyStyle` rendering flat hairline borders, consistent radii (`kRadiusSm/Md/Lg`), clean button/input/slider/checkbox states, and refined scrollbars matching Figma tokens.
 
 ## What is not here yet
 
-- **No finnd.** Power, brightness, volume, wireless, package installs, OTA
-  updates and the audit log do not exist in v1. The compositor does not
-  change the machine's power state. In the shell's Control Center, Wi-Fi,
-  Bluetooth, brightness and volume controls are drawn as disabled indicators.
-- **No weather backend.** There is no temperature or weather forecast daemon;
-  the Time & Weather pill displays the real system clock without synthetic metrics.
-- **No sandbox.** Apps run as `finn` with the user's full authority. A
-  per-app transient unit or a namespace sandbox is the next security step.
-- **No package manager.** The installed list is written by the installer.
-  Store, Flatpak, Wine and winget are not shipped.
-- **No browser.** No first-party browser is shipped in v1.
-- **One output, one scale.** No multi-monitor, no per-output scaling, no
-  an integer output scale only, no input methods. Touch is forwarded but
-  untested on hardware.
-- **No screen lock, session switching or logout control.**
-- **No server-side decoration.** Client-side chrome only.
-- **No clipboard manager policy.** `wl_data_device_manager` is advertised;
-  the session does not implement a clipboard history.
-- **No A/B update slots and no package signatures.**
+- **No bespoke privileged `finnd` daemon.** Package installation inside `Finn Store` supports unprivileged per-user Flatpak operations (`flatpak --user`); system-wide `pacman` installs give exact commands for the user to authorize in `Finn Terminal`.
+- **No weather forecast backend.** The clock pill displays real local time without fabricated temperatures or forecasts.
+- **No OS-level native app sandbox.** Native C++20/Qt6 apps run directly with user `finn` privileges; sandboxed distribution uses `flatpak`.
+- **No first-party native web browser binary.** Browsers (such as Firefox or Chromium) are installed/launched as Linux desktop or Flatpak apps.
+- **Single output & integer scaling focus; no multi-monitor layout editor, custom compositor Gaussian blur shader, or A/B OTA partition slots.**
+- **ARM64 Wine runtime**: `base/packages.aarch64` does not invent unavailable upstream `wine` packages; `probe_wine_runtime()` inspects binaries/prefixes honestly and keeps launch buttons disabled until a compatible runtime (`wine` + optional translator) exists on the machine.

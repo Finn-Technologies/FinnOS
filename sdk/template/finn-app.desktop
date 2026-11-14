@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Counter
+Comment=Native FinnOS FinnSDK example application
+Exec=finn-counter
+Icon=native-apps
+Categories=Utility;
+X-Finn-Id=counter

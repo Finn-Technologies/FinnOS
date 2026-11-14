@@ -1,52 +1,55 @@
 # Install
 
-The base image and the session are still Arch's package manager's job. The
-FinnOS userland provides the session on top of the distribution.
+Arch Linux provides the kernel, firmware, systemd, pacman, mesa, libdrm,
+libinput, Wayland, and Qt6. FinnOS builds the compositor, session, Qt6
+platform integration, shell, SDK, and native applications on top.
 
 ## On a machine
 
-`base/setup.sh` makes an Arch installation FinnOS's:
+`base/setup.sh` configures an Arch Linux installation for FinnOS:
 
 ```sh
 sudo base/setup.sh aarch64
 ```
 
-It installs the package list, the `finn` user, the system units, the fonts,
-the wallpapers, the icons and the registry. It writes
-`/var/lib/finn/installed` with the two native apps, enables linger for
-`finn` so `/run/user/1000` exists before the session starts, and enables:
+It installs `base/packages.<arch>`, configures `finn`, installs systemd units,
+fonts, wallpapers, icons, `apps.registry`, `/var/lib/finn/installed` (all 7
+native apps: `settings`, `files`, `terminal`, `notes`, `store`, `viewer`,
+`monitor`), enables linger for `finn`, writes `/etc/ld.so.conf.d/finn.conf`, and
+enables:
 
-- `finn-comp.service` on tty1, as root, with `seatd` and `LIBSEAT_BACKEND=seatd`;
-- `finn-session.service` as `finn`;
-- `finn-shell.service` as `finn`;
-- `finn-wallpaper.service` as `finn` when its binary exists;
-- `finn-failure.service` for a compositor that stops.
+- `finn-comp.service` on tty1 as `root` with `seatd` (`LIBSEAT_BACKEND=seatd`)
+- `finn-session.service` as `finn`
+- `finn-shell.service` as `finn`
+- `finn-wallpaper.service` as `finn`
+- `finn-failure.service` if the compositor fails
 
-The session is enabled only when all three binaries exist. A machine without
-them boots to a login console and the script says what is missing.
+The session is enabled only when `finn-comp`, `finn-session`, `finn-shell`,
+and `finn-wallpaper` all exist.
 
 ## The runtime package
 
-`scripts/build-runtime-pkg.sh` builds `finnos-runtime`, the userland package
-that can be replaced while the machine is running. It contains the four
-programs, `libfinnui`, the registry, the icons, the wallpapers, the fonts and
-the units. The kernel, firmware and bootloader remain the distribution's.
+`scripts/build-runtime-pkg.sh` packages `finnos-runtime` (`finn-comp`,
+`finn-session`, `finn-shell`, `finn-open`, `finn-sdk`, `finn-display`,
+`libfinnui`, `finnplatformtheme` + `finnstyle`, `FinnSDKConfig.cmake`,
+the 7 native apps + `finn-wallpaper`, assets, `sdk/template`, and units).
 
 ## Units
 
-| Unit | User | Why |
+| Unit | User | Role |
 |---|---|---|
-| `finn-comp.service` | root | DRM and evdev through seatd; the display socket |
-| `finn-session.service` | finn | catalogue, installed list, launch |
-| `finn-shell.service` | finn | layer-shell dock and menu |
-| `finn-wallpaper.service` | finn | the background layer and its WebP image |
-| `finn-failure.service` | root | one line on the console when the session stops |
+| `finn-comp.service` | `root` | wlroots DRM compositor, seatd, `/run/finn/wayland-0` |
+| `finn-session.service` | `finn` | app registry, installed list, launch broker |
+| `finn-shell.service` | `finn` | Qt6 layer-shell dock, Spotlight, Home, Control Center |
+| `finn-wallpaper.service` | `finn` | background layer surface and WebP wallpaper |
+| `finn-failure.service` | `root` | fallback console notice if compositor exits |
 
-`/run/finn` is created by tmpfiles, not by a unit's `RuntimeDirectory`, so
-restarting the compositor does not unlink the session's other sockets.
+`/run/finn` and `/tmp/.X11-unix` are managed by `tmpfiles.d`
+(`base/finn-tmpfiles.conf`), so restarting `finn-comp` does not wipe shared
+sockets unexpectedly.
 
-## What is not installed
+## What is not installed yet
 
-There is no `finnd`, no package manager, no Store, no Flatpak/Wine and no
-OTA frontend in v1. Installing an app today means putting its binary on the machine,
-adding its registry line and adding its id to `/var/lib/finn/installed`.
+There is no root `finnd` authority daemon and no OTA A/B update mechanism yet.
+Finn Store surfaces pacman, Flatpak, Wine `.exe` registration, and FinnSDK app
+scaffolding on top of the distribution tooling.

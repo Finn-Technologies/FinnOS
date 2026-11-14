@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the journal of the process that is missing, then the socket.
+Start with the journal of the unit that is missing, then inspect the sockets.
 
 ## The screen is black
 
@@ -9,12 +9,7 @@ systemctl status finn-comp
 journalctl -u finn-comp -b -n 50
 ```
 
-The compositor needs `/dev/dri/card0`, a seat from `seatd`, and
-`XDG_RUNTIME_DIR=/run/finn`. The unit sets all three. If it exits, the
-failure unit writes one line to the console; `Ctrl+Alt+F2` gives a login.
-
-A compositor that is alive but not painting is a different failure: the
-watchdog in the unit stops it after 15 seconds without a frame.
+`finn-comp` needs `/dev/dri/card*`, `seatd`, and `XDG_RUNTIME_DIR=/run/finn`.
 
 ## The session socket is missing
 
@@ -23,9 +18,7 @@ systemctl status finn-session
 ls -l /run/user/1000/finn/session.sock
 ```
 
-`finn-session` runs as `finn` and needs `/run/user/1000`. It is created by
-logind; `loginctl enable-linger finn` is the persistent way to ask for it.
-`/run/user/1000` must be owned by `finn` and mode `0700`.
+Ensure `loginctl enable-linger finn` has run so `/run/user/1000` exists.
 
 ## An app cannot connect to the display
 
@@ -34,49 +27,27 @@ ls -l /run/finn/wayland-0
 echo "$WAYLAND_DISPLAY"
 ```
 
-The socket is `0660 root:finn`. An app running as another user cannot use it.
-The path is absolute; a relative `WAYLAND_DISPLAY` is resolved under
-`XDG_RUNTIME_DIR`, which is not where the compositor put it.
+The socket is `0660 root:finn`. Clients use an absolute `WAYLAND_DISPLAY=/run/finn/wayland-0`.
 
-## An app is not in the menu
+## Shared libraries or Qt6 plugins are not found
 
-The menu lists the catalogue and filters by the installed list:
+Confirm `/etc/ld.so.conf.d/finn.conf` lists `/usr/local/lib` (`sudo ldconfig`)
+and `finn-sdk check` reports `[ok]` for `libfinnplatformtheme.so`,
+`libfinnstyle.so`, `liblayer-shell.so`, and `FinnSDK CMake package`.
 
-```sh
-grep '^hello' /usr/share/finn/apps.registry
-grep -x hello /var/lib/finn/installed
-test -x /usr/local/bin/finn-hello && echo executable
-```
+## Text or icons look wrong
 
-`finn-session --list` shows what the broker sees, including the installed
-flag.
+Check `/usr/share/fonts/OTF/FixelDisplay-Regular.otf` and
+`/usr/share/finn/icons/`. `FINN_FONT` and `FINN_ICON_DIR` override paths during
+development.
 
-## A launch fails
+## The theme does not update
 
-```sh
-finn-session --launch files
-```
-
-The error names the refusal: `unknown app`, `not installed`, `not a native
-launch`, `command not executable`, or a missing `XDG_RUNTIME_DIR`.
-
-## Text or icons are empty
-
-`libfinnui` looks for the font at
-`/usr/share/fonts/OTF/FixelDisplay-Regular.otf` and icons under
-`/usr/share/finn/icons`. `FINN_FONT` and `FINN_ICON_DIR` override them for
-development. A missing file is reported on stderr; it is not replaced.
-
-## The theme does not change
-
-Settings writes `$HOME/.config/finn/settings` (`dark=1`). The compositor also
-reads `/home/finn/.config/finn/settings` and `/var/lib/finn/settings`. An
-exported `FINN_DARK` wins over the file and is a development switch, not a
-setting.
+Settings, Control Center, and CLI edits write `$HOME/.config/finn/settings`
+(`dark=1`, `accent=...`, `reduced_motion=1`). `FinnThemeManager` watches that
+file live; an exported `FINN_DARK` environment variable overrides the file.
 
 ## The screenshot fails
 
-`vm/shot.sh` runs grim as `finn` with
-`XDG_RUNTIME_DIR=/run/user/1000` and
-`WAYLAND_DISPLAY=/run/finn/wayland-0`. The compositor advertises
-screencopy and xdg-output; a compositor that does not is not the current one.
+`vm/shot.sh` runs `grim` as `finn` with `XDG_RUNTIME_DIR=/run/user/1000` and
+`WAYLAND_DISPLAY=/run/finn/wayland-0`.

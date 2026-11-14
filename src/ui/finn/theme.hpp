@@ -1,0 +1,78 @@
+// Live theme manager, token broadcaster, settings mutator, and cached HiDPI SVG renderer.
+
+#ifndef FINN_UI_FINN_THEME_HPP
+#define FINN_UI_FINN_THEME_HPP
+
+#include <QColor>
+#include <QIcon>
+#include <QObject>
+#include <QPixmap>
+#include <QRectF>
+#include <QSize>
+#include <QString>
+#include <QStringList>
+
+#include "ui/finn/tokens.hpp"
+
+class QFileSystemWatcher;
+class QPainter;
+class QTimer;
+
+namespace finn::ui {
+
+class FinnThemeManager final : public QObject {
+    Q_OBJECT
+
+public:
+    static FinnThemeManager& instance();
+
+    const FinnTokens& tokens() const { return tokens_; }
+    const finn::sys::SettingsData& settings() const { return settings_; }
+
+    bool isDark() const { return tokens_.dark; }
+    bool reducedMotion() const { return tokens_.reduced_motion; }
+    QString wallpaperPath() const { return QString::fromStdString(settings_.wallpaper); }
+    QStringList dockPins() const;
+
+    QPixmap iconPixmap(const QString& name_or_path, const QSize& logical_size,
+                       const QColor& tint = QColor(), qreal dpr = 1.0) const;
+    QPixmap pointerPixmap(const QString& name, int size = 28, qreal dpr = 1.0) const;
+    QIcon icon(const QString& name_or_path, const QColor& tint = QColor()) const;
+    void paintIcon(QPainter* painter, const QRectF& rect,
+                   const QString& name_or_path,
+                   const QColor& tint = QColor()) const;
+
+    bool setDark(bool dark);
+    bool setReducedMotion(bool reduced);
+    bool setHighContrast(bool high_contrast);
+    bool setColorFilter(const QString& filter);
+    bool setScreenReader(bool enabled);
+    bool setStickyKeys(bool enabled);
+    bool setFilterKeys(bool enabled);
+    bool setCursorSize(int size_px);
+    bool setTextScale(double text_scale);
+    bool setAutoLockMinutes(int minutes);
+    bool setLockOnSleep(bool enabled);
+    bool setAccent(const QString& hex_or_empty);
+    bool setWallpaper(const QString& path);
+    bool setDockPins(const QStringList& pins);
+    bool setScale(double scale);
+    void reload();
+
+signals:
+    void themeChanged(const finn::ui::FinnTokens& tokens);
+
+private:
+    explicit FinnThemeManager(QObject* parent = nullptr);
+    void setupWatcher();
+    bool saveUpdated(const finn::sys::SettingsData& next);
+
+    finn::sys::SettingsData settings_;
+    FinnTokens tokens_;
+    QFileSystemWatcher* watcher_ = nullptr;
+    QTimer* reload_timer_ = nullptr;
+};
+
+}  // namespace finn::ui
+
+#endif

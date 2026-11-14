@@ -232,8 +232,9 @@ EOF
 
   say "checking that the desktop stays out"
   # The servers, not the client library: wayland is checked just below,
-  # because Mesa links it and the guard rail has to yield there.
-  for want in xorg-server weston gtk3 gtk4 qt5-base qt6-base gnome plasma; do
+  # because Mesa links it and the guard rail has to yield there. Qt6 is
+  # FinnOS's native UI toolkit (see AGENTS.md / docs/architecture.md).
+  for want in xorg-server weston gtk3 gtk4 qt5-base gnome plasma; do
     grep -qE "^IgnorePkg[[:space:]]*=.*(^|[[:space:]])$want([[:space:]]|$)" "$HERE/pacman.conf" ||
       problem "pacman.conf does not ignore $want"
   done

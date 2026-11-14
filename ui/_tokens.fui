@@ -12,30 +12,31 @@ theme FinnTokens {
   // ---- the palette ----------------------------------------------------
   // Bone and ink. The chrome is bone; the text on it is ink.
 
-  color: bone_light #FFFFFF, bone_dark #23262E
-  color: tile_light #FFFFFF, tile_dark #2F333C
+  color: bone_light #FFFFFF, bone_dark #1C2029
+  color: tile_light #FFFFFF, tile_dark #232834
   color: tile_on_light #D3E6FF, tile_on_dark #2B4A78
-  color: hair_light #1A000000, hair_dark #1AFFFFFF
+  color: hair_light #1A000000, hair_dark #22FFFFFF
 
-  color: ink_light #000000, ink_dark #F4F0E8
-  color: mute_light #969696, mute_dark #8B9099
-  color: dim_light #5D5C5C, dim_dark #A9A59E
+  color: ink_light #000000, ink_dark #F2F4F8
+  color: mute_light #969696, mute_dark #8891A0
+  color: dim_light #5D5C5C, dim_dark #9EA6B5
 
   // The family accent is the same in both appearances: it is the brand's
-  // colour, not the appearance's.
-  color: accent_light #006FFF, accent_dark #006FFF
+  // colour, not the appearance's (#007BFF in Figma).
+  color: accent_light #007BFF, accent_dark #007BFF
 
-  color: track_light #40000000, track_dark #3B4048
+  color: track_light #80000000, track_dark #3B4048
   color: knob_light #FFFFFF, knob_dark #EDE9E1
 
   // `on` and `fill` are the accent and the track at full strength.
-  color: on_light #006FFF, on_dark #0A84FF
+  color: on_light #007BFF, on_dark #0A84FF
   color: fill_light #FFFFFF, fill_dark #EDE9E1
 
   // The tint of the frosted chrome: near-white in the light appearance,
-  // and the deep bone in the dark one, where frosted has to mean darkened
-  // rather than brightened.
-  color: glass_light #FFFFFF, glass_dark #23262E
+  // and the deep charcoal/bone in the dark one (#414141B2 in Figma dark notifications).
+  color: glass_light #FFFFFF, glass_dark #282C37
+  color: nav_sel_light #1A505050, nav_sel_dark #29FFFFFF
+  color: hero_tint_light #EBFFDF, hero_tint_dark #15221B
 
   // ---- the radii ------------------------------------------------------
   // A surface's radius is a fraction of its smallest dimension.

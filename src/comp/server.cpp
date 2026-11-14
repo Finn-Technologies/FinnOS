@@ -1,534 +1,151 @@
-// Implementation of finn-comp display server using wlroots.
-// Dispatches seat input, orders scene trees across shell layers and toplevels,
-// and enforces security boundaries by isolating socket permissions to group finn.
+#include "comp/internal.hpp"
+#include "common/paths.hpp"
 
-#include "comp/server.hpp"
-#include "comp/wlroots.hpp"
+#include <linux/input-event-codes.h>
+#include <systemd/sd-daemon.h>
+#include <unistd.h>
+#include <xkbcommon/xkbcommon-keysyms.h>
 
 #include <algorithm>
-#include <cerrno>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
+#include <filesystem>
 #include <fstream>
-#include <grp.h>
-#include <memory>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <vector>
 
-#include <systemd/sd-daemon.h>
-#include <xkbcommon/xkbcommon.h>
+namespace fs = std::filesystem;
 
 namespace finn {
+
+void setup_xdg_decoration(Server* server, wlr_xdg_toplevel_decoration_v1* dec);
+void setup_xwayland_window(Server::ManagedWindow* w, wlr_xwayland_surface* xsurface);
+
 namespace {
 
-int64_t monotonic_ms() {
-    timespec now{};
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return static_cast<int64_t>(now.tv_sec) * 1000 + now.tv_nsec / 1000000;
+std::string trim(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    std::size_t i = 0;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    return s.substr(i);
 }
 
-double ease_out_cubic(double t) {
-    t = std::max(0.0, std::min(1.0, t));
-    const double left = 1.0 - t;
-    return 1.0 - left * left * left;
+bool parse_bool_str(const std::string& v) {
+    return v == "1" || v == "true" || v == "TRUE" || v == "yes";
 }
 
-bool reduced_motion() {
-    const char* value = std::getenv("FINN_REDUCED_MOTION");
-    return value != nullptr && *value != '\0' && *value != '0';
-}
-
-// Checks environment overrides followed by user settings to ensure dark theme
-// is respected on startup before any layer-shell surfaces or windows map.
-bool prefers_dark() {
-    if (const char* value = std::getenv("FINN_DARK"); value != nullptr) {
-        const std::string text(value);
-        if (text == "1" || text == "true" || text == "dark") return true;
-        if (text == "0" || text == "false" || text == "light") return false;
+void write_xdisplay_file(const char* disp) {
+    std::error_code ec;
+    fs::create_directories(fs::path(kXwaylandDisplayFile).parent_path(), ec);
+    std::ofstream out(kXwaylandDisplayFile, std::ios::trunc);
+    if (out && disp && *disp) {
+        out << disp << '\n';
     }
-    const char* home = std::getenv("HOME");
-    const std::string user_path =
-        home != nullptr && *home != '\0'
-            ? std::string(home) + "/.config/finn/settings"
-            : "/home/finn/.config/finn/settings";
-    for (const std::string& path :
-         {user_path, std::string("/home/finn/.config/finn/settings"),
-          std::string("/var/lib/finn/settings")}) {
-        std::ifstream settings(path);
+}
+
+const char* cursor_for_edges(uint32_t edges) {
+    if (edges == (WLR_EDGE_TOP | WLR_EDGE_LEFT) ||
+        edges == (WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT)) {
+        return "nwse-resize";
+    }
+    if (edges == (WLR_EDGE_TOP | WLR_EDGE_RIGHT) ||
+        edges == (WLR_EDGE_BOTTOM | WLR_EDGE_LEFT)) {
+        return "nesw-resize";
+    }
+    if ((edges & WLR_EDGE_LEFT) || (edges & WLR_EDGE_RIGHT)) return "ew-resize";
+    if ((edges & WLR_EDGE_TOP) || (edges & WLR_EDGE_BOTTOM)) return "ns-resize";
+    return "left_ptr";
+}
+
+}  // namespace
+
+Server::Server() = default;
+Server::~Server() { shutdown(); }
+
+uint64_t Server::monotonic_msec() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000u +
+           static_cast<uint64_t>(ts.tv_nsec / 1000000u);
+}
+
+Server::ManagedWindow* Server::find_xdg_toplevel(const wlr_xdg_toplevel* top) const {
+    for (const auto& w : windows_) {
+        if (!w->is_xwayland && w->xdg_toplevel == top) return w.get();
+    }
+    return nullptr;
+}
+
+wlr_output* Server::primary_output() const {
+    return outputs_.empty() ? nullptr : outputs_.front()->output;
+}
+
+bool Server::read_dark_setting() {
+    const std::string home_settings = "/home/finn/.config/finn/settings";
+    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+        std::ifstream in(path);
+        if (!in) continue;
         std::string line;
-        while (std::getline(settings, line)) {
-            if (line == "dark=1") return true;
-            if (line == "dark=0") return false;
+        bool saw_dark = false;
+        bool dark = false;
+        while (std::getline(in, line)) {
+            line = trim(line);
+            if (line.rfind("dark=", 0) == 0) {
+                dark = parse_bool_str(trim(line.substr(5)));
+                saw_dark = true;
+            }
         }
+        if (saw_dark) return dark;
     }
     return false;
 }
 
-void detach(wl_listener& listener) {
-    if (listener.link.next == nullptr) return;
-    wl_list_remove(&listener.link);
-    listener.link.next = nullptr;
-    listener.link.prev = nullptr;
-}
-
-void remove_listener(wl_listener& listener) { detach(listener); }
-
-}  // namespace
-
-struct Server::Output {
-    Server* server = nullptr;
-    wlr_output* output = nullptr;
-    wl_listener frame{};
-    wl_listener request_state{};
-    wl_listener destroy{};
-
-    ~Output() {
-        detach(frame);
-        detach(request_state);
-        detach(destroy);
-    }
-};
-
-struct Server::Toplevel {
-    Server* server = nullptr;
-    wlr_xdg_toplevel* xdg_toplevel = nullptr;
-    wlr_scene_tree* scene_tree = nullptr;
-    wl_listener map{};
-    wl_listener unmap{};
-    wl_listener commit{};
-    wl_listener destroy{};
-    wl_listener request_move{};
-    wl_listener request_resize{};
-    wl_listener request_maximize{};
-    bool opened_once = false;
-    bool opening = false;
-    int64_t open_start_ms = 0;
-    int open_from_y = 0;
-    int open_to_y = 0;
-    bool maximized = false;
-    int restore_x = 0;
-    int restore_y = 0;
-    int restore_w = 0;
-    int restore_h = 0;
-
-    ~Toplevel() {
-        detach(map);
-        detach(unmap);
-        detach(commit);
-        detach(destroy);
-        detach(request_move);
-        detach(request_resize);
-        detach(request_maximize);
-    }
-};
-
-struct Server::Keyboard {
-    Server* server = nullptr;
-    wlr_keyboard* keyboard = nullptr;
-    wlr_input_device* device = nullptr;
-    wl_listener modifiers{};
-    wl_listener key{};
-    wl_listener destroy{};
-
-    ~Keyboard() {
-        detach(modifiers);
-        detach(key);
-        detach(destroy);
-    }
-};
-
-struct Server::Layer {
-    Server* server = nullptr;
-    wlr_layer_surface_v1* layer = nullptr;
-    wlr_scene_layer_surface_v1* scene = nullptr;
-    wl_listener map{};
-    wl_listener commit{};
-    wl_listener destroy{};
-    bool configured = false;
-
-    ~Layer() {
-        detach(map);
-        detach(commit);
-        detach(destroy);
-    }
-};
-
-Server::Server() = default;
-
-Server::~Server() { shutdown(); }
-
-int Server::run() {
-    if (!init()) {
-        shutdown();
-        return 1;
-    }
-    wl_display_run(display_);
-    shutdown();
-    return 0;
-}
-
-bool Server::init() {
-    wlr_log_init(WLR_INFO, nullptr);
-
-    display_ = wl_display_create();
-    if (display_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: wl_display_create failed");
-        return false;
-    }
-
-    backend_ = wlr_backend_autocreate(wl_display_get_event_loop(display_),
-                                      nullptr);
-    if (backend_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no backend");
-        return false;
-    }
-
-    renderer_ = wlr_renderer_autocreate(backend_);
-    if (renderer_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no renderer");
-        return false;
-    }
-    wlr_renderer_init_wl_display(renderer_, display_);
-
-    allocator_ = wlr_allocator_autocreate(backend_, renderer_);
-    if (allocator_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no allocator");
-        return false;
-    }
-
-    wlr_compositor_create(display_, 5, renderer_);
-    wlr_subcompositor_create(display_);
-    wlr_data_device_manager_create(display_);
-    wlr_screencopy_manager_v1_create(display_);
-
-    output_layout_ = wlr_output_layout_create(display_);
-    wlr_xdg_output_manager_v1_create(display_, output_layout_);
-    scene_ = wlr_scene_create();
-    scene_layout_ = wlr_scene_attach_output_layout(scene_, output_layout_);
-
-    /* The scene is ordered once, here: background, background layer, bottom
-     * layer, ordinary windows, top layer, overlay. A layer surface therefore
-     * stays above app windows without the shell or the compositor knowing an
-     * app id. */
-    const bool dark = prefers_dark();
-    float background_color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
-    if (dark) {
-        background_color[0] = 0.086f;
-        background_color[1] = 0.094f;
-        background_color[2] = 0.114f;
-    }
-    background_ = wlr_scene_rect_create(&scene_->tree, 1, 1, background_color);
-    layer_trees_[0] = wlr_scene_tree_create(&scene_->tree);
-    layer_trees_[1] = wlr_scene_tree_create(&scene_->tree);
-    toplevel_tree_ = wlr_scene_tree_create(&scene_->tree);
-    layer_trees_[2] = wlr_scene_tree_create(&scene_->tree);
-    layer_trees_[3] = wlr_scene_tree_create(&scene_->tree);
-
-    new_output_.notify = on_new_output;
-    wl_signal_add(&backend_->events.new_output, &new_output_);
-
-    xdg_shell_ = wlr_xdg_shell_create(display_, 3);
-    if (xdg_shell_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no xdg-shell");
-        return false;
-    }
-    new_toplevel_.notify = on_new_toplevel;
-    wl_signal_add(&xdg_shell_->events.new_toplevel, &new_toplevel_);
-
-    layer_shell_ = wlr_layer_shell_v1_create(display_, 4);
-    if (layer_shell_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no layer-shell");
-        return false;
-    }
-    new_layer_.notify = on_new_layer;
-    wl_signal_add(&layer_shell_->events.new_surface, &new_layer_);
-
-    cursor_ = wlr_cursor_create();
-    if (cursor_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no cursor");
-        return false;
-    }
-    wlr_cursor_attach_output_layout(cursor_, output_layout_);
-    cursor_manager_ = wlr_xcursor_manager_create(nullptr, 24);
-    if (cursor_manager_ != nullptr) wlr_xcursor_manager_load(cursor_manager_, 1);
-
-    cursor_motion_.notify = on_cursor_motion;
-    wl_signal_add(&cursor_->events.motion, &cursor_motion_);
-    cursor_motion_absolute_.notify = on_cursor_motion_absolute;
-    wl_signal_add(&cursor_->events.motion_absolute, &cursor_motion_absolute_);
-    cursor_button_.notify = on_cursor_button;
-    wl_signal_add(&cursor_->events.button, &cursor_button_);
-    cursor_axis_.notify = on_cursor_axis;
-    wl_signal_add(&cursor_->events.axis, &cursor_axis_);
-    cursor_frame_.notify = on_cursor_frame;
-    wl_signal_add(&cursor_->events.frame, &cursor_frame_);
-    touch_down_.notify = on_touch_down;
-    wl_signal_add(&cursor_->events.touch_down, &touch_down_);
-    touch_up_.notify = on_touch_up;
-    wl_signal_add(&cursor_->events.touch_up, &touch_up_);
-    touch_motion_.notify = on_touch_motion;
-    wl_signal_add(&cursor_->events.touch_motion, &touch_motion_);
-    touch_cancel_.notify = on_touch_cancel;
-    wl_signal_add(&cursor_->events.touch_cancel, &touch_cancel_);
-    touch_frame_.notify = on_touch_frame;
-    wl_signal_add(&cursor_->events.touch_frame, &touch_frame_);
-
-    seat_ = wlr_seat_create(display_, "seat0");
-    if (seat_ == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no seat");
-        return false;
-    }
-    request_cursor_.notify = on_request_cursor;
-    wl_signal_add(&seat_->events.request_set_cursor, &request_cursor_);
-    pointer_focus_change_.notify = on_pointer_focus_change;
-    wl_signal_add(&seat_->pointer_state.events.focus_change,
-                  &pointer_focus_change_);
-    request_set_selection_.notify = on_request_set_selection;
-    wl_signal_add(&seat_->events.request_set_selection,
-                  &request_set_selection_);
-
-    new_input_.notify = on_new_input;
-    wl_signal_add(&backend_->events.new_input, &new_input_);
-
-    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
-    if (runtime == nullptr || *runtime == '\0') {
-        wlr_log(WLR_ERROR,
-                "finn-comp: XDG_RUNTIME_DIR is not set; the display socket "
-                "has nowhere to live");
-        return false;
-    }
-    const std::string socket_path = std::string(runtime) + "/wayland-0";
-    struct stat socket_status{};
-    if (lstat(socket_path.c_str(), &socket_status) == 0) {
-        if (!S_ISSOCK(socket_status.st_mode)) {
-            wlr_log(WLR_ERROR, "finn-comp: %s exists and is not a socket",
-                    socket_path.c_str());
-            return false;
+bool Server::read_reduced_motion_setting() {
+    const std::string home_settings = "/home/finn/.config/finn/settings";
+    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+        std::ifstream in(path);
+        if (!in) continue;
+        std::string line;
+        bool saw_rm = false;
+        bool rm = false;
+        while (std::getline(in, line)) {
+            line = trim(line);
+            if (line.rfind("reduced_motion=", 0) == 0) {
+                rm = parse_bool_str(trim(line.substr(15)));
+                saw_rm = true;
+            }
         }
-        if (unlink(socket_path.c_str()) != 0) {
-            wlr_log(WLR_ERROR, "finn-comp: cannot remove a stale socket: %s",
-                    std::strerror(errno));
-            return false;
-        }
+        if (saw_rm) return rm;
     }
-    if (wl_display_add_socket(display_, "wayland-0") != 0) {
-        wlr_log(WLR_ERROR, "finn-comp: cannot bind wayland-0: %s",
-                std::strerror(errno));
-        return false;
-    }
-    if (chmod(socket_path.c_str(), 0660) != 0) {
-        wlr_log(WLR_ERROR, "finn-comp: cannot chmod %s: %s", socket_path.c_str(),
-                std::strerror(errno));
-    }
-    if (group* finn_group = getgrnam("finn"); finn_group != nullptr) {
-        if (chown(socket_path.c_str(), static_cast<uid_t>(-1),
-                  finn_group->gr_gid) != 0) {
-            wlr_log(WLR_ERROR, "finn-comp: cannot chown %s: %s",
-                    socket_path.c_str(), std::strerror(errno));
-        }
-    }
-
-    if (!wlr_backend_start(backend_)) {
-        wlr_log(WLR_ERROR, "finn-comp: backend failed to start");
-        return false;
-    }
-
-    wlr_log(WLR_INFO, "finn-comp: listening on WAYLAND_DISPLAY=wayland-0");
-    wl_event_loop* loop = wl_display_get_event_loop(display_);
-    watchdog_ = wl_event_loop_add_timer(
-        loop,
-        [](void* data) -> int {
-            Server* server = static_cast<Server*>(data);
-            sd_notify(0, "WATCHDOG=1");
-            wl_event_source_timer_update(server->watchdog_, 5000);
-            return 0;
-        },
-        this);
-    if (watchdog_ != nullptr) wl_event_source_timer_update(watchdog_, 5000);
-    theme_source_ = wl_event_loop_add_timer(
-        loop,
-        [](void* data) -> int {
-            Server* server = static_cast<Server*>(data);
-            server->update_background_theme();
-            server->update_display_settings();
-            wl_event_source_timer_update(server->theme_source_, 1000);
-            return 0;
-        },
-        this);
-    if (theme_source_ != nullptr) wl_event_source_timer_update(theme_source_, 1000);
-    anim_source_ = wl_event_loop_add_timer(loop, on_animation, this);
-    sd_notify(0, "READY=1");
-    return true;
+    return false;
 }
 
-// Offsets newly mapped windows slightly downwards and animates them to rest,
-// giving visual feedback of window instantiation unless reduced motion is set.
-void Server::begin_open_animation(Toplevel* toplevel) {
-    if (toplevel == nullptr || toplevel->opened_once || reduced_motion()) {
-        if (toplevel != nullptr) toplevel->opened_once = true;
-        return;
-    }
-    toplevel->opened_once = true;
-    toplevel->opening = true;
-    toplevel->open_start_ms = monotonic_ms();
-    toplevel->open_to_y = toplevel->scene_tree->node.y;
-    toplevel->open_from_y = toplevel->open_to_y + 14;
-    wlr_scene_node_set_position(&toplevel->scene_tree->node,
-                                toplevel->scene_tree->node.x,
-                                toplevel->open_from_y);
-    if (anim_source_ != nullptr) wl_event_source_timer_update(anim_source_, 16);
-}
-
-void Server::animate_windows() {
-    const int64_t now = monotonic_ms();
-    bool active = false;
-    for (auto& entry : toplevels_) {
-        Toplevel* toplevel = entry.get();
-        if (!toplevel->opening) continue;
-        const double k = std::min(
-            1.0, static_cast<double>(now - toplevel->open_start_ms) / 220.0);
-        const double eased = ease_out_cubic(k);
-        const int y = toplevel->open_from_y +
-                      static_cast<int>((toplevel->open_to_y - toplevel->open_from_y) *
-                                       eased + 0.5);
-        wlr_scene_node_set_position(&toplevel->scene_tree->node,
-                                    toplevel->scene_tree->node.x, y);
-        if (k >= 1.0) {
-            toplevel->opening = false;
-            wlr_scene_node_set_position(&toplevel->scene_tree->node,
-                                        toplevel->scene_tree->node.x,
-                                        toplevel->open_to_y);
-        } else {
-            active = true;
-        }
-    }
-    if (anim_source_ != nullptr) {
-        wl_event_source_timer_update(anim_source_, active ? 16 : 0);
-    }
-}
-
-int Server::on_animation(void* data) {
-    static_cast<Server*>(data)->animate_windows();
-    return 0;
-}
-
-void Server::update_background_theme() {
-    if (background_ == nullptr) return;
-    const bool dark = prefers_dark();
-    float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
-    if (dark) {
-        color[0] = 0.086f;
-        color[1] = 0.094f;
-        color[2] = 0.114f;
-    }
-    wlr_scene_rect_set_color(background_, color);
-}
-
-void Server::shutdown() {
-    if (display_ == nullptr) return;
-
-    wl_display_destroy_clients(display_);
-
-    toplevels_.clear();
-    keyboards_.clear();
-    layers_.clear();
-    outputs_.clear();
-
-    remove_listener(new_output_);
-    remove_listener(new_input_);
-    remove_listener(new_toplevel_);
-    remove_listener(new_layer_);
-    remove_listener(cursor_motion_);
-    remove_listener(cursor_motion_absolute_);
-    remove_listener(cursor_button_);
-    remove_listener(cursor_axis_);
-    remove_listener(cursor_frame_);
-    remove_listener(touch_down_);
-    remove_listener(touch_up_);
-    remove_listener(touch_motion_);
-    remove_listener(touch_cancel_);
-    remove_listener(touch_frame_);
-    remove_listener(request_cursor_);
-    remove_listener(pointer_focus_change_);
-    remove_listener(request_set_selection_);
-
-    if (scene_ != nullptr) wlr_scene_node_destroy(&scene_->tree.node);
-    if (watchdog_ != nullptr) {
-        wl_event_source_remove(watchdog_);
-        watchdog_ = nullptr;
-    }
-    if (theme_source_ != nullptr) {
-        wl_event_source_remove(theme_source_);
-        theme_source_ = nullptr;
-    }
-    if (anim_source_ != nullptr) {
-        wl_event_source_remove(anim_source_);
-        anim_source_ = nullptr;
-    }
-    if (cursor_manager_ != nullptr) wlr_xcursor_manager_destroy(cursor_manager_);
-    if (cursor_ != nullptr) wlr_cursor_destroy(cursor_);
-    if (allocator_ != nullptr) wlr_allocator_destroy(allocator_);
-    if (renderer_ != nullptr) wlr_renderer_destroy(renderer_);
-    if (backend_ != nullptr) wlr_backend_destroy(backend_);
-
-    wl_display_destroy(display_);
-
-    display_ = nullptr;
-    backend_ = nullptr;
-    renderer_ = nullptr;
-    allocator_ = nullptr;
-    scene_ = nullptr;
-    scene_layout_ = nullptr;
-    output_layout_ = nullptr;
-    xdg_shell_ = nullptr;
-    layer_shell_ = nullptr;
-    seat_ = nullptr;
-    cursor_ = nullptr;
-    cursor_manager_ = nullptr;
-    focused_ = nullptr;
-}
-
-// One output, one integer scale. A panel at least 2400 px wide is a HiDPI
-// panel: at 2x its logical size is near the 1280-wide frames in the design.
-// FINN_OUTPUT_SCALE overrides the guess for panels that report badly.
-Server::DisplayConfig Server::read_display_config() {
-    DisplayConfig cfg{};
-
-    // 1. Environment variables
+Server::OutputConfig Server::read_output_config() {
+    OutputConfig cfg;
     if (const char* mode_env = std::getenv("FINN_OUTPUT_MODE")) {
         std::sscanf(mode_env, "%dx%d", &cfg.width, &cfg.height);
     }
     if (cfg.width <= 0 || cfg.height <= 0) {
-        if (const char* w_env = std::getenv("FINN_OUTPUT_WIDTH")) {
-            cfg.width = std::atoi(w_env);
-        }
-        if (const char* h_env = std::getenv("FINN_OUTPUT_HEIGHT")) {
-            cfg.height = std::atoi(h_env);
-        }
+        if (const char* w = std::getenv("FINN_OUTPUT_WIDTH")) cfg.width = std::atoi(w);
+        if (const char* h = std::getenv("FINN_OUTPUT_HEIGHT")) cfg.height = std::atoi(h);
     }
-    if (const char* scale_env = std::getenv("FINN_OUTPUT_SCALE")) {
-        cfg.scale = std::strtof(scale_env, nullptr);
+    if (const char* s = std::getenv("FINN_OUTPUT_SCALE")) {
+        cfg.scale = std::strtof(s, nullptr);
     }
 
-    // 2. User settings files
-    const char* home = std::getenv("HOME");
-    const std::string user_path =
-        home != nullptr && *home != '\0'
-            ? std::string(home) + "/.config/finn/settings"
-            : "/home/finn/.config/finn/settings";
-    for (const std::string& path :
-         {user_path, std::string("/home/finn/.config/finn/settings"),
-          std::string("/var/lib/finn/settings")}) {
-        std::ifstream file(path);
-        if (!file.is_open()) continue;
+    const std::string home_settings = "/home/finn/.config/finn/settings";
+    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+        std::ifstream in(path);
+        if (!in) continue;
         std::string line;
-        while (std::getline(file, line)) {
+        while (std::getline(in, line)) {
+            line = trim(line);
             if (cfg.width <= 0 && line.rfind("resolution=", 0) == 0) {
                 int w = 0, h = 0;
-                if (std::sscanf(line.c_str() + 11, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+                if (std::sscanf(line.c_str() + 11, "%dx%d", &w, &h) == 2 &&
+                    w > 0 && h > 0) {
                     cfg.width = w;
                     cfg.height = h;
                 }
@@ -536,961 +153,1280 @@ Server::DisplayConfig Server::read_display_config() {
                 cfg.width = std::atoi(line.c_str() + 6);
             } else if (cfg.height <= 0 && line.rfind("height=", 0) == 0) {
                 cfg.height = std::atoi(line.c_str() + 7);
-            }
-            if (cfg.scale <= 0.0f && line.rfind("scale=", 0) == 0) {
+            } else if (cfg.scale <= 0.0f && line.rfind("scale=", 0) == 0) {
                 cfg.scale = std::strtof(line.c_str() + 6, nullptr);
             }
         }
+        if (cfg.width > 0 && cfg.scale > 0.0f) break;
     }
 
-    // 3. Fallback default resolution: 1440x900 @ 1.0x (fits nicely on Mac screens)
     if (cfg.width <= 0 || cfg.height <= 0) {
         cfg.width = 1440;
         cfg.height = 900;
     }
-    if (cfg.scale <= 0.1f) {
-        cfg.scale = (cfg.width >= 2400) ? 2.0f : 1.0f;
-    }
+    if (cfg.scale <= 0.0f) cfg.scale = (cfg.width >= 2400) ? 2.0f : 1.0f;
+    cfg.scale = std::clamp(cfg.scale, 0.5f, 4.0f);
     return cfg;
 }
 
-void Server::apply_output_config(Output* entry, const DisplayConfig& cfg) {
-    if (entry == nullptr || entry->output == nullptr) return;
-    wlr_output* output = entry->output;
-
+void Server::apply_output_config(wlr_output* output, const OutputConfig& cfg) {
+    if (!output) return;
     wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
+    wlr_output_state_set_scale(&state, cfg.scale);
 
+    wlr_output_mode* matched = nullptr;
     wlr_output_mode* mode = nullptr;
-    wlr_output_mode* m;
-    wl_list_for_each(m, &output->modes, link) {
-        if (m->width == cfg.width && m->height == cfg.height) {
-            mode = m;
+    wl_list_for_each(mode, &output->modes, link) {
+        if (mode->width == cfg.width && mode->height == cfg.height) {
+            matched = mode;
             break;
         }
     }
-    if (mode != nullptr) {
-        wlr_output_state_set_mode(&state, mode);
+    if (matched) {
+        wlr_output_state_set_mode(&state, matched);
+    } else if (!wl_list_empty(&output->modes)) {
+        wlr_output_state_set_mode(&state, wlr_output_preferred_mode(output));
     } else {
         wlr_output_state_set_custom_mode(&state, cfg.width, cfg.height, 60000);
     }
-
-    wlr_output_state_set_scale(&state, cfg.scale);
-    if (!wlr_output_commit_state(output, &state)) {
-        wlr_log(WLR_ERROR, "finn-comp: failed to commit output mode %dx%d @ scale %.1f",
-                cfg.width, cfg.height, cfg.scale);
-        wlr_output_state_finish(&state);
-        return;
-    }
+    wlr_output_commit_state(output, &state);
     wlr_output_state_finish(&state);
+}
 
-    if (cursor_manager_ != nullptr) {
-        wlr_xcursor_manager_load(cursor_manager_, cfg.scale);
+void Server::update_background() {
+    dark_theme_ = read_dark_setting();
+    if (!background_rect_) return;
+    if (dark_theme_) {
+        const float col[4] = {0.105f, 0.118f, 0.149f, 1.0f};
+        wlr_scene_rect_set_color(background_rect_, col);
+    } else {
+        const float col[4] = {0.918f, 0.925f, 0.941f, 1.0f};
+        wlr_scene_rect_set_color(background_rect_, col);
     }
-
-    wlr_box box{};
-    wlr_output_layout_get_box(output_layout_, output, &box);
-    usable_x_ = box.x;
-    usable_y_ = box.y;
-    usable_w_ = box.width;
-    usable_h_ = box.height;
-
-    if (background_ != nullptr) {
-        int logical_w = 0;
-        int logical_h = 0;
-        wlr_output_effective_resolution(output, &logical_w, &logical_h);
-        wlr_scene_rect_set_size(background_, logical_w, logical_h);
-        wlr_scene_node_set_position(&background_->node, 0, 0);
-        wlr_scene_node_lower_to_bottom(&background_->node);
+    if (wlr_output* out = primary_output()) {
+        int w = 0, h = 0;
+        wlr_output_effective_resolution(out, &w, &h);
+        wlr_scene_rect_set_size(background_rect_, std::max(1, w), std::max(1, h));
     }
+    sync_all_ssd_themes();
+}
 
-    for (auto& layer : layers_) {
-        configure_layer(layer.get());
+void Server::sync_all_ssd_themes() {
+    for (auto& w : windows_) {
+        w->apply_ssd_theme(dark_theme_, focused_window_ == w.get());
     }
+}
 
-    for (auto& toplevel : toplevels_) {
-        if (toplevel->maximized) {
-            wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, usable_w_, usable_h_);
-            wlr_scene_node_set_position(&toplevel->scene_tree->node, usable_x_, usable_y_);
-        } else if (toplevel->scene_tree != nullptr) {
-            int cur_x = toplevel->scene_tree->node.x;
-            int cur_y = toplevel->scene_tree->node.y;
-            if (cur_x > usable_w_ - 80) cur_x = std::max(0, usable_w_ - 200);
-            if (cur_y > usable_h_ - 80) cur_y = std::max(0, usable_h_ - 200);
-            wlr_scene_node_set_position(&toplevel->scene_tree->node, cur_x, cur_y);
+static int read_cursor_size_setting() {
+    const std::string home_settings = "/home/finn/.config/finn/settings";
+    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+        std::ifstream in(path);
+        if (!in) continue;
+        std::string line;
+        while (std::getline(in, line)) {
+            line = trim(line);
+            if (line.rfind("cursor_size=", 0) == 0) {
+                const int sz = std::atoi(line.c_str() + 12);
+                if (sz >= 16 && sz <= 96) return sz;
+            }
         }
+        return 24;
+    }
+    return 24;
+}
+
+void Server::reload_cursor_theme() {
+    if (xcursor_mgr_) {
+        wlr_xcursor_manager_destroy(xcursor_mgr_);
+        xcursor_mgr_ = nullptr;
+    }
+    const char* theme_name = dark_theme_ ? "finn-dark" : "finn-light";
+    xcursor_mgr_ = wlr_xcursor_manager_create(
+        theme_name, static_cast<uint32_t>(cursor_size_));
+    if (!xcursor_mgr_) {
+        xcursor_mgr_ = wlr_xcursor_manager_create(
+            nullptr, static_cast<uint32_t>(cursor_size_));
+    }
+    if (xcursor_mgr_) {
+        wlr_xcursor_manager_load(xcursor_mgr_, 1.0f);
+    }
+    if (xcursor_mgr_ && cursor_) {
+        if (active_cursor_name_.empty()) active_cursor_name_ = "left_ptr";
+        wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, active_cursor_name_.c_str());
     }
 }
 
 void Server::update_display_settings() {
-    DisplayConfig cfg = read_display_config();
-    if (cfg.width == configured_w_ && cfg.height == configured_h_ &&
-        std::abs(cfg.scale - configured_scale_) < 0.01f) {
-        return;
+    reduced_motion_ = read_reduced_motion_setting();
+    const bool new_dark = read_dark_setting();
+    const bool dark_changed = (new_dark != dark_theme_);
+    if (dark_changed) {
+        dark_theme_ = new_dark;
+        update_background();
     }
-    wlr_log(WLR_INFO, "finn-comp: display settings changed: %dx%d @ %.1fx (was %dx%d @ %.1fx)",
-            cfg.width, cfg.height, cfg.scale, configured_w_, configured_h_, configured_scale_);
-    configured_w_ = cfg.width;
-    configured_h_ = cfg.height;
-    configured_scale_ = cfg.scale;
-
-    for (auto& entry : outputs_) {
-        apply_output_config(entry.get(), cfg);
+    const int new_cursor = read_cursor_size_setting();
+    const bool size_changed = (new_cursor != cursor_size_);
+    if (dark_changed || size_changed || !xcursor_mgr_) {
+        cursor_size_ = new_cursor;
+        reload_cursor_theme();
     }
-}
-
-void Server::add_output(wlr_output* output) {
-    wlr_output_init_render(output, allocator_, renderer_);
-
-    if (configured_w_ <= 0 || configured_h_ <= 0) {
-        DisplayConfig cfg = read_display_config();
-        configured_w_ = cfg.width;
-        configured_h_ = cfg.height;
-        configured_scale_ = cfg.scale;
-    }
-
-    auto entry = std::make_unique<Output>();
-    entry->server = this;
-    entry->output = output;
-
-    entry->frame.notify = on_output_frame;
-    wl_signal_add(&output->events.frame, &entry->frame);
-    entry->request_state.notify = on_output_request_state;
-    wl_signal_add(&output->events.request_state, &entry->request_state);
-    entry->destroy.notify = on_output_destroy;
-    wl_signal_add(&output->events.destroy, &entry->destroy);
-
-    wlr_output_layout_output* layout_output =
-        wlr_output_layout_add_auto(output_layout_, output);
-    wlr_scene_output* scene_output =
-        wlr_scene_output_create(scene_, output);
-    wlr_scene_output_layout_add_output(scene_layout_, layout_output,
-                                       scene_output);
-
-    DisplayConfig cfg{configured_w_, configured_h_, configured_scale_};
-    apply_output_config(entry.get(), cfg);
-    // Start the pointer in the middle of the screen with an arrow, so it is
-    // visible before the first motion event.
-    if (cursor_ != nullptr && outputs_.empty()) {
-        wlr_box box{};
-        wlr_output_layout_get_box(output_layout_, output, &box);
-        wlr_cursor_warp(cursor_, nullptr, box.x + box.width / 2.0,
-                        box.y + box.height / 2.0);
-        if (cursor_manager_ != nullptr) {
-            wlr_cursor_set_xcursor(cursor_, cursor_manager_, "default");
+    const OutputConfig cfg = read_output_config();
+    for (auto& o : outputs_) {
+        int cur_w = 0, cur_h = 0;
+        wlr_output_effective_resolution(o->output, &cur_w, &cur_h);
+        const float cur_scale = o->output->scale;
+        if (std::abs(cur_scale - cfg.scale) > 0.05f ||
+            (!wl_list_empty(&o->output->modes) &&
+             o->output->current_mode &&
+             (o->output->current_mode->width != cfg.width ||
+              o->output->current_mode->height != cfg.height))) {
+            apply_output_config(o->output, cfg);
+            arrange_layers();
+            update_background();
         }
     }
+}
 
-    if (usable_w_ == 0 || usable_h_ == 0) {
-        usable_x_ = 0;
-        usable_y_ = 0;
-        // Logical size: at scale 2 the output has twice as many pixels as
-        // the layout has units.
-        wlr_box logical{};
-        wlr_output_layout_get_box(output_layout_, output, &logical);
-        usable_w_ = logical.width;
-        usable_h_ = logical.height;
+void Server::focus_window(ManagedWindow* win) {
+    if (win && (!win->mapped || win->minimized)) return;
+
+    if (focused_window_ && focused_window_ != win) {
+        focused_window_->set_activated(false);
+        focused_window_->sync_foreign_state();
+    }
+    focused_window_ = win;
+
+    if (!win) {
+        if (seat_) wlr_seat_keyboard_clear_focus(seat_);
+        process_cursor_motion(monotonic_msec());
+        return;
     }
 
-    const bool dark = prefers_dark();
-    float color[4] = {0.93f, 0.95f, 0.98f, 1.0f};
-    if (dark) {
-        color[0] = 0.086f;
-        color[1] = 0.094f;
-        color[2] = 0.114f;
-    }
-    if (background_ != nullptr) {
-        int logical_w = 0;
-        int logical_h = 0;
-        wlr_output_effective_resolution(output, &logical_w, &logical_h);
-        wlr_scene_rect_set_size(background_, logical_w, logical_h);
-        wlr_scene_rect_set_color(background_, color);
-        wlr_scene_node_set_position(&background_->node, 0, 0);
-        wlr_scene_node_lower_to_bottom(&background_->node);
+    // Move to front in scene-graph & windows_ list
+    windows_.splice(windows_.begin(), windows_,
+                    std::find_if(windows_.begin(), windows_.end(),
+                                 [win](const auto& p) { return p.get() == win; }));
+    wlr_scene_node_raise_to_top(&win->scene_tree->node);
+
+    win->set_activated(true);
+    win->sync_foreign_state();
+
+    if (win->is_xwayland && win->xwayland_surface) {
+        wlr_xwayland_surface_restack(win->xwayland_surface, nullptr, XCB_STACK_MODE_ABOVE);
     }
 
-    for (auto& layer : layers_) {
-        if (layer->layer->output == nullptr) {
-            layer->layer->output = output;
-            configure_layer(layer.get());
+    wlr_surface* surf = win->main_surface();
+    if (surf && seat_) {
+        wlr_keyboard* kb = wlr_seat_get_keyboard(seat_);
+        if (kb) {
+            wlr_seat_keyboard_notify_enter(seat_, surf, kb->keycodes, kb->num_keycodes,
+                                           &kb->modifiers);
+        } else {
+            wlr_seat_keyboard_notify_enter(seat_, surf, nullptr, 0, nullptr);
         }
     }
-
-    outputs_.push_back(std::move(entry));
+    process_cursor_motion(monotonic_msec());
 }
 
-void Server::remove_output(Output* output) {
-    outputs_.erase(std::remove_if(outputs_.begin(), outputs_.end(),
-                                  [output](const auto& entry) {
-                                      return entry.get() == output;
-                                  }),
-                   outputs_.end());
-}
-
-void Server::add_input(wlr_input_device* device) {
-    switch (device->type) {
-        case WLR_INPUT_DEVICE_KEYBOARD:
-            add_keyboard(wlr_keyboard_from_input_device(device), device);
-            break;
-        case WLR_INPUT_DEVICE_POINTER:
-            wlr_cursor_attach_input_device(cursor_, device);
-            break;
-        case WLR_INPUT_DEVICE_TOUCH:
-            // The cursor maps touch coordinates onto the output layout and
-            // re-emits them as touch_* signals.
-            wlr_cursor_attach_input_device(cursor_, device);
-            ++touch_devices_;
-            break;
-        default:
-            break;
-    }
-
-    uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
-    if (touch_devices_ > 0) caps |= WL_SEAT_CAPABILITY_TOUCH;
-    if (!keyboards_.empty()) caps |= WL_SEAT_CAPABILITY_KEYBOARD;
-    wlr_seat_set_capabilities(seat_, caps);
-}
-
-void Server::add_keyboard(wlr_keyboard* keyboard, wlr_input_device* device) {
-    auto entry = std::make_unique<Keyboard>();
-    entry->server = this;
-    entry->keyboard = keyboard;
-    entry->device = device;
-
-    xkb_context* context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    if (context == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no xkb context for a keyboard");
-        return;
-    }
-    xkb_keymap* keymap = xkb_keymap_new_from_names(
-        context, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    if (keymap == nullptr) {
-        wlr_log(WLR_ERROR, "finn-comp: no keymap for a keyboard");
-        xkb_context_unref(context);
-        return;
-    }
-    wlr_keyboard_set_keymap(keyboard, keymap);
-    xkb_keymap_unref(keymap);
-    xkb_context_unref(context);
-    wlr_keyboard_set_repeat_info(keyboard, 25, 600);
-
-    entry->modifiers.notify = on_keyboard_modifiers;
-    wl_signal_add(&keyboard->events.modifiers, &entry->modifiers);
-    entry->key.notify = on_keyboard_key;
-    wl_signal_add(&keyboard->events.key, &entry->key);
-    entry->destroy.notify = on_keyboard_destroy;
-    wl_signal_add(&device->events.destroy, &entry->destroy);
-
-    wlr_seat_set_keyboard(seat_, keyboard);
-    keyboards_.push_back(std::move(entry));
-}
-
-void Server::remove_keyboard(Keyboard* keyboard) {
-    keyboards_.erase(std::remove_if(keyboards_.begin(), keyboards_.end(),
-                                    [keyboard](const auto& entry) {
-                                        return entry.get() == keyboard;
-                                    }),
-                     keyboards_.end());
-}
-
-void Server::add_toplevel(wlr_xdg_toplevel* xdg_toplevel) {
-    auto entry = std::make_unique<Toplevel>();
-    entry->server = this;
-    entry->xdg_toplevel = xdg_toplevel;
-    entry->scene_tree = wlr_scene_xdg_surface_create(toplevel_tree_,
-                                                     xdg_toplevel->base);
-    entry->scene_tree->node.data = entry.get();
-    xdg_toplevel->base->data = entry->scene_tree;
-
-    const int offset = 40 + 32 * static_cast<int>(toplevels_.size() % 8);
-    wlr_scene_node_set_position(&entry->scene_tree->node, offset, offset);
-
-    entry->map.notify = on_toplevel_map;
-    wl_signal_add(&xdg_toplevel->base->surface->events.map, &entry->map);
-    entry->unmap.notify = on_toplevel_unmap;
-    wl_signal_add(&xdg_toplevel->base->surface->events.unmap, &entry->unmap);
-    entry->commit.notify = on_toplevel_commit;
-    wl_signal_add(&xdg_toplevel->base->surface->events.commit, &entry->commit);
-    entry->destroy.notify = on_toplevel_destroy;
-    wl_signal_add(&xdg_toplevel->events.destroy, &entry->destroy);
-    entry->request_move.notify = on_toplevel_request_move;
-    wl_signal_add(&xdg_toplevel->events.request_move, &entry->request_move);
-    entry->request_resize.notify = on_toplevel_request_resize;
-    wl_signal_add(&xdg_toplevel->events.request_resize, &entry->request_resize);
-    entry->request_maximize.notify = on_toplevel_request_maximize;
-    wl_signal_add(&xdg_toplevel->events.request_maximize,
-                  &entry->request_maximize);
-
-    toplevels_.push_back(std::move(entry));
-}
-
-void Server::remove_toplevel(Toplevel* toplevel) {
-    if (focused_ == toplevel) focused_ = nullptr;
-    if (last_focused_ == toplevel) last_focused_ = nullptr;
-    if (grabbed_ == toplevel) reset_cursor_mode();
-    toplevels_.erase(std::remove_if(toplevels_.begin(), toplevels_.end(),
-                                    [toplevel](const auto& entry) {
-                                        return entry.get() == toplevel;
-                                    }),
-                     toplevels_.end());
-}
-
-void Server::add_layer(wlr_layer_surface_v1* layer_surface) {
-    if (layer_surface == nullptr) return;
-    if (layer_surface->output == nullptr) {
-        if (outputs_.empty()) {
-            wlr_log(WLR_ERROR, "finn-comp: layer surface before an output");
+void Server::focus_top_window() {
+    for (auto& w : windows_) {
+        if (w->mapped && !w->minimized && !w->override_redirect) {
+            focus_window(w.get());
             return;
         }
-        layer_surface->output = outputs_.front()->output;
     }
-
-    auto entry = std::make_unique<Layer>();
-    entry->server = this;
-    entry->layer = layer_surface;
-    std::uint32_t layer_number =
-        static_cast<std::uint32_t>(layer_surface->current.layer);
-    if (layer_number > 3) layer_number = 3;
-    wlr_scene_tree* tree = layer_trees_[layer_number];
-    if (tree == nullptr) tree = &scene_->tree;
-    entry->scene = wlr_scene_layer_surface_v1_create(tree, layer_surface);
-    if (entry->scene == nullptr) return;
-
-    entry->map.notify = on_layer_map;
-    wl_signal_add(&layer_surface->surface->events.map, &entry->map);
-    entry->commit.notify = on_layer_commit;
-    wl_signal_add(&layer_surface->surface->events.commit, &entry->commit);
-    entry->destroy.notify = on_layer_destroy;
-    wl_signal_add(&layer_surface->events.destroy, &entry->destroy);
-
-    layers_.push_back(std::move(entry));
-    wlr_log(WLR_INFO, "finn-comp: layer surface '%s'", layer_surface->namespace_);
+    focus_window(nullptr);
 }
 
-void Server::remove_layer(Layer* layer) {
-    if (focused_layer_ == layer) {
-        focused_layer_ = nullptr;
-        wlr_seat_keyboard_notify_clear_focus(seat_);
-        if (last_focused_ != nullptr) focus(last_focused_);
+void Server::cycle_focus(bool forward) {
+    std::vector<ManagedWindow*> eligible;
+    for (auto& w : windows_) {
+        if (w->mapped && !w->override_redirect) eligible.push_back(w.get());
     }
-    layers_.erase(std::remove_if(layers_.begin(), layers_.end(),
-                                 [layer](const auto& entry) {
-                                     return entry.get() == layer;
-                                 }),
-                  layers_.end());
+    if (eligible.empty()) return;
+
+    std::size_t idx = 0;
+    for (std::size_t i = 0; i < eligible.size(); ++i) {
+        if (eligible[i] == focused_window_) {
+            idx = forward ? ((i + 1) % eligible.size())
+                          : ((i + eligible.size() - 1) % eligible.size());
+            break;
+        }
+    }
+    ManagedWindow* target = eligible[idx];
+    if (target->minimized) target->set_minimized(false);
+    focus_window(target);
 }
 
-void Server::configure_layer(Layer* layer) {
-    if (layer == nullptr || layer->layer->output == nullptr) return;
-    wlr_box full{};
-    wlr_output_layout_get_box(output_layout_, layer->layer->output, &full);
-    if (full.width <= 0 || full.height <= 0) {
-        wlr_output_effective_resolution(layer->layer->output, &full.width,
-                                        &full.height);
+void Server::minimize_all_toggle() {
+    bool any_visible = false;
+    for (auto& w : windows_) {
+        if (w->mapped && !w->minimized && !w->override_redirect) {
+            any_visible = true;
+            break;
+        }
     }
-    wlr_box usable = full;
-    wlr_scene_layer_surface_v1_configure(layer->scene, &full, &usable);
-    if (usable.width > 0 && usable.height > 0) {
-        usable_x_ = usable.x;
-        usable_y_ = usable.y;
-        usable_w_ = usable.width;
-        usable_h_ = usable.height;
+    all_minimized_state_ = any_visible;
+    for (auto& w : windows_) {
+        if (!w->mapped || w->override_redirect) continue;
+        w->set_minimized(all_minimized_state_);
     }
+    if (!all_minimized_state_) focus_top_window();
 }
 
-void Server::focus_layer(Layer* layer) {
-    if (layer == nullptr || seat_ == nullptr) return;
-    if (!layer->layer->surface->mapped) return;
-    if (layer->layer->current.keyboard_interactive == 0) return;
-    wlr_keyboard* keyboard = wlr_seat_get_keyboard(seat_);
-    if (keyboard == nullptr) return;
-    wlr_seat_keyboard_notify_enter(seat_, layer->layer->surface,
-                                   keyboard->keycodes, keyboard->num_keycodes,
-                                   &keyboard->modifiers);
-    if (focused_ != nullptr) {
-        wlr_xdg_toplevel_set_activated(focused_->xdg_toplevel, false);
-        focused_ = nullptr;
-    }
-    focused_layer_ = layer;
+void Server::begin_move(ManagedWindow* win) {
+    if (!win || !win->mapped || win->override_redirect) return;
+    if (!seat_ || seat_->pointer_state.button_count == 0) return;
+    win->stop_animation();
+    if (win->maximized) win->set_maximized(false);
+    grabbed_window_ = win;
+    cursor_mode_ = CursorMode::kMove;
+    grab_x_ = cursor_->x - win->x;
+    grab_y_ = cursor_->y - win->y;
+    active_cursor_name_ = "grabbing";
+    wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "grabbing");
 }
 
-// Preserves unmaximized window geometry before constraining to usable screen area,
-// allowing clean restoration when unmaximize is requested by the client.
-void Server::maximize(Toplevel* toplevel) {
-    if (toplevel == nullptr || toplevel->maximized) return;
-    int x = usable_x_;
-    int y = usable_y_;
-    int w = usable_w_;
-    int h = usable_h_;
-    if (w <= 0 || h <= 0) {
-        if (outputs_.empty()) return;
-        x = 0;
-        y = 0;
-        wlr_output_effective_resolution(outputs_.front()->output, &w, &h);
-    }
-    toplevel->restore_x = toplevel->scene_tree->node.x;
-    toplevel->restore_y = toplevel->scene_tree->node.y;
-    toplevel->restore_w = toplevel->xdg_toplevel->base->geometry.width;
-    toplevel->restore_h = toplevel->xdg_toplevel->base->geometry.height;
-    toplevel->maximized = true;
-    toplevel->opening = false;
-    wlr_scene_node_set_position(&toplevel->scene_tree->node, x, y);
-    wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, w, h);
-    wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
-    focus(toplevel);
-}
-
-void Server::unmaximize(Toplevel* toplevel) {
-    if (toplevel == nullptr || !toplevel->maximized) return;
-    toplevel->maximized = false;
-    toplevel->opening = false;
-    wlr_scene_node_set_position(&toplevel->scene_tree->node,
-                                toplevel->restore_x, toplevel->restore_y);
-    if (toplevel->restore_w > 0 && toplevel->restore_h > 0) {
-        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, toplevel->restore_w,
-                                  toplevel->restore_h);
-    }
-    wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, false);
-    focus(toplevel);
-}
-
-void Server::begin_interactive(Toplevel* toplevel, CursorMode mode,
-                               uint32_t edges) {
-    if (toplevel == nullptr) return;
-    grabbed_ = toplevel;
-    cursor_mode_ = mode;
-    if (mode == CursorMode::move) {
-        grab_x_ = cursor_->x - toplevel->scene_tree->node.x;
-        grab_y_ = cursor_->y - toplevel->scene_tree->node.y;
-        return;
-    }
-    const wlr_box& geometry = toplevel->xdg_toplevel->base->geometry;
-    const double border_x = toplevel->scene_tree->node.x + geometry.x +
-                            ((edges & WLR_EDGE_RIGHT) != 0 ? geometry.width : 0);
-    const double border_y = toplevel->scene_tree->node.y + geometry.y +
-                            ((edges & WLR_EDGE_BOTTOM) != 0 ? geometry.height : 0);
-    grab_x_ = cursor_->x - border_x;
-    grab_y_ = cursor_->y - border_y;
-    grab_gx_ = geometry.x + static_cast<int>(toplevel->scene_tree->node.x);
-    grab_gy_ = geometry.y + static_cast<int>(toplevel->scene_tree->node.y);
-    grab_gw_ = geometry.width;
-    grab_gh_ = geometry.height;
+void Server::begin_resize(ManagedWindow* win, uint32_t edges) {
+    if (!win || !win->mapped || win->override_redirect) return;
+    if (!seat_ || seat_->pointer_state.button_count == 0) return;
+    win->stop_animation();
+    if (win->maximized) win->set_maximized(false);
+    grabbed_window_ = win;
+    cursor_mode_ = CursorMode::kResize;
+    grab_x_ = cursor_->x;
+    grab_y_ = cursor_->y;
+    grab_geobox_ = wlr_box{win->x, win->y, win->width, win->height};
     resize_edges_ = edges;
+    active_cursor_name_ = cursor_for_edges(edges);
+    wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, active_cursor_name_.c_str());
 }
 
-void Server::process_cursor_move() {
-    if (grabbed_ == nullptr) return;
-    wlr_scene_node_set_position(&grabbed_->scene_tree->node,
-                                static_cast<int>(cursor_->x - grab_x_),
-                                static_cast<int>(cursor_->y - grab_y_));
-}
+void Server::update_cursor_shape_or_edge(double lx, double ly) {
+    if (cursor_mode_ != CursorMode::kPassthrough || !scene_ || !cursor_) return;
 
-void Server::process_cursor_resize() {
-    if (grabbed_ == nullptr) return;
-    const double border_x = cursor_->x - grab_x_;
-    const double border_y = cursor_->y - grab_y_;
-    int left = grab_gx_;
-    int right = grab_gx_ + grab_gw_;
-    int top = grab_gy_;
-    int bottom = grab_gy_ + grab_gh_;
-
-    if ((resize_edges_ & WLR_EDGE_TOP) != 0) {
-        top = static_cast<int>(border_y);
-        if (top >= bottom) top = bottom - 1;
-    } else if ((resize_edges_ & WLR_EDGE_BOTTOM) != 0) {
-        bottom = static_cast<int>(border_y);
-        if (bottom <= top) bottom = top + 1;
-    }
-    if ((resize_edges_ & WLR_EDGE_LEFT) != 0) {
-        left = static_cast<int>(border_x);
-        if (left >= right) left = right - 1;
-    } else if ((resize_edges_ & WLR_EDGE_RIGHT) != 0) {
-        right = static_cast<int>(border_x);
-        if (right <= left) right = left + 1;
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node, lx, ly, &sx, &sy);
+    for (wlr_scene_tree* t = node ? node->parent : nullptr; t != nullptr;
+         t = t->node.parent) {
+        if (t == layer_trees_[2] || t == layer_trees_[3] || t == lock_tree_) {
+            return;
+        }
     }
 
-    const wlr_box& geometry = grabbed_->xdg_toplevel->base->geometry;
-    wlr_scene_node_set_position(&grabbed_->scene_tree->node, left - geometry.x,
-                                top - geometry.y);
-    wlr_xdg_toplevel_set_size(grabbed_->xdg_toplevel, right - left, bottom - top);
+    for (auto& w : windows_) {
+        if (!w->mapped || w->minimized) continue;
+        uint32_t edges = 0;
+        const auto hz = w->hit_test(lx, ly, &edges);
+        if (hz == ManagedWindow::HitZone::kNone) continue;
+
+        const bool want_hover_close = (hz == ManagedWindow::HitZone::kBtnClose);
+        if (w->hover_close != want_hover_close) {
+            w->hover_close = want_hover_close;
+            w->apply_ssd_theme(dark_theme_, focused_window_ == w.get());
+        }
+        if (hz == ManagedWindow::HitZone::kResize) {
+            const char* cname = cursor_for_edges(edges);
+            if (active_cursor_name_ != cname) {
+                active_cursor_name_ = cname;
+                wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, cname);
+            }
+            return;
+        }
+        if (hz != ManagedWindow::HitZone::kClient) {
+            if (active_cursor_name_ != "left_ptr") {
+                active_cursor_name_ = "left_ptr";
+                wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "left_ptr");
+            }
+            return;
+        }
+        break;
+    }
+
+    if (seat_ && !seat_->pointer_state.focused_surface &&
+        active_cursor_name_ != "left_ptr") {
+        active_cursor_name_ = "left_ptr";
+        wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "left_ptr");
+    }
 }
 
 void Server::process_cursor_motion(uint32_t time_msec) {
-    if (cursor_mode_ == CursorMode::move) {
-        process_cursor_move();
+    if (!scene_ || !cursor_ || !seat_) return;
+    if (idle_notifier_) wlr_idle_notifier_v1_notify_activity(idle_notifier_, seat_);
+
+    if (cursor_mode_ != CursorMode::kPassthrough &&
+        seat_->pointer_state.button_count == 0) {
+        cursor_mode_ = CursorMode::kPassthrough;
+        grabbed_window_ = nullptr;
+        active_cursor_name_ = "left_ptr";
+        wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "left_ptr");
+    }
+
+    if (cursor_mode_ == CursorMode::kMove && grabbed_window_) {
+        grabbed_window_->set_position(static_cast<int>(cursor_->x - grab_x_),
+                                      static_cast<int>(cursor_->y - grab_y_));
         return;
     }
-    if (cursor_mode_ == CursorMode::resize) {
-        process_cursor_resize();
+    if (cursor_mode_ == CursorMode::kResize && grabbed_window_) {
+        const int dx = static_cast<int>(cursor_->x - grab_x_);
+        const int dy = static_cast<int>(cursor_->y - grab_y_);
+        int nx = grab_geobox_.x;
+        int ny = grab_geobox_.y;
+        int nw = grab_geobox_.width;
+        int nh = grab_geobox_.height;
+
+        if (resize_edges_ & WLR_EDGE_LEFT) {
+            nw = std::max(240, grab_geobox_.width - dx);
+            nx = grab_geobox_.x + (grab_geobox_.width - nw);
+        } else if (resize_edges_ & WLR_EDGE_RIGHT) {
+            nw = std::max(240, grab_geobox_.width + dx);
+        }
+        if (resize_edges_ & WLR_EDGE_TOP) {
+            nh = std::max(140, grab_geobox_.height - dy);
+            ny = grab_geobox_.y + (grab_geobox_.height - nh);
+        } else if (resize_edges_ & WLR_EDGE_BOTTOM) {
+            nh = std::max(140, grab_geobox_.height + dy);
+        }
+        grabbed_window_->set_position(nx, ny);
+        grabbed_window_->configure_size(nw, nh);
         return;
     }
-    pointer_motion(time_msec);
-}
 
-void Server::reset_cursor_mode() {
-    cursor_mode_ = CursorMode::passthrough;
-    grabbed_ = nullptr;
-}
-
-
-void Server::focus(Toplevel* toplevel) {
-    if (toplevel == nullptr) return;
-    wlr_surface* surface = toplevel->xdg_toplevel->base->surface;
-    wlr_surface* previous = seat_->keyboard_state.focused_surface;
-    if (previous == surface) return;
-
-    if (previous != nullptr) {
-        wlr_xdg_toplevel* previous_toplevel =
-            wlr_xdg_toplevel_try_from_wlr_surface(previous);
-        if (previous_toplevel != nullptr) {
-            wlr_xdg_toplevel_set_activated(previous_toplevel, false);
-        }
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node, cursor_->x, cursor_->y,
+                                             &sx, &sy);
+    wlr_surface* surface = nullptr;
+    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
+        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
+        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
+        if (scene_surf) surface = scene_surf->surface;
     }
 
-    wlr_scene_node_raise_to_top(&toplevel->scene_tree->node);
-    wlr_xdg_toplevel_set_activated(toplevel->xdg_toplevel, true);
-
-    wlr_keyboard* keyboard = wlr_seat_get_keyboard(seat_);
-    if (keyboard != nullptr) {
-        wlr_seat_keyboard_notify_enter(seat_, surface, keyboard->keycodes,
-                                       keyboard->num_keycodes,
-                                       &keyboard->modifiers);
-    }
-    focused_ = toplevel;
-    last_focused_ = toplevel;
-    focused_layer_ = nullptr;
-}
-
-// Handles compositor-level shortcuts before passing keystrokes down to
-// focused client surfaces. There is no quit chord: Alt+Escape is easy to hit
-// next to Alt+Tab and would close every open window, and a developer can
-// restart the compositor with `systemctl restart finn-comp`.
-bool Server::handle_keybinding(uint32_t keysym) {
-    switch (keysym) {
-        case XKB_KEY_F1: {
-            if (toplevels_.empty()) return true;
-            const auto current = std::find_if(
-                toplevels_.begin(), toplevels_.end(),
-                [this](const auto& entry) { return entry.get() == focused_; });
-            std::size_t index = 0;
-            if (current != toplevels_.end()) {
-                index = static_cast<std::size_t>(
-                            std::distance(toplevels_.begin(), current)) +
-                        1;
-                index %= toplevels_.size();
-            }
-            focus(toplevels_[index].get());
-            return true;
-        }
-        default:
-            return false;
-    }
-}
-
-wlr_surface* Server::surface_at(double lx, double ly, double* sx, double* sy) {
-    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node, lx, ly, sx, sy);
-    if (node == nullptr || node->type != WLR_SCENE_NODE_BUFFER) return nullptr;
-    wlr_scene_buffer* scene_buffer = wlr_scene_buffer_from_node(node);
-    wlr_scene_surface* scene_surface =
-        wlr_scene_surface_try_from_buffer(scene_buffer);
-    if (scene_surface == nullptr) return nullptr;
-    return scene_surface->surface;
-}
-
-Server::Toplevel* Server::toplevel_at(double lx, double ly,
-                                      wlr_surface** surface, double* sx,
-                                      double* sy) {
-    wlr_scene_node* node =
-        wlr_scene_node_at(&scene_->tree.node, lx, ly, sx, sy);
-    if (node == nullptr || node->type != WLR_SCENE_NODE_BUFFER) return nullptr;
-
-    wlr_scene_buffer* scene_buffer = wlr_scene_buffer_from_node(node);
-    wlr_scene_surface* scene_surface =
-        wlr_scene_surface_try_from_buffer(scene_buffer);
-    if (scene_surface == nullptr) return nullptr;
-
-    *surface = scene_surface->surface;
-    wlr_scene_tree* tree = node->parent;
-    while (tree != nullptr && tree->node.data == nullptr) {
-        tree = tree->node.parent;
-    }
-    if (tree == nullptr) return nullptr;
-    return static_cast<Toplevel*>(tree->node.data);
-}
-
-void Server::pointer_motion(uint32_t time_msec) {
-    double sx = 0;
-    double sy = 0;
-    wlr_surface* surface = surface_at(cursor_->x, cursor_->y, &sx, &sy);
-    if (surface == nullptr && cursor_manager_ != nullptr) {
-        wlr_cursor_set_xcursor(cursor_, cursor_manager_, "default");
-    }
-    if (surface != nullptr) {
+    if (surface) {
         wlr_seat_pointer_notify_enter(seat_, surface, sx, sy);
         wlr_seat_pointer_notify_motion(seat_, time_msec, sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(seat_);
     }
+    update_cursor_shape_or_edge(cursor_->x, cursor_->y);
 }
 
 void Server::on_new_output(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, new_output_);
-    server->add_output(static_cast<wlr_output*>(data));
+    Server* server = wl_container_of(listener, server, new_output_);
+    auto* wlr_out = static_cast<wlr_output*>(data);
+    wlr_output_init_render(wlr_out, server->allocator_, server->renderer_);
+
+    const OutputConfig cfg = read_output_config();
+    server->apply_output_config(wlr_out, cfg);
+
+    auto dev = std::make_unique<OutputDevice>();
+    auto* d = dev.get();
+    d->server = server;
+    d->output = wlr_out;
+
+    wlr_output_layout_output* l_out =
+        wlr_output_layout_add_auto(server->output_layout_, wlr_out);
+    d->scene_output = wlr_scene_output_create(server->scene_, wlr_out);
+    wlr_scene_output_layout_add_output(server->scene_layout_, l_out, d->scene_output);
+
+    server->outputs_.push_back(std::move(dev));
+
+    attach_listener(wlr_out->events.frame, d->frame_l,
+                    [](wl_listener* l, void*) {
+                        OutputDevice* od = wl_container_of(l, od, frame_l);
+                        wlr_scene_output_commit(od->scene_output, nullptr);
+                        timespec now{};
+                        clock_gettime(CLOCK_MONOTONIC, &now);
+                        wlr_scene_output_send_frame_done(od->scene_output, &now);
+                    });
+
+    attach_listener(wlr_out->events.request_state, d->request_state_l,
+                    [](wl_listener* l, void* edata) {
+                        OutputDevice* od = wl_container_of(l, od, request_state_l);
+                        const auto* ev =
+                            static_cast<const wlr_output_event_request_state*>(edata);
+                        wlr_output_commit_state(od->output, ev->state);
+                        od->server->arrange_layers();
+                        od->server->update_background();
+                    });
+
+    attach_listener(wlr_out->events.destroy, d->destroy_l,
+                    [](wl_listener* l, void*) {
+                        OutputDevice* od = wl_container_of(l, od, destroy_l);
+                        Server* s = od->server;
+                        s->outputs_.remove_if(
+                            [od](const auto& p) { return p.get() == od; });
+                    });
+
+    server->arrange_layers();
+    server->update_background();
+    if (server->cursor_ && server->xcursor_mgr_) {
+        wlr_cursor_set_xcursor(server->cursor_, server->xcursor_mgr_,
+                               server->active_cursor_name_.c_str());
+    }
 }
 
 void Server::on_new_input(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, new_input_);
-    server->add_input(static_cast<wlr_input_device*>(data));
-}
+    Server* server = wl_container_of(listener, server, new_input_);
+    auto* device = static_cast<wlr_input_device*>(data);
 
-void Server::on_new_toplevel(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, new_toplevel_);
-    server->add_toplevel(static_cast<wlr_xdg_toplevel*>(data));
-}
+    if (device->type == WLR_INPUT_DEVICE_KEYBOARD) {
+        wlr_keyboard* kb = wlr_keyboard_from_input_device(device);
+        xkb_context* ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        xkb_keymap* map = xkb_keymap_new_from_names(ctx, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
+        wlr_keyboard_set_keymap(kb, map);
+        xkb_keymap_unref(map);
+        xkb_context_unref(ctx);
+        wlr_keyboard_set_repeat_info(kb, 28, 350);
 
-void Server::on_new_layer(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, new_layer_);
-    server->add_layer(static_cast<wlr_layer_surface_v1*>(data));
-}
+        auto kdev = std::make_unique<KeyboardDevice>();
+        auto* kd = kdev.get();
+        kd->server = server;
+        kd->keyboard = kb;
+        server->keyboards_.push_back(std::move(kdev));
+        wlr_seat_set_keyboard(server->seat_, kb);
 
-void Server::on_output_frame(wl_listener* listener, void* data) {
-    (void)data;
-    Output* output = nullptr;
-    output = wl_container_of(listener, output, frame);
-    wlr_scene_output* scene_output =
-        wlr_scene_get_scene_output(output->server->scene_, output->output);
-    if (scene_output == nullptr) return;
+        attach_listener(kb->events.modifiers, kd->modifiers_l,
+                        [](wl_listener* l, void*) {
+                            KeyboardDevice* k = wl_container_of(l, k, modifiers_l);
+                            wlr_seat_set_keyboard(k->server->seat_, k->keyboard);
+                            wlr_seat_keyboard_notify_modifiers(k->server->seat_,
+                                                               &k->keyboard->modifiers);
+                        });
 
-    wlr_scene_output_commit(scene_output, nullptr);
-    sd_notify(0, "WATCHDOG=1");
+        attach_listener(kb->events.key, kd->key_l,
+                        [](wl_listener* l, void* edata) {
+                            KeyboardDevice* k = wl_container_of(l, k, key_l);
+                            const auto* ev = static_cast<const wlr_keyboard_key_event*>(edata);
+                            Server* s = k->server;
+                            wlr_idle_notifier_v1_notify_activity(s->idle_notifier_, s->seat_);
 
-    timespec now{};
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    wlr_scene_output_send_frame_done(scene_output, &now);
-}
+                            const uint32_t mods = wlr_keyboard_get_modifiers(k->keyboard);
+                            const xkb_keycode_t keycode = ev->keycode + 8;
+                            const xkb_keysym_t* syms = nullptr;
+                            const int nsyms = xkb_state_key_get_syms(
+                                k->keyboard->xkb_state, keycode, &syms);
 
-void Server::on_output_request_state(wl_listener* listener, void* data) {
-    Output* output = nullptr;
-    output = wl_container_of(listener, output, request_state);
-    const auto* event = static_cast<wlr_output_event_request_state*>(data);
-    wlr_output_commit_state(output->output, event->state);
-}
+                            bool handled = false;
+                            if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+                                for (int i = 0; i < nsyms; ++i) {
+                                    const xkb_keysym_t sym = syms[i];
+                                    if ((mods & (WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT)) ==
+                                            (WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT) &&
+                                        sym >= XKB_KEY_XF86Switch_VT_1 &&
+                                        sym <= XKB_KEY_XF86Switch_VT_12) {
+                                        if (s->wlr_session_) {
+                                            wlr_session_change_vt(
+                                                s->wlr_session_,
+                                                sym - XKB_KEY_XF86Switch_VT_1 + 1);
+                                        }
+                                        handled = true;
+                                        break;
+                                    }
+                                    if ((mods & WLR_MODIFIER_ALT) && sym == XKB_KEY_Tab) {
+                                        s->cycle_focus(!(mods & WLR_MODIFIER_SHIFT));
+                                        handled = true;
+                                        break;
+                                    }
+                                    if ((mods & WLR_MODIFIER_ALT) && sym == XKB_KEY_F4) {
+                                        if (s->focused_window_) s->focused_window_->close();
+                                        handled = true;
+                                        break;
+                                    }
+                                    if (mods & WLR_MODIFIER_LOGO) {
+                                        if (sym == XKB_KEY_q || sym == XKB_KEY_Q) {
+                                            if (s->focused_window_) s->focused_window_->close();
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_Left && s->focused_window_) {
+                                            s->focused_window_->snap_half(true);
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_Right && s->focused_window_) {
+                                            s->focused_window_->snap_half(false);
+                                            handled = true;
+                                            break;
+                                        }
+                                        if ((sym == XKB_KEY_Up || sym == XKB_KEY_m) &&
+                                            s->focused_window_) {
+                                            s->focused_window_->set_maximized(
+                                                !s->focused_window_->maximized);
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_Down && s->focused_window_) {
+                                            if (s->focused_window_->maximized)
+                                                s->focused_window_->set_maximized(false);
+                                            else
+                                                s->focused_window_->set_minimized(true);
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_d || sym == XKB_KEY_D) {
+                                            s->minimize_all_toggle();
+                                            handled = true;
+                                            break;
+                                        }
+                                    }
+                                    if (const char* allow = std::getenv("FINN_ALLOW_QUIT");
+                                        allow && *allow == '1' &&
+                                        (mods & WLR_MODIFIER_ALT) && sym == XKB_KEY_Escape) {
+                                        wl_display_terminate(s->display_);
+                                        handled = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!handled) {
+                                wlr_seat_set_keyboard(s->seat_, k->keyboard);
+                                wlr_seat_keyboard_notify_key(s->seat_, ev->time_msec,
+                                                             ev->keycode, ev->state);
+                            }
+                        });
 
-void Server::on_output_destroy(wl_listener* listener, void* data) {
-    (void)data;
-    Output* output = nullptr;
-    output = wl_container_of(listener, output, destroy);
-    output->server->remove_output(output);
-}
-
-void Server::on_toplevel_map(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, map);
-    wlr_log(WLR_INFO, "finn-comp: toplevel mapped (%zu open)",
-            toplevel->server->toplevels_.size());
-    toplevel->server->begin_open_animation(toplevel);
-    toplevel->server->focus(toplevel);
-}
-
-void Server::on_toplevel_unmap(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, unmap);
-    toplevel->opening = false;
-    wlr_log(WLR_INFO, "finn-comp: toplevel unmapped");
-    if (toplevel->server->focused_ == toplevel) {
-        toplevel->server->focused_ = nullptr;
-    }
-}
-
-void Server::on_toplevel_commit(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, commit);
-    if (toplevel->xdg_toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
-    }
-}
-
-void Server::on_toplevel_destroy(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, destroy);
-    toplevel->server->remove_toplevel(toplevel);
-}
-
-void Server::on_toplevel_request_move(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, request_move);
-    toplevel->server->begin_interactive(toplevel, CursorMode::move, 0);
-}
-
-void Server::on_toplevel_request_resize(wl_listener* listener, void* data) {
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, request_resize);
-    auto* event = static_cast<wlr_xdg_toplevel_resize_event*>(data);
-    toplevel->server->begin_interactive(toplevel, CursorMode::resize,
-                                        event->edges);
-}
-
-void Server::on_toplevel_request_maximize(wl_listener* listener, void* data) {
-    (void)data;
-    Toplevel* toplevel = nullptr;
-    toplevel = wl_container_of(listener, toplevel, request_maximize);
-    if (!toplevel->xdg_toplevel->base->initialized) return;
-    if (toplevel->xdg_toplevel->requested.maximized) {
-        toplevel->server->maximize(toplevel);
-    } else {
-        toplevel->server->unmaximize(toplevel);
-    }
-}
-
-void Server::on_layer_map(wl_listener* listener, void* data) {
-    (void)data;
-    Layer* layer = nullptr;
-    layer = wl_container_of(listener, layer, map);
-    if (layer->layer->current.keyboard_interactive != 0) {
-        layer->server->focus_layer(layer);
-    }
-}
-
-// Reconfigures layer surfaces dynamically so adjustments to panel dimensions
-// immediately recalculate usable space for maximized application windows.
-void Server::on_layer_commit(wl_listener* listener, void* data) {
-    (void)data;
-    Layer* layer = nullptr;
-    layer = wl_container_of(listener, layer, commit);
-    Server* server = layer->server;
-    if (!layer->configured) {
-        if (layer->layer->initialized) {
-            layer->configured = true;
-            server->configure_layer(layer);
-        }
-        return;
-    }
-    if (!layer->layer->surface->mapped) return;
-    if (layer->layer->current.keyboard_interactive != 0) {
-        server->focus_layer(layer);
-    } else if (server->focused_layer_ == layer) {
-        server->focused_layer_ = nullptr;
-        wlr_seat_keyboard_notify_clear_focus(server->seat_);
-        if (server->last_focused_ != nullptr) server->focus(server->last_focused_);
-    }
-}
-
-void Server::on_layer_destroy(wl_listener* listener, void* data) {
-    (void)data;
-    Layer* layer = nullptr;
-    layer = wl_container_of(listener, layer, destroy);
-    layer->server->remove_layer(layer);
-}
-
-void Server::on_keyboard_modifiers(wl_listener* listener, void* data) {
-    (void)data;
-    Keyboard* keyboard = nullptr;
-    keyboard = wl_container_of(listener, keyboard, modifiers);
-    Server* server = keyboard->server;
-    wlr_seat_set_keyboard(server->seat_, keyboard->keyboard);
-    wlr_seat_keyboard_notify_modifiers(server->seat_,
-                                       &keyboard->keyboard->modifiers);
-}
-
-void Server::on_keyboard_key(wl_listener* listener, void* data) {
-    Keyboard* keyboard = nullptr;
-    keyboard = wl_container_of(listener, keyboard, key);
-    Server* server = keyboard->server;
-    auto* event = static_cast<wlr_keyboard_key_event*>(data);
-
-    const uint32_t keycode = event->keycode + 8;
-    const xkb_keysym_t* syms = nullptr;
-    const int count =
-        xkb_state_key_get_syms(keyboard->keyboard->xkb_state, keycode, &syms);
-
-    bool handled = false;
-    const uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->keyboard);
-    if ((modifiers & WLR_MODIFIER_ALT) != 0 &&
-        event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
-        for (int i = 0; i < count; ++i) {
-            if (server->handle_keybinding(syms[i])) handled = true;
-        }
+        attach_listener(device->events.destroy, kd->destroy_l,
+                        [](wl_listener* l, void*) {
+                            KeyboardDevice* k = wl_container_of(l, k, destroy_l);
+                            Server* s = k->server;
+                            s->keyboards_.remove_if(
+                                [k](const auto& p) { return p.get() == k; });
+                        });
+    } else if (device->type == WLR_INPUT_DEVICE_POINTER) {
+        wlr_cursor_attach_input_device(server->cursor_, device);
+        auto pdev = std::make_unique<PointerDevice>();
+        auto* pd = pdev.get();
+        pd->server = server;
+        pd->pointer = wlr_pointer_from_input_device(device);
+        server->pointers_.push_back(std::move(pdev));
+        attach_listener(device->events.destroy, pd->destroy_l,
+                        [](wl_listener* l, void*) {
+                            PointerDevice* p = wl_container_of(l, p, destroy_l);
+                            Server* s = p->server;
+                            s->pointers_.remove_if(
+                                [p](const auto& x) { return x.get() == p; });
+                        });
     }
 
-    if (!handled) {
-        wlr_seat_set_keyboard(server->seat_, keyboard->keyboard);
-        wlr_seat_keyboard_notify_key(server->seat_, event->time_msec,
-                                     event->keycode, event->state);
-    }
+    uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
+    if (!server->keyboards_.empty()) caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+    wlr_seat_set_capabilities(server->seat_, caps);
 }
 
-void Server::on_keyboard_destroy(wl_listener* listener, void* data) {
-    (void)data;
-    Keyboard* keyboard = nullptr;
-    keyboard = wl_container_of(listener, keyboard, destroy);
-    keyboard->server->remove_keyboard(keyboard);
+void Server::on_new_xdg_toplevel(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, new_xdg_toplevel_);
+    auto* xdg_toplevel = static_cast<wlr_xdg_toplevel*>(data);
+
+    // setup_xdg_toplevel appends ManagedWindow inside this scope manually
+    auto node = std::make_unique<ManagedWindow>(server);
+    auto* w = node.get();
+    server->windows_.push_back(std::move(node));
+
+    w->is_xwayland = false;
+    w->xdg_toplevel = xdg_toplevel;
+    w->scene_tree = wlr_scene_tree_create(server->toplevel_tree_);
+    w->surface_tree = wlr_scene_xdg_surface_create(w->scene_tree, xdg_toplevel->base);
+    w->scene_tree->node.data = w;
+    xdg_toplevel->base->data = w->surface_tree;
+
+    const wlr_box area = server->usable_area_for();
+    w->x = area.x + 36;
+    w->y = area.y + 32;
+    w->set_position(w->x, w->y);
+    wlr_scene_node_set_enabled(&w->scene_tree->node, false);
+
+    attach_listener(xdg_toplevel->base->surface->events.map, w->map_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, map_l);
+                        w->mapped = true;
+                        w->update_size_from_surface();
+                        const wlr_box area = w->server->usable_area_for();
+                        int mapped_others = 0;
+                        for (const auto& other : w->server->windows_) {
+                            if (other.get() != w && other->mapped && !other->minimized) {
+                                ++mapped_others;
+                            }
+                        }
+                        const int offset_x = (mapped_others % 5) * 26;
+                        const int offset_y = (mapped_others % 5) * 22;
+                        w->x = area.x + std::max(16, (area.width - w->width) / 2) + offset_x;
+                        w->y = area.y +
+                               std::max(16, (area.height - w->height - w->title_offset()) / 2) +
+                               offset_y;
+                        if (w->x + w->width > area.x + area.width) {
+                            w->x = std::max(area.x + 12, area.x + area.width - w->width - 16);
+                        }
+                        if (w->y + w->height + w->title_offset() > area.y + area.height) {
+                            w->y = std::max(area.y + 12,
+                                            area.y + area.height - w->height -
+                                                w->title_offset() - 16);
+                        }
+                        w->set_position(w->x, w->y);
+                        wlr_scene_node_set_enabled(&w->scene_tree->node, !w->minimized);
+                        w->update_ssd_layout();
+                        w->ensure_foreign_handle();
+                        w->sync_foreign_state();
+                        if (!w->minimized) {
+                            w->start_animation(w->x, w->y + 14, 150);
+                        }
+                        w->server->focus_window(w);
+                        w->server->process_cursor_motion(monotonic_msec());
+                    });
+
+    attach_listener(xdg_toplevel->base->surface->events.unmap, w->unmap_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, unmap_l);
+                        w->stop_animation();
+                        w->mapped = false;
+                        wlr_scene_node_set_enabled(&w->scene_tree->node, false);
+                        if (w->server->focused_window() == w) w->server->focus_top_window();
+                        w->server->process_cursor_motion(monotonic_msec());
+                    });
+
+    attach_listener(xdg_toplevel->base->surface->events.commit, w->commit_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, commit_l);
+                        if (w->xdg_toplevel->base->initial_commit) {
+                            wlr_xdg_toplevel_set_size(w->xdg_toplevel, 0, 0);
+                            return;
+                        }
+                        if (w->mapped) w->update_size_from_surface();
+                    });
+
+    attach_listener(xdg_toplevel->events.request_move, w->req_move_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, req_move_l);
+                        w->server->begin_move(w);
+                    });
+
+    attach_listener(xdg_toplevel->events.request_resize, w->req_resize_l,
+                    [](wl_listener* l, void* edata) {
+                        ManagedWindow* w = wl_container_of(l, w, req_resize_l);
+                        const auto* ev = static_cast<const wlr_xdg_toplevel_resize_event*>(edata);
+                        w->server->begin_resize(w, ev->edges);
+                    });
+
+    attach_listener(xdg_toplevel->events.request_maximize, w->req_maximize_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, req_maximize_l);
+                        w->set_maximized(w->xdg_toplevel->requested.maximized);
+                    });
+
+    attach_listener(xdg_toplevel->events.request_minimize, w->req_minimize_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, req_minimize_l);
+                        w->set_minimized(true);
+                    });
+
+    attach_listener(xdg_toplevel->events.request_fullscreen, w->req_fullscreen_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, req_fullscreen_l);
+                        w->set_maximized(w->xdg_toplevel->requested.fullscreen);
+                    });
+
+    attach_listener(xdg_toplevel->events.set_title, w->set_title_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, set_title_l);
+                        w->sync_foreign_state();
+                    });
+
+    attach_listener(xdg_toplevel->events.set_app_id, w->set_app_id_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, set_app_id_l);
+                        w->sync_foreign_state();
+                    });
+
+    attach_listener(xdg_toplevel->events.destroy, w->destroy_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, destroy_l);
+                        Server* s = w->server;
+                        if (s->grabbed_window_ == w) {
+                            s->grabbed_window_ = nullptr;
+                            s->cursor_mode_ = CursorMode::kPassthrough;
+                        }
+                        if (s->focused_window_ == w) s->focused_window_ = nullptr;
+                        s->windows_.remove_if(
+                            [w](const auto& p) { return p.get() == w; });
+                        if (!s->focused_window_) s->focus_top_window();
+                    });
 }
 
-void Server::on_cursor_motion(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, cursor_motion_);
-    auto* event = static_cast<wlr_pointer_motion_event*>(data);
-    wlr_cursor_move(server->cursor_, &event->pointer->base, event->delta_x,
-                    event->delta_y);
-    server->process_cursor_motion(event->time_msec);
+void Server::on_new_xdg_popup(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, new_xdg_popup_);
+    auto* popup = static_cast<wlr_xdg_popup*>(data);
+    if (!popup->parent) return;  // Layer-shell popups arrive via layer->events.new_popup
+    wlr_scene_tree* ptree = server->parent_tree_for_xdg(popup->parent);
+    if (!ptree) ptree = server->layer_trees_[2];
+    server->create_popup(popup, ptree);
 }
 
-void Server::on_cursor_motion_absolute(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, cursor_motion_absolute_);
-    auto* event = static_cast<wlr_pointer_motion_absolute_event*>(data);
-    wlr_cursor_warp_absolute(server->cursor_, &event->pointer->base, event->x,
-                             event->y);
-    server->process_cursor_motion(event->time_msec);
+void Server::on_new_xdg_decoration(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, new_xdg_decoration_);
+    setup_xdg_decoration(server, static_cast<wlr_xdg_toplevel_decoration_v1*>(data));
 }
 
-void Server::on_cursor_button(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, cursor_button_);
-    auto* event = static_cast<wlr_pointer_button_event*>(data);
-    wlr_seat_pointer_notify_button(server->seat_, event->time_msec,
-                                   event->button, event->state);
-    if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
-        double sx = 0;
-        double sy = 0;
-        wlr_surface* surface = nullptr;
-        server->focus(server->toplevel_at(server->cursor_->x, server->cursor_->y,
-                                          &surface, &sx, &sy));
-    } else {
-        server->reset_cursor_mode();
-    }
+void Server::on_xwayland_ready(wl_listener* listener, void*) {
+    Server* server = wl_container_of(listener, server, xwayland_ready_);
+    if (!server->xwayland_) return;
+    wlr_xwayland_set_seat(server->xwayland_, server->seat_);
+    write_xdisplay_file(server->xwayland_->display_name);
+    wlr_log(WLR_INFO, "finn-comp: Xwayland ready on DISPLAY=%s",
+            server->xwayland_->display_name ? server->xwayland_->display_name : "");
 }
 
-void Server::on_cursor_axis(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, cursor_axis_);
-    auto* event = static_cast<wlr_pointer_axis_event*>(data);
-    wlr_seat_pointer_notify_axis(
-        server->seat_, event->time_msec, event->orientation, event->delta,
-        event->delta_discrete, event->source, event->relative_direction);
-}
+void Server::on_xwayland_new_surface(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, xwayland_new_surface_);
+    auto* xsurface = static_cast<wlr_xwayland_surface*>(data);
+    auto node = std::make_unique<ManagedWindow>(server);
+    ManagedWindow* w = node.get();
+    server->windows_.push_back(std::move(node));
+    setup_xwayland_window(w, xsurface);
 
-void Server::on_cursor_frame(wl_listener* listener, void* data) {
-    (void)data;
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, cursor_frame_);
-    wlr_seat_pointer_notify_frame(server->seat_);
-}
-
-// Touch goes straight to the surface under the finger. Unlike the pointer it
-// has no hover state, so a touch-down also focuses the toplevel it landed on.
-void Server::on_touch_down(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, touch_down_);
-    auto* event = static_cast<wlr_touch_down_event*>(data);
-    double lx = 0;
-    double ly = 0;
-    wlr_cursor_absolute_to_layout_coords(server->cursor_, &event->touch->base,
-                                         event->x, event->y, &lx, &ly);
-    double sx = 0;
-    double sy = 0;
-    wlr_surface* surface = nullptr;
-    Toplevel* toplevel = server->toplevel_at(lx, ly, &surface, &sx, &sy);
-    if (toplevel != nullptr) {
-        server->focus(toplevel);
-    } else {
-        surface = server->surface_at(lx, ly, &sx, &sy);
-    }
-    if (surface == nullptr) return;
-    wlr_seat_touch_notify_down(server->seat_, surface, event->time_msec,
-                               event->touch_id, sx, sy);
-}
-
-void Server::on_touch_up(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, touch_up_);
-    auto* event = static_cast<wlr_touch_up_event*>(data);
-    wlr_seat_touch_notify_up(server->seat_, event->time_msec, event->touch_id);
-}
-
-void Server::on_touch_motion(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, touch_motion_);
-    auto* event = static_cast<wlr_touch_motion_event*>(data);
-    // A point that never reached a surface has nothing to move.
-    if (wlr_seat_touch_get_point(server->seat_, event->touch_id) == nullptr) return;
-    double lx = 0;
-    double ly = 0;
-    wlr_cursor_absolute_to_layout_coords(server->cursor_, &event->touch->base,
-                                         event->x, event->y, &lx, &ly);
-    double sx = 0;
-    double sy = 0;
-    wlr_surface* surface = server->surface_at(lx, ly, &sx, &sy);
-    if (surface == nullptr) return;
-    wlr_seat_touch_notify_motion(server->seat_, event->time_msec,
-                                 event->touch_id, sx, sy);
-}
-
-void Server::on_touch_cancel(wl_listener* listener, void* data) {
-    (void)data;
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, touch_cancel_);
-    // Cancelling removes points from the list, so collect the clients first.
-    std::vector<wlr_seat_client*> clients;
-    wlr_touch_point* point = nullptr;
-    wl_list_for_each(point, &server->seat_->touch_state.touch_points, link) {
-        if (point->client != nullptr &&
-            std::find(clients.begin(), clients.end(), point->client) == clients.end()) {
-            clients.push_back(point->client);
-        }
-    }
-    for (wlr_seat_client* client : clients) {
-        wlr_seat_touch_notify_cancel(server->seat_, client);
-    }
-}
-
-void Server::on_touch_frame(wl_listener* listener, void* data) {
-    (void)data;
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, touch_frame_);
-    wlr_seat_touch_notify_frame(server->seat_);
+    attach_listener(xsurface->events.destroy, w->destroy_l,
+                    [](wl_listener* l, void*) {
+                        ManagedWindow* w = wl_container_of(l, w, destroy_l);
+                        Server* s = w->server;
+                        if (s->grabbed_window_ == w) {
+                            s->grabbed_window_ = nullptr;
+                            s->cursor_mode_ = CursorMode::kPassthrough;
+                        }
+                        if (s->focused_window_ == w) s->focused_window_ = nullptr;
+                        if (w->scene_tree) wlr_scene_node_destroy(&w->scene_tree->node);
+                        s->windows_.remove_if(
+                            [w](const auto& p) { return p.get() == w; });
+                        if (!s->focused_window_) s->focus_top_window();
+                    });
 }
 
 void Server::on_request_cursor(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, request_cursor_);
-    auto* event = static_cast<wlr_seat_pointer_request_set_cursor_event*>(data);
-    wlr_seat_client* focused = server->seat_->pointer_state.focused_client;
-    if (focused == event->seat_client) {
-        wlr_cursor_set_surface(server->cursor_, event->surface,
-                               event->hotspot_x, event->hotspot_y);
+    Server* server = wl_container_of(listener, server, request_cursor_);
+    const auto* ev = static_cast<const wlr_seat_pointer_request_set_cursor_event*>(data);
+    if (server->seat_->pointer_state.focused_client == ev->seat_client &&
+        server->cursor_mode_ == CursorMode::kPassthrough) {
+        wlr_cursor_set_surface(server->cursor_, ev->surface, ev->hotspot_x, ev->hotspot_y);
     }
 }
 
-void Server::on_pointer_focus_change(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, pointer_focus_change_);
-    (void)data;
-    // Every focus change starts from the default arrow. A client that wants
-    // another image asks for it after the enter, which replaces this one.
-    // Without this, a client that never calls set_cursor (libfinnui) leaves
-    // the pointer invisible.
-    if (server->cursor_manager_ != nullptr) {
-        wlr_cursor_set_xcursor(server->cursor_, server->cursor_manager_,
-                               "default");
+void Server::on_request_set_shape(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, request_set_shape_);
+    const auto* ev =
+        static_cast<const wlr_cursor_shape_manager_v1_request_set_shape_event*>(data);
+    if (server->seat_->pointer_state.focused_client == ev->seat_client &&
+        server->cursor_mode_ == CursorMode::kPassthrough) {
+        const char* cname = wlr_cursor_shape_v1_name(ev->shape);
+        if (cname && *cname) {
+            server->active_cursor_name_ = cname;
+            wlr_cursor_set_xcursor(server->cursor_, server->xcursor_mgr_, cname);
+        }
     }
 }
 
 void Server::on_request_set_selection(wl_listener* listener, void* data) {
-    Server* server = nullptr;
-    server = wl_container_of(listener, server, request_set_selection_);
-    auto* event = static_cast<wlr_seat_request_set_selection_event*>(data);
-    wlr_seat_set_selection(server->seat_, event->source, event->serial);
+    Server* server = wl_container_of(listener, server, request_set_selection_);
+    const auto* ev = static_cast<const wlr_seat_request_set_selection_event*>(data);
+    wlr_seat_set_selection(server->seat_, ev->source, ev->serial);
+}
+
+void Server::on_request_set_primary_selection(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, request_set_primary_selection_);
+    const auto* ev =
+        static_cast<const wlr_seat_request_set_primary_selection_event*>(data);
+    wlr_seat_set_primary_selection(server->seat_, ev->source, ev->serial);
+}
+
+void Server::on_request_activate(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, request_activate_);
+    const auto* ev =
+        static_cast<const wlr_xdg_activation_v1_request_activate_event*>(data);
+    if (!ev->surface) return;
+    for (auto& w : server->windows_) {
+        if (w->main_surface() == ev->surface) {
+            if (w->minimized) w->set_minimized(false);
+            server->focus_window(w.get());
+            break;
+        }
+    }
+}
+
+void Server::on_cursor_motion(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_motion_);
+    const auto* ev = static_cast<const wlr_pointer_motion_event*>(data);
+    wlr_cursor_move(server->cursor_, &ev->pointer->base, ev->delta_x, ev->delta_y);
+    server->process_cursor_motion(ev->time_msec);
+}
+
+void Server::on_cursor_motion_absolute(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_motion_absolute_);
+    const auto* ev = static_cast<const wlr_pointer_motion_absolute_event*>(data);
+    wlr_cursor_warp_absolute(server->cursor_, &ev->pointer->base, ev->x, ev->y);
+    server->process_cursor_motion(ev->time_msec);
+}
+
+void Server::on_cursor_button(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_button_);
+    const auto* ev = static_cast<const wlr_pointer_button_event*>(data);
+    if (server->idle_notifier_) {
+        wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
+    }
+
+    if (ev->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+        if (server->cursor_mode_ != CursorMode::kPassthrough) {
+            server->cursor_mode_ = CursorMode::kPassthrough;
+            server->grabbed_window_ = nullptr;
+            server->active_cursor_name_ = "left_ptr";
+            wlr_cursor_set_xcursor(server->cursor_, server->xcursor_mgr_, "left_ptr");
+            server->process_cursor_motion(ev->time_msec);
+            return;
+        }
+        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        return;
+    }
+
+    // 1. Hit-test the scene graph at the cursor position first so Top/Overlay
+    // layer surfaces (dock, popovers, lock screen) take priority over windows below.
+    double sx = 0, sy = 0;
+    wlr_scene_node* node = wlr_scene_node_at(
+        &server->scene_->tree.node, server->cursor_->x, server->cursor_->y, &sx, &sy);
+    wlr_surface* hit_surface = nullptr;
+    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
+        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
+        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
+        if (scene_surf) hit_surface = scene_surf->surface;
+    }
+
+    bool hit_top_or_overlay_layer = false;
+    for (wlr_scene_tree* t = node ? node->parent : nullptr; t != nullptr;
+         t = t->node.parent) {
+        if (t == server->layer_trees_[2] || t == server->layer_trees_[3] ||
+            t == server->lock_tree_) {
+            hit_top_or_overlay_layer = true;
+            break;
+        }
+    }
+
+    if (hit_top_or_overlay_layer) {
+        if (hit_surface) {
+            wlr_seat_pointer_notify_enter(server->seat_, hit_surface, sx, sy);
+            wlr_seat_pointer_notify_motion(server->seat_, ev->time_msec, sx, sy);
+            wlr_surface* root_surf = wlr_surface_get_root_surface(hit_surface);
+            if (wlr_layer_surface_v1* lsurf =
+                    root_surf ? wlr_layer_surface_v1_try_from_wlr_surface(root_surf)
+                              : nullptr) {
+                if (lsurf->current.keyboard_interactive !=
+                    ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+                    wlr_keyboard* kb = wlr_seat_get_keyboard(server->seat_);
+                    if (kb) {
+                        wlr_seat_keyboard_notify_enter(server->seat_, lsurf->surface,
+                                                       kb->keycodes, kb->num_keycodes,
+                                                       &kb->modifiers);
+                    } else {
+                        wlr_seat_keyboard_notify_enter(server->seat_, lsurf->surface,
+                                                       nullptr, 0, nullptr);
+                    }
+                }
+            }
+        }
+        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        return;
+    }
+
+    // 2. Check SSD chrome buttons, borders, or Alt+drag on ManagedWindows
+    wlr_keyboard* kb = wlr_seat_get_keyboard(server->seat_);
+    const uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
+    bool hit_any_window = false;
+
+    for (auto& w : server->windows_) {
+        if (!w->mapped || w->minimized) continue;
+        uint32_t edges = 0;
+        const auto hz = w->hit_test(server->cursor_->x, server->cursor_->y, &edges);
+        if (hz == ManagedWindow::HitZone::kNone) continue;
+
+        hit_any_window = true;
+        server->focus_window(w.get());
+
+        // Forward button press into seat first if client-decorated so pointer_state.button_count
+        // is non-zero if the client requests an interactive move/resize on this press.
+        if (hz == ManagedWindow::HitZone::kClient) {
+            break;
+        }
+
+        if ((mods & WLR_MODIFIER_ALT) && ev->button == BTN_LEFT) {
+            wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+            server->begin_move(w.get());
+            return;
+        }
+        if ((mods & WLR_MODIFIER_ALT) && ev->button == BTN_RIGHT) {
+            wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+            server->begin_resize(w.get(), WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
+            return;
+        }
+        if (ev->button == BTN_LEFT) {
+            if (hz == ManagedWindow::HitZone::kBtnClose) {
+                w->close();
+                return;
+            }
+            if (hz == ManagedWindow::HitZone::kBtnMax) {
+                w->set_maximized(!w->maximized);
+                return;
+            }
+            if (hz == ManagedWindow::HitZone::kBtnMin) {
+                w->set_minimized(true);
+                return;
+            }
+            if (hz == ManagedWindow::HitZone::kMoveBar) {
+                wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button,
+                                               ev->state);
+                server->begin_move(w.get());
+                return;
+            }
+            if (hz == ManagedWindow::HitZone::kResize) {
+                wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button,
+                                               ev->state);
+                server->begin_resize(w.get(), edges);
+                return;
+            }
+        }
+        break;
+    }
+
+    // 3. Also check if scene node belongs to a ManagedWindow (e.g. client-side subtrees/popups)
+    if (!hit_any_window && node && node->type == WLR_SCENE_NODE_BUFFER) {
+        wlr_scene_node* cur = node;
+        while (cur && !cur->data) cur = cur->parent ? &cur->parent->node : nullptr;
+        if (cur && cur->data) {
+            auto* candidate = static_cast<ManagedWindow*>(cur->data);
+            for (auto& w : server->windows_) {
+                if (w.get() == candidate) {
+                    hit_any_window = true;
+                    server->focus_window(candidate);
+                    break;
+                }
+            }
+        }
+    }
+
+    // Clicking the desktop background clears keyboard focus (closing any open OnDemand/Exclusive popover).
+    if (!hit_any_window) {
+        server->focus_window(nullptr);
+    }
+
+    // Re-query the scene node at cursor after focus/raise and ensure pointer enter + motion
+    // are delivered BEFORE button press so the very first click always lands without moving first.
+    node = wlr_scene_node_at(
+        &server->scene_->tree.node, server->cursor_->x, server->cursor_->y, &sx, &sy);
+    hit_surface = nullptr;
+    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
+        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
+        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
+        if (scene_surf) hit_surface = scene_surf->surface;
+    }
+    if (hit_surface) {
+        wlr_seat_pointer_notify_enter(server->seat_, hit_surface, sx, sy);
+        wlr_seat_pointer_notify_motion(server->seat_, ev->time_msec, sx, sy);
+    } else {
+        wlr_seat_pointer_clear_focus(server->seat_);
+    }
+
+    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && ev->button == BTN_LEFT &&
+        server->focused_window_) {
+        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        server->begin_move(server->focused_window_);
+        return;
+    }
+    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && ev->button == BTN_RIGHT &&
+        server->focused_window_) {
+        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        server->begin_resize(server->focused_window_, WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
+        return;
+    }
+
+    wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+}
+
+void Server::on_cursor_axis(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_axis_);
+    const auto* ev = static_cast<const wlr_pointer_axis_event*>(data);
+    wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
+    wlr_seat_pointer_notify_axis(server->seat_, ev->time_msec, ev->orientation,
+                                 ev->delta, ev->delta_discrete, ev->source,
+                                 ev->relative_direction);
+}
+
+void Server::on_cursor_frame(wl_listener* listener, void*) {
+    Server* server = wl_container_of(listener, server, cursor_frame_);
+    wlr_seat_pointer_notify_frame(server->seat_);
+}
+
+void Server::on_output_mgr_apply(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, output_mgr_apply_);
+    server->on_output_manager_configure(static_cast<wlr_output_configuration_v1*>(data),
+                                        false);
+}
+
+void Server::on_output_mgr_test(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, output_mgr_test_);
+    server->on_output_manager_configure(static_cast<wlr_output_configuration_v1*>(data),
+                                        true);
+}
+
+void Server::on_output_manager_configure(wlr_output_configuration_v1* cfg,
+                                         bool test_only) {
+    wlr_output_configuration_head_v1* head = nullptr;
+    bool ok = true;
+    wl_list_for_each(head, &cfg->heads, link) {
+        wlr_output_state state;
+        wlr_output_state_init(&state);
+        wlr_output_state_set_enabled(&state, head->state.enabled);
+        if (head->state.enabled) {
+            if (head->state.mode) {
+                wlr_output_state_set_mode(&state, head->state.mode);
+            } else if (head->state.custom_mode.width > 0) {
+                wlr_output_state_set_custom_mode(&state, head->state.custom_mode.width,
+                                                 head->state.custom_mode.height,
+                                                 head->state.custom_mode.refresh);
+            }
+            wlr_output_state_set_scale(&state, head->state.scale);
+        }
+        if (test_only) {
+            ok &= wlr_output_test_state(head->state.output, &state);
+        } else {
+            ok &= wlr_output_commit_state(head->state.output, &state);
+        }
+        wlr_output_state_finish(&state);
+    }
+    if (ok) wlr_output_configuration_v1_send_succeeded(cfg);
+    else wlr_output_configuration_v1_send_failed(cfg);
+    wlr_output_configuration_v1_destroy(cfg);
+    if (!test_only) {
+        arrange_layers();
+        update_background();
+    }
+}
+
+int Server::run() {
+    wlr_log_init(WLR_INFO, nullptr);
+
+    display_ = wl_display_create();
+    if (!display_) return 1;
+
+    wl_event_loop* loop = wl_display_get_event_loop(display_);
+    backend_ = wlr_backend_autocreate(loop, &wlr_session_);
+    if (!backend_) {
+        wlr_log(WLR_ERROR, "finn-comp: failed to create wlroots backend");
+        return 1;
+    }
+
+    renderer_ = wlr_renderer_autocreate(backend_);
+    if (!renderer_) return 1;
+    wlr_renderer_init_wl_display(renderer_, display_);
+
+    allocator_ = wlr_allocator_autocreate(backend_, renderer_);
+    if (!allocator_) return 1;
+
+    compositor_ = wlr_compositor_create(display_, 6, renderer_);
+    wlr_subcompositor_create(display_);
+    wlr_data_device_manager_create(display_);
+    wlr_primary_selection_v1_device_manager_create(display_);
+    wlr_data_control_manager_v1_create(display_);
+    wlr_screencopy_manager_v1_create(display_);
+    wlr_viewporter_create(display_);
+    wlr_fractional_scale_manager_v1_create(display_, 1);
+
+    output_layout_ = wlr_output_layout_create(display_);
+    wlr_xdg_output_manager_v1_create(display_, output_layout_);
+    output_manager_ = wlr_output_manager_v1_create(display_);
+    attach_listener(output_manager_->events.apply, output_mgr_apply_, on_output_mgr_apply);
+    attach_listener(output_manager_->events.test, output_mgr_test_, on_output_mgr_test);
+
+    scene_ = wlr_scene_create();
+    scene_layout_ = wlr_scene_attach_output_layout(scene_, output_layout_);
+
+    // Exact stacking invariant: Background rect -> layer 0 -> layer 1 -> toplevels -> layer 2 -> layer 3 -> lock
+    const float bg_init[4] = {0.918f, 0.925f, 0.941f, 1.0f};
+    background_rect_ = wlr_scene_rect_create(&scene_->tree, 1440, 900, bg_init);
+    layer_trees_[0] = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[1] = wlr_scene_tree_create(&scene_->tree);
+    toplevel_tree_ = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[2] = wlr_scene_tree_create(&scene_->tree);
+    layer_trees_[3] = wlr_scene_tree_create(&scene_->tree);
+    lock_tree_ = wlr_scene_tree_create(&scene_->tree);
+
+    attach_listener(backend_->events.new_output, new_output_, on_new_output);
+    attach_listener(backend_->events.new_input, new_input_, on_new_input);
+
+    xdg_shell_ = wlr_xdg_shell_create(display_, 5);
+    attach_listener(xdg_shell_->events.new_toplevel, new_xdg_toplevel_,
+                    on_new_xdg_toplevel);
+    attach_listener(xdg_shell_->events.new_popup, new_xdg_popup_, on_new_xdg_popup);
+
+    xdg_decoration_mgr_ = wlr_xdg_decoration_manager_v1_create(display_);
+    attach_listener(xdg_decoration_mgr_->events.new_toplevel_decoration,
+                    new_xdg_decoration_, on_new_xdg_decoration);
+
+    layer_shell_ = wlr_layer_shell_v1_create(display_, 4);
+    attach_listener(layer_shell_->events.new_surface, new_layer_surface_,
+                    on_new_layer_surface);
+
+    foreign_toplevel_mgr_ = wlr_foreign_toplevel_manager_v1_create(display_);
+    activation_ = wlr_xdg_activation_v1_create(display_);
+    attach_listener(activation_->events.request_activate, request_activate_,
+                    on_request_activate);
+
+    idle_notifier_ = wlr_idle_notifier_v1_create(display_);
+    idle_inhibit_mgr_ = wlr_idle_inhibit_v1_create(display_);
+    session_lock_mgr_ = wlr_session_lock_manager_v1_create(display_);
+
+    cursor_ = wlr_cursor_create();
+    wlr_cursor_attach_output_layout(cursor_, output_layout_);
+    dark_theme_ = read_dark_setting();
+    cursor_size_ = read_cursor_size_setting();
+    reduced_motion_ = read_reduced_motion_setting();
+    reload_cursor_theme();
+
+    cursor_shape_mgr_ = wlr_cursor_shape_manager_v1_create(display_, 1);
+    attach_listener(cursor_shape_mgr_->events.request_set_shape, request_set_shape_,
+                    on_request_set_shape);
+
+    seat_ = wlr_seat_create(display_, "seat0");
+    attach_listener(seat_->events.request_set_cursor, request_cursor_, on_request_cursor);
+    attach_listener(seat_->events.request_set_selection, request_set_selection_,
+                    on_request_set_selection);
+    attach_listener(seat_->events.request_set_primary_selection,
+                    request_set_primary_selection_, on_request_set_primary_selection);
+
+    attach_listener(cursor_->events.motion, cursor_motion_, on_cursor_motion);
+    attach_listener(cursor_->events.motion_absolute, cursor_motion_absolute_,
+                    on_cursor_motion_absolute);
+    attach_listener(cursor_->events.button, cursor_button_, on_cursor_button);
+    attach_listener(cursor_->events.axis, cursor_axis_, on_cursor_axis);
+    attach_listener(cursor_->events.frame, cursor_frame_, on_cursor_frame);
+
+    const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    if (!runtime_dir || !*runtime_dir) {
+        wlr_log(WLR_ERROR, "finn-comp: XDG_RUNTIME_DIR is required");
+        return 1;
+    }
+    const char* sock_override = std::getenv("FINN_WAYLAND_SOCKET");
+    const char* sock_name = (sock_override && *sock_override) ? sock_override : "wayland-0";
+    if (wl_display_add_socket(display_, sock_name) != 0) {
+        wlr_log(WLR_ERROR, "finn-comp: cannot bind %s/%s", runtime_dir, sock_name);
+        return 1;
+    }
+    const std::string sock_full = std::string(runtime_dir) + "/" + sock_name;
+    ::chmod(sock_full.c_str(), 0660);
+
+    // Optional Xwayland server for X11 Linux apps and Wine Windows apps
+    xwayland_ = wlr_xwayland_create(display_, compositor_, true);
+    if (xwayland_) {
+        attach_listener(xwayland_->events.ready, xwayland_ready_, on_xwayland_ready);
+        attach_listener(xwayland_->events.new_surface, xwayland_new_surface_,
+                        on_xwayland_new_surface);
+        write_xdisplay_file(xwayland_->display_name);
+        wlr_log(WLR_INFO, "finn-comp: Xwayland enabled (%s)",
+                xwayland_->display_name ? xwayland_->display_name : "lazy");
+    } else {
+        wlr_log(WLR_INFO, "finn-comp: Xwayland unavailable; running Wayland-only");
+    }
+
+    if (!wlr_backend_start(backend_)) {
+        wlr_log(WLR_ERROR, "finn-comp: failed to start backend");
+        return 1;
+    }
+
+    dark_theme_ = read_dark_setting();
+    update_background();
+    reload_cursor_theme();
+
+    // Feed systemd watchdog every 5s and check theme/display overrides every 1s
+    watchdog_timer_ = wl_event_loop_add_timer(
+        loop,
+        [](void* data) -> int {
+            auto* s = static_cast<Server*>(data);
+            sd_notify(0, "WATCHDOG=1");
+            wl_event_source_timer_update(s->watchdog_timer_, 5000);
+            return 0;
+        },
+        this);
+    wl_event_source_timer_update(watchdog_timer_, 5000);
+
+    theme_timer_ = wl_event_loop_add_timer(
+        loop,
+        [](void* data) -> int {
+            auto* s = static_cast<Server*>(data);
+            s->update_display_settings();
+            wl_event_source_timer_update(s->theme_timer_, 1000);
+            return 0;
+        },
+        this);
+    wl_event_source_timer_update(theme_timer_, 1000);
+
+    sd_notify(0, "READY=1");
+    (void)monotonic_msec();
+    wlr_log(WLR_INFO, "finn-comp: running on %s", sock_full.c_str());
+    wl_display_run(display_);
+    return 0;
+}
+
+void Server::shutdown() {
+    if (!display_) return;
+    if (watchdog_timer_) {
+        wl_event_source_remove(watchdog_timer_);
+        watchdog_timer_ = nullptr;
+    }
+    if (theme_timer_) {
+        wl_event_source_remove(theme_timer_);
+        theme_timer_ = nullptr;
+    }
+
+    if (xwayland_) {
+        remove_listener(xwayland_ready_);
+        remove_listener(xwayland_new_surface_);
+        wlr_xwayland_destroy(xwayland_);
+        xwayland_ = nullptr;
+        std::error_code ec;
+        fs::remove(kXwaylandDisplayFile, ec);
+    }
+
+    wl_display_destroy_clients(display_);
+    popups_.clear();
+    layers_.clear();
+    windows_.clear();
+    outputs_.clear();
+    keyboards_.clear();
+    pointers_.clear();
+
+    remove_listener(new_output_);
+    remove_listener(new_input_);
+    remove_listener(new_xdg_toplevel_);
+    remove_listener(new_xdg_popup_);
+    remove_listener(new_xdg_decoration_);
+    remove_listener(new_layer_surface_);
+    remove_listener(request_cursor_);
+    remove_listener(request_set_shape_);
+    remove_listener(request_set_selection_);
+    remove_listener(request_set_primary_selection_);
+    remove_listener(request_activate_);
+    remove_listener(cursor_motion_);
+    remove_listener(cursor_motion_absolute_);
+    remove_listener(cursor_button_);
+    remove_listener(cursor_axis_);
+    remove_listener(cursor_frame_);
+    remove_listener(output_mgr_apply_);
+    remove_listener(output_mgr_test_);
+
+    if (xcursor_mgr_) {
+        wlr_xcursor_manager_destroy(xcursor_mgr_);
+        xcursor_mgr_ = nullptr;
+    }
+    if (cursor_) {
+        wlr_cursor_destroy(cursor_);
+        cursor_ = nullptr;
+    }
+    wl_display_destroy(display_);
+    display_ = nullptr;
 }
 
 }  // namespace finn

@@ -16,7 +16,7 @@ cmp -s "$tmp" src/ui/generated_tokens.hpp || {
 
 # An app is a program with a toplevel. The compositor must never learn an app
 # id, or the launch model has slipped back into the old switchboard.
-if grep -R -n -E '"(settings|files|store|hello)"' src/comp --include='*.cpp' \
+if grep -R -n -E '"(settings|files|terminal|notes|store|viewer|monitor|hello)"' src/comp --include='*.cpp' \
         --include='*.hpp'; then
     echo "style: app id found in src/comp; the compositor must not know apps" >&2
     exit 1

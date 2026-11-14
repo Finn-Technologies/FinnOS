@@ -1,11 +1,10 @@
-// App registry definitions representing discoverable and installed applications.
-// Parses static system catalogues and correlates them with installed package states
-// to inform application menus and validate launch requests.
+// Application catalogue, installed tracking, and unified Linux/Windows discovery.
+// Preserves finn-session's line-oriented catalogue semantics while integrating
+// Freedesktop .desktop / Flatpak entries, FinnSDK manifests, and Wine apps.
 
 #ifndef FINN_SESSION_APP_REGISTRY_HPP
 #define FINN_SESSION_APP_REGISTRY_HPP
 
-#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,9 +12,14 @@
 
 namespace finn {
 
-enum class AppSource { kNative, kFlatpak, kWinget, kUnknown };
-
-const char* app_source_name(AppSource source);
+enum class AppSource {
+    kNative,
+    kFlatpak,
+    kWinget,
+    kDesktop,
+    kWindows,
+    kUnknown,
+};
 
 struct App {
     std::string id;
@@ -23,28 +27,38 @@ struct App {
     std::string icon;
     std::string command;
     std::string note;
+    std::string category = "System";
+    std::string desktop_file;
+    std::vector<std::string> mime_types;
     AppSource source = AppSource::kNative;
     bool installed = false;
+    bool terminal = false;
 
-    /* A remote catalogue entry is a discovery record, not a launch. */
     bool launchable() const;
 };
 
-/*
- * The catalogue the OS ships and the list the package manager writes. The
- * catalogue says what exists; the installed list says what is on this
- * machine. A missing catalogue is an error; a missing installed list means
- * nothing is installed and is not.
- */
+const char* app_source_name(AppSource source);
+AppSource parse_app_source(std::string_view text);
+
 class AppRegistry {
 public:
-    static std::optional<AppRegistry> load(std::string_view catalogue_path,
-                                           std::string_view installed_path);
+    // Loads the FinnOS catalogue and installed list (honoring empty/missing installed list).
+    static std::optional<AppRegistry> load(const std::string& catalogue_path,
+                                           const std::string& installed_path);
 
+    // Loads catalogue + installed list + user FinnSDK manifests + Linux/Flatpak
+    // .desktop applications + registered Windows executables.
+    static AppRegistry load_all(const std::string& catalogue_path,
+                                const std::string& installed_path);
+
+    std::size_t size() const { return apps_.size(); }
     const std::vector<App>& apps() const { return apps_; }
     const App* find(std::string_view id) const;
     bool installed(std::string_view id) const;
-    std::size_t size() const { return apps_.size(); }
+
+    void merge_desktop_entries(bool check_try_exec = true);
+    void merge_windows_entries(const std::string& windows_conf_path = {});
+    void merge_user_manifests(const std::string& manifests_dir = {});
 
 private:
     std::vector<App> apps_;

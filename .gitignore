@@ -47,3 +47,5 @@ build/
 # The agent's local state (taste files and scratch data), not the tree.
 .commandcode/
 /tests/unit/test_search
+/tests/unit/test_compat
+/tests/unit/test_sys_files

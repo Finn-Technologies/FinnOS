@@ -39,10 +39,10 @@ PKGS="$HERE/packages.$ARCH"
 list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" | grep -v '^$'; }
 
 # 1. remove competing desktop stacks if they are already on the machine.
-#    FinnOS has its own compositor and hosts Wayland clients; protocol
+#    FinnOS has its own compositor and hosts Wayland/Qt6 clients; protocol
 #    libraries and the optional Xwayland compatibility bridge are allowed.
 pacman -Rns --noconfirm xorg-server xorg-server-common \
-    gtk3 gtk4 gtkmm3 qt5-base qt6-base 2>/dev/null || true
+    gtk3 gtk4 gtkmm3 qt5-base 2>/dev/null || true
 
 # 2. the configuration: the repo list with the desktop ignored by name.
 #    Kept once as a backup, because a machine whose pacman.conf is
@@ -157,7 +157,9 @@ install -m644 "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/de
 install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/setup.webp
 cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-printf 'settings\nfiles\n' > /var/lib/finn/installed
+printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\n' > /var/lib/finn/installed
+printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
+ldconfig 2>/dev/null || true
 fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l
@@ -187,10 +189,10 @@ fi
 # 10. the sources, so the machine can build the compositor and the control
 #     plane. This is the machine with the DRM headers.
 mkdir -p /opt/finnos
-for d in src assets ui apps sdk docs base vm; do
+for d in src assets ui apps sdk docs base vm tools; do
     cp -r "$ROOT/$d" /opt/finnos/ 2>/dev/null || true
 done
-for f in Makefile README.md NAMING.md; do
+for f in Makefile CMakeLists.txt VERSION README.md NAMING.md; do
     cp "$ROOT/$f" /opt/finnos/ 2>/dev/null || true
 done
 chown -R finn:finn /opt/finnos

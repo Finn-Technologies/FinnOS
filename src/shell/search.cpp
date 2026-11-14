@@ -6,7 +6,6 @@
 namespace finn {
 namespace {
 
-// The field is 300 px wide; past this the text would run under its edge.
 constexpr std::size_t kMaxQueryBytes = 48;
 
 char lower(char c) {
@@ -23,7 +22,6 @@ bool is_continuation(char c) {
     return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
 }
 
-// 0 is the best rank; a negative rank is no match.
 int rank(const SessionApp& app, const std::string& needle) {
     const std::string name = lowered(app.name);
     const std::size_t at = name.find(needle);
@@ -33,6 +31,7 @@ int rank(const SessionApp& app, const std::string& needle) {
     }
     if (at != std::string::npos) return 2;
     if (lowered(app.id).find(needle) != std::string::npos) return 2;
+    if (!app.note.empty() && lowered(app.note).find(needle) != std::string::npos) return 3;
     return -1;
 }
 

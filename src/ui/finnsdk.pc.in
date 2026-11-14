@@ -1,0 +1,11 @@
+prefix=/usr
+exec_prefix=${prefix}
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@
+
+Name: FinnSDK
+Description: FinnOS native C++20 Qt6 application library (libfinnui)
+Version: 0.2.0
+Requires: Qt6Core Qt6Gui Qt6Widgets Qt6Svg
+Libs: -L${libdir} -lfinnui -lLayerShellQtInterface
+Cflags: -std=c++20 -I${includedir}/finnos

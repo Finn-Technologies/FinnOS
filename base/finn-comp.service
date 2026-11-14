@@ -40,7 +40,6 @@ WatchdogSec=15
 IgnoreSIGPIPE=yes
 
 NoNewPrivileges=yes
-PrivateTmp=yes
 ProtectHome=read-only
 ProtectKernelModules=yes
 ProtectControlGroups=yes

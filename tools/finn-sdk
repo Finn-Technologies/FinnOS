@@ -1,0 +1,256 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    cat <<'EOF'
+Usage: finn-sdk <command> [args]
+
+Commands:
+  new <id> [--dir <path>] [--name <title>]   Create a new native C++20 Qt6 FinnOS app project
+  build [dir]                                Configure and compile with CMake + Ninja
+  run [dir] [-- <args...>]                   Build if needed and run on the FinnOS compositor
+  register <id> <name> <binary> [icon] [note]
+                                             Install user desktop entry into ~/.local/share/applications
+  check                                      Verify FinnSDK, Qt6 plugins, Wayland, and compat tooling
+EOF
+}
+
+sanitize_id() {
+    printf '%s' "$1" | tr '[:upper:] _' '[:lower:]--' | tr -cd 'a-z0-9-'
+}
+
+cmd_new() {
+    if [ "$#" -lt 1 ]; then
+        usage >&2
+        exit 2
+    fi
+    raw_id="$1"
+    shift
+    id="$(sanitize_id "$raw_id")"
+    if [ -z "$id" ]; then
+        echo "finn-sdk: invalid app id: $raw_id" >&2
+        exit 2
+    fi
+    dir="./$id"
+    title="$id"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --dir) dir="$2"; shift 2 ;;
+            --name) title="$2"; shift 2 ;;
+            *) echo "finn-sdk: unknown option: $1" >&2; exit 2 ;;
+        esac
+    done
+
+    if [ -e "$dir" ]; then
+        echo "finn-sdk: destination already exists: $dir" >&2
+        exit 1
+    fi
+
+    mkdir -p "$dir"
+    bin_name="finn-$id"
+
+    cat > "$dir/CMakeLists.txt" <<EOF
+cmake_minimum_required(VERSION 3.22)
+project(${id} VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+
+find_package(FinnSDK REQUIRED)
+
+add_executable(${bin_name}
+    main.cpp
+)
+
+target_link_libraries(${bin_name} PRIVATE FinnSDK::FinnUI)
+EOF
+
+    cat > "$dir/Makefile" <<EOF
+BUILD_DIR ?= build
+
+.PHONY: all run clean
+
+all:
+	cmake -B \$(BUILD_DIR) -G Ninja
+	cmake --build \$(BUILD_DIR)
+
+run: all
+	WAYLAND_DISPLAY=\$\${WAYLAND_DISPLAY:-/run/finn/wayland-0} \\
+	QT_QPA_PLATFORMTHEME=\$\${QT_QPA_PLATFORMTHEME:-finn} \\
+	QT_STYLE_OVERRIDE=\$\${QT_STYLE_OVERRIDE:-finn} \\
+	./\$(BUILD_DIR)/${bin_name}
+
+clean:
+	rm -rf \$(BUILD_DIR)
+EOF
+
+    cat > "$dir/main.cpp" <<EOF
+#include <FinnSDK/FinnSDK.hpp>
+
+#include <QVBoxLayout>
+#include <QWidget>
+
+int main(int argc, char** argv) {
+    finn::ui::FinnApplication app(argc, argv, QStringLiteral("${id}"),
+                                  QStringLiteral("${title}"));
+
+    finn::ui::FinnWindow win(QStringLiteral("${title}"),
+                             QStringLiteral("native-apps"));
+    win.resize(740, 480);
+
+    auto* page = new QWidget(&win);
+    auto* lay = new QVBoxLayout(page);
+    lay->setContentsMargins(28, 24, 28, 24);
+    lay->setSpacing(12);
+
+    lay->addWidget(new finn::ui::FinnLabel(
+        QStringLiteral("${title}"),
+        finn::ui::FinnLabel::Role::TitleLarge,
+        finn::ui::FinnLabel::Tone::Ink, page));
+    lay->addWidget(new finn::ui::FinnLabel(
+        QStringLiteral("Native FinnOS C++20 + Qt6 application."),
+        finn::ui::FinnLabel::Role::Body,
+        finn::ui::FinnLabel::Tone::Dim, page));
+
+    auto* btn = new finn::ui::FinnButton(
+        QStringLiteral("Say Hello"),
+        finn::ui::FinnButton::Variant::Primary, QString(), page);
+    QObject::connect(btn, &QAbstractButton::clicked, &win, [&win]() {
+        win.showToast(QStringLiteral("Running natively on FinnOS Qt6"),
+                      finn::ui::FinnToast::Severity::Success);
+    });
+    lay->addWidget(btn, 0, Qt::AlignLeft);
+    lay->addStretch(1);
+
+    win.setContentWidget(page);
+    win.show();
+    return app.exec();
+}
+EOF
+
+    cat > "$dir/finn-app.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=${title}
+Comment=Native FinnOS application
+Exec=${bin_name}
+Icon=native-apps
+Categories=Utility;
+X-Finn-Id=${id}
+EOF
+
+    echo "Created FinnSDK app '${title}' in ${dir}"
+    echo "Next: finn-sdk build ${dir} && finn-sdk run ${dir}"
+}
+
+find_executable_in_build() {
+    bdir="$1"
+    cmake_file="$2/CMakeLists.txt"
+    target=""
+    if [ -f "$cmake_file" ]; then
+        target="$(sed -n 's/^[[:space:]]*add_executable([[:space:]]*\([^[:space:])]*\).*/\1/p' "$cmake_file" | head -n 1)"
+    fi
+    if [ -n "$target" ] && [ -x "$bdir/$target" ]; then
+        printf '%s\n' "$bdir/$target"
+        return 0
+    fi
+    found="$(find "$bdir" -maxdepth 2 -type f -perm -111 ! -name 'CMake*' 2>/dev/null | head -n 1 || true)"
+    printf '%s\n' "$found"
+}
+
+cmd_build() {
+    dir="${1:-.}"
+    if [ ! -f "$dir/CMakeLists.txt" ]; then
+        echo "finn-sdk: no CMakeLists.txt in $dir" >&2
+        exit 1
+    fi
+    cmake -S "$dir" -B "$dir/build" -G Ninja
+    cmake --build "$dir/build"
+}
+
+cmd_run() {
+    dir="."
+    if [ "$#" -gt 0 ] && [ "$1" != "--" ]; then
+        dir="$1"
+        shift
+    fi
+    if [ "${1:-}" = "--" ]; then shift; fi
+    cmd_build "$dir"
+    bin="$(find_executable_in_build "$dir/build" "$dir")"
+    if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+        echo "finn-sdk: built executable not found in $dir/build" >&2
+        exit 1
+    fi
+    export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-/run/finn/wayland-0}"
+    export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+    export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-finn}"
+    export QT_STYLE_OVERRIDE="${QT_STYLE_OVERRIDE:-finn}"
+    exec "$bin" "$@"
+}
+
+cmd_register() {
+    if [ "$#" -lt 3 ]; then
+        echo "Usage: finn-sdk register <id> <name> <binary> [icon] [note]" >&2
+        exit 2
+    fi
+    id="$(sanitize_id "$1")"
+    name="$2"
+    binary="$3"
+    icon="${4:-native-apps}"
+    note="${5:-Native FinnOS app}"
+    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    mkdir -p "$apps_dir"
+    out="$apps_dir/finn-$id.desktop"
+    cat > "$out" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$name
+Comment=$note
+Exec=$binary
+Icon=$icon
+Categories=Utility;
+X-Finn-Id=$id
+EOF
+    echo "Registered $out"
+}
+
+cmd_check() {
+    ok=0
+    check_item() {
+        label="$1"
+        shift
+        if "$@" >/dev/null 2>&1; then
+            printf '[ok]      %s\n' "$label"
+        else
+            printf '[missing] %s\n' "$label"
+            ok=1
+        fi
+    }
+    check_item "cmake" command -v cmake
+    check_item "ninja" command -v ninja
+    check_item "g++ / c++" command -v c++
+    check_item "pkgconf / pkg-config" command -v pkg-config
+    check_item "FinnSDK CMake package" sh -c 'test -f /usr/lib/cmake/FinnSDK/FinnSDKConfig.cmake || test -f /usr/local/lib/cmake/FinnSDK/FinnSDKConfig.cmake'
+    check_item "libfinnplatformtheme.so" sh -c 'test -f /usr/lib/qt6/plugins/platformthemes/libfinnplatformtheme.so'
+    check_item "libfinnstyle.so" sh -c 'test -f /usr/lib/qt6/plugins/styles/libfinnstyle.so'
+    check_item "liblayer-shell.so" sh -c 'test -f /usr/lib/qt6/plugins/wayland-shell-integration/liblayer-shell.so'
+    check_item "finn-session binary" command -v finn-session
+    check_item "Wayland socket (/run/finn/wayland-0)" test -S /run/finn/wayland-0 || true
+    check_item "Xwayland binary (optional Linux X11)" command -v Xwayland || true
+    check_item "Wine runtime (optional Windows apps)" command -v wine || command -v wine64 || true
+    return 0
+}
+
+sub="${1:-help}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$sub" in
+    new) cmd_new "$@" ;;
+    build) cmd_build "$@" ;;
+    run) cmd_run "$@" ;;
+    register) cmd_register "$@" ;;
+    check) cmd_check ;;
+    help|-h|--help) usage ;;
+    *) echo "finn-sdk: unknown command: $sub" >&2; usage >&2; exit 2 ;;
+esac

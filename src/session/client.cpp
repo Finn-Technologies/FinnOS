@@ -4,17 +4,17 @@
 
 #include "session/client.hpp"
 
+#include "common/paths.hpp"
+
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <cerrno>
-#include <fcntl.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-#include "common/paths.hpp"
 
 namespace finn {
 namespace {
@@ -34,8 +34,7 @@ bool write_all(int fd, std::string_view text) {
     return true;
 }
 
-// Reads byte-by-byte from the stream socket to avoid buffer overshoot into
-// subsequent protocol response lines on shared connection channels.
+// Reads byte-by-byte to avoid consuming past protocol line boundaries.
 bool read_line(int fd, std::string* line) {
     line->clear();
     char buffer[1];
@@ -74,10 +73,17 @@ void set_error(std::string* error, std::string text) {
     if (error != nullptr) *error = std::move(text);
 }
 
+std::string strip_newlines(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c != '\n' && c != '\r') out.push_back(c);
+    }
+    return out;
+}
+
 }  // namespace
 
-// Respects test environment overrides first, falling back to standard user runtime
-// directories to isolate socket permissions per login session.
 std::string session_socket_path() {
     if (const char* path = std::getenv("FINN_SESSION_SOCK"); path && *path) {
         return path;
@@ -130,9 +136,33 @@ bool SessionClient::connect(std::string* error) {
     return true;
 }
 
+bool SessionClient::request_line(std::string_view req, std::string* reply,
+                                 std::string* error) {
+    close();
+    if (!connect(error)) return false;
+    std::string payload = strip_newlines(req);
+    payload.push_back('\n');
+    if (!write_all(fd_, payload)) {
+        set_error(error, "cannot write request to finn-session");
+        close();
+        return false;
+    }
+    std::string line;
+    if (!read_line(fd_, &line)) {
+        set_error(error, "no reply from finn-session");
+        close();
+        return false;
+    }
+    close();
+    if (line.rfind("OK", 0) != 0) {
+        set_error(error, line.rfind("ERR ", 0) == 0 ? line.substr(4) : line);
+        return false;
+    }
+    if (reply) *reply = std::move(line);
+    return true;
+}
+
 bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
-    /* The broker serves one request per connection and closes it. Reusing a
-     * socket after that is a write to a closed peer, not a request. */
     close();
     if (!connect(error)) return false;
     if (!write_all(fd_, "APP.LIST\n")) {
@@ -173,6 +203,9 @@ bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
         app.installed = fields[1] == "1";
         app.name = fields[2];
         app.icon = fields[3];
+        if (fields.size() >= 5 && !fields[4].empty()) app.source = fields[4];
+        if (fields.size() >= 6 && !fields[5].empty()) app.category = fields[5];
+        if (fields.size() >= 7) app.note = fields[6];
         result.push_back(std::move(app));
     }
     close();
@@ -181,28 +214,50 @@ bool SessionClient::list(std::vector<SessionApp>* apps, std::string* error) {
 }
 
 bool SessionClient::launch(std::string_view id, std::string* error) {
-    close();
-    if (!connect(error)) return false;
-    std::string request = "APP.LAUNCH ";
-    request += id;
-    request += "\n";
-    if (!write_all(fd_, request)) {
-        set_error(error, "cannot send APP.LAUNCH");
-        close();
-        return false;
-    }
-    std::string line;
-    if (!read_line(fd_, &line)) {
-        set_error(error, "no reply from finn-session");
-        close();
-        return false;
-    }
-    close();
-    if (line.rfind("OK", 0) != 0) {
-        set_error(error, line.rfind("ERR ", 0) == 0 ? line.substr(4) : line);
-        return false;
+    return request_line("APP.LAUNCH " + std::string(id), nullptr, error);
+}
+
+bool SessionClient::launch_with_arg(std::string_view id, std::string_view arg,
+                                    std::string* error) {
+    if (arg.empty()) return launch(id, error);
+    return request_line("APP.LAUNCH " + std::string(id) + "\t" + std::string(arg),
+                        nullptr, error);
+}
+
+bool SessionClient::open_target(std::string_view target, std::string* error) {
+    return request_line("APP.OPEN " + std::string(target), nullptr, error);
+}
+
+bool SessionClient::run_windows(std::string_view exe_path, std::string_view prefix,
+                                 std::string* error) {
+    return request_line("WIN.RUN " + std::string(exe_path) + "|" + std::string(prefix),
+                        nullptr, error);
+}
+
+bool SessionClient::compat_status(CompatStatus* out, std::string* error) {
+    std::string reply;
+    if (!request_line("COMPAT.STATUS", &reply, error)) return false;
+    if (!out) return true;
+    *out = CompatStatus{};
+    const auto fields = split(reply.size() > 3 ? reply.substr(3) : "", '|');
+    for (const auto& f : fields) {
+        const std::size_t eq = f.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = f.substr(0, eq);
+        const std::string v = f.substr(eq + 1);
+        if (k == "arch") out->arch = v;
+        else if (k == "wayland") out->wayland_display = v;
+        else if (k == "display") out->x_display = v;
+        else if (k == "xwayland") out->xwayland_ready = (v == "1");
+        else if (k == "wine") out->wine_ready = (v == "1");
+        else if (k == "flatpak") out->flatpak_ready = (v == "1");
+        else if (k == "wine_summary") out->wine_summary = v;
     }
     return true;
+}
+
+bool SessionClient::power_action(std::string_view action, std::string* error) {
+    return request_line("POWER.ACTION " + std::string(action), nullptr, error);
 }
 
 }  // namespace finn

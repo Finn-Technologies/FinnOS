@@ -8,66 +8,52 @@ make test-unit
 make lint
 ```
 
-`make test` runs the Python tests that need no display: the base-image wiring,
-the catalogue and the generated tokens. `make test-unit` builds
-`tests/unit/test_app_registry.cpp` with AddressSanitizer and
-UndefinedBehaviorSanitizer and checks the registry rules, and
-`tests/unit/test_search.cpp` the same way for what a search query finds and
-how the field is edited. `make lint` fails on
-trailing whitespace, a stale generated token header and an app id under
-`src/comp`.
-
-The base tests focus on the image and deployment: the package list,
-the units, and the installer helpers.
+- `make test` runs the Python suite with no display needed: `test_base.py`
+  (package lists, units, installer scripts, icon parity), `test_catalogue.py`
+  (`apps.registry`), `test_tokens.py` (`ui/_tokens.fui` vs generated header),
+  and `test_icons.py` (SVG icon assets). Note: QEMU ISO boot tests skip
+  automatically when `FINN_TEST_ISO` is not set.
+- `make test-unit` compiles C++20 unit tests under `-fsanitize=address,undefined`
+  for `AppRegistry` (`test_app_registry`), `search` & `WineRunner` CLI /
+  registry helpers (`test_search`, `test_compat`), `sys_files`
+  (`test_sys_files`), `SessionClient` (`test_session_client`), and animation
+  easings (`test_animation`).
+- `make lint` checks trailing whitespace, generated token sync
+  (`tokens.py --check`), and confirms zero app ids appear inside `src/comp`.
+- `base/mkfinniso --check` verifies parity between `base/` and `base/airootfs/`
+  for all systemd units and tmpfiles configs.
 
 ## The VM
 
-These are the checks that prove the session, not just the build:
+Display, Qt6 plugin, wlroots compositor, and shell integration checks require
+Arch + Qt6 + seatd/headless Wayland in the dev VM:
 
-1. Headless compositor starts, `wayland-info` sees the expected globals.
-2. A real xdg-shell client (`weston-simple-shm` or a Finn app) maps and
-   unmaps without a protocol assertion.
-3. The session advertises the catalogue and launches an app.
-4. The shell's layer surface is above app windows and its menu is drawn above
-   both.
-5. `grim` captures the frame in light and dark.
-6. On DRM, the compositor runs as root through seatd while the session, shell
-   and apps run as `finn` and connect through `/run/finn/wayland-0`.
+1. Full `make` + `make install` compiles `finn-comp`, `finn-session`,
+   `libfinnui`, `finnplatformtheme`, `finnstyle`, `finn-shell`, `finn-open`,
+   and all 8 targets under `apps/`.
+2. `finn-sdk check`, `finn-sdk new`, and `finn-sdk build` verify standalone
+   third-party SDK compilation against installed `FinnSDKConfig.cmake`.
+3. `finn-comp` starts on DRM (through `seatd`) or headless/pixman, serves
+   `xdg_wm_base`, `zwlr_layer_shell_v1`, `zwlr_foreign_toplevel_management_v1`,
+   `zwlr_screencopy_manager_v1`, and on-demand `Xwayland`.
+4. `finn-session --list` advertises all 7 native apps; `finn-session --launch`
+   starts native Qt6 apps cleanly onto `/run/finn/wayland-0`.
+5. `vm/shot.sh` captures frames with `grim` in Light and Dark appearances and
+   verifies `finn-wallpaper`, `finn-shell` (Dock, Home menu, Spotlight Search,
+   Control Center), and native Qt6 app windows.
 
-The repository cannot automate the display steps without a seat, a GPU and
-an input device; they were run by hand on the VM and the captures are the
-evidence. `vm/shot.sh` is the tool.
+## What is not tested automatically
 
-Pointer input is now exercised on the VM with a virtual pointer
-(`ydotool` + `uinput`): the launcher click opens the app menu, a menu row
-launches Finn Files, and the window's maximize and restore controls resize
-it. Keyboard input was driven by hand on a QEMU VM through its virtio
-keyboard, into the shell's search field: letters, Shift for a capital,
-Backspace, Enter to launch the first result and Escape to close. That is the
-keymap, one modifier and key forwarding to a layer surface; keys to an app
-window, and Ctrl and Alt, are still unverified, and nothing drives keys
-automatically. The window entrance was
-captured as a frame sequence (top edge 43 → 42 → 41 px), so the 220 ms slide
-is moving, not just declared.
-
-## What is not tested
-
-- Keyboard input to an app window, Ctrl and Alt, and any layout but the
-  default one.
-- Search with more results than fit: the VM has two installed apps, so the
-  five-row limit was never reached on screen.
-- Launch failure races: the session checks the command before `posix_spawn`,
-  but a file removed between the check and the exec becomes an app that exits.
-- Multi-output, HiDPI, suspend/resume, screen lock and audio.
-- Package installs and updates: there is no package manager in v1.
-- The compositor's root attack surface under a hostile client. The protocol
-  set is deliberately small, and wlroots owns the parsers, but no fuzzing has
-  been run.
-- Backdrop blur: `libfinnui` implements client-side wallpaper backdrop blur
-  (`Canvas::glass()`) with a 3-pass box blur. Limitations: only the wallpaper
-  behind the surface is blurred (not underlying windows), and for xdg windows
-  whose screen origin is not known to the client under Wayland, surface origin
-  defaults to (0, 0). Compositor-level scene backdrop blur is not yet written.
-
-A test that cannot be written without a display is not a reason to leave the
-behaviour implicit; say so in the change, as this page does.
+- **Automated pointer/keyboard UI driving across arbitrary app widgets**:
+  basic pointer/keyboard forwarding has been checked manually on the VM, while
+  Qt widget drag-and-drop and IME input-method protocols remain untested.
+- **Physical x86_64 bare-metal hardware & native Wine execution**: the ARM64 dev
+  VM verifies `finn::inspect_pe` and clean missing-runtime handling (`Wine` is
+  not available natively on Arch Linux ARM64 without x86 emulation).
+- **Multi-monitor and mixed per-output HiDPI**: v1 targets single-output
+  workspaces cleanly.
+- **True compositor-wide multi-window backdrop blur**: glass surfaces blur/tint
+  cohesively via tokens and translucency; scene-graph Gaussian blur of arbitrary
+  windows behind another window is not implemented in `finn-comp`.
+- **Per-app sandboxing and root `finnd` daemon**: not implemented yet (see
+  [roadmap.md](roadmap.md)).

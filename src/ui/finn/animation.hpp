@@ -54,6 +54,29 @@ inline double ease_in_out_cubic(double t) {
     return 1.0 - (left * left * left) / 2.0;
 }
 
+/* Gentle overshoot for popovers: fast arrival, small settle past target.
+ * Capped so layout never depends on the overshoot. */
+inline double ease_out_back(double t) {
+    t = clamp_unit(t);
+    constexpr double c1 = 1.30158;
+    constexpr double c3 = c1 + 1.0;
+    const double u = t - 1.0;
+    return 1.0 + c3 * u * u * u + c1 * u * u;
+}
+
+/* Staggered grid entrance: item `index` of `count` starts after
+ * `index * step` of the `progress` range. Returns 0..1 local progress.
+ * Pure: same layout, only timing differs. */
+inline double stagger(double progress, int index, int count, double step = 0.06) {
+    if (count <= 1) return clamp_unit(progress);
+    if (index < 0) index = 0;
+    if (index >= count) index = count - 1;
+    const double start = index * step;
+    const double span = 1.0 - start;
+    if (span <= 0.0) return progress >= 1.0 ? 1.0 : 0.0;
+    return clamp_unit((progress - start) / span);
+}
+
 /* Move `value` toward `target` with the same feel as a short animation, but
  * interruptible at any frame. `duration` is the time to get most of the way
  * there, not a hard stop. */
@@ -97,12 +120,64 @@ struct Animation {
         return duration > 0.0 && elapsed < duration;
     }
 
-    double update(double dt) {
-        if (!running()) return value;
-        elapsed = std::min(duration, elapsed + std::max(0.0, dt));
-        const double k = elapsed / duration;
-        value = from + (target - from) * ease_out_cubic(k);
-        if (elapsed >= duration) value = target;
+    double step(double dt) {
+        if (!running()) {
+            value = target;
+            return value;
+        }
+        elapsed += std::max(0.0, dt);
+        const double t = clamp_unit(elapsed / duration);
+        value = from + (target - from) * ease_out_cubic(t);
+        if (elapsed >= duration) {
+            value = target;
+            duration = 0.0;
+        }
+        return value;
+    }
+
+    double update(double dt) { return step(dt); }
+};
+
+/* Damped harmonic oscillator physics spring for fluid UI motion. */
+struct SpringValue {
+    double value = 0.0;
+    double velocity = 0.0;
+    double target = 0.0;
+    double stiffness = 320.0;
+    double damping = 26.0;
+    double mass = 1.0;
+
+    void set(double v) {
+        value = target = v;
+        velocity = 0.0;
+    }
+
+    void to(double v) {
+        if (reduced_motion()) {
+            set(v);
+            return;
+        }
+        target = v;
+    }
+
+    bool settled() const {
+        return std::abs(target - value) < 1e-4 && std::abs(velocity) < 1e-3;
+    }
+
+    double step(double dt) {
+        if (reduced_motion() || dt <= 0.0) {
+            if (reduced_motion()) set(target);
+            return value;
+        }
+        const double clamped_dt = std::min(dt, 0.033);
+        const double force = -stiffness * (value - target);
+        const double damper = -damping * velocity;
+        const double accel = (force + damper) / std::max(0.1, mass);
+        velocity += accel * clamped_dt;
+        value += velocity * clamped_dt;
+        if (settled()) {
+            set(target);
+        }
         return value;
     }
 };

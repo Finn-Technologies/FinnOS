@@ -4,8 +4,10 @@ CXXFLAGS ?= -O2 -g -Wall -Wextra -Wpedantic -Werror -std=c++20
 CXXFLAGS += -I..
 LDLIBS   +=
 
-SRCS = main.cpp client.cpp app_registry.cpp
-HDRS = client.hpp app_registry.hpp ../common/paths.hpp
+SRCS = main.cpp client.cpp app_registry.cpp \
+       ../compat/desktop_entry.cpp ../compat/wine_runner.cpp ../system/sys_files.cpp
+HDRS = client.hpp app_registry.hpp ../common/paths.hpp \
+       ../compat/desktop_entry.hpp ../compat/wine_runner.hpp ../system/sys_files.hpp
 BIN  = finn-session
 
 PREFIX ?= /usr/local

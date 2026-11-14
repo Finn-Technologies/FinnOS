@@ -43,7 +43,13 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/session/finn-session' \
     --exclude='src/shell/finn-shell' \
     --exclude='apps/*/finn-*' \
+    --exclude='build' \
     --exclude='tests/unit/test_app_registry' \
+    --exclude='tests/unit/test_animation' \
+    --exclude='tests/unit/test_session_client' \
+    --exclude='tests/unit/test_search' \
+    --exclude='tests/unit/test_compat' \
+    --exclude='tests/unit/test_sys_files' \
     . | rsh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 
 echo "==> preparing the build environment"
@@ -54,8 +60,10 @@ rsh "$HOST" "
         $SUDO pacman-key --populate
     fi
     $SUDO pacman -S --needed --noconfirm --ignore=systemd --ignore=systemd-libs \
-        base-devel pkgconf wlroots0.20 wayland wayland-protocols \
-        libxkbcommon freetype2 fontconfig libwebp libdrm libinput mesa seatd grim
+        base-devel cmake ninja pkgconf wlroots0.20 wayland wayland-protocols \
+        libxkbcommon freetype2 fontconfig libwebp libdrm libinput mesa seatd \
+        grim qt6-base qt6-wayland qt6-svg qt6-imageformats qt6-tools qt6-declarative \
+        layer-shell-qt xorg-xwayland ttf-dejavu
 "
 
 echo "==> preparing the dev user"
@@ -79,8 +87,11 @@ rsh "$HOST" "cd $REMOTE && make clean >/dev/null && make -j\$(nproc) 2>&1 | tail
 
 echo "==> installing"
 rsh "$HOST" "cd $REMOTE && $SUDO make install && \
+             $SUDO QT_QPA_PLATFORM=offscreen /usr/local/bin/finn-cursors /usr/share/finn/pointers /usr/share/icons && \
              $SUDO install -d /var/lib/finn && \
-             printf 'settings\\nfiles\\n' | $SUDO tee /var/lib/finn/installed >/dev/null && \
+             printf 'settings\\nfiles\\nterminal\\nnotes\\nstore\\nviewer\\nmonitor\\n' | $SUDO tee /var/lib/finn/installed >/dev/null && \
+             printf '/usr/local/lib\\n' | $SUDO tee /etc/ld.so.conf.d/finn.conf >/dev/null && \
+             $SUDO ldconfig && \
              $SUDO chgrp -R finn /usr/share/finn /var/lib/finn"
 
 echo "==> installing the session units"

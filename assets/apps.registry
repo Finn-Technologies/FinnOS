@@ -15,3 +15,8 @@
 
 settings | Settings | settings-app.svg | /usr/local/bin/finn-settings | Settings
 files | Finn Files | files.svg | /usr/local/bin/finn-files | File manager
+terminal | Finn Terminal | terminal.svg | /usr/local/bin/finn-terminal | Terminal emulator
+notes | Finn Notes | notes.svg | /usr/local/bin/finn-notes | Notes and text editor
+store | Finn Store | store.svg | /usr/local/bin/finn-store | Software, Flatpak & Windows apps
+viewer | Finn Viewer | viewer.svg | /usr/local/bin/finn-viewer | Image and SVG viewer
+monitor | Finn Monitor | monitor.svg | /usr/local/bin/finn-monitor | System activity and processes

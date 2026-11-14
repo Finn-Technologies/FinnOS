@@ -1,71 +1,71 @@
 # FinnSDK
 
-A FinnOS app is a normal Wayland client. `libfinnui` is the runtime that makes
-one small: the display connection, shared-memory buffers, frame callbacks,
-input translation, the software canvas, text, icons and widgets.
+FinnOS native applications are **C++20 + Qt6** Wayland clients styled with
+FinnOS's custom platform integration (`QT_QPA_PLATFORMTHEME=finn`,
+`QT_STYLE_OVERRIDE=finn`) and built on `libfinnui` (`FinnSDK::FinnUI`).
 
-## Start
+Native FinnOS apps get first-class integration:
+- Custom frameless rounded Wayland CSD via `FinnWindow` with the Figma `83x24`
+  Minimize / Maximize / Close pill, collapsible sidebar, and native system move/resize.
+- Live Dark Mode, Accent Color, and Reduced Motion updates via `FinnThemeManager`.
+- Cohesive custom components (`FinnCard`, `FinnButton`, `FinnToggle`, `FinnSlider`,
+  `FinnSearchField`, `FinnSidebar`, `FinnSettingRow`, `FinnProgressBar`, `FinnToast`,
+  `FinnDialog`, `FinnEmptyState`) matching `ui/_tokens.fui`.
+- Desktop/layer surfaces via `FinnLayerWindow` (`LayerShellQt::Interface`).
+
+## Quickstart
+
+Scaffold, build, and run a new app inside FinnOS:
+
+```sh
+finn-sdk new notes-lite --name "Notes Lite"
+finn-sdk build notes-lite
+finn-sdk run notes-lite
+```
+
+Or copy `sdk/template/`:
 
 ```sh
 cp -r sdk/template my-app
 cd my-app
 make
+make run
 ```
 
-`make` uses the installed `finnui` pkg-config file when it exists, and the
-`/usr/local` paths otherwise. Install the runtime once:
+Register your app so it appears in the FinnOS Home Menu and Spotlight Search:
 
 ```sh
-sudo make -C src/ui install
+finn-sdk register notes-lite "Notes Lite" /path/to/my-app/build/finn-notes-lite
 ```
 
-## The app contract
-
-- One program, one `xdg_toplevel`.
-- Metadata in `assets/apps.registry`:
-  `id | Name | icon | command | note | source`.
-- Installed state in `/var/lib/finn/installed` (one id per line).
-- Launch through `finn-session`, never by starting the app from the
-  compositor.
-
-The compositor has no app ids and no special cases. A native app and a GTK
-app are the same kind of client.
-
-## API
-
-The public header is `finn/ui.hpp`. The shape:
+## Minimal Example
 
 ```cpp
-class App {
-public:
-    App(std::string title, int width, int height);
-    virtual void draw(Canvas& canvas) = 0;
-    virtual void on_close() {}
-    void request_frame();
-    int run();
-protected:
-    Rect content_rect() const;
-    void set_framed(bool);
-    void set_title(std::string);
-};
+#include <FinnSDK/FinnSDK.hpp>
+#include <QVBoxLayout>
+#include <QWidget>
+
+int main(int argc, char** argv) {
+    finn::ui::FinnApplication app(argc, argv, "hello", "Hello FinnOS");
+    finn::ui::FinnWindow window("Hello FinnOS", "native-apps");
+    window.resize(680, 440);
+
+    auto* body = new QWidget(&window);
+    auto* lay = new QVBoxLayout(body);
+    lay->addWidget(new finn::ui::FinnLabel(
+        "Built for FinnOS", finn::ui::FinnLabel::Role::TitleLarge));
+    window.setContentWidget(body);
+    window.show();
+    return app.exec();
+}
 ```
 
-`Canvas` draws into a pixel buffer: `clear`, `fill`, `stroke`, `line`, `text`,
-`icon`, `app_icon`, `push_clip`/`pop_clip`, and the widgets `button`,
-`icon_button`, `app_icon_button`, `toggle`, `slider`, `text_field`,
-`list_item`, `list_item_icon`, `app_list_item`. Every widget takes a stable id
-and returns true when it was activated.
+## App Compatibility Tiers
 
-`input()` exposes the pointer, scroll, keys and committed text for the frame;
-`theme()` exposes the tokens; `width()`/`height()` are the surface size.
-
-`LayerApp` is the same runtime for a layer-shell surface. The shell uses it.
-
-## Building without installing
-
-The template's Makefile accepts overrides:
-
-```sh
-make FINNUI_CFLAGS=-I../../src/ui \
-     FINNUI_LIBS="../../src/ui/libfinnui.a -lwayland-client -lxkbcommon -lfreetype -lm"
-```
+FinnOS prioritizes app integration in three tiers:
+1. **Native (`FinnSDK`)** — Wayland C++20 + Qt6 apps built with `FinnSDK::FinnUI`
+   and registered in `/usr/share/finn/apps.registry` or `~/.local/share/applications`.
+2. **Linux Desktop** — Standard Wayland (`Qt6`, `GTK`), Xwayland (`DISPLAY`),
+   and Flatpak apps launched from discovered `.desktop` files or `finn-open`.
+3. **Windows (`.exe`)** — Inspected by PE header (`x86`, `x86_64`, `ARM64`) and
+   launched cleanly inside per-app Wine prefixes when Wine / emulation is installed.

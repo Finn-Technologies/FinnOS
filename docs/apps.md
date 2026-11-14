@@ -1,124 +1,76 @@
-# Writing a native app
+# Writing a native app with FinnSDK
 
-A FinnOS app is a program that connects to the compositor and creates an
-`xdg_toplevel`. `libfinnui` hides the connection, the buffers, the frame
-callbacks and the input; you write `draw`.
+FinnOS applications are standard Qt6 + C++20 GUI programs built against **`FinnSDK::FinnUI`** (`libfinnui`), automatically styled with FinnOS's Figma-matched platform theme and widgets, and launched by `finn-session`.
 
-## The smallest app
+## Quick start with `finn-sdk`
+
+```sh
+finn-sdk check
+finn-sdk new my-app --name "Finn Hello"
+finn-sdk build my-app
+finn-sdk run my-app
+```
+
+Register your built binary in the local user launcher (`~/.local/share/finn/apps/`):
+
+```sh
+finn-sdk register my-app/my-app.desktop
+```
+
+## Minimal C++20 example
 
 ```cpp
-#include <finn/ui.hpp>
+#include <FinnSDK/FinnSDK.hpp>
 
-class Hello final : public finn::ui::App {
-public:
-    Hello() : App("Hello", 640, 420, "hello") {}
+int main(int argc, char** argv) {
+    finn::ui::FinnApplication app(
+        argc, argv, QStringLiteral("my-app"), QStringLiteral("Finn Hello"));
 
-    void draw(finn::ui::Canvas& canvas) override {
-        const auto& theme = canvas.theme();
-        const auto content = content_rect();
-        canvas.fill(content, theme.tile);
-        canvas.text(content.x + 24, content.y + 56, "Hello, FinnOS", 24, theme.ink);
-    }
-};
+    finn::ui::FinnWindow window(
+        QStringLiteral("Finn Hello"), QStringLiteral("app-grid"));
+    window.resize(760, 520);
 
-int main() {
-    Hello app;
-    return app.run();
+    auto* empty = new finn::ui::FinnEmptyState(
+        QStringLiteral("info"),
+        QStringLiteral("Hello from FinnSDK"),
+        QStringLiteral("Custom frameless window chrome, Fixel Display typography, and live theme switching included."));
+    window.setContentWidget(empty);
+    window.show();
+    return app.exec();
 }
 ```
 
-`App` takes the window title, default width, default height, and the app's
-catalogue registry id (`"hello"`). When `app_id` is omitted, it falls back to
-a lowercase-hyphenated form of the title. `App` draws window chrome per Figma
-specifications; `content_rect()` is the area under the top header. Apps that want
-the whole surface call `set_framed(false)` and draw everything themselves.
+## Building with CMake (`sdk/template`)
 
-## Build
+```cmake
+cmake_minimum_required(VERSION 3.22)
+project(my-finn-app LANGUAGES CXX)
 
-Install `libfinnui` (`sudo make -C src/ui install`), then:
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
 
-```make
-CXX ?= c++
-CXXFLAGS = -std=c++20 -O2 -Wall -Wextra -I/usr/local/include
-LDLIBS = /usr/local/lib/libfinnui.a -lwayland-client -lxkbcommon -lfreetype -lm
+find_package(FinnSDK REQUIRED)
 
-finn-hello: main.cpp
-	$(CXX) $(CXXFLAGS) -o $@ main.cpp $(LDLIBS)
+add_executable(my-finn-app main.cpp)
+target_link_libraries(my-finn-app PRIVATE FinnSDK::FinnUI)
 ```
 
-The full template is [sdk/template](../sdk/template). It builds with the same
-flags on the dev VM.
+See [`sdk/template`](../sdk/template) for a complete starter with CMake, Makefile (`pkg-config finnsdk`), and Freedesktop `.desktop` manifest.
 
-## Register it
+## Public API highlights (`<FinnSDK/FinnSDK.hpp>`)
 
-Add one line to `/usr/share/finn/apps.registry`:
-
-```
-hello | Hello | app-grid.svg | /usr/local/bin/finn-hello | A native app
-```
-
-Mark it installed in `/var/lib/finn/installed` while there is no package
-manager:
-
-```
-hello
-```
-
-Start it with `finn-session --launch hello` or from the shell's app menu.
-`finn-session` checks that the command is executable and native before it
-spawns it.
-
-## The API
-
-| Type | Use |
+| Class / Header | Role |
 |---|---|
-| `ui::App` | a window with an xdg-shell toplevel |
-| `ui::LayerApp` | a layer-shell surface (the shell uses this) |
-| `ui::Canvas` | drawing and widgets |
-| `ui::Theme` | the tokens, light or dark |
-| `ui::Rect`, `ui::Color` | geometry and colour |
-| `ui::Input` | pointer position, buttons, scroll, keys and text |
+| `finn::ui::FinnApplication` | Configures Wayland display, app id, Fixel Display fonts, FinnOS `QPalette`, and theme polling |
+| `finn::ui::FinnWindow` | Custom frameless CSD Wayland window with Figma traffic-light controls, collapsible sidebar, edge resize, and toast overlay |
+| `finn::ui::FinnLayerWindow` | `LayerShellQt` panel wrapper with explicit click-through input masking (`setInputRegions`) |
+| `finn::ui::FinnThemeManager` | Live light/dark/accent/scale/reduced-motion state synced with `~/.config/finn/settings` |
+| Widgets (`Components.hpp`) | `FinnCard`, `FinnGlassPanel`, `FinnLabel`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider`, `FinnSearchField`, `FinnTextField`, `FinnProgressBar`, `FinnProgressRing`, `FinnSidebar`, `FinnNavItem`, `FinnSettingRow`, `FinnBadge`, `FinnDivider`, `FinnTabBar`, `FinnBreadcrumbs`, `FinnEmptyState`, `FinnToast`, `FinnDialog` |
+| `finn::SessionClient` | Typed client for `finn-session` (`list`, `launch`, `open_target`, `run_windows`, `compat_status`, `power_action`) |
 
-Canvas:
+## App contract & honesty rules
 
-| Call | What it does |
-|---|---|
-| `clear`, `fill`, `stroke`, `line` | shapes, with a radius for rounded corners |
-| `glass` | backdrop blur with tint and corner radius |
-| `text`, `text_centered`, `text_width` | Fixel Display text |
-| `icon`, `app_icon` | monochrome or full-colour SVG |
-| `button`, `icon_button`, `app_icon_button` | returns true on a click |
-| `toggle`, `slider`, `text_field` | form controls |
-| `list_item`, `list_item_icon`, `app_list_item` | rows |
-| `push_clip`, `pop_clip` | clipping |
-| `input()`, `theme()`, `width()`, `height()`, `delta_time()` | the frame's context |
-| `animating()` | true while a widget still has motion to finish |
-
-Every widget takes a stable string id. The canvas keeps hover and pressed
-state per id, so a widget keeps its state across frames without a class for
-each control.
-
-## What an app may not do
-
-- It may not talk to the compositor's internal sockets. It is a normal
-  Wayland client and nothing else.
-- It may not expect the compositor to know its name. The compositor does not
-  contain app ids; the registry does.
-- It may not draw outside its surface or assume a position. The window manager
-  owns placement.
-- It may not claim a capability it does not have. A disabled button is drawn
-  disabled and refuses presses.
-
-## Text and images
-
-`FINN_FONT` overrides the font path; the default is
-`/usr/share/fonts/OTF/FixelDisplay-Regular.otf`. `FINN_ICON_DIR` overrides the
-icon directory; the default is `/usr/share/finn/icons`. A missing font or icon
-is reported and left empty rather than replaced by a plausible-looking
-substitute.
-
-## Theme changes
-
-`Canvas::theme()` is refreshed every few frames from `$HOME/.config/finn/settings`
-(`dark=1`) and `/var/lib/finn/settings`. The Settings app writes the user file;
-a new frame of every app picks it up.
+- Do not assume elevated privileges or private compositor sockets; communicate with the system via Wayland, XDG portals/DBus, or `SessionClient`.
+- Never fake hardware or service availability: use `FinnButton::setEnabled(false)` and `FinnBadge` status indicators honestly when a capability is missing.
+- Keep `src/comp` free of application names.

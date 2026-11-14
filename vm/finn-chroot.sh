@@ -158,7 +158,9 @@ mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn /usr/loca
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\n' > /var/lib/finn/installed
+printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\n' > /var/lib/finn/installed
+printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
+ldconfig 2>/dev/null || true
 # Every icon, when the payload is the tree. A list of names is a second
 # place to forget one, and an icon the shell cannot find is a tile drawn
 # as an empty square. The list below is only for the host-server flow,
@@ -169,14 +171,16 @@ if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
         install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
     done
 else
-    for icon in avatar battery bluetooth boot-mark chevron-right cursor \
+    for icon in arc avatar battery bluetooth boot-mark chevron-right cursor \
                 display edit-01 expand folder home-09 info internet minus-sign \
-                moon paint-brush power refresh search-01 settings-02 sun-01 \
-                sun-03 view-open-windows volume-02 wifi-02 x; do
+                moon oobe-hi paint-brush power refresh search-01 settings-02 \
+                sidebar-toggle sun-01 sun-03 view-open-windows volume-02 \
+                wifi-02 x; do
         get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
     done
-    for icon in app-grid browser chevron-left files library settings-app \
-                store windows; do
+    for icon in app-grid browser chevron-left files library monitor \
+                native-apps notes settings-app store terminal viewer \
+                windows; do
         get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
     done
 fi

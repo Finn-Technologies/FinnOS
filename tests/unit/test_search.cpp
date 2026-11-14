@@ -9,10 +9,10 @@ namespace {
 
 std::vector<finn::SessionApp> catalogue() {
     return {
-        {"settings", "Settings", "settings-app.svg", true},
-        {"files", "Finn Files", "files.svg", true},
-        {"store", "Finn Store", "store.svg", false},
-        {"fonts", "Fonts", "fonts.svg", true},
+        {"settings", "Settings", "settings-app.svg", true, "native", "System", ""},
+        {"files", "Finn Files", "files.svg", true, "native", "System", ""},
+        {"store", "Finn Store", "store.svg", false, "native", "System", ""},
+        {"fonts", "Fonts", "fonts.svg", true, "native", "System", ""},
     };
 }
 

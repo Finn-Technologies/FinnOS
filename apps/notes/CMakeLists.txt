@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.22)
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(finn-notes LANGUAGES CXX)
+    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    find_package(FinnSDK REQUIRED)
+endif()
+
+set(CMAKE_AUTOMOC ON)
+
+add_executable(finn-notes
+    main.cpp
+)
+target_link_libraries(finn-notes PRIVATE FinnSDK::FinnUI)
+
+include(GNUInstallDirs)
+install(TARGETS finn-notes RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

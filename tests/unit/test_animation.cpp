@@ -24,6 +24,17 @@ int main() {
     assert(animation.value == 1.0);
     assert(!animation.running());
 
+    assert(ease_out_back(0.0) == 0.0);
+    assert(std::fabs(ease_out_back(1.0) - 1.0) < 1e-9);
+    assert(ease_out_back(0.7) > ease_out_cubic(0.7));
+
+    // Staggered grid: first item leads, last item trails, all finish together.
+    assert(stagger(0.0, 0, 10) == 0.0);
+    assert(stagger(1.0, 9, 10) == 1.0);
+    assert(stagger(0.5, 0, 10) > stagger(0.5, 9, 10));
+    assert(stagger(0.5, 9, 10) >= 0.0);
+    assert(stagger(1.0, 0, 1) == 1.0);
+
     double value = 0.0;
     for (int i = 0; i < 30; ++i) {
         const double next = approach(value, 1.0, 0.016, kMotionFast);
