@@ -409,7 +409,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        const QColor stage_bg = dark ? QColor(0x0E, 0x11, 0x18) : QColor(0xFF, 0xFF, 0xFF);
+        const QColor stage_bg = dark ? QColor(0x00, 0x00, 0x00) : QColor(0xFF, 0xFF, 0xFF);
         const QColor border = dark ? QColor(255, 255, 255, 28) : QColor(0, 0, 0, 18);
 
         p.setPen(QPen(border, 1.0));
@@ -495,7 +495,7 @@ protected:
         p.drawRoundedRect(r, 14.0, 14.0);
 
         const QRectF swatch(r.left() + 10.0, r.top() + 10.0, r.width() - 20.0, 70.0);
-        const QColor swatch_bg = dark_card_ ? QColor(0x11, 0x13, 0x1A) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor swatch_bg = dark_card_ ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
         const QColor swatch_border = dark_card_ ? QColor(255, 255, 255, 20) : QColor(0, 0, 0, 14);
         p.setPen(QPen(swatch_border, 1.0));
         p.setBrush(swatch_bg);
@@ -784,7 +784,7 @@ protected:
     void paintEvent(QPaintEvent*) override {
         if (!target_ || height() < 40 || in_capture_) return;
         const auto& t = FinnThemeManager::instance().tokens();
-        const QColor bg = t.dark ? QColor(0x16, 0x19, 0x22) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor bg = t.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
 
         const int blur_top = qRound(height() * 0.607);
         const int blur_h = height() - blur_top;
@@ -889,7 +889,7 @@ protected:
 
         constexpr double kPi = 3.14159265358979323846;
         const auto& tok = FinnThemeManager::instance().tokens();
-        const QColor bg = tok.dark ? QColor(0x16, 0x19, 0x22) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor bg = tok.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
         const QColor ink = tok.dark ? tok.ink : QColor(0, 0, 0);
         const QColor text_col = tok.dark ? QColor(0xF4, 0xF6, 0xFA) : QColor(0x11, 0x13, 0x18);
         const QColor coral(0xFF, 0x57, 0x22);
@@ -1258,7 +1258,7 @@ protected:
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         // Exact #F5F5F5 canvas from Figma First Time Setup ("hi" & "How do we talk?")
-        const QColor bg = t.dark ? QColor(0x16, 0x19, 0x22) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor bg = t.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
         p.fillRect(rect(), bg);
     }
 

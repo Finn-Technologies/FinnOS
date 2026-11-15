@@ -92,9 +92,9 @@ inline FinnTokens tokens_from_settings(const finn::sys::SettingsData& s) {
     if (s.dark) {
         t.bone = QColor::fromRgba(colors::bone_dark);
         t.tile = QColor::fromRgba(colors::tile_dark);
-        t.surface_canvas = QColor(0x16, 0x19, 0x22);
+        t.surface_canvas = QColor(0x00, 0x00, 0x00);
         t.surface_elevated = QColor::fromRgba(colors::tile_dark);
-        t.surface_input = QColor(0x2B, 0x31, 0x3F);
+        t.surface_input = QColor(0x18, 0x1A, 0x20);
         t.surface_hover = QColor(255, 255, 255, 20);
         t.surface_pressed = QColor(255, 255, 255, 34);
         t.tile_on = QColor::fromRgba(colors::tile_on_dark);

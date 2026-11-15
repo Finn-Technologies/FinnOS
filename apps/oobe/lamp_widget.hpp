@@ -540,17 +540,17 @@ protected:
             };
 
             if (m.role == GlbSubMesh::Role::Bulb) {
-                // High-end frosted opal glass bulb: soft luminous alabaster-white core with warm cream rim
+                // High-end frosted opal glass bulb: luminous warm ivory when lit, smoked-opal moonlight glass when off
                 const float bl = std::min(1.0f, t_surf);
                 const float core = std::pow(ndv, 2.0f);
                 const float edge_fresnel = (1.0f - ndv) * (1.0f - ndv);
-                const float glass_spec = std::pow(ndh_key, 24.0f) * 0.25f;
+                const float glass_spec = std::pow(ndh_key, 28.0f) * 0.34f;
 
-                // Unlit: smoked frosted alabaster-opal glass
-                const float unlit_r = 0.72f + 0.14f * core + 0.12f * edge_fresnel + glass_spec * 0.55f;
-                const float unlit_g = 0.74f + 0.14f * core + 0.12f * edge_fresnel + glass_spec * 0.60f;
-                const float unlit_b = 0.79f + 0.12f * core + 0.12f * edge_fresnel + glass_spec * 0.70f;
-                const float unlit_a = 0.68f + 0.22f * edge_fresnel;
+                // Unlit (Dark Mode on #000000): deep smoked-charcoal frosted glass with crisp studio rim
+                const float unlit_r = soft_tonemap(0.11f + 0.05f * core + 0.18f * edge_fresnel + glass_spec * 0.70f);
+                const float unlit_g = soft_tonemap(0.115f + 0.055f * core + 0.19f * edge_fresnel + glass_spec * 0.72f);
+                const float unlit_b = soft_tonemap(0.13f + 0.06f * core + 0.22f * edge_fresnel + glass_spec * 0.78f);
+                const float unlit_a = 0.90f + 0.08f * edge_fresnel;
 
                 // Lit: pure warm ivory core (#FFFDF8) fading gently into soft champagne-cream (#FFEACA)
                 const float flash_warm = light_flash_ * (1.0f - target_light_);
@@ -570,21 +570,22 @@ protected:
                 // Transition smoothly into a warm brushed antique-brass collar at the shade neck
                 const float neck_dist = (wp - cord_p3).length();
                 const float brass_blend = 1.0f - std::clamp((neck_dist - 0.14f) / 0.12f, 0.0f, 1.0f);
+                const float lit_mix = std::clamp(t_lit, 0.0f, 1.0f);
                 const float diff_key = std::max(0.0f, QVector3D::dotProduct(N, key_dir));
-                const float cord_spec = std::pow(ndh_key, 20.0f) * 0.22f;
-                const float brass_spec = std::pow(ndh_key, 32.0f) * 0.42f;
+                const float cord_spec = std::pow(ndh_key, 20.0f) * 0.24f;
+                const float brass_spec = std::pow(ndh_key, 32.0f) * (0.28f + 0.18f * lit_mix);
 
-                // Matte dark-bronze fabric cord above
-                const float c_base = 0.11f + 0.10f * diff_key + 0.05f * fresnel + cord_spec * 0.5f;
-                const float cr = c_base * 1.04f;
-                const float cg = c_base * 0.98f;
-                const float cb = c_base * 0.90f;
+                // Matte dark-bronze fabric cord above (with cool rim in Dark Mode so it reads on #000000)
+                const float c_base = 0.12f + 0.11f * diff_key + (0.05f + 0.08f * (1.0f - lit_mix)) * fresnel + cord_spec * 0.55f;
+                const float cr = c_base * (0.94f + 0.10f * lit_mix);
+                const float cg = c_base * (0.96f + 0.02f * lit_mix);
+                const float cb = c_base * (1.06f - 0.16f * lit_mix);
 
-                // Warm brushed antique brass (#C8A05A) collar at the shade neck
-                const float b_lit = 0.42f + 0.48f * diff_key + 0.22f * fresnel;
-                const float br = soft_tonemap(0.78f * b_lit + brass_spec * 0.95f);
-                const float bg = soft_tonemap(0.61f * b_lit + brass_spec * 0.80f);
-                const float bb = soft_tonemap(0.34f * b_lit + brass_spec * 0.45f);
+                // Warm brushed antique brass (#C8A05A) collar at the shade neck (subtle moonlight glint when off)
+                const float b_lit = (0.24f + 0.18f * lit_mix) + (0.34f + 0.14f * lit_mix) * diff_key + 0.22f * fresnel;
+                const float br = soft_tonemap(0.76f * b_lit + brass_spec * 0.95f);
+                const float bg = soft_tonemap(0.60f * b_lit + brass_spec * 0.80f);
+                const float bb = soft_tonemap(0.35f * b_lit + brass_spec * 0.45f);
 
                 r = cr * (1.0f - brass_blend) + br * brass_blend;
                 g = cg * (1.0f - brass_blend) + bg * brass_blend;
@@ -593,8 +594,9 @@ protected:
                 return;
             }
 
-            // Shade: velvety ivory linen-ceramic with soft internal warm-cream subsurface glow when lit
-            // (inspired by luxury cream-linen shades — no harsh plastic specular dot)
+            // Shade: velvety ivory linen-ceramic when lit; moody moonlight satin-slate linen in Dark Mode
+            const float lit_mix = std::clamp(t_lit, 0.0f, 1.0f);
+            const float dark_mix = 1.0f - lit_mix;
             const float diff_key = std::max(0.0f, QVector3D::dotProduct(N, key_dir));
             const float wrap_key = std::max(0.0f, (QVector3D::dotProduct(N, key_dir) + 0.50f) / 1.50f);
             const QVector3D fill_dir = QVector3D(-0.65f, 0.35f, 0.45f).normalized();
@@ -603,7 +605,6 @@ protected:
             const QVector3D to_bulb = bulb_world - wp;
             const float dist = std::max(0.05f, to_bulb.length());
             const QVector3D L = to_bulb / dist;
-            // Directional downward spotlight on the lower rim + soft linen subsurface translucency inside the dome
             const float spot_cos = QVector3D::dotProduct(-L, lamp_down);
             const float cone_u = std::clamp((spot_cos - 0.02f) / 0.68f, 0.0f, 1.0f);
             const float spot_cone = cone_u * cone_u * (3.0f - 2.0f * cone_u);
@@ -611,31 +612,32 @@ protected:
             const float diff_bulb = std::max(0.0f, n_dot_l) * spot_cone;
             const float atten = 1.0f / (1.0f + 0.32f * dist * dist);
 
-            // Soft translucent linen glow through the middle of the shade + subtle vertical woven-linen slub
             const float linen_sss = std::pow(ndv, 1.20f) * (1.0f / (1.0f + 0.38f * dist * dist)) * t_lit;
             const float weave_ang = std::atan2(wp.x() - cord_p3.x(), wp.z() - cord_p3.z());
-            const float weave = 0.016f * std::sin(weave_ang * 140.0f) + 0.008f * std::sin(weave_ang * 310.0f + wp.y() * 14.0f);
+            const float weave = (0.016f * std::sin(weave_ang * 140.0f) + 0.008f * std::sin(weave_ang * 310.0f + wp.y() * 14.0f))
+                              * (0.45f + 0.55f * lit_mix);
 
-            // Velvety matte-linen sheen (very broad & subtle, zero harsh plastic hotspot)
-            const float spec = std::pow(ndh_key, 7.0f) * 0.05f;
+            const float spec = std::pow(ndh_key, 7.0f) * (0.05f + 0.04f * dark_mix);
 
-            // Studio neutral-warm ambient
+            // Studio warm ambient when lit; deep neutral-graphite moonlight ambient when off
             const float up_fac = N.y() * 0.5f + 0.5f;
-            const float amb_r = (0.48f + 0.14f * t_lit) + 0.05f * up_fac;
-            const float amb_g = (0.47f + 0.11f * t_lit) + 0.05f * up_fac;
-            const float amb_b = (0.46f + 0.06f * t_lit) + 0.06f * up_fac;
+            const float amb_r = (0.09f + 0.53f * lit_mix) + (0.03f + 0.02f * lit_mix) * up_fac;
+            const float amb_g = (0.095f + 0.495f * lit_mix) + (0.032f + 0.018f * lit_mix) * up_fac;
+            const float amb_b = (0.11f + 0.41f * lit_mix) + (0.04f + 0.02f * lit_mix) * up_fac;
 
-            const float key_term = diff_key * 0.24f + wrap_key * 0.22f;
-            const float key_r = 0.26f * key_term + 0.12f * diff_fill;
-            const float key_g = 0.25f * key_term + 0.12f * diff_fill;
-            const float key_b = 0.24f * key_term + 0.13f * diff_fill;
+            const float key_term = diff_key * (0.24f + 0.06f * dark_mix) + wrap_key * (0.22f * lit_mix + 0.12f * dark_mix);
+            const float key_r = (0.26f * lit_mix + 0.22f * dark_mix) * key_term + (0.12f * lit_mix + 0.07f * dark_mix) * diff_fill;
+            const float key_g = (0.25f * lit_mix + 0.23f * dark_mix) * key_term + (0.12f * lit_mix + 0.075f * dark_mix) * diff_fill;
+            const float key_b = (0.24f * lit_mix + 0.26f * dark_mix) * key_term + (0.13f * lit_mix + 0.09f * dark_mix) * diff_fill;
 
             const float bulb_f = diff_bulb * atten * t_lit;
-            const float rim = fresnel * 0.10f;
+            const float rim_r = fresnel * (0.10f * lit_mix + 0.14f * dark_mix);
+            const float rim_g = fresnel * (0.10f * lit_mix + 0.15f * dark_mix);
+            const float rim_b = fresnel * (0.105f * lit_mix + 0.18f * dark_mix);
 
-            r = soft_tonemap(m.base_color.x() * (amb_r + key_r + 0.65f * bulb_f + weave) + 0.34f * linen_sss + spec + rim);
-            g = soft_tonemap(m.base_color.y() * (amb_g + key_g + 0.54f * bulb_f + weave) + 0.22f * linen_sss + spec * 0.96f + rim);
-            b = soft_tonemap(m.base_color.z() * (amb_b + key_b + 0.36f * bulb_f + weave) + 0.09f * linen_sss + spec * 0.90f + rim * 1.05f);
+            r = soft_tonemap(m.base_color.x() * (amb_r + key_r + 0.65f * bulb_f + weave) + 0.34f * linen_sss + spec + rim_r);
+            g = soft_tonemap(m.base_color.y() * (amb_g + key_g + 0.54f * bulb_f + weave) + 0.22f * linen_sss + spec * 0.96f + rim_g);
+            b = soft_tonemap(m.base_color.z() * (amb_b + key_b + 0.36f * bulb_f + weave) + 0.09f * linen_sss + spec * 0.92f + rim_b);
             a = m.base_color.w();
         };
 
@@ -737,7 +739,7 @@ protected:
         }
         for (const auto& m : meshes_) {
             if (m.role == GlbSubMesh::Role::Bulb) {
-                rasterize_mesh(m, false);
+                rasterize_mesh(m, true);
             }
         }
 
@@ -761,17 +763,45 @@ protected:
         const qreal floor_y = H * 0.975;
         const qreal floor_bx = bx + (dir_dx / dir_dy) * (floor_y - by);
 
-        // Subtle back-wall depth & blurred ground plane gradient at the very bottom
-        {
+        // Subtle back-wall depth & blurred ground plane gradient (active in Light Mode; clean AMOLED in Dark Mode)
+        const float lit_backdrop = std::clamp(t_lit, 0.0f, 1.0f);
+        if (lit_backdrop > 0.01f) {
             QLinearGradient wall_grad(0.0, 0.0, 0.0, H);
-            const int top_shade = t_lit > 0.5f ? 0 : 10;
-            const int horizon_a = qRound(10.0 + 12.0 * (1.0f - t_lit));
-            const int floor_a = qRound(28.0 + 26.0 * (1.0f - t_lit));
-            wall_grad.setColorAt(0.0, QColor(0, 0, 0, top_shade));
+            const int horizon_a = qRound(10.0 * lit_backdrop);
+            const int floor_a = qRound(26.0 * lit_backdrop);
+            wall_grad.setColorAt(0.0, QColor(0, 0, 0, 0));
             wall_grad.setColorAt(0.76, QColor(0, 0, 0, 0));
             wall_grad.setColorAt(0.90, QColor(0, 0, 0, horizon_a));
             wall_grad.setColorAt(1.0, QColor(0, 0, 0, floor_a));
             p.fillRect(rect(), wall_grad);
+        }
+
+        // Dark Mode (unlit): subtle atmospheric cool-moonlight halo behind the lamp on pure AMOLED #000000
+        const float dark_amt = 1.0f - lit_backdrop;
+        if (dark_amt > 0.01f) {
+            p.save();
+            p.translate(bx, by - 45.0);
+            p.scale(1.15, 1.10);
+            QRadialGradient moon_wall(QPointF(0.0, 0.0), 360.0);
+            moon_wall.setColorAt(0.0, QColor(36, 46, 70, qRound(54.0 * dark_amt)));
+            moon_wall.setColorAt(0.45, QColor(24, 32, 50, qRound(28.0 * dark_amt)));
+            moon_wall.setColorAt(1.0, QColor(14, 18, 28, 0));
+            p.setPen(Qt::NoPen);
+            p.setBrush(moon_wall);
+            p.drawEllipse(QPointF(0.0, 0.0), 360.0, 360.0);
+            p.restore();
+
+            p.save();
+            p.translate(floor_bx, floor_y);
+            p.scale(2.05, 0.26);
+            QRadialGradient moon_floor(QPointF(0.0, 0.0), 170.0);
+            moon_floor.setColorAt(0.0, QColor(38, 48, 72, qRound(38.0 * dark_amt)));
+            moon_floor.setColorAt(0.60, QColor(22, 28, 44, qRound(14.0 * dark_amt)));
+            moon_floor.setColorAt(1.0, QColor(0, 0, 0, 0));
+            p.setPen(Qt::NoPen);
+            p.setBrush(moon_floor);
+            p.drawEllipse(QPointF(0.0, 0.0), 170.0, 170.0);
+            p.restore();
         }
 
         // Warm plaster wall wash (ambient wall bounce behind the shade + directional downward cone)
@@ -838,8 +868,8 @@ protected:
             p.restore();
         }
 
-        // Ultra-soft warm taupe-umber architectural shadows behind the cord, shade, and ground
-        {
+        // Ultra-soft warm taupe-umber architectural shadows behind the cord, shade, and ground (Light Mode)
+        if (lit_backdrop > 0.01f) {
             const QVector4D tclip = vp * QVector4D(cord_p0, 1.0f);
             const float tinv_w = (std::abs(tclip.w()) > 1e-5f) ? (1.0f / tclip.w()) : 1.0f;
             const qreal cx_top = (tclip.x() * tinv_w * 0.5 + 0.75) * W - 24.0;
@@ -850,7 +880,7 @@ protected:
             const qreal sh_x = (sclip.x() * sinv_w * 0.5 + 0.75) * W - 32.0;
             const qreal sh_y = (0.5 - sclip.y() * sinv_w * 0.5) * H + 46.0;
 
-            const double peak_a = 48.0 - 14.0 * t_lit;
+            const double peak_a = 34.0 * lit_backdrop;
 
             // Extra-wide diffused warm-taupe shadow behind the cord
             for (int pass = 0; pass < 8; ++pass) {

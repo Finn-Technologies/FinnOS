@@ -12,8 +12,8 @@ theme FinnTokens {
   // ---- the palette ----------------------------------------------------
   // Bone and ink. The chrome is bone; the text on it is ink.
 
-  color: bone_light #FFFFFF, bone_dark #1C2029
-  color: tile_light #FFFFFF, tile_dark #232834
+  color: bone_light #FFFFFF, bone_dark #000000
+  color: tile_light #FFFFFF, tile_dark #121418
   color: tile_on_light #D3E6FF, tile_on_dark #2B4A78
   color: hair_light #1A000000, hair_dark #22FFFFFF
 
@@ -34,7 +34,7 @@ theme FinnTokens {
 
   // The tint of the frosted chrome: near-white in the light appearance,
   // and the deep charcoal/bone in the dark one (#414141B2 in Figma dark notifications).
-  color: glass_light #FFFFFF, glass_dark #282C37
+  color: glass_light #FFFFFF, glass_dark #14161C
   color: nav_sel_light #1A505050, nav_sel_dark #29FFFFFF
   color: hero_tint_light #EBFFDF, hero_tint_dark #15221B
 

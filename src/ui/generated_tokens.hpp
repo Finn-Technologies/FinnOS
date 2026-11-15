@@ -7,9 +7,9 @@
 namespace finn::ui::colors {
 
 inline constexpr std::uint32_t bone_light = 0xFFFFFFFFu;
-inline constexpr std::uint32_t bone_dark = 0xFF1C2029u;
+inline constexpr std::uint32_t bone_dark = 0xFF000000u;
 inline constexpr std::uint32_t tile_light = 0xFFFFFFFFu;
-inline constexpr std::uint32_t tile_dark = 0xFF232834u;
+inline constexpr std::uint32_t tile_dark = 0xFF121418u;
 inline constexpr std::uint32_t tile_on_light = 0xFFD3E6FFu;
 inline constexpr std::uint32_t tile_on_dark = 0xFF2B4A78u;
 inline constexpr std::uint32_t hair_light = 0x1A000000u;
@@ -31,7 +31,7 @@ inline constexpr std::uint32_t on_dark = 0xFF0A84FFu;
 inline constexpr std::uint32_t fill_light = 0xFFFFFFFFu;
 inline constexpr std::uint32_t fill_dark = 0xFFEDE9E1u;
 inline constexpr std::uint32_t glass_light = 0xFFFFFFFFu;
-inline constexpr std::uint32_t glass_dark = 0xFF282C37u;
+inline constexpr std::uint32_t glass_dark = 0xFF14161Cu;
 inline constexpr std::uint32_t nav_sel_light = 0x1A505050u;
 inline constexpr std::uint32_t nav_sel_dark = 0x29FFFFFFu;
 inline constexpr std::uint32_t hero_tint_light = 0xFFEBFFDFu;
