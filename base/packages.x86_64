@@ -99,9 +99,12 @@ wireplumber
 bluez
 bluez-utils
 
-# A font to fall back to when Fixel Display is missing. The shell ships its
-# own face; this is what a text editor on the machine can use.
+# A font to fall back to when Fixel Display is missing, plus full Unicode/CJK/RTL
+# script coverage (Hindi, Arabic, Japanese, Chinese, Korean, etc.).
 ttf-dejavu
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
 
 # NetworkManager configures connections; wpa_supplicant provides Wi-Fi.
 networkmanager

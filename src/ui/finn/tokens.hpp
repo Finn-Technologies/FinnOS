@@ -233,6 +233,23 @@ inline QString primary_font_family() {
         } else if (!QFontDatabase::families().contains(resolved_family)) {
             resolved_family = QFont().defaultFamily();
         }
+        // Ensure non-Latin scripts (Devanagari/Hindi, Arabic, CJK, etc.) fall
+        // back to Noto fonts rather than tofu boxes when Fixel Display lacks glyphs.
+        const QStringList script_fallbacks = {
+            QStringLiteral("Noto Sans"),
+            QStringLiteral("Noto Sans Devanagari"),
+            QStringLiteral("Noto Sans Arabic"),
+            QStringLiteral("Noto Sans CJK SC"),
+            QStringLiteral("Noto Sans CJK TC"),
+            QStringLiteral("Noto Sans CJK JP"),
+            QStringLiteral("Noto Sans CJK KR"),
+            QStringLiteral("Noto Color Emoji"),
+            QStringLiteral("DejaVu Sans"),
+        };
+        QFont::insertSubstitutions(QStringLiteral("Fixel Display"), script_fallbacks);
+        if (resolved_family != QStringLiteral("Fixel Display")) {
+            QFont::insertSubstitutions(resolved_family, script_fallbacks);
+        }
     });
     return resolved_family;
 }

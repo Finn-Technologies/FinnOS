@@ -151,11 +151,12 @@ fi
 #    registry the shell draws its tiles from. The compositor starts with
 #    default.webp; setup.webp is the wallpaper the first-run screen shows,
 #    and it is installed beside it so that screen has one on any machine.
-mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn
+mkdir -p /usr/share/fonts/OTF /usr/share/finn/wallpaper /usr/share/finn/icons /usr/share/finn/models /var/lib/finn
 cp "$ROOT"/assets/fonts/FixelDisplay/*.otf /usr/share/fonts/OTF/
 install -m644 "$ROOT/assets/wallpaper/default.webp" /usr/share/finn/wallpaper/default.webp
 install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/setup.webp
 cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
+cp "$ROOT"/assets/models/*.glb /usr/share/finn/models/
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
 printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\n' > /var/lib/finn/installed
 printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf

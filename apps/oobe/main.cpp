@@ -4,26 +4,32 @@
 
 #include <FinnSDK/FinnSDK.hpp>
 
+#include "lamp_widget.hpp"
 #include "common/paths.hpp"
 #include "system/desktop_services.hpp"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEnterEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProcess>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -39,6 +45,64 @@ QFont oobe_font(int pixel_size, QFont::Weight weight = QFont::Normal) {
     f.setWeight(weight);
     f.setHintingPreference(QFont::PreferNoHinting);
     return f;
+}
+
+QString oobe_tr(const QString& key, const QString& locale) {
+    struct Entry {
+        const char* lang;
+        const char* lang_prompt;
+        const char* wifi_prompt;
+        const char* wifi_scan;
+        const char* account_prompt;
+        const char* a11y_prompt;
+        const char* complete_title;
+        const char* get_started;
+    };
+    static constexpr Entry kTable[] = {
+        {"es", "¿Cómo hablamos?", "¿Dónde nos conectamos?", "Buscando redes cercanas...", "¿Cómo te llamamos?", "Accesibilidad", "Todo listo", "Empezar"},
+        {"it", "Come parliamo?", "Dove ci connettiamo?", "Ricerca reti vicine...", "Come ti chiamiamo?", "Accessibilità", "Tutto pronto", "Inizia"},
+        {"fr", "Comment parlons-nous ?", "Où se connecter ?", "Recherche des réseaux...", "Comment vous appelez-vous ?", "Accessibilité", "Tout est prêt", "Commencer"},
+        {"ca", "Com parlem?", "On ens connectem?", "Cercant xarxes properes...", "Com et diem?", "Accessibilitat", "Tot a punt", "Començar"},
+        {"de", "Wie sprechen wir?", "Wo verbinden wir uns?", "Suche nach Netzwerken...", "Wie sollen wir dich nennen?", "Barrierefreiheit", "Alles bereit", "Los geht’s"},
+        {"af", "Hoe praat ons?", "Waar koppel ons?", "Soek na nabygeleë netwerke...", "Wat moet ons jou noem?", "Toeganklikheid", "Alles gereed", "Begin"},
+        {"zh_CN", "我们使用哪种语言？", "连接到哪里？", "正在扫描附近网络…", "我们怎么称呼你？", "辅助功能", "一切就绪", "开始使用"},
+        {"zh_TW", "我們使用哪種語言？", "連線到哪裡？", "正在掃描附近網路…", "我們該怎麼稱呼你？", "輔助使用", "一切就緒", "開始使用"},
+        {"hi", "हम किस भाषा में बात करें?", "हम कहाँ जुड़ें?", "आस-पास के नेटवर्क खोजे जा रहे हैं...", "हम आपको क्या कहकर बुलाएँ?", "सुगम्यता", "सब तैयार है", "शुरू करें"},
+        {"ko", "어떤 언어를 사용할까요?", "어디에 연결할까요?", "주변 네트워크 검색 중...", "어떻게 불러드릴까요?", "손쉬운 사용", "모두 준비되었습니다", "시작하기"},
+        {"ja", "どの言語を使いますか？", "どこに接続しますか？", "近くのネットワークを検索中…", "お名前を教えてください", "アクセシビリティ", "準備が整いました", "始める"},
+        {"ar", "بأي لغة نتحدث؟", "أين نتصل؟", "جارٍ البحث عن الشبكات القريبة...", "ماذا نناديك؟", "إمكانية الوصول", "كل شيء جاهز", "ابدأ الآن"},
+        {"pt", "Como falamos?", "Onde nos ligamos?", "A procurar redes próximas...", "Como devemos chamar-te?", "Acessibilidade", "Tudo pronto", "Começar"},
+        {"nl", "Hoe spreken we?", "Waar verbinden we?", "Zoeken naar netwerken...", "Hoe mogen we je noemen?", "Toegankelijkheid", "Alles klaar", "Aan de slag"},
+        {"pl", "W jakim języku rozmawiamy?", "Gdzie się łączymy?", "Skanowanie pobliskich sieci...", "Jak mamy się do Ciebie zwracać?", "Dostępność", "Wszystko gotowe", "Rozpocznij"},
+        {"ru", "На каком языке мы говорим?", "Куда подключимся?", "Поиск ближайших сетей...", "Как к вам обращаться?", "Специальные возможности", "Всё готово", "Начать"},
+        {"uk", "Якою мовою спілкуємось?", "Де підключимося?", "Пошук мереж поруч...", "Як до вас звертатися?", "Доступність", "Усе готово", "Почати"},
+        {"tr", "Hangi dilde konuşalım?", "Nereye bağlanalım?", "Yakındaki ağlar taranıyor...", "Size nasıl hitap edelim?", "Erişilebilirlik", "Her şey hazır", "Başla"},
+    };
+
+    const QString short_loc = locale.section(QLatin1Char('.'), 0, 0);
+    const QString lang_only = short_loc.section(QLatin1Char('_'), 0, 0);
+    const Entry* match = nullptr;
+    for (const auto& e : kTable) {
+        if (short_loc == QLatin1String(e.lang) || lang_only == QLatin1String(e.lang)) {
+            match = &e;
+            break;
+        }
+    }
+    if (key == QLatin1String("lang_prompt"))
+        return match ? QString::fromUtf8(match->lang_prompt) : QStringLiteral("How do we talk?");
+    if (key == QLatin1String("wifi_prompt"))
+        return match ? QString::fromUtf8(match->wifi_prompt) : QStringLiteral("Where do we connect?");
+    if (key == QLatin1String("wifi_scan"))
+        return match ? QString::fromUtf8(match->wifi_scan) : QStringLiteral("Scanning nearby networks...");
+    if (key == QLatin1String("account_prompt"))
+        return match ? QString::fromUtf8(match->account_prompt) : QStringLiteral("What should we call you?");
+    if (key == QLatin1String("a11y_prompt"))
+        return match ? QString::fromUtf8(match->a11y_prompt) : QStringLiteral("Accessibility");
+    if (key == QLatin1String("complete_title"))
+        return match ? QString::fromUtf8(match->complete_title) : QStringLiteral("You\u2019re all set");
+    if (key == QLatin1String("get_started"))
+        return match ? QString::fromUtf8(match->get_started) : QStringLiteral("Get started");
+    return key;
 }
 
 // Top Branding lockup matching Figma 36:45 (20x20 four-shape mark + 15px gap + "FinnOS" 20px).
@@ -67,7 +131,9 @@ protected:
 
         const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
         FinnThemeManager::instance().paintIcon(
-            &p, QRectF(0.0, 2.0, 20.0, 20.0), QStringLiteral("boot-mark"), ink);
+            &p, QRectF(0.0, 2.0, 20.0, 20.0),
+            t.dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
+            ink);
 
         p.setFont(oobe_font(20, QFont::Normal));
         p.setPen(ink);
@@ -325,6 +391,166 @@ private:
     bool pressed_ = false;
 };
 
+// 3D-ready appearance preview stage showing the Finn logo on the active Light/Dark backdrop.
+class OobeAppearancePreview final : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit OobeAppearancePreview(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(350, 200);
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                this, qOverload<>(&QWidget::update));
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        const bool dark = FinnThemeManager::instance().isDark();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const QColor stage_bg = dark ? QColor(0x0E, 0x11, 0x18) : QColor(0xFF, 0xFF, 0xFF);
+        const QColor border = dark ? QColor(255, 255, 255, 28) : QColor(0, 0, 0, 18);
+
+        p.setPen(QPen(border, 1.0));
+        p.setBrush(stage_bg);
+        p.drawRoundedRect(bounds, 16.0, 16.0);
+
+        // Soft ambient glow behind the logo stage (placeholder until 3D model integration).
+        QRadialGradient glow(bounds.center(), bounds.width() * 0.42);
+        if (dark) {
+            glow.setColorAt(0.0, QColor(255, 255, 255, 22));
+            glow.setColorAt(1.0, QColor(255, 255, 255, 0));
+        } else {
+            glow.setColorAt(0.0, QColor(0, 0, 0, 12));
+            glow.setColorAt(1.0, QColor(0, 0, 0, 0));
+        }
+        p.setPen(Qt::NoPen);
+        p.setBrush(glow);
+        p.drawRoundedRect(bounds, 16.0, 16.0);
+
+        const qreal logo_sz = 64.0;
+        const QRectF logo_rect(bounds.center().x() - logo_sz * 0.5,
+                               bounds.center().y() - logo_sz * 0.5 - 6.0,
+                               logo_sz, logo_sz);
+        FinnThemeManager::instance().paintIcon(
+            &p, logo_rect,
+            dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
+            dark ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x00, 0x00, 0x00));
+
+        p.setFont(oobe_font(12, QFont::Medium));
+        p.setPen(dark ? QColor(255, 255, 255, 130) : QColor(0, 0, 0, 110));
+        p.drawText(QRectF(bounds.left(), bounds.bottom() - 32.0, bounds.width(), 22.0),
+                   Qt::AlignCenter,
+                   dark ? QStringLiteral("Dark Mode") : QStringLiteral("Light Mode"));
+    }
+};
+
+// Visual Light/Dark mode selector card featuring the white/black 4-shape Finn logo.
+class OobeAppearanceCard final : public QWidget {
+    Q_OBJECT
+
+public:
+    OobeAppearanceCard(bool dark_card, const QString& label, bool selected,
+                       QWidget* parent = nullptr)
+        : QWidget(parent),
+          dark_card_(dark_card),
+          label_(label),
+          selected_(selected) {
+        setFixedSize(169, 122);
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_Hover, true);
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                this, qOverload<>(&QWidget::update));
+    }
+
+    void setSelected(bool selected) {
+        if (selected_ == selected) return;
+        selected_ = selected;
+        update();
+    }
+
+signals:
+    void clicked();
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        const auto& t = FinnThemeManager::instance().tokens();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF r = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
+        QColor card_bg = t.dark ? QColor(0x22, 0x27, 0x34) : QColor(0xFF, 0xFF, 0xFF);
+        if (pressed_) {
+            card_bg = t.dark ? QColor(0x2C, 0x32, 0x42) : QColor(0xEE, 0xF0, 0xF4);
+        } else if (hovered_ && !selected_) {
+            card_bg = t.dark ? QColor(0x27, 0x2D, 0x3B) : QColor(0xFA, 0xFA, 0xFC);
+        }
+
+        const QColor border = selected_
+            ? t.accent
+            : (t.dark ? QColor(255, 255, 255, 26) : QColor(0, 0, 0, 20));
+        p.setPen(QPen(border, selected_ ? 2.5 : 1.0));
+        p.setBrush(card_bg);
+        p.drawRoundedRect(r, 14.0, 14.0);
+
+        const QRectF swatch(r.left() + 10.0, r.top() + 10.0, r.width() - 20.0, 70.0);
+        const QColor swatch_bg = dark_card_ ? QColor(0x11, 0x13, 0x1A) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor swatch_border = dark_card_ ? QColor(255, 255, 255, 20) : QColor(0, 0, 0, 14);
+        p.setPen(QPen(swatch_border, 1.0));
+        p.setBrush(swatch_bg);
+        p.drawRoundedRect(swatch, 9.0, 9.0);
+
+        const qreal logo_sz = 34.0;
+        const QRectF logo_r(swatch.center().x() - logo_sz * 0.5,
+                            swatch.center().y() - logo_sz * 0.5,
+                            logo_sz, logo_sz);
+        FinnThemeManager::instance().paintIcon(
+            &p, logo_r,
+            dark_card_ ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
+            dark_card_ ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x00, 0x00, 0x00));
+
+        p.setFont(oobe_font(15, selected_ ? QFont::DemiBold : QFont::Normal));
+        p.setPen(t.dark ? t.ink : QColor(0x18, 0x18, 0x20));
+        p.drawText(QRectF(r.left(), swatch.bottom() + 4.0, r.width(), 28.0),
+                   Qt::AlignCenter, label_);
+    }
+
+    void enterEvent(QEnterEvent*) override {
+        hovered_ = true;
+        update();
+    }
+    void leaveEvent(QEvent*) override {
+        hovered_ = false;
+        pressed_ = false;
+        update();
+    }
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton) {
+            pressed_ = true;
+            update();
+        } else {
+            QWidget::mousePressEvent(event);
+        }
+    }
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && pressed_) {
+            pressed_ = false;
+            update();
+            if (rect().contains(event->pos())) emit clicked();
+        } else {
+            QWidget::mouseReleaseEvent(event);
+        }
+    }
+
+private:
+    bool dark_card_ = false;
+    QString label_;
+    bool selected_ = false;
+    bool hovered_ = false;
+    bool pressed_ = false;
+};
+
 // Minimalist 350px text input row matching Figma 37:98 pill geometry.
 class OobeInputField final : public QWidget {
     Q_OBJECT
@@ -493,6 +719,8 @@ public:
     explicit OobeProgressiveList(QWidget* parent = nullptr) : QWidget(parent) {
         setFixedWidth(356);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
 
         scroll_ = new QScrollArea(this);
         scroll_->setWidgetResizable(true);
@@ -500,10 +728,12 @@ public:
         scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll_->viewport()->setAutoFillBackground(false);
+        scroll_->viewport()->setAttribute(Qt::WA_TranslucentBackground, true);
         scroll_->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
 
         host_ = new QWidget(scroll_);
         host_->setAutoFillBackground(false);
+        host_->setAttribute(Qt::WA_TranslucentBackground, true);
         list_lay_ = new QVBoxLayout(host_);
         list_lay_->setContentsMargins(0, 0, 6, 80);
         list_lay_->setSpacing(10);
@@ -563,12 +793,13 @@ protected:
         in_capture_ = true;
         QImage snap(width(), blur_h, QImage::Format_ARGB32_Premultiplied);
         snap.fill(bg);
-        target_->render(&snap, QPoint(0, 0), QRegion(0, blur_top, width(), blur_h));
+        target_->render(&snap, QPoint(0, 0), QRegion(0, blur_top, width(), blur_h),
+                        QWidget::DrawChildren);
         in_capture_ = false;
 
         const QImage b1 = box_blur_image(snap, 2);
-        const QImage b2 = box_blur_image(b1, 3);
-        const QImage b3 = box_blur_image(b2, 4);
+        const QImage b2 = box_blur_image(b1, 4);
+        const QImage b3 = box_blur_image(b2, 6);
 
         const int band = blur_h / 4;
         const int feather = std::max(12, blur_h / 5);
@@ -594,16 +825,16 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.drawImage(0, blur_top, comp);
 
-        // Smooth progressive surface fade at the bottom edge
+        // Smooth progressive surface fade all the way to opaque bg at bottom edge.
         QLinearGradient fade(0, blur_top, 0, height());
         QColor c0 = bg;
         c0.setAlpha(0);
         QColor c1 = bg;
-        c1.setAlpha(45);
+        c1.setAlpha(110);
         QColor c2 = bg;
-        c2.setAlpha(185);
+        c2.setAlpha(255);
         fade.setColorAt(0.0, c0);
-        fade.setColorAt(0.45, c1);
+        fade.setColorAt(0.55, c1);
         fade.setColorAt(1.0, c2);
         p.fillRect(QRect(0, blur_top, width(), blur_h), fade);
     }
@@ -611,6 +842,374 @@ protected:
 private:
     QWidget* target_ = nullptr;
     bool in_capture_ = false;
+};
+
+// Seamless transition overlay when advancing from Step 0 ("hi.") to Step 1
+// ("How do we talk?"): continues from the end of "hi." into the same upright
+// oval spring as the intro, draws forward across the whole screen while the
+// camera pans, fades into Step 1, and reveals "How do we talk?" left-to-right
+// with a glowing leading edge.
+class OobeHiToLangOverlay : public QWidget {
+public:
+    OobeHiToLangOverlay(QWidget* parent, QLabel* target_prompt)
+        : QWidget(parent), target_prompt_(target_prompt) {
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        if (parent) {
+            setGeometry(parent->rect());
+        }
+        elapsed_.start();
+        timer_ = new QTimer(this);
+        timer_->setInterval(16);
+        connect(timer_, &QTimer::timeout, this, [this]() {
+            if (parentWidget() && size() != parentWidget()->size()) {
+                setGeometry(parentWidget()->rect());
+            }
+            const double t = elapsed_.elapsed() / 1000.0;
+            if (t >= 3.55) {
+                timer_->stop();
+                hide();
+                deleteLater();
+                return;
+            }
+            update();
+        });
+        timer_->start();
+        show();
+        raise();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        const double t = elapsed_.elapsed() / 1000.0;
+        const int w = width();
+        const int h = height();
+        if (w <= 0 || h <= 0) return;
+
+        constexpr double kPi = 3.14159265358979323846;
+        const auto& tok = FinnThemeManager::instance().tokens();
+        const QColor bg = tok.dark ? QColor(0x16, 0x19, 0x22) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor ink = tok.dark ? tok.ink : QColor(0, 0, 0);
+        const QColor text_col = tok.dark ? QColor(0xF4, 0xF6, 0xFA) : QColor(0x11, 0x13, 0x18);
+        const QColor coral(0xFF, 0x57, 0x22);
+        const QColor amber(0xFF, 0x95, 0x00);
+        const QColor violet(0x8B, 0x5C, 0xF6);
+        const QColor blue = tok.accent.isValid() ? tok.accent : QColor(0x00, 0x7B, 0xFF);
+
+        auto clamp01 = [](double v) { return std::clamp(v, 0.0, 1.0); };
+        auto smooth01 = [&](double a, double b) {
+            const double u = clamp01((t - a) / std::max(0.001, b - a));
+            return u * u * (3.0 - 2.0 * u);
+        };
+        auto ease_out_cubic = [](double u) {
+            const double inv = 1.0 - std::clamp(u, 0.0, 1.0);
+            return 1.0 - inv * inv * inv;
+        };
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // 1. Keep Step 1 hidden behind opaque bg while:
+        //    0.00..2.48s : "hi." -> spring (same pace as paintHiIntro) -> brief pause as POV
+        //                  puts spring on the left side -> uncoils at target_rect.left()
+        //    2.40..2.98s : ONLY "How do we talk?" text animates in with feathered bloom
+        //    3.00..3.45s : veil fades out so the rest of Step 1 appears underneath
+        const double veil_fade = smooth01(3.00, 3.45);
+        const int veil_alpha = static_cast<int>(std::lround(255.0 * (1.0 - veil_fade)));
+        if (veil_alpha > 0) {
+            QColor veil = bg;
+            veil.setAlpha(veil_alpha);
+            p.fillRect(rect(), veil);
+        }
+
+        // Determine target text rect ("How do we talk?") in overlay coordinates.
+        QRectF target_rect(w * 0.25 - 95.0, h * 0.50 - 16.0, 190.0, 32.0);
+        if (target_prompt_ && parentWidget()) {
+            const QPoint tl = target_prompt_->mapTo(parentWidget(), QPoint(0, 0));
+            const QFontMetricsF fm(target_prompt_->font());
+            const QRectF br = fm.boundingRect(target_prompt_->text());
+            const double tx = tl.x() + (target_prompt_->width() - br.width()) * 0.5;
+            const double ty = tl.y() + (target_prompt_->height() - br.height()) * 0.5;
+            target_rect = QRectF(tx, ty, br.width(), br.height());
+        }
+
+        // 2. Smooth feathered left-to-right glowing text reveal ("How do we talk?")
+        //    seamlessly ignited as the spring tip reaches target_rect.left() (2.26..2.94s),
+        //    then veil fades out (2.96..3.42s) to reveal the rest of Step 1.
+        if (t >= 2.20 && t < 3.52 && target_prompt_) {
+            if (crisp_img_.isNull() && target_rect.width() > 4.0) {
+                constexpr int kPad = 32;
+                const int gw = static_cast<int>(std::ceil(target_rect.width())) + kPad * 2;
+                const int gh = static_cast<int>(std::ceil(target_rect.height())) + kPad * 2;
+                const QRectF text_box(kPad, kPad, target_rect.width(), target_rect.height());
+
+                crisp_img_ = QImage(gw, gh, QImage::Format_ARGB32_Premultiplied);
+                crisp_img_.fill(Qt::transparent);
+                {
+                    QPainter cp(&crisp_img_);
+                    cp.setRenderHint(QPainter::Antialiasing, true);
+                    cp.setRenderHint(QPainter::TextAntialiasing, true);
+                    cp.setFont(target_prompt_->font());
+                    cp.setPen(text_col);
+                    cp.drawText(text_box, Qt::AlignCenter, target_prompt_->text());
+                }
+
+                QImage raw_glow(gw, gh, QImage::Format_ARGB32_Premultiplied);
+                raw_glow.fill(Qt::transparent);
+                {
+                    QPainter gp(&raw_glow);
+                    gp.setRenderHint(QPainter::Antialiasing, true);
+                    gp.setRenderHint(QPainter::TextAntialiasing, true);
+                    gp.setFont(target_prompt_->font());
+                    gp.setPen(tok.dark ? QColor(255, 255, 255, 255)
+                                       : QColor(255, 255, 255, 240));
+                    gp.drawText(text_box, Qt::AlignCenter, target_prompt_->text());
+                    if (!tok.dark) {
+                        // Subtle cool-indigo outer tint in light mode so bloom reads on #F5F5F5.
+                        gp.setPen(QColor(110, 150, 255, 130));
+                        gp.drawText(text_box, Qt::AlignCenter, target_prompt_->text());
+                    }
+                }
+                glow_img_ = box_blur_image(box_blur_image(raw_glow, 9), 5);
+                glow_pad_ = kPad;
+            }
+
+            const double reveal_raw = clamp01((t - 2.26) / (2.94 - 2.26));
+            const double reveal_u = ease_out_cubic(reveal_raw);
+            const double neon_u = clamp01((t - 2.26) / (3.26 - 2.26));
+            const double bloom_in = smooth01(2.26, 2.52);
+            const double bloom_out = 1.0 - smooth01(2.96, 3.45);
+            const double bloom_alpha = bloom_in * bloom_out;
+
+            if (!crisp_img_.isNull() && (reveal_u > 0.001 || bloom_alpha > 0.01)) {
+                const int gw = crisp_img_.width();
+                const int gh = crisp_img_.height();
+
+                // Paint the neon wave (text_col -> violet -> coral -> amber -> blue -> text_col)
+                // directly inside the letters of "How do we talk?", matching the spring lines.
+                QImage tinted_text(gw, gh, QImage::Format_ARGB32_Premultiplied);
+                tinted_text.fill(Qt::transparent);
+                {
+                    QPainter tp(&tinted_text);
+                    tp.drawImage(0, 0, crisp_img_);
+                    const double wave_head = glow_pad_ + (target_rect.width() + 150.0) * neon_u;
+                    QLinearGradient text_grad(wave_head - 140.0, 0.0, wave_head + 35.0, 0.0);
+                    text_grad.setColorAt(0.00, text_col);
+                    text_grad.setColorAt(0.28, violet);
+                    text_grad.setColorAt(0.54, coral);
+                    text_grad.setColorAt(0.76, amber);
+                    text_grad.setColorAt(0.92, blue);
+                    text_grad.setColorAt(1.00, text_col);
+                    tp.setCompositionMode(QPainter::CompositionMode_SourceIn);
+                    tp.fillRect(0, 0, gw, gh, text_grad);
+                }
+
+                QImage comp(gw, gh, QImage::Format_ARGB32_Premultiplied);
+                comp.fill(Qt::transparent);
+                {
+                    QPainter cp(&comp);
+                    if (bloom_alpha > 0.01) {
+                        cp.setOpacity(bloom_alpha * 0.70);
+                        cp.drawImage(0, 0, glow_img_);
+                    }
+                    if (veil_alpha > 0) {
+                        cp.setOpacity(veil_alpha / 255.0);
+                        cp.drawImage(0, 0, tinted_text);
+                    }
+                    // Smooth feathered left-to-right alpha sweep (no hard clip line).
+                    if (reveal_u < 1.0) {
+                        const double sweep_x = -12.0 + (gw + 48.0) * reveal_u;
+                        QLinearGradient feather(sweep_x - 52.0, 0.0, sweep_x + 12.0, 0.0);
+                        feather.setColorAt(0.0, QColor(255, 255, 255, 255));
+                        feather.setColorAt(0.65, QColor(255, 255, 255, 160));
+                        feather.setColorAt(1.0, QColor(255, 255, 255, 0));
+                        cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                        cp.setOpacity(1.0);
+                        cp.fillRect(0, 0, gw, gh, feather);
+                    }
+                }
+                p.drawImage(QPointF(target_rect.left() - glow_pad_,
+                                    target_rect.top() - glow_pad_),
+                            comp);
+            }
+        }
+
+        // 3. Exact "hi." stroke continuing forward into the vertically-centered
+        //    full-screen upright oval spring at the exact same pace as paintHiIntro,
+        //    staying visible at target_rect.left() until "How do we talk?" is
+        //    fully shown (2.94s), then fading out cleanly (2.88..3.08s).
+        if (t <= 3.12) {
+            struct Pt { double x; double y; };
+            static constexpr Pt kHiMain[] = {
+                {-8.0, 20.5},  {-3.5, 20.8},  {0.8, 20.6},   {3.5, 19.2},   {6.8, 15.8},
+                {9.8, 11.4},   {12.2, 6.8},   {13.6, 3.4},   {13.9, 1.4},   {12.8, 0.7},
+                {11.1, 1.3},   {9.3, 3.6},    {7.4, 7.5},    {5.6, 12.6},   {4.1, 18.2},
+                {2.9, 23.6},   {2.2, 27.4},   {2.4, 29.0},   {3.4, 28.2},   {5.2, 25.4},
+                {7.8, 21.6},   {10.6, 17.8},  {13.4, 15.0},  {15.8, 13.8},  {17.6, 14.3},
+                {18.4, 16.2},  {18.1, 19.4},  {17.1, 23.2},  {16.3, 26.6},  {16.5, 28.6},
+                {17.8, 29.3},  {19.8, 28.4},  {22.2, 25.8},  {24.6, 22.0},  {26.8, 17.6},
+                {28.3, 14.4},  {28.8, 13.5},  {28.4, 15.2},  {27.3, 18.8},  {26.1, 23.0},
+                {25.4, 26.5},  {25.9, 28.4},  {27.4, 29.0},  {29.8, 28.0},  {32.4, 25.6},
+                {34.8, 22.6},  {36.6, 20.4},
+            };
+            static constexpr Pt kHiIDot[] = {
+                {30.3, 6.9}, {31.6, 7.5}, {32.1, 8.6}, {31.5, 9.7}, {30.3, 10.2},
+                {29.0, 9.7}, {28.4, 8.6}, {29.0, 7.5}, {30.3, 6.9},
+            };
+            static constexpr Pt kHiPeriod[] = {
+                {37.9, 25.9}, {39.2, 26.5}, {39.7, 27.8}, {39.1, 29.1}, {37.9, 29.7},
+                {36.7, 29.1}, {36.1, 27.8}, {36.7, 26.5}, {37.9, 25.9},
+            };
+            constexpr int kMainCount = static_cast<int>(sizeof(kHiMain) / sizeof(kHiMain[0]));
+
+            const double cx = w * 0.5;
+            const double cy = h * 0.499;
+            const double hi_ox = cx - 41.0 * 0.5;
+            const double hi_oy = cy - 31.0 * 0.5;
+            const double r_max = std::min(w, h) * 0.165;
+
+            const double coil_start_x = hi_ox + kHiMain[kMainCount - 1].x;
+            const double coil_start_y = hi_oy + kHiMain[kMainCount - 1].y;
+            const double coil_world_span = w * 1.85;
+            const double coil_world_end = coil_start_x + coil_world_span;
+            const double cam_x_final = coil_world_end - (target_rect.left() - 2.0);
+
+            // Continuous spring motion at the exact same pace as paintHiIntro (no mid pause).
+            const double p_stroke = clamp01(t / 2.38);
+            const double head_u =
+                p_stroke * (0.82 + 0.18 * (3.0 * p_stroke - 2.0 * p_stroke * p_stroke));
+            const double cam_x = cam_x_final * smooth01(0.15, 2.38);
+            const double ox = hi_ox - cam_x;
+
+            const double dots_alpha = 1.0 - smooth01(0.28, 0.72);
+            if (dots_alpha > 0.01) {
+                p.save();
+                QColor dc = ink;
+                dc.setAlpha(static_cast<int>(255 * dots_alpha));
+                p.setPen(Qt::NoPen);
+                p.setBrush(dc);
+                for (const auto* arr : {kHiIDot, kHiPeriod}) {
+                    QPainterPath dp;
+                    dp.moveTo(ox + arr[0].x, hi_oy + arr[0].y);
+                    for (int i = 1; i < 9; ++i) {
+                        dp.lineTo(ox + arr[i].x, hi_oy + arr[i].y);
+                    }
+                    dp.closeSubpath();
+                    p.drawPath(dp);
+                }
+                p.restore();
+            }
+
+            constexpr double kHiSplit = 0.14;
+            const double head_s = kHiSplit + (1.0 - kHiSplit) * head_u;
+            const double tail_s = std::min(head_s - 0.012, smooth01(0.85, 3.06));
+
+            if (head_s > tail_s + 0.002) {
+                constexpr double kLoops = 12.5;
+                const double pitch = coil_world_span / kLoops;
+                const double loop_rx = pitch * 0.40;
+                const double loop_ry = r_max * 0.90;
+
+                auto sample_coil = [&](double u) -> QPointF {
+                    const double eu = clamp01(u / 0.10);
+                    const double entry_amp = eu * eu * (3.0 - 2.0 * eu);
+                    const double xu = clamp01((u - 0.86) / 0.14);
+                    const double exit_amp = 1.0 - xu * xu * (3.0 - 2.0 * xu);
+                    const double amp = entry_amp * exit_amp;
+                    const double rx = loop_rx * amp;
+                    const double ry = loop_ry * amp;
+                    const double wave = std::sin(2.0 * kPi * 2.0 * u + t * 2.1) *
+                                        (r_max * 0.16) * clamp01(u / 0.08) * (1.0 - u);
+                    const double base_x = coil_start_x + coil_world_span * u - cam_x;
+                    const double mid_y =
+                        coil_start_y + ((cy + r_max - loop_ry) - coil_start_y)
+                                           * clamp01(u / 0.14);
+                    const double end_t = clamp01((u - 0.76) / 0.24);
+                    const double end_ease = end_t * end_t * (3.0 - 2.0 * end_t);
+                    const double center_y =
+                        mid_y + (target_rect.center().y() - mid_y) * end_ease + wave;
+                    const double angle = 2.0 * kPi * kLoops * u;
+                    return QPointF(base_x + rx * std::sin(angle),
+                                   center_y + ry * std::cos(angle));
+                };
+
+                QPainterPath ribbon_path;
+                bool started = false;
+                QPointF tail_pt(ox + kHiMain[0].x, hi_oy + kHiMain[0].y);
+                QPointF nib_pt = tail_pt;
+
+                if (tail_s < kHiSplit) {
+                    const double hi_start_u = clamp01(tail_s / kHiSplit);
+                    const int min_idx = std::clamp(
+                        static_cast<int>(std::floor(hi_start_u * (kMainCount - 1))),
+                        0, kMainCount - 2);
+                    const double frac = hi_start_u * (kMainCount - 1) - min_idx;
+                    tail_pt = QPointF(
+                        ox + kHiMain[min_idx].x + (kHiMain[min_idx + 1].x - kHiMain[min_idx].x) * frac,
+                        hi_oy + kHiMain[min_idx].y + (kHiMain[min_idx + 1].y - kHiMain[min_idx].y) * frac);
+                    ribbon_path.moveTo(tail_pt);
+                    started = true;
+                    for (int idx = min_idx + 1; idx < kMainCount - 1; ++idx) {
+                        const QPointF p0(ox + kHiMain[idx].x, hi_oy + kHiMain[idx].y);
+                        const QPointF p1(ox + kHiMain[idx + 1].x, hi_oy + kHiMain[idx + 1].y);
+                        ribbon_path.quadTo(p0, (p0 + p1) * 0.5);
+                    }
+                    ribbon_path.lineTo(QPointF(ox + kHiMain[kMainCount - 1].x,
+                                               hi_oy + kHiMain[kMainCount - 1].y));
+                }
+
+                if (head_s > kHiSplit) {
+                    const double coil_start_u =
+                        tail_s <= kHiSplit ? 0.0 : clamp01((tail_s - kHiSplit) / (1.0 - kHiSplit));
+                    const double coil_end_u = clamp01((head_s - kHiSplit) / (1.0 - kHiSplit));
+                    if (tail_s >= kHiSplit) {
+                        tail_pt = sample_coil(coil_start_u);
+                    }
+                    constexpr int kCoilSamples = 420;
+                    for (int i = 0; i <= kCoilSamples; ++i) {
+                        const double u =
+                            coil_start_u + (coil_end_u - coil_start_u) * (static_cast<double>(i) / kCoilSamples);
+                        const QPointF pt = sample_coil(u);
+                        if (!started) {
+                            ribbon_path.moveTo(pt);
+                            started = true;
+                        } else {
+                            ribbon_path.lineTo(pt);
+                        }
+                        nib_pt = pt;
+                    }
+                }
+
+                const double grad_x0 = std::min(tail_pt.x(), nib_pt.x() - 220.0);
+                const double grad_x1 = std::max(nib_pt.x() + 18.0, grad_x0 + 40.0);
+                QLinearGradient ribbon_grad(QPointF(grad_x0, cy), QPointF(grad_x1, cy));
+                ribbon_grad.setColorAt(0.00, ink);
+                ribbon_grad.setColorAt(0.45, ink);
+                ribbon_grad.setColorAt(0.68, violet);
+                ribbon_grad.setColorAt(0.82, coral);
+                ribbon_grad.setColorAt(0.92, amber);
+                ribbon_grad.setColorAt(1.00, blue);
+
+                const double ribbon_alpha = 1.0 - smooth01(2.88, 3.08);
+                p.save();
+                p.setOpacity(ribbon_alpha);
+                p.setPen(QPen(QBrush(ribbon_grad), 3.2,
+                              Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                p.setBrush(Qt::NoBrush);
+                p.drawPath(ribbon_path);
+                p.restore();
+            }
+        }
+    }
+
+private:
+    QLabel* target_prompt_ = nullptr;
+    QImage crisp_img_;
+    QImage glow_img_;
+    int glow_pad_ = 32;
+    QElapsedTimer elapsed_;
+    QTimer* timer_ = nullptr;
 };
 
 class OobeWindow final : public FinnLayerWindow {
@@ -636,6 +1235,7 @@ public:
         stack_->addWidget(buildWifiPage());
         stack_->addWidget(buildAccountPage());
         stack_->addWidget(buildAppearancePage());
+        stack_->addWidget(buildAccessibilityPage());
         stack_->addWidget(buildCompletePage());
         root->addWidget(stack_, 1);
 
@@ -646,7 +1246,7 @@ public:
                 this, &OobeWindow::syncNetwork);
         finn::sys::FinnDesktopServices::instance().refreshAll();
 
-        setStep(update_mode_ ? 5 : 0);
+        setStep(update_mode_ ? 6 : 0);
     }
 
     void openStep(int idx) {
@@ -679,10 +1279,13 @@ private:
     //   - Left prompt ("How do we talk?") at x=225..320, y=408 (24px Fixel Display Regular)
     //   - Right 350px column at x=805, y=195
     //   - Centered Back/Next 56x56 circular chevron buttons at x=574, y=631 (itemSpacing 20)
-    QWidget* createSplitStepPage(const QString& prompt_text,
+    QWidget* createSplitStepPage(const QString& icon_name,
+                                 const QString& prompt_text,
                                  const QString& sub_caption,
                                  QWidget* right_column,
-                                 QLabel** out_sub_label = nullptr) {
+                                 QLabel** out_sub_label = nullptr,
+                                 bool flush_right_top = false,
+                                 QLabel** out_prompt_label = nullptr) {
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
 
@@ -694,20 +1297,30 @@ private:
         content_row->setContentsMargins(0, 0, 0, 0);
         content_row->setSpacing(32);
 
-        // Left column: conversational question centered vertically around y=408
+        // Left column: 46x46 icon + 40px gap + conversational question centered vertically (Figma 36:53)
         auto* left_host = new QWidget(page);
         auto* left_col = new QVBoxLayout(left_host);
         left_col->setContentsMargins(80, 0, 20, 0);
-        left_col->setSpacing(10);
+        left_col->setSpacing(0);
         left_col->addStretch(49);
+
+        auto* icon_lbl = new QLabel(left_host);
+        icon_lbl->setFixedSize(46, 46);
+        icon_lbl->setAlignment(Qt::AlignCenter);
+        left_col->addWidget(icon_lbl, 0, Qt::AlignHCenter);
+        left_col->addSpacing(40);
 
         auto* prompt_lbl = new QLabel(prompt_text, left_host);
         prompt_lbl->setFont(oobe_font(24, QFont::Normal));
         prompt_lbl->setAlignment(Qt::AlignCenter);
+        prompt_lbl->setWordWrap(true);
+        prompt_lbl->setFixedWidth(300);
+        if (out_prompt_label) *out_prompt_label = prompt_lbl;
         left_col->addWidget(prompt_lbl, 0, Qt::AlignHCenter);
 
         QLabel* sub_lbl = nullptr;
         if (!sub_caption.isEmpty() || out_sub_label != nullptr) {
+            left_col->addSpacing(10);
             sub_lbl = new QLabel(sub_caption, left_host);
             sub_lbl->setFont(oobe_font(14, QFont::Normal));
             sub_lbl->setAlignment(Qt::AlignCenter);
@@ -719,10 +1332,15 @@ private:
         }
         left_col->addStretch(51);
 
-        auto sync_left_colors = [prompt_lbl, sub_lbl]() {
+        auto sync_left_colors = [icon_lbl, icon_name, prompt_lbl, sub_lbl]() {
             const auto& t = FinnThemeManager::instance().tokens();
+            const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+            const qreal dpr = icon_lbl->devicePixelRatioF();
+            icon_lbl->setPixmap(FinnThemeManager::instance().iconPixmap(
+                icon_name, QSize(46, 46), ink, dpr));
+
             QPalette p1 = prompt_lbl->palette();
-            p1.setColor(QPalette::WindowText, t.dark ? t.ink : QColor(0, 0, 0));
+            p1.setColor(QPalette::WindowText, ink);
             prompt_lbl->setPalette(p1);
             if (sub_lbl) {
                 QPalette p2 = sub_lbl->palette();
@@ -734,18 +1352,18 @@ private:
                 page, sync_left_colors);
         sync_left_colors();
 
-        // Right column positioned at Figma's x=805, y=195 (top margin ~23.4% of 832)
+        // Right column positioned at Figma's x=805, y=195 (or y=0 for ceiling lamp)
         auto* right_host = new QWidget(page);
         auto* right_col = new QVBoxLayout(right_host);
-        right_col->setContentsMargins(0, 175, 45, 0);
+        right_col->setContentsMargins(0, flush_right_top ? 0 : 195, 45, 0);
         right_col->setSpacing(0);
         right_col->addWidget(right_column, 1);
 
         content_row->addWidget(left_host, 1);
 
-        // Center Back/Next navigation bar pinned near y=631 (bottom ~145px)
+        // Center Back/Next navigation bar pinned at Figma's y=631 (bottom 145px)
         auto* center_nav_col = new QVBoxLayout();
-        center_nav_col->setContentsMargins(0, 0, 0, 130);
+        center_nav_col->setContentsMargins(0, 0, 0, 145);
         center_nav_col->addStretch(1);
 
         auto* nav_box = new QWidget(page);
@@ -821,11 +1439,12 @@ private:
         return page;
     }
 
-    // Step 1: Figma 36:53 ("How do we talk?") with exact 14 languages + progressive blur
+    // Step 1: Figma 36:53 ("How do we talk?") with world languages + progressive blur
     QWidget* buildLanguagePage() {
         auto* list_wrap = new QWidget();
         list_wrap->setFixedWidth(356);
         list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
 
         auto* prog_list = new OobeProgressiveList(list_wrap);
         auto* blur_ov = new ProgressiveBlurOverlay(prog_list, list_wrap);
@@ -836,39 +1455,123 @@ private:
         stack_lay->addWidget(prog_list, 0, 0);
         stack_lay->addWidget(blur_ov, 0, 0);
 
-        const QStringList languages = {
-            QStringLiteral("English (UK)"),
-            QStringLiteral("Spanish"),
-            QStringLiteral("Italian"),
-            QStringLiteral("French"),
-            QStringLiteral("Catal\u00E0"),
-            QStringLiteral("German"),
-            QStringLiteral("Africaans"),
-            QStringLiteral("Chinese (Simplified)"),
-            QStringLiteral("Hindi"),
-            QStringLiteral("Korean"),
-            QStringLiteral("Japanese"),
-            QStringLiteral("Arabic"),
-            QStringLiteral("Chinese (Traditional)"),
-            QStringLiteral("Portuguese"),
+        struct LangEntry {
+            const char* name;
+            const char* locale;
+        };
+        static constexpr LangEntry kLanguages[] = {
+            {"English (UK)", "en_GB.UTF-8"},
+            {"English (US)", "en_US.UTF-8"},
+            {"Spanish", "es_ES.UTF-8"},
+            {"Italian", "it_IT.UTF-8"},
+            {"French", "fr_FR.UTF-8"},
+            {"Catal\u00E0", "ca_ES.UTF-8"},
+            {"German", "de_DE.UTF-8"},
+            {"Afrikaans", "af_ZA.UTF-8"},
+            {"Chinese (Simplified)", "zh_CN.UTF-8"},
+            {"Hindi", "hi_IN.UTF-8"},
+            {"Korean", "ko_KR.UTF-8"},
+            {"Japanese", "ja_JP.UTF-8"},
+            {"Arabic", "ar_SA.UTF-8"},
+            {"Chinese (Traditional)", "zh_TW.UTF-8"},
+            {"Portuguese (Portugal)", "pt_PT.UTF-8"},
+            {"Portuguese (Brazil)", "pt_BR.UTF-8"},
+            {"Dutch", "nl_NL.UTF-8"},
+            {"Polish", "pl_PL.UTF-8"},
+            {"Russian", "ru_RU.UTF-8"},
+            {"Ukrainian", "uk_UA.UTF-8"},
+            {"Turkish", "tr_TR.UTF-8"},
+            {"Swedish", "sv_SE.UTF-8"},
+            {"Norwegian", "nb_NO.UTF-8"},
+            {"Danish", "da_DK.UTF-8"},
+            {"Finnish", "fi_FI.UTF-8"},
+            {"Greek", "el_GR.UTF-8"},
+            {"Czech", "cs_CZ.UTF-8"},
+            {"Slovak", "sk_SK.UTF-8"},
+            {"Hungarian", "hu_HU.UTF-8"},
+            {"Romanian", "ro_RO.UTF-8"},
+            {"Bulgarian", "bg_BG.UTF-8"},
+            {"Croatian", "hr_HR.UTF-8"},
+            {"Serbian", "sr_RS.UTF-8"},
+            {"Slovenian", "sl_SI.UTF-8"},
+            {"Estonian", "et_EE.UTF-8"},
+            {"Latvian", "lv_LV.UTF-8"},
+            {"Lithuanian", "lt_LT.UTF-8"},
+            {"Icelandic", "is_IS.UTF-8"},
+            {"Irish", "ga_IE.UTF-8"},
+            {"Welsh", "cy_GB.UTF-8"},
+            {"Basque", "eu_ES.UTF-8"},
+            {"Galician", "gl_ES.UTF-8"},
+            {"Hebrew", "he_IL.UTF-8"},
+            {"Persian", "fa_IR.UTF-8"},
+            {"Urdu", "ur_PK.UTF-8"},
+            {"Bengali", "bn_BD.UTF-8"},
+            {"Punjabi", "pa_IN.UTF-8"},
+            {"Tamil", "ta_IN.UTF-8"},
+            {"Telugu", "te_IN.UTF-8"},
+            {"Marathi", "mr_IN.UTF-8"},
+            {"Gujarati", "gu_IN.UTF-8"},
+            {"Vietnamese", "vi_VN.UTF-8"},
+            {"Thai", "th_TH.UTF-8"},
+            {"Indonesian", "id_ID.UTF-8"},
+            {"Malay", "ms_MY.UTF-8"},
+            {"Filipino", "fil_PH.UTF-8"},
+            {"Swahili", "sw_KE.UTF-8"},
+            {"Amharic", "am_ET.UTF-8"},
         };
 
+        // Pre-select saved locale if present in ~/.config/finn/locale.conf
+        QString initial_locale = QStringLiteral("en_GB.UTF-8");
+        {
+            QFile lf(QDir::homePath() + QStringLiteral("/.config/finn/locale.conf"));
+            if (lf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QString content = QString::fromUtf8(lf.readAll());
+                for (const QString& line : content.split(QLatin1Char('\n'))) {
+                    if (line.startsWith(QStringLiteral("LANG="))) {
+                        const QString val = line.mid(5).trimmed();
+                        if (!val.isEmpty()) initial_locale = val;
+                    }
+                }
+            }
+        }
+
+        int initial_idx = 0;
+        constexpr int kLangCount = static_cast<int>(sizeof(kLanguages) / sizeof(kLanguages[0]));
+        for (int i = 0; i < kLangCount; ++i) {
+            if (QString::fromLatin1(kLanguages[i].locale) == initial_locale) {
+                initial_idx = i;
+                break;
+            }
+        }
+        selected_language_ = QString::fromUtf8(kLanguages[initial_idx].name);
+        selected_locale_ = QString::fromLatin1(kLanguages[initial_idx].locale);
+
         language_rows_.clear();
-        for (int i = 0; i < languages.size(); ++i) {
-            auto* row = new OobeOptionRow(languages[i], {}, i == 0,
+        for (int i = 0; i < kLangCount; ++i) {
+            const QString lang_name = QString::fromUtf8(kLanguages[i].name);
+            const QString locale_code = QString::fromLatin1(kLanguages[i].locale);
+            auto* row = new OobeOptionRow(lang_name, {}, i == initial_idx,
                                           prog_list->hostWidget());
             language_rows_.push_back(row);
-            connect(row, &OobeOptionRow::clicked, this, [this, i, blur_ov]() {
-                for (int j = 0; j < language_rows_.size(); ++j) {
-                    language_rows_[j]->setSelected(j == i);
-                }
-                blur_ov->update();
-            });
+            connect(row, &OobeOptionRow::clicked, this,
+                    [this, i, lang_name, locale_code, blur_ov]() {
+                        for (int j = 0; j < language_rows_.size(); ++j) {
+                            language_rows_[j]->setSelected(j == i);
+                        }
+                        applyLanguageSelection(lang_name, locale_code);
+                        blur_ov->update();
+                    });
             prog_list->listLayout()->addWidget(row);
         }
         prog_list->listLayout()->addStretch(1);
 
-        return createSplitStepPage(QStringLiteral("How do we talk?"), {}, list_wrap);
+        if (selected_locale_ != QLatin1String("en_GB.UTF-8")) {
+            applyLanguageSelection(selected_language_, selected_locale_);
+        }
+
+        return createSplitStepPage(QStringLiteral("language-skill"),
+                                   oobe_tr(QStringLiteral("lang_prompt"), selected_locale_),
+                                   {}, list_wrap, nullptr, false, &lang_prompt_lbl_);
     }
 
     // Step 2: Wi-Fi / Network in the same Figma 36:53 split layout
@@ -885,9 +1588,10 @@ private:
         stack_lay->addWidget(wifi_prog_list_, 0, 0);
         stack_lay->addWidget(wifi_blur_ov_, 0, 0);
 
-        return createSplitStepPage(QStringLiteral("Where do we connect?"),
-                                   QStringLiteral("Scanning nearby networks..."),
-                                   list_wrap, &net_status_lbl_);
+        return createSplitStepPage(QStringLiteral("wifi-02"),
+                                   oobe_tr(QStringLiteral("wifi_prompt"), selected_locale_),
+                                   oobe_tr(QStringLiteral("wifi_scan"), selected_locale_),
+                                   list_wrap, &net_status_lbl_, false, &wifi_prompt_lbl_);
     }
 
     // Step 3: Account setup in the same Figma 36:53 split layout
@@ -910,12 +1614,96 @@ private:
         col->addWidget(pw_verify_edit_);
         col->addStretch(1);
 
-        return createSplitStepPage(QStringLiteral("What should we call you?"), {},
-                                   col_host);
+        return createSplitStepPage(QStringLiteral("user"),
+                                   oobe_tr(QStringLiteral("account_prompt"), selected_locale_), {},
+                                   col_host, nullptr, false, &account_prompt_lbl_);
     }
 
-    // Step 4: Appearance & Accessibility in the same Figma 36:53 split layout
+    // Step 4: Appearance page with interactive 3D pendant lamp filling the entire right half,
+    // wire anchored at the ceiling (y=0), and Back/Next navigation buttons overlaid on top.
     QWidget* buildAppearancePage() {
+        auto* page = new QWidget();
+        page->setAutoFillBackground(false);
+
+        auto* stack_grid = new QGridLayout(page);
+        stack_grid->setContentsMargins(0, 0, 0, 0);
+        stack_grid->setSpacing(0);
+
+        // Base layer: left half prompt + right half full-height 3D lamp area
+        auto* base_layer = new QWidget(page);
+        base_layer->setAutoFillBackground(false);
+        auto* halves = new QHBoxLayout(base_layer);
+        halves->setContentsMargins(0, 0, 0, 0);
+        halves->setSpacing(0);
+
+        auto* left_host = new QWidget(base_layer);
+        auto* left_col = new QVBoxLayout(left_host);
+        left_col->setContentsMargins(80, 0, 20, 0);
+        left_col->setSpacing(0);
+        left_col->addStretch(49);
+
+        auto* icon_lbl = new QLabel(left_host);
+        icon_lbl->setFixedSize(46, 46);
+        icon_lbl->setAlignment(Qt::AlignCenter);
+        left_col->addWidget(icon_lbl, 0, Qt::AlignHCenter);
+        left_col->addSpacing(40);
+
+        auto* prompt_lbl = new QLabel(QStringLiteral("Dark or light? Your choice."), left_host);
+        prompt_lbl->setFont(oobe_font(24, QFont::Normal));
+        prompt_lbl->setAlignment(Qt::AlignCenter);
+        prompt_lbl->setWordWrap(true);
+        prompt_lbl->setFixedWidth(300);
+        left_col->addWidget(prompt_lbl, 0, Qt::AlignHCenter);
+        left_col->addStretch(51);
+
+        auto sync_left_colors = [icon_lbl, prompt_lbl]() {
+            const auto& t = FinnThemeManager::instance().tokens();
+            const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+            const qreal dpr = icon_lbl->devicePixelRatioF();
+            icon_lbl->setPixmap(FinnThemeManager::instance().iconPixmap(
+                QStringLiteral("oobe-appearance"), QSize(46, 46), ink, dpr));
+            QPalette p1 = prompt_lbl->palette();
+            p1.setColor(QPalette::WindowText, ink);
+            prompt_lbl->setPalette(p1);
+        };
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                page, sync_left_colors);
+        sync_left_colors();
+
+        auto* lamp = new finn::oobe::OobeLamp3DWidget(page);
+
+        halves->addWidget(left_host, 1);
+        halves->addStretch(1);
+        stack_grid->addWidget(base_layer, 0, 0);
+        stack_grid->addWidget(lamp, 0, 0);
+
+        // Top overlay layer: Back / Next circular buttons always on top, sized only to nav_box
+        auto* nav_overlay = new QWidget(page);
+        nav_overlay->setAutoFillBackground(false);
+        auto* nav_col = new QVBoxLayout(nav_overlay);
+        nav_col->setContentsMargins(0, 0, 0, 145);
+
+        auto* nav_box = new QWidget(nav_overlay);
+        nav_box->setFixedSize(132, 56);
+        auto* nav_row = new QHBoxLayout(nav_box);
+        nav_row->setContentsMargins(0, 0, 0, 0);
+        nav_row->setSpacing(20);
+
+        auto* back_btn = new OobeCircleNavButton(true, false, nav_box);
+        auto* next_btn = new OobeCircleNavButton(false, false, nav_box);
+        connect(back_btn, &QAbstractButton::clicked, this, &OobeWindow::previousStep);
+        connect(next_btn, &QAbstractButton::clicked, this, &OobeWindow::advanceStep);
+        nav_row->addWidget(back_btn);
+        nav_row->addWidget(next_btn);
+        nav_col->addWidget(nav_box, 0, Qt::AlignHCenter);
+
+        stack_grid->addWidget(nav_overlay, 0, 0, Qt::AlignHCenter | Qt::AlignBottom);
+        nav_overlay->raise();
+        return page;
+    }
+
+    // Step 5: Accessibility toggles in the same Figma 36:53 split layout
+    QWidget* buildAccessibilityPage() {
         auto* col_host = new QWidget();
         col_host->setFixedWidth(356);
         auto* col = new QVBoxLayout(col_host);
@@ -924,29 +1712,6 @@ private:
 
         auto& tm = FinnThemeManager::instance();
         const auto s = finn::sys::load_merged_settings();
-
-        light_row_ = new OobeOptionRow(QStringLiteral("Light Appearance"), {},
-                                       !tm.isDark(), col_host);
-        dark_row_ = new OobeOptionRow(QStringLiteral("Dark Appearance"), {},
-                                      tm.isDark(), col_host);
-
-        auto sync_appearance = [this]() {
-            const bool dark = FinnThemeManager::instance().isDark();
-            if (light_row_) light_row_->setSelected(!dark);
-            if (dark_row_) dark_row_->setSelected(dark);
-        };
-        connect(light_row_, &OobeOptionRow::clicked, this, [sync_appearance]() {
-            FinnThemeManager::instance().setDark(false);
-            sync_appearance();
-        });
-        connect(dark_row_, &OobeOptionRow::clicked, this, [sync_appearance]() {
-            FinnThemeManager::instance().setDark(true);
-            sync_appearance();
-        });
-
-        col->addWidget(light_row_);
-        col->addWidget(dark_row_);
-        col->addSpacing(10);
 
         auto* sr = new OobeToggleRow(QStringLiteral("Screen Reader"),
                                      s.screen_reader, col_host);
@@ -977,8 +1742,7 @@ private:
         col->addWidget(sk);
 
         connect(&tm, &FinnThemeManager::themeChanged, this,
-                [sync_appearance, sr, hc, rm, sk]() {
-                    sync_appearance();
+                [sr, hc, rm, sk]() {
                     const auto& st = FinnThemeManager::instance().settings();
                     QSignalBlocker b1(sr->toggle());
                     QSignalBlocker b2(hc->toggle());
@@ -991,8 +1755,9 @@ private:
                 });
 
         col->addStretch(1);
-        return createSplitStepPage(QStringLiteral("How should it look?"), {},
-                                   col_host);
+        return createSplitStepPage(QStringLiteral("accessibility"),
+                                   oobe_tr(QStringLiteral("a11y_prompt"), selected_locale_), {},
+                                   col_host, nullptr, false, &a11y_prompt_lbl_);
     }
 
     // Step 5: Video-matched Completion / Update Successful Screen with 6-Ring Slinky
@@ -1021,7 +1786,7 @@ private:
 
         complete_title_ = new QLabel(
             update_mode_ ? QStringLiteral("Update successful")
-                         : QStringLiteral("You\u2019re all set"),
+                         : oobe_tr(QStringLiteral("complete_title"), selected_locale_),
             page);
         complete_title_->setFont(oobe_font(26, QFont::Medium));
         complete_title_->setAlignment(Qt::AlignCenter);
@@ -1041,11 +1806,11 @@ private:
 
         col->addSpacing(28);
 
-        auto* start_btn =
-            new OobeGetStartedPill(QStringLiteral("Get started"), page);
-        connect(start_btn, &QAbstractButton::clicked, this,
+        start_btn_ = new OobeGetStartedPill(
+            oobe_tr(QStringLiteral("get_started"), selected_locale_), page);
+        connect(start_btn_, &QAbstractButton::clicked, this,
                 &OobeWindow::finishSetup);
-        col->addWidget(start_btn, 0, Qt::AlignHCenter);
+        col->addWidget(start_btn_, 0, Qt::AlignHCenter);
 
         col->addStretch(14);
         return page;
@@ -1127,6 +1892,11 @@ private:
 
     void advanceStep() {
         const int cur = stack_->currentIndex();
+        if (cur == 0 && fixed_phase_ < 0.0) {
+            setStep(1);
+            new OobeHiToLangOverlay(this, lang_prompt_lbl_);
+            return;
+        }
         if (cur + 1 < stack_->count()) {
             setStep(cur + 1);
         } else {
@@ -1141,14 +1911,57 @@ private:
             const qreal rev = hi_ribbon_->uiRevealProgress();
             if (hi_branding_) hi_branding_->setRevealOpacity(rev);
             if (hi_next_btn_) hi_next_btn_->setRevealOpacity(rev);
-        } else if (idx == 5 && complete_ribbon_ && fixed_phase_ < 0.0) {
+        } else if (idx == 6 && complete_ribbon_ && fixed_phase_ < 0.0) {
             complete_ribbon_->restart();
         }
     }
 
+    void applyLanguageSelection(const QString& lang_name, const QString& locale_code) {
+        selected_language_ = lang_name;
+        selected_locale_ = locale_code;
+
+        const QString short_loc = locale_code.section(QLatin1Char('.'), 0, 0);
+        QLocale::setDefault(QLocale(short_loc));
+        qputenv("LANG", locale_code.toUtf8());
+        qputenv("LC_ALL", locale_code.toUtf8());
+
+        if (lang_prompt_lbl_)
+            lang_prompt_lbl_->setText(oobe_tr(QStringLiteral("lang_prompt"), locale_code));
+        if (wifi_prompt_lbl_)
+            wifi_prompt_lbl_->setText(oobe_tr(QStringLiteral("wifi_prompt"), locale_code));
+        if (account_prompt_lbl_)
+            account_prompt_lbl_->setText(oobe_tr(QStringLiteral("account_prompt"), locale_code));
+        if (a11y_prompt_lbl_)
+            a11y_prompt_lbl_->setText(oobe_tr(QStringLiteral("a11y_prompt"), locale_code));
+        if (complete_title_ && !update_mode_)
+            complete_title_->setText(oobe_tr(QStringLiteral("complete_title"), locale_code));
+        if (start_btn_)
+            start_btn_->setText(oobe_tr(QStringLiteral("get_started"), locale_code));
+
+        const QString conf_path =
+            QDir::homePath() + QStringLiteral("/.config/finn/locale.conf");
+        QDir().mkpath(QFileInfo(conf_path).absolutePath());
+        QFile lf(conf_path);
+        if (lf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            const QByteArray body =
+                QStringLiteral("LANG=%1\nLC_ALL=%1\nLANGUAGE=%2\n")
+                    .arg(locale_code, short_loc)
+                    .toUtf8();
+            lf.write(body);
+        }
+    }
+
     void finishSetup() {
+        applyLanguageSelection(selected_language_, selected_locale_);
+        if (!selected_locale_.isEmpty()) {
+            QProcess::startDetached(
+                QStringLiteral("localectl"),
+                {QStringLiteral("set-locale"),
+                 QStringLiteral("LANG=") + selected_locale_});
+        }
         const QString marker =
-            QDir::homePath() + QStringLiteral("/.config/finn/oobe_complete");
+            QDir::homePath() + QLatin1Char('/') +
+            QString::fromLatin1(finn::kOobeCompleteRel);
         QDir().mkpath(QFileInfo(marker).absolutePath());
         QFile f(marker);
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -1159,12 +1972,19 @@ private:
 
     bool update_mode_ = false;
     double fixed_phase_ = -1.0;
+    QString selected_language_ = QStringLiteral("English (UK)");
+    QString selected_locale_ = QStringLiteral("en_GB.UTF-8");
     QStackedWidget* stack_ = nullptr;
     FinnRibbonAnimation* hi_ribbon_ = nullptr;
     OobeBrandingHeader* hi_branding_ = nullptr;
     OobeCircleNavButton* hi_next_btn_ = nullptr;
+    QLabel* lang_prompt_lbl_ = nullptr;
+    QLabel* wifi_prompt_lbl_ = nullptr;
+    QLabel* account_prompt_lbl_ = nullptr;
+    QLabel* a11y_prompt_lbl_ = nullptr;
     FinnRibbonAnimation* complete_ribbon_ = nullptr;
     QLabel* complete_title_ = nullptr;
+    OobeGetStartedPill* start_btn_ = nullptr;
 
     QVector<OobeOptionRow*> language_rows_;
     OobeProgressiveList* wifi_prog_list_ = nullptr;
@@ -1175,8 +1995,6 @@ private:
     OobeInputField* username_edit_ = nullptr;
     OobeInputField* pw_edit_ = nullptr;
     OobeInputField* pw_verify_edit_ = nullptr;
-    OobeOptionRow* light_row_ = nullptr;
-    OobeOptionRow* dark_row_ = nullptr;
 };
 
 }  // namespace

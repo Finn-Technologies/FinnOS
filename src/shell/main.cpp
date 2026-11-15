@@ -4,8 +4,10 @@
 
 #include <FinnSDK/FinnSDK.hpp>
 
+#include <QDir>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QProcess>
 #include <QStandardPaths>
 #include <QTimer>
 #include <cstdlib>
@@ -177,21 +179,50 @@ int main(int argc, char** argv) {
                          dock->rebuildAppsPill();
                      });
 
-    dock->show();
-
-    auto* boot_splash = new finn::shell::BootSplashWindow();
     const char* open_env = std::getenv("FINN_SHELL_OPEN");
-    const char* no_splash_env = std::getenv("FINN_NO_BOOT_SPLASH");
-    const char* force_splash_env = std::getenv("FINN_BOOT_SPLASH");
-    const char* hold_splash_env = std::getenv("FINN_BOOT_SPLASH_HOLD");
-    const bool skip_splash =
-        (no_splash_env && *no_splash_env == '1') ||
-        (open_env && *open_env != '\0') ||
-        (finn::ui::FinnThemeManager::instance().reducedMotion() &&
-         !(force_splash_env && *force_splash_env == '1'));
-    if (!skip_splash) {
-        const bool hold = (hold_splash_env && *hold_splash_env == '1');
-        boot_splash->startBootAnimation(hold);
+    const char* no_oobe_env = std::getenv("FINN_NO_OOBE");
+    const QString oobe_marker =
+        QDir::homePath() + QLatin1Char('/') +
+        QString::fromLatin1(finn::kOobeCompleteRel);
+    const QString oobe_bin = QString::fromLatin1(finn::kOobeBinPath);
+    const bool is_live_iso = QFileInfo::exists(QStringLiteral("/run/archiso"));
+    const bool oobe_pending =
+        !QFileInfo::exists(oobe_marker) && !is_live_iso &&
+        !(no_oobe_env && *no_oobe_env == '1') &&
+        (!open_env || *open_env == '\0') && QFileInfo::exists(oobe_bin);
+
+    if (oobe_pending) {
+        auto* oobe_proc = new QProcess(&app);
+        QObject::connect(
+            oobe_proc,
+            qOverload<int, QProcess::ExitStatus>(&QProcess::finished), &app,
+            [dock, oobe_proc](int, QProcess::ExitStatus) {
+                dock->show();
+                oobe_proc->deleteLater();
+            });
+        QObject::connect(
+            oobe_proc, &QProcess::errorOccurred, &app,
+            [dock, oobe_proc](QProcess::ProcessError) {
+                if (!dock->isVisible()) dock->show();
+                oobe_proc->deleteLater();
+            });
+        oobe_proc->start(oobe_bin, {});
+    } else {
+        dock->show();
+
+        auto* boot_splash = new finn::shell::BootSplashWindow();
+        const char* no_splash_env = std::getenv("FINN_NO_BOOT_SPLASH");
+        const char* force_splash_env = std::getenv("FINN_BOOT_SPLASH");
+        const char* hold_splash_env = std::getenv("FINN_BOOT_SPLASH_HOLD");
+        const bool skip_splash =
+            (no_splash_env && *no_splash_env == '1') ||
+            (open_env && *open_env != '\0') ||
+            (finn::ui::FinnThemeManager::instance().reducedMotion() &&
+             !(force_splash_env && *force_splash_env == '1'));
+        if (!skip_splash) {
+            const bool hold = (hold_splash_env && *hold_splash_env == '1');
+            boot_splash->startBootAnimation(hold);
+        }
     }
 
     // Opens one popover shortly after start (home | windows | search | control).

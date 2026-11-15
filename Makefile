@@ -64,6 +64,8 @@ install: all
 	install -d $(DESTDIR)/usr/share/finn/icons
 	install -m644 assets/icons/shell/*.svg assets/icons/apps/*.svg \
 		$(DESTDIR)/usr/share/finn/icons/
+	install -d $(DESTDIR)/usr/share/finn/models
+	install -m644 assets/models/*.glb $(DESTDIR)/usr/share/finn/models/
 	install -d $(DESTDIR)/usr/share/finn/pointers
 	install -m644 assets/pointers/*.svg $(DESTDIR)/usr/share/finn/pointers/
 	install -d $(DESTDIR)/usr/share/icons

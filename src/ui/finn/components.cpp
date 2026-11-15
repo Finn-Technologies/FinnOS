@@ -2247,7 +2247,7 @@ void FinnRibbonAnimation::setAmbientGlow(bool enabled) {
 double FinnRibbonAnimation::uiRevealProgress() const {
     if (FinnThemeManager::instance().reducedMotion()) return 1.0;
     if (mode_ == Mode::HiIntro) {
-        return ease_out_cubic(clamp_unit((elapsed_ - 2.38) / 0.48));
+        return ease_out_cubic(clamp_unit((elapsed_ - 8.45) / 0.50));
     }
     return ease_out_cubic(clamp_unit((elapsed_ - 1.95) / 0.45));
 }
@@ -2282,7 +2282,7 @@ void FinnRibbonAnimation::tick() {
         (last_ms_ > 0) ? std::clamp((now - last_ms_) / 1000.0, 0.001, 0.05) : 0.016;
     last_ms_ = now;
     elapsed_ += dt;
-    const double done_t = (mode_ == Mode::HiIntro) ? 2.45 : 2.25;
+    const double done_t = (mode_ == Mode::HiIntro) ? 8.52 : 2.25;
     if (!intro_emitted_ && elapsed_ >= done_t) {
         intro_emitted_ = true;
         emit introCompleted();
@@ -2315,23 +2315,41 @@ void FinnRibbonAnimation::paintHiIntro(QPainter& p, double w, double h, double t
     const double cx = w * 0.5;
     const double cy = h * 0.499;
 
-    // Timeline for Mode::HiIntro:
-    //   0.00..0.40s : 6 horizontal curved arcs tilt into 3D stacked cylinder ellipses
-    //   0.40..1.35s : 6 eccentric nested circles orbit continuously ("rounding line going on and on")
-    //   1.35..2.05s : The 6 rings sweep across and converge into the cursive "hi." path,
-    //                 drawing "hi." stroke-by-stroke with a traveling coral/amber/violet/blue tip
-    //   2.05..2.42s : The stroke settles into the crisp Figma 36:37 "hi." vector mark and the
-    //                 ambient glow fades out cleanly
-    //   2.38..2.86s : uiRevealProgress() goes 0 -> 1 so the top FinnOS branding and bottom
-    //                 Next circle button fade in only AFTER "hi." is drawn.
-    const double p_cyl = ease_in_out_cubic(clamp_unit(t / 0.40));
-    const double p_torus = ease_in_out_cubic(clamp_unit((t - 0.30) / 0.36));
-    const double p_draw = ease_in_out_cubic(clamp_unit((t - 1.32) / 0.76));
-    const double p_svg = ease_in_out_cubic(clamp_unit((t - 1.96) / 0.42));
+    // Timeline for Mode::HiIntro (black boot Finn logo -> white bg -> logo fade out ->
+    // expanding torus rings -> clockwise eccentric circles -> left shrink -> spring -> "hi."):
+    //   0.00..0.55s : Black background with white Finn logo at center
+    //   0.55..1.15s : Background fades black -> white; Finn logo fades white -> black
+    //   1.15..1.65s : Finn logo gently scales down & fades out
+    //   1.25..2.85s : Rings bloom outward from center and fan into 8 eccentric circles
+    //   2.85..4.70s : 8 eccentric nested circles orbit clockwise, then merge into 1 circle
+    //   4.65..5.35s : Left side shrinks down to (cx, cy + r_max) while spring emerges
+    //   5.05..8.15s : Full-width upright oval spring pans right-to-left -> centered "hi."
+    //   8.12..8.50s : Cross-fades into crisp Figma 36:37 "hi." vector mark
+    //   8.45..8.95s : uiRevealProgress() reveals FinnOS branding and Next button
+    const double p_bg_white = ease_in_out_cubic(clamp_unit((t - 0.55) / 0.60));
+    const double p_logo_out = ease_in_out_cubic(clamp_unit((t - 1.15) / 0.50));
+    const double p_bloom = ease_in_out_cubic(clamp_unit((t - 1.25) / 1.10));
+    const double p_torus = ease_in_out_cubic(clamp_unit((t - 2.10) / 0.75));
+    const double p_converge = ease_in_out_cubic(clamp_unit((t - 4.30) / 0.40));
+    const double raw_split = clamp_unit((t - 4.65) / 0.70);
+    const double p_split = raw_split * raw_split;
 
-    if (ambient_glow_) {
-        const double glow_alpha = (1.0 - p_svg);
-        draw_feathered_aura(p, rect(), cx, cy - h * 0.04, tok.dark, glow_alpha);
+    constexpr double kCoilSplit = 0.76;
+    const double p_stroke = clamp_unit((t - 5.05) / 3.10);
+    const double head_s =
+        p_stroke * (0.82 + 0.18 * (3.0 * p_stroke - 2.0 * p_stroke * p_stroke));
+    const double hi_prog = clamp_unit((head_s - kCoilSplit) / (1.0 - kCoilSplit));
+
+    const double p_cam = ease_in_out_cubic(clamp_unit((t - 5.30) / 2.20));
+    const double p_tail = ease_in_out_cubic(clamp_unit((t - 6.40) / 1.45));
+    const double p_svg = ease_in_out_cubic(clamp_unit((t - 8.12) / 0.38));
+
+    // Black boot background fading smoothly to transparent (revealing white/theme canvas)
+    if (p_bg_white < 0.999) {
+        p.save();
+        p.setOpacity(1.0 - p_bg_white);
+        p.fillRect(rect(), Qt::black);
+        p.restore();
     }
 
     const QColor ink = tok.dark ? tok.ink : QColor(0, 0, 0);
@@ -2341,20 +2359,26 @@ void FinnRibbonAnimation::paintHiIntro(QPainter& p, double w, double h, double t
     const QColor violet(0x8B, 0x5C, 0xF6);
     const QColor blue = tok.accent.isValid() ? tok.accent : QColor(0x00, 0x7B, 0xFF);
 
-    // Target bounding box for the 41x31 "hi." mark at the center
+    // Target bounding box for the 41x31 "hi." mark at the center of the screen
     const double hi_w = 41.0;
     const double hi_h = 31.0;
     const double hi_ox = cx - hi_w * 0.5;
     const double hi_oy = cy - hi_h * 0.5;
 
     if (p_svg < 0.999) {
-        constexpr int kRings = 6;
+        constexpr int kRings = 8;
         constexpr int kSamples = 110;
         const double r_max = std::min(w, h) * 0.165;
-        const double dr = r_max * 0.072;
-        const double phi = kPi + t * 3.4;  // continuous rounding rotation
+        const double dr = r_max * 0.058;
+        const double phi = kPi + t * 3.8;
 
-        QConicalGradient torus_grad(QPointF(cx, cy), -phi * 180.0 / kPi);
+        const double coil_world_start = cx;
+        const double coil_world_span = w * 1.85;
+        const double coil_world_end = coil_world_start + coil_world_span;
+        const double hi_world_ox = coil_world_end - kHiMainStroke[0].x;
+        const double cam_x = (hi_world_ox - hi_ox) * p_cam;
+
+        QConicalGradient torus_grad(QPointF(cx - cam_x, cy), -phi * 180.0 / kPi);
         torus_grad.setColorAt(0.00, coral);
         torus_grad.setColorAt(0.11, amber);
         torus_grad.setColorAt(0.25, violet);
@@ -2364,121 +2388,211 @@ void FinnRibbonAnimation::paintHiIntro(QPainter& p, double w, double h, double t
         torus_grad.setColorAt(0.94, violet);
         torus_grad.setColorAt(1.00, coral);
 
-        // Linear gradient along the "hi." writing sweep
-        QLinearGradient write_grad(QPointF(hi_ox - 24.0, cy),
-                                   QPointF(hi_ox + hi_w + 24.0, cy));
-        const double head = std::clamp(p_draw * 1.25, 0.0, 1.0);
-        write_grad.setColorAt(0.0, ink);
-        write_grad.setColorAt(std::clamp(head - 0.28, 0.0, 1.0), ink);
-        write_grad.setColorAt(std::clamp(head - 0.16, 0.0, 1.0), violet);
-        write_grad.setColorAt(std::clamp(head - 0.07, 0.0, 1.0), coral);
-        write_grad.setColorAt(std::clamp(head, 0.0, 1.0), amber);
-        write_grad.setColorAt(std::clamp(head + 0.08, 0.0, 1.0), blue);
-        write_grad.setColorAt(1.0, base_ink);
+        // Phase 0: Finn logo softly scales down & fades out while luminous rings
+        // bloom outward from center into the 8 clockwise-orbiting torus rings.
+        const double logo_size = std::min(w, h) * 0.088;
+        {
+            const double scale = 1.0 - 0.16 * p_logo_out;
+            const double cur_size = logo_size * scale;
+            const QRectF logo_rect(cx - cur_size * 0.5, cy - cur_size * 0.5, cur_size, cur_size);
+            const double svg_alpha = 1.0 - p_logo_out;
+            if (svg_alpha > 0.01) {
+                auto& tm = FinnThemeManager::instance();
+                if (p_bg_white < 0.999) {
+                    p.save();
+                    p.setOpacity(svg_alpha * (1.0 - p_bg_white));
+                    tm.paintIcon(&p, logo_rect, QStringLiteral("finn-logo-light"),
+                                 QColor(0xFF, 0xFF, 0xFF));
+                    p.restore();
+                }
+                if (p_bg_white > 0.001) {
+                    p.save();
+                    p.setOpacity(svg_alpha * p_bg_white);
+                    tm.paintIcon(&p, logo_rect,
+                                 tok.dark ? QStringLiteral("finn-logo-light")
+                                          : QStringLiteral("finn-logo-dark"),
+                                 ink);
+                    p.restore();
+                }
+            }
+        }
 
-        const QBrush pen_brush = (p_draw > 0.52) ? QBrush(write_grad) : QBrush(torus_grad);
-        const double stroke_w = 1.65 + 1.85 * p_draw;
+        if (p_bloom > 0.001 && p_split < 0.998) {
+            const double theta_start = 2.0 * kPi * p_split;
+            const double theta_span = 2.0 * kPi * (1.0 - p_split);
+            const double arc_opacity = (1.0 - p_svg * 0.92) * clamp_unit(p_bloom * 1.6);
+            const double r_seed = logo_size * 0.42;
 
-        p.save();
-        p.setOpacity(1.0 - p_svg * 0.92);
+            for (int i = 0; i < kRings; ++i) {
+                const double ring_alpha =
+                    (i == kRings - 1) ? arc_opacity : arc_opacity * (1.0 - p_converge);
+                if (ring_alpha <= 0.01) continue;
 
-        const int main_count = static_cast<int>(sizeof(kHiMainStroke) / sizeof(kHiMainStroke[0]));
-
-        for (int i = 0; i < kRings; ++i) {
-            const double ring_u_draw =
-                ease_in_out_cubic(stagger(p_draw, i, kRings, 0.05));
-            // Outer rings fade as they merge into the single handwriting nib
-            const double ring_alpha =
-                (i == kRings - 1) ? 1.0 : std::max(0.0, 1.0 - ring_u_draw * 1.45);
-            if (ring_alpha <= 0.01) continue;
-
-            // Morph finishes into the loop shape by ring_u_draw=0.45, then traces
-            // the full cursive "hi." stroke cleanly from 0.15 -> 1.0.
-            const double shrink = clamp_unit(1.0 - ring_u_draw * 1.85);
-            const double trace_prog = clamp_unit((ring_u_draw - 0.12) / 0.88);
-
-            QPainterPath path;
-            for (int s = 0; s <= kSamples; ++s) {
-                const double u = static_cast<double>(s) / kSamples;
-                const double delta = (u * 2.0 - 1.0) * kPi + t * 2.2;
-                const double norm_i = static_cast<double>(i) - 2.5;
-
-                // 1. Horizontal curved arc -> 3D stacked cylinder ellipse
-                const double arc_x = cx + (u - 0.5) * (r_max * 2.6);
-                const double arc_y =
-                    cy + norm_i * (r_max * 0.22) + std::cos((u - 0.5) * kPi) * (r_max * 0.16);
-
-                const double cyl_rx = r_max * 1.18;
-                const double cyl_ry = r_max * 0.36;
-                const double cyl_x = cx + cyl_rx * std::sin(delta);
-                const double cyl_y = cy + norm_i * (r_max * 0.18) - cyl_ry * std::cos(delta);
-
-                const double s1_x = arc_x + (cyl_x - arc_x) * p_cyl;
-                const double s1_y = arc_y + (cyl_y - arc_y) * p_cyl;
-
-                // 2. Continuous rounding eccentric circles ("going on and on")
-                const double ri = r_max - (5 - i) * dr;
-                const double ecc = (5 - i) * dr * 0.90;
+                // Each ring blooms outward from r_seed at (cx, cy) and fans into its
+                // eccentric orbiting torus radius/center.
+                const double ri_target = r_max - (kRings - 1 - i) * dr * (1.0 - p_converge);
+                const double ri = r_seed + (ri_target - r_seed) * p_bloom;
+                const double ecc = (kRings - 1 - i) * dr * 0.92 * (1.0 - p_converge) * p_torus;
                 const double t_cx = cx + ecc * std::cos(phi);
                 const double t_cy = cy + ecc * std::sin(phi);
-                const double torus_x = t_cx + ri * std::sin(delta);
-                const double torus_y = t_cy - ri * std::cos(delta);
 
-                const double loop_x = s1_x + (torus_x - s1_x) * p_torus;
-                const double loop_y = s1_y + (torus_y - s1_y) * p_torus;
+                QPainterPath path;
+                for (int s = 0; s <= kSamples; ++s) {
+                    const double u = static_cast<double>(s) / kSamples;
+                    const double theta = theta_start + u * theta_span;
+                    const double delta = theta + t * 2.2 * (1.0 - p_converge);
+                    const double pt_x = (t_cx + ri * std::sin(delta)) - cam_x;
+                    const double pt_y = t_cy + ri * std::cos(delta);
+                    if (s == 0) path.moveTo(pt_x, pt_y);
+                    else path.lineTo(pt_x, pt_y);
+                }
 
-                // 3. Progressive cursive "hi." handwriting trace
-                const double write_u = u * std::max(0.06, trace_prog);
-                const QPointF hi_pt = sample_polyline(
-                    kHiMainStroke, main_count, write_u, hi_ox, hi_oy, 1.0, 1.0);
+                QPen ring_pen(QBrush(torus_grad), 1.65 * (i == kRings - 1 ? 1.0 : 0.72),
+                              Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+                p.save();
+                p.setOpacity(ring_alpha);
+                p.setPen(ring_pen);
+                p.setBrush(Qt::NoBrush);
+                p.drawPath(path);
+                p.restore();
+            }
+        }
 
-                // Smoothly coil the rounding line into the handwriting nib
-                const double pt_x = loop_x * shrink + hi_pt.x() * (1.0 - shrink);
-                const double pt_y = loop_y * shrink + hi_pt.y() * (1.0 - shrink);
+        // Phase 2: From the vanished bottom point (cx, cy + r_max), continue seamlessly
+        // into the closer upright oval spring + lively up/down wave -> crisp "hi."
+        const int main_count = static_cast<int>(sizeof(kHiMainStroke) / sizeof(kHiMainStroke[0]));
+        const double tail_s = std::min(head_s, kCoilSplit * p_tail);
 
-                if (s == 0) path.moveTo(pt_x, pt_y);
-                else path.lineTo(pt_x, pt_y);
+        if (head_s > tail_s + 0.002) {
+            constexpr double kLoops = 12.5;
+            const double pitch = coil_world_span / kLoops;
+            const double loop_rx = pitch * 0.40;
+            const double loop_ry = r_max * 0.90;
+            const double hi_start_y = hi_oy + kHiMainStroke[0].y;
+
+            auto sample_coil = [&](double u) -> QPointF {
+                const double exit_amp = 1.0 - ease_in_out_cubic(clamp_unit((u - 0.88) / 0.12));
+                const double rx = loop_rx * exit_amp;
+                const double ry = loop_ry * exit_amp;
+                const double wave = std::sin(2.0 * kPi * 2.0 * u + t * 2.1) *
+                                    (r_max * 0.16) * clamp_unit(u / 0.08) * (1.0 - u);
+                // First spring loop is full height right from u = 0, anchored at (cx, cy + r_max)
+                const double start_base_y = cy + r_max - loop_ry;
+                const double base_x = coil_world_start + coil_world_span * u - cam_x;
+                const double base_y =
+                    start_base_y + (hi_start_y - start_base_y) * ease_in_out_cubic(u) + wave;
+                const double angle = 2.0 * kPi * kLoops * u;
+                return QPointF(base_x + rx * std::sin(angle),
+                               base_y + ry * std::cos(angle));
+            };
+
+            auto sample_ribbon = [&](double s) -> QPointF {
+                if (s <= kCoilSplit) {
+                    return sample_coil(clamp_unit(s / kCoilSplit));
+                }
+                const double hi_u = clamp_unit((s - kCoilSplit) / (1.0 - kCoilSplit));
+                return sample_polyline(
+                    kHiMainStroke, main_count, hi_u, hi_world_ox - cam_x, hi_oy, 1.0, 1.0);
+            };
+
+            const QPointF nib_pt = sample_ribbon(head_s);
+            const QPointF tail_pt = sample_ribbon(tail_s);
+            const double grad_x0 = std::min(tail_pt.x(), nib_pt.x() - 220.0);
+            const double grad_x1 = std::max(nib_pt.x() + 18.0, grad_x0 + 40.0);
+
+            QLinearGradient ribbon_grad(QPointF(grad_x0, cy), QPointF(grad_x1, cy));
+            ribbon_grad.setColorAt(0.00, ink);
+            ribbon_grad.setColorAt(0.45, ink);
+            ribbon_grad.setColorAt(0.68, violet);
+            ribbon_grad.setColorAt(0.82, coral);
+            ribbon_grad.setColorAt(0.92, amber);
+            ribbon_grad.setColorAt(1.00, blue);
+
+            QPainterPath ribbon_path;
+            bool started = false;
+            if (tail_s < kCoilSplit) {
+                const double coil_end_s = std::min(head_s, kCoilSplit);
+                constexpr int kCoilSamples = 420;
+                for (int i = 0; i <= kCoilSamples; ++i) {
+                    const double s =
+                        tail_s + (coil_end_s - tail_s) * (static_cast<double>(i) / kCoilSamples);
+                    const QPointF pt = sample_coil(clamp_unit(s / kCoilSplit));
+                    if (!started) {
+                        ribbon_path.moveTo(pt);
+                        started = true;
+                    } else {
+                        ribbon_path.lineTo(pt);
+                    }
+                }
+            }
+            if (head_s > kCoilSplit) {
+                // Sample "hi." at high density with midpoint quadratic smoothing so the
+                // handwriting curves are crisp and undistorted
+                const double hi_end_u = clamp_unit((head_s - kCoilSplit) / (1.0 - kCoilSplit));
+                const int max_idx = std::max(
+                    1, static_cast<int>(std::floor(hi_end_u * (main_count - 1))));
+                const double ox = hi_world_ox - cam_x;
+                auto hi_pt_at = [&](int idx) {
+                    return QPointF(ox + kHiMainStroke[idx].x, hi_oy + kHiMainStroke[idx].y);
+                };
+                if (!started) {
+                    ribbon_path.moveTo(hi_pt_at(0));
+                    started = true;
+                }
+                for (int idx = 1; idx < max_idx; ++idx) {
+                    const QPointF p0 = hi_pt_at(idx);
+                    const QPointF p1 = hi_pt_at(idx + 1);
+                    ribbon_path.quadTo(p0, (p0 + p1) * 0.5);
+                }
+                ribbon_path.lineTo(sample_polyline(
+                    kHiMainStroke, main_count, hi_end_u, ox, hi_oy, 1.0, 1.0));
             }
 
-            QPen ring_pen(pen_brush, stroke_w * (i == kRings - 1 ? 1.0 : 0.78),
-                          Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-            p.setOpacity((1.0 - p_svg * 0.92) * ring_alpha);
-            p.setPen(ring_pen);
+            const double stroke_w = 2.0 + 1.5 * hi_prog;
+            p.save();
+            p.setOpacity(1.0 - p_svg * 0.92);
+            p.setPen(QPen(QBrush(ribbon_grad), stroke_w,
+                          Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p.setBrush(Qt::NoBrush);
-            p.drawPath(path);
+            p.drawPath(ribbon_path);
+            p.restore();
         }
 
         // Draw the 'i' dot and '.' period dot as the handwriting finishes
-        const double dot1_prog = clamp_unit((p_draw - 0.72) / 0.16);
-        const double dot2_prog = clamp_unit((p_draw - 0.84) / 0.16);
+        const double dot1_prog = clamp_unit((hi_prog - 0.72) / 0.16);
+        const double dot2_prog = clamp_unit((hi_prog - 0.84) / 0.16);
         if (dot1_prog > 0.01) {
             const int d1_count = static_cast<int>(sizeof(kHiIDot) / sizeof(kHiIDot[0]));
             QPainterPath d1;
             for (int s = 0; s <= 16; ++s) {
                 const double u = (static_cast<double>(s) / 16.0) * dot1_prog;
-                const QPointF pt = sample_polyline(kHiIDot, d1_count, u, hi_ox, hi_oy, 1.0, 1.0);
+                const QPointF pt = sample_polyline(
+                    kHiIDot, d1_count, u, hi_world_ox - cam_x, hi_oy, 1.0, 1.0);
                 if (s == 0) d1.moveTo(pt);
                 else d1.lineTo(pt);
             }
+            p.save();
             p.setOpacity((1.0 - p_svg * 0.92) * dot1_prog);
             p.setPen(QPen(coral, 3.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p.drawPath(d1);
+            p.restore();
         }
         if (dot2_prog > 0.01) {
             const int d2_count = static_cast<int>(sizeof(kHiPeriodDot) / sizeof(kHiPeriodDot[0]));
             QPainterPath d2;
             for (int s = 0; s <= 16; ++s) {
                 const double u = (static_cast<double>(s) / 16.0) * dot2_prog;
-                const QPointF pt =
-                    sample_polyline(kHiPeriodDot, d2_count, u, hi_ox, hi_oy, 1.0, 1.0);
+                const QPointF pt = sample_polyline(
+                    kHiPeriodDot, d2_count, u, hi_world_ox - cam_x, hi_oy, 1.0, 1.0);
                 if (s == 0) d2.moveTo(pt);
                 else d2.lineTo(pt);
             }
+            p.save();
             p.setOpacity((1.0 - p_svg * 0.92) * dot2_prog);
             p.setPen(QPen(amber, 3.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
             p.drawPath(d2);
+            p.restore();
         }
-        p.restore();
     }
 
     // Crisp Figma 36:37 "hi." vector cross-fades in as the handwriting stroke completes

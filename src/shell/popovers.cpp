@@ -2238,7 +2238,7 @@ void BootSplashWindow::startBootAnimation(bool hold_open) {
     show();
     raise();
     if (!hold_open) {
-        QTimer::singleShot(3100, this, [this]() {
+        QTimer::singleShot(9100, this, [this]() {
             if (isVisible()) fade_anim_->start();
         });
     }

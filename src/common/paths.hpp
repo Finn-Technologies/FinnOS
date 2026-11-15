@@ -27,6 +27,8 @@ inline constexpr const char* kUserAppsRel = ".local/share/finn/apps";
 inline constexpr const char* kUserWindowsConfRel = ".local/share/finn/windows.conf";
 inline constexpr const char* kRecentAppsRel = ".local/state/finn/recent-apps";
 inline constexpr const char* kWinePrefixRel = ".local/share/finn/wine/default";
+inline constexpr const char* kOobeCompleteRel = ".config/finn/oobe_complete";
+inline constexpr const char* kOobeBinPath = "/usr/local/bin/finn-oobe";
 
 }  // namespace finn
 

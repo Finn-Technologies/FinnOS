@@ -60,6 +60,9 @@ libwebp
 alsa-lib
 alsa-ucm-conf
 ttf-dejavu
+noto-fonts
+noto-fonts-cjk
+noto-fonts-emoji
 
 # Audio and Bluetooth: the same set the x86_64 profile carries, because the
 # shell's Control Center shows the same tiles and the packages exist for
