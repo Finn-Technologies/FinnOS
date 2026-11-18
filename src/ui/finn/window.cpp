@@ -183,6 +183,27 @@ FinnWindow::FinnWindow(const QString& title, const QString& icon_name,
     refresh_icon();
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, refresh_icon);
+
+    sidebar_spring_.init(this, springs::kSmooth, 250.0, [this](double v) {
+        if (!sidebar_container_) return;
+        const int w = std::max(0, qRound(v));
+        if (!sidebar_collapsed_ && sidebar_spring_.animator.settled()) {
+            sidebar_container_->setMaximumWidth(QWIDGETSIZE_MAX);
+        } else {
+            sidebar_container_->setMaximumWidth(w);
+            if (sidebar_collapsed_ && w == 0 && sidebar_spring_.animator.settled()) {
+                sidebar_container_->setVisible(false);
+                if (sidebar_divider_) sidebar_divider_->setVisible(false);
+            }
+        }
+        update();
+    });
+
+    entrance_spring_.init(this, springs::kSmooth, 1.0, [this](double v) {
+        setWindowOpacity(std::clamp(v, 0.0, 1.0));
+    });
+
+    updateFrameMask();
 }
 
 void FinnWindow::setChromeMode(ChromeMode mode) {
@@ -233,9 +254,14 @@ void FinnWindow::setSidebarWidget(QWidget* widget) {
     if (sidebar_widget_) {
         sidebar_widget_->setParent(sidebar_container_);
         sidebar_slot_->addWidget(sidebar_widget_, 1);
+        sidebar_expanded_width_ =
+            std::max(180, sidebar_widget_->sizeHint().width());
     }
-    sidebar_container_->setVisible(has_sidebar && !sidebar_collapsed_);
-    sidebar_divider_->setVisible(has_sidebar && !sidebar_collapsed_);
+    const bool show = has_sidebar && !sidebar_collapsed_;
+    sidebar_container_->setMaximumWidth(show ? QWIDGETSIZE_MAX : 0);
+    sidebar_spring_.animator.set(show ? sidebar_expanded_width_ : 0.0, 0.0);
+    sidebar_container_->setVisible(show);
+    sidebar_divider_->setVisible(show);
 }
 
 void FinnWindow::setContentWidget(QWidget* widget) {
@@ -251,10 +277,42 @@ void FinnWindow::setContentWidget(QWidget* widget) {
 }
 
 void FinnWindow::setSidebarCollapsed(bool collapsed) {
+    if (sidebar_collapsed_ == collapsed) return;
     sidebar_collapsed_ = collapsed;
-    const bool show = (sidebar_widget_ != nullptr) && !sidebar_collapsed_;
-    sidebar_container_->setVisible(show);
-    sidebar_divider_->setVisible(show);
+    if (!sidebar_widget_) {
+        sidebar_container_->setVisible(false);
+        sidebar_divider_->setVisible(false);
+        return;
+    }
+    if (!collapsed) {
+        sidebar_expanded_width_ =
+            std::max(180, sidebar_widget_->sizeHint().width());
+        if (!sidebar_container_->isVisible()) {
+            sidebar_container_->setMaximumWidth(0);
+            sidebar_spring_.animator.set(0.0, 0.0);
+            sidebar_container_->setVisible(true);
+            sidebar_divider_->setVisible(true);
+        }
+        sidebar_spring_.retarget(static_cast<double>(sidebar_expanded_width_),
+                                 springs::kSmooth);
+    } else {
+        const int cur_w = std::max(0, sidebar_container_->width());
+        if (cur_w > 0) {
+            sidebar_expanded_width_ = cur_w;
+            if (!sidebar_spring_.active()) {
+                sidebar_spring_.animator.set(static_cast<double>(cur_w), 0.0);
+            }
+        }
+        sidebar_spring_.retarget(0.0, springs::kSmooth);
+    }
+}
+
+void FinnWindow::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if (shown_once_) return;
+    shown_once_ = true;
+    entrance_spring_.animator.set(0.88, 0.0);
+    entrance_spring_.retargetOrCrossfade(0.6, 1.0, springs::kSmooth);
 }
 
 void FinnWindow::showToast(const QString& message, FinnToast::Severity severity,
@@ -275,7 +333,29 @@ void FinnWindow::updateMarginsForWindowState() {
     const int m = (isMaximized() || isFullScreen()) ? 0 : kShadowMargin;
     outer_layout_->setContentsMargins(m, m, m, m);
     controls_->setMaximizedState(isMaximized() || isFullScreen());
+    updateFrameMask();
     update();
+}
+
+// The frame paints its own rounded corners, but the widgets inside it (scroll
+// viewports, text edits, image canvases) paint square backgrounds over them.
+// Clipping the frame to the same rounded region keeps all four corners round
+// for every app, whichever widget is in the content slot.
+void FinnWindow::updateFrameMask() {
+    if (!frame_root_) return;
+    const QRect r = frame_root_->rect();
+    if (r.isEmpty()) return;
+    const int d = 2 * kRadiusXl;
+    QRegion mask(QRect(r.left() + kRadiusXl, r.top(),
+                       r.width() - d, r.height()));
+    mask |= QRegion(QRect(r.left(), r.top() + kRadiusXl,
+                          r.width(), r.height() - d));
+    mask |= QRegion(QRect(r.left(), r.top(), d, d), QRegion::Ellipse);
+    mask |= QRegion(QRect(r.right() - d + 1, r.top(), d, d), QRegion::Ellipse);
+    mask |= QRegion(QRect(r.left(), r.bottom() - d + 1, d, d), QRegion::Ellipse);
+    mask |= QRegion(QRect(r.right() - d + 1, r.bottom() - d + 1, d, d),
+                    QRegion::Ellipse);
+    frame_root_->setMask(mask);
 }
 
 void FinnWindow::positionToast() {
@@ -403,6 +483,7 @@ void FinnWindow::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void FinnWindow::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
+    updateFrameMask();
     if (chrome_mode_ == ChromeMode::FigmaSplit && controls_) {
         controls_->move(std::max(0, frame_root_->width() - controls_->width() - 6), 6);
         controls_->raise();
@@ -430,13 +511,14 @@ void FinnWindow::paintEvent(QPaintEvent*) {
     const qreal rad = (isMaximized() || isFullScreen()) ? 0.0 : kRadiusXl;
 
     if (!(isMaximized() || isFullScreen())) {
-        // Subtle multi-stop outer shadow frame matching composited desktop depth.
-        for (int i = 4; i >= 1; --i) {
-            QColor sc(0, 0, 0, t.dark ? (8 + i * 2) : (4 + i * 2));
+        // Soft multi-stop ambient shadow with gentle downward lift so windows float.
+        for (int i = 6; i >= 1; --i) {
+            const int alpha = t.dark ? (10 + i * 3) : (3 + i * 2);
+            QColor sc(0, 0, 0, alpha);
             p.setBrush(Qt::NoBrush);
-            p.setPen(QPen(sc, i * 2.0));
-            p.drawRoundedRect(fr.adjusted(-i * 0.5, i * 0.5, i * 0.5, i * 1.2),
-                               rad + i, rad + i);
+            p.setPen(QPen(sc, i * 1.8));
+            p.drawRoundedRect(fr.adjusted(-i * 0.4, i * 0.6, i * 0.4, i * 1.4),
+                               rad + i * 0.8, rad + i * 0.8);
         }
     }
 
@@ -457,7 +539,11 @@ void FinnWindow::paintEvent(QPaintEvent*) {
     p.restore();
 
     if (!(isMaximized() || isFullScreen())) {
+        // Subtle top-inner specular rim + outer hairline border.
         p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, t.dark ? 18 : 190), 1.0));
+        p.drawRoundedRect(fr.adjusted(1.5, 1.5, -1.5, -1.5),
+                          std::max(1.0, rad - 1.0), std::max(1.0, rad - 1.0));
         p.setPen(QPen(t.hair, 1.0));
         p.drawRoundedRect(fr.adjusted(0.5, 0.5, -0.5, -0.5), rad, rad);
     }

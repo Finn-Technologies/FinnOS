@@ -12,11 +12,16 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QShowEvent>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #include "ui/finn/animation.hpp"
+#include "ui/finn/spring.hpp"
 #include "ui/finn/theme.hpp"
 
 namespace finn::ui {
@@ -58,18 +63,16 @@ QColor lerp_color(const QColor& a, const QColor& b, qreal progress) {
         qRound(a.alpha() + (b.alpha() - a.alpha()) * t));
 }
 
-void animate_hover_progress(QWidget* owner, QVariantAnimation* anim,
-                            qreal& progress, qreal target) {
-    if (!anim || FinnThemeManager::instance().reducedMotion()) {
-        if (anim) anim->stop();
-        progress = target;
-        owner->update();
-        return;
-    }
-    anim->stop();
-    anim->setStartValue(progress);
-    anim->setEndValue(target);
-    anim->start();
+bool is_reduced_motion_active() {
+    return FinnThemeManager::instance().reducedMotion() || reduced_motion();
+}
+
+void apply_press_scale(QPainter& p, const QWidget* w, qreal scale) {
+    if (!w || is_reduced_motion_active() || std::abs(scale - 1.0) <= 1e-4) return;
+    const QPointF c = QRectF(w->rect()).center();
+    p.translate(c);
+    p.scale(scale, scale);
+    p.translate(-c);
 }
 
 // Paints a theme-reactive SVG glyph directly in paintEvent so Light/Dark
@@ -136,6 +139,84 @@ class DynamicIconWidget final : public QWidget {
 
 }  // namespace
 
+void FinnSpringDriver::init(QWidget* owner, const SpringParams& params,
+                            double initial,
+                            std::function<void(double)> step_cb) {
+    animator = SpringAnimator(params, initial);
+    on_step = std::move(step_cb);
+    if (!timer && owner) {
+        timer = new QTimer(owner);
+        timer->setTimerType(Qt::PreciseTimer);
+        timer->setInterval(8);
+        QObject::connect(timer, &QTimer::timeout, owner, [this]() {
+            const double dt = clock.isValid()
+                                  ? std::clamp(static_cast<double>(clock.restart()) * 1e-3,
+                                               0.001, 0.05)
+                                  : (1.0 / 60.0);
+            if (using_crossfade) {
+                const double v = crossfade.step(dt);
+                if (on_step) on_step(v);
+                if (!crossfade.running() && timer) {
+                    using_crossfade = false;
+                    timer->stop();
+                }
+                return;
+            }
+            const bool rm = is_reduced_motion_active();
+            animator.set_reduced_motion_override(rm);
+            const double v = animator.step(dt);
+            if (on_step) on_step(v);
+            if (animator.settled() && timer) timer->stop();
+        });
+    }
+}
+
+void FinnSpringDriver::retarget(double target) {
+    using_crossfade = false;
+    const bool rm = is_reduced_motion_active();
+    animator.set_reduced_motion_override(rm);
+    animator.retarget(target);
+    if (animator.settled()) {
+        if (timer) timer->stop();
+        if (on_step) on_step(animator.value());
+        return;
+    }
+    if (timer && !timer->isActive()) {
+        clock.restart();
+        timer->start();
+    }
+}
+
+void FinnSpringDriver::retarget(double target, const SpringParams& params) {
+    animator.set_params(params);
+    retarget(target);
+}
+
+void FinnSpringDriver::retargetOrCrossfade(double from_on_reduced,
+                                           double target,
+                                           const SpringParams& params,
+                                           double reduced_seconds) {
+    if (is_reduced_motion_active()) {
+        using_crossfade = true;
+        animator.set(target, 0.0);
+        crossfade.start(from_on_reduced, target, reduced_seconds);
+        if (on_step) on_step(crossfade.value);
+        if (crossfade.running() && timer && !timer->isActive()) {
+            clock.restart();
+            timer->start();
+        }
+        return;
+    }
+    retarget(target, params);
+}
+
+void FinnSpringDriver::setImmediate(double value) {
+    using_crossfade = false;
+    if (timer) timer->stop();
+    animator.set(value, 0.0);
+    if (on_step) on_step(value);
+}
+
 // ---- FinnSurface ----
 
 FinnSurface::FinnSurface(Role role, qreal radius, bool border, QWidget* parent)
@@ -176,14 +257,14 @@ FinnCard::FinnCard(qreal radius, bool clickable, QWidget* parent)
     : QWidget(parent), radius_(radius), clickable_(clickable) {
     setAttribute(Qt::WA_Hover, true);
     if (clickable_) setCursor(Qt::PointingHandCursor);
-    hover_anim_ = new QVariantAnimation(this);
-    hover_anim_->setDuration(120);
-    hover_anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(hover_anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                hover_progress_ = v.toReal();
-                update();
-            });
+    hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
+        hover_progress_ = v;
+        update();
+    });
+    press_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        press_scale_ = v;
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
 }
@@ -204,6 +285,7 @@ void FinnCard::paintEvent(QPaintEvent*) {
     const auto& t = FinnThemeManager::instance().tokens();
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    apply_press_scale(p, this, press_scale_);
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
 
     QColor bg = t.tile;
@@ -221,22 +303,32 @@ void FinnCard::paintEvent(QPaintEvent*) {
     p.setBrush(bg);
     p.setPen(QPen(border, selected_ ? 1.4 : 1.0));
     p.drawRoundedRect(r, radius_, radius_);
+
+    if (!selected_) {
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, t.dark ? 10 : 140), 1.0));
+        p.drawRoundedRect(r.adjusted(1.0, 1.0, -1.0, -1.0),
+                          std::max(1.0, radius_ - 1.0),
+                          std::max(1.0, radius_ - 1.0));
+    }
 }
 
 void FinnCard::enterEvent(QEnterEvent*) {
     hovered_ = true;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 1.0);
+    hover_spring_.retarget(1.0);
 }
 
 void FinnCard::leaveEvent(QEvent*) {
     hovered_ = false;
     pressed_ = false;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 0.0);
+    hover_spring_.retarget(0.0);
+    press_spring_.retarget(1.0, springs::kBouncy);
 }
 
 void FinnCard::mousePressEvent(QMouseEvent* event) {
     if (clickable_ && event->button() == Qt::LeftButton) {
         pressed_ = true;
+        press_spring_.retarget(0.985, springs::kSnappy);
         update();
     } else {
         QWidget::mousePressEvent(event);
@@ -246,6 +338,7 @@ void FinnCard::mousePressEvent(QMouseEvent* event) {
 void FinnCard::mouseReleaseEvent(QMouseEvent* event) {
     if (clickable_ && event->button() == Qt::LeftButton && pressed_) {
         pressed_ = false;
+        press_spring_.retarget(1.0, springs::kBouncy);
         update();
         if (rect().contains(event->pos())) {
             emit clicked();
@@ -285,9 +378,10 @@ void FinnGlassPanel::paintEvent(QPaintEvent*) {
     p.setPen(QPen(t.hair, 1.0));
     p.drawRoundedRect(r, radius_, radius_);
 
-    // Subtle specular highlight along top edge matching Figma glass pills.
+    // A hairline of light on the top edge is enough; a bright inner rim made
+    // every glass surface look like a glossy card.
     QColor spec = Qt::white;
-    spec.setAlpha(t.dark ? 18 : 130);
+    spec.setAlpha(t.dark ? 12 : 60);
     p.setBrush(Qt::NoBrush);
     p.setPen(QPen(spec, 1.0));
     p.drawRoundedRect(r.adjusted(1.0, 1.0, -1.0, -1.0),
@@ -316,23 +410,25 @@ void FinnLabel::setTone(Tone tone) {
 
 void FinnLabel::applyTypographyAndColor() {
     switch (role_) {
+        // Figma 20:64: 16px page header, 14px values, 11-12px meta. Hierarchy
+        // comes from size and ink, not from a heavier cut of the face.
         case Role::TitleLarge:
-            setFont(finn_font(19.0, QFont::Bold));
+            setFont(finn_font_px(18, QFont::Medium));
             break;
         case Role::Title:
-            setFont(finn_font(14.5, QFont::DemiBold));
+            setFont(finn_font_px(16, QFont::Medium));
             break;
         case Role::Headline:
-            setFont(finn_font(11.5, QFont::DemiBold));
+            setFont(finn_font_px(14, QFont::Medium));
             break;
         case Role::Body:
-            setFont(finn_font(10.5, QFont::Normal));
+            setFont(finn_font_px(14, QFont::Normal));
             break;
         case Role::Caption:
-            setFont(finn_font(9.2, QFont::Normal));
+            setFont(finn_font_px(12, QFont::Normal));
             break;
         case Role::Mono:
-            setFont(finn_mono_font(9.8, QFont::Normal));
+            setFont(finn_mono_font(9.0, QFont::Normal));
             break;
     }
 
@@ -380,14 +476,14 @@ FinnButton::FinnButton(const QString& text, Variant variant,
     setAttribute(Qt::WA_Hover, true);
     setFont(finn_font(10.0, QFont::Medium));
     setMinimumHeight(32);
-    hover_anim_ = new QVariantAnimation(this);
-    hover_anim_->setDuration(120);
-    hover_anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(hover_anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                hover_progress_ = v.toReal();
-                update();
-            });
+    hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
+        hover_progress_ = v;
+        update();
+    });
+    press_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        press_scale_ = v;
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
 }
@@ -415,6 +511,7 @@ void FinnButton::paintEvent(QPaintEvent*) {
     const auto& t = FinnThemeManager::instance().tokens();
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    apply_press_scale(p, this, press_scale_);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     const bool en = isEnabled();
@@ -455,12 +552,27 @@ void FinnButton::paintEvent(QPaintEvent*) {
     }
 
     if (bg.alpha() > 0) {
-        p.setBrush(bg);
+        if ((variant_ == Variant::Primary || variant_ == Variant::Danger) && en) {
+            QLinearGradient grad(r.topLeft(), r.bottomLeft());
+            grad.setColorAt(0.0, bg.lighter(108));
+            grad.setColorAt(1.0, bg);
+            p.setBrush(grad);
+        } else {
+            p.setBrush(bg);
+        }
     } else {
         p.setBrush(Qt::NoBrush);
     }
     p.setPen(border == Qt::transparent ? Qt::NoPen : QPen(border, 1.0));
     p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+
+    if (en && (variant_ == Variant::Primary || variant_ == Variant::Danger)) {
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(QColor(255, 255, 255, 50), 1.0));
+        p.drawRoundedRect(r.adjusted(1.0, 1.0, -1.0, -1.0),
+                          std::max(1.0, kRadiusMd - 1.0),
+                          std::max(1.0, kRadiusMd - 1.0));
+    }
 
     const bool has_icon = !icon_name_.isEmpty();
     const bool has_text = !text().isEmpty();
@@ -486,12 +598,27 @@ void FinnButton::paintEvent(QPaintEvent*) {
 
 void FinnButton::enterEvent(QEnterEvent*) {
     hovered_ = true;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 1.0);
+    hover_spring_.retarget(1.0);
 }
 
 void FinnButton::leaveEvent(QEvent*) {
     hovered_ = false;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 0.0);
+    hover_spring_.retarget(0.0);
+    press_spring_.retarget(1.0, springs::kBouncy);
+}
+
+void FinnButton::mousePressEvent(QMouseEvent* event) {
+    if (isEnabled() && event->button() == Qt::LeftButton) {
+        press_spring_.retarget(0.96, springs::kSnappy);
+    }
+    QPushButton::mousePressEvent(event);
+}
+
+void FinnButton::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        press_spring_.retarget(1.0, springs::kBouncy);
+    }
+    QPushButton::mouseReleaseEvent(event);
 }
 
 // ---- FinnIconButton ----
@@ -505,14 +632,14 @@ FinnIconButton::FinnIconButton(const QString& icon_name, int box_size,
     setFixedSize(box_size, box_size);
     setCursor(Qt::PointingHandCursor);
     setAttribute(Qt::WA_Hover, true);
-    hover_anim_ = new QVariantAnimation(this);
-    hover_anim_->setDuration(120);
-    hover_anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(hover_anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                hover_progress_ = v.toReal();
-                update();
-            });
+    hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
+        hover_progress_ = v;
+        update();
+    });
+    press_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        press_scale_ = v;
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
 }
@@ -552,6 +679,7 @@ void FinnIconButton::paintEvent(QPaintEvent*) {
     const auto& t = FinnThemeManager::instance().tokens();
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    apply_press_scale(p, this, press_scale_);
 
     const QColor base_bg = (active_ || isChecked()) ? t.tile_on : QColor(Qt::transparent);
     const QColor target_hover_bg = hover_bg_.isValid() ? hover_bg_ : t.surface_hover;
@@ -591,12 +719,27 @@ void FinnIconButton::paintEvent(QPaintEvent*) {
 
 void FinnIconButton::enterEvent(QEnterEvent*) {
     hovered_ = true;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 1.0);
+    hover_spring_.retarget(1.0);
 }
 
 void FinnIconButton::leaveEvent(QEvent*) {
     hovered_ = false;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 0.0);
+    hover_spring_.retarget(0.0);
+    press_spring_.retarget(1.0, springs::kBouncy);
+}
+
+void FinnIconButton::mousePressEvent(QMouseEvent* event) {
+    if (isEnabled() && event->button() == Qt::LeftButton) {
+        press_spring_.retarget(0.95, springs::kSnappy);
+    }
+    QAbstractButton::mousePressEvent(event);
+}
+
+void FinnIconButton::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        press_spring_.retarget(1.0, springs::kBouncy);
+    }
+    QAbstractButton::mouseReleaseEvent(event);
 }
 
 // ---- FinnToggle ----
@@ -608,14 +751,10 @@ FinnToggle::FinnToggle(bool checked, QWidget* parent)
     setFixedSize(38, 22);
     setCursor(Qt::PointingHandCursor);
 
-    anim_ = new QVariantAnimation(this);
-    anim_->setDuration(static_cast<int>(kMotionFast * 1000.0));
-    anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                progress_ = v.toReal();
-                update();
-            });
+    toggle_spring_.init(this, springs::kSnappy, progress_, [this](double v) {
+        progress_ = std::clamp(v, 0.0, 1.0);
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
 }
@@ -623,16 +762,7 @@ FinnToggle::FinnToggle(bool checked, QWidget* parent)
 void FinnToggle::nextCheckState() {
     QAbstractButton::nextCheckState();
     const qreal target = isChecked() ? 1.0 : 0.0;
-    if (FinnThemeManager::instance().reducedMotion()) {
-        anim_->stop();
-        progress_ = target;
-        update();
-    } else {
-        anim_->stop();
-        anim_->setStartValue(progress_);
-        anim_->setEndValue(target);
-        anim_->start();
-    }
+    toggle_spring_.retarget(target);
 }
 
 void FinnToggle::paintEvent(QPaintEvent*) {
@@ -669,8 +799,22 @@ FinnSlider::FinnSlider(int min, int max, int value, QWidget* parent)
     setFixedHeight(22);
     setCursor(Qt::PointingHandCursor);
     setAttribute(Qt::WA_Hover, true);
+    visual_ratio_ = currentRatio();
+    ratio_spring_.init(this, springs::kSnappy, visual_ratio_, [this](double v) {
+        visual_ratio_ = std::clamp(v, 0.0, 1.0);
+        update();
+    });
+    knob_spring_.init(this, springs::kSnappy, knob_radius_, [this](double v) {
+        knob_radius_ = v;
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
+}
+
+qreal FinnSlider::currentRatio() const {
+    if (max_ <= min_) return 0.0;
+    return std::clamp<qreal>(qreal(value_ - min_) / (max_ - min_), 0.0, 1.0);
 }
 
 int FinnSlider::value() const { return value_; }
@@ -679,6 +823,7 @@ void FinnSlider::setRange(int min, int max) {
     min_ = min;
     max_ = std::max(min + 1, max);
     value_ = std::clamp(value_, min_, max_);
+    ratio_spring_.setImmediate(currentRatio());
     update();
 }
 
@@ -686,6 +831,11 @@ void FinnSlider::setValue(int v) {
     const int clamped = std::clamp(v, min_, max_);
     if (clamped == value_) return;
     value_ = clamped;
+    if (dragging_) {
+        ratio_spring_.setImmediate(currentRatio());
+    } else {
+        ratio_spring_.retarget(currentRatio());
+    }
     update();
 }
 
@@ -706,7 +856,7 @@ void FinnSlider::setPillStyle(bool pill, const QString& icon_name, int icon_x,
     update();
 }
 
-void FinnSlider::updateFromX(int x) {
+void FinnSlider::updateFromX(int x, bool immediate) {
     qreal ratio = 0.0;
     if (pill_) {
         ratio = std::clamp<qreal>(qreal(x) / std::max(1, width()), 0.0, 1.0);
@@ -716,6 +866,14 @@ void FinnSlider::updateFromX(int x) {
         ratio = std::clamp<qreal>((x - margin) / usable, 0.0, 1.0);
     }
     const int next = qRound(min_ + ratio * (max_ - min_));
+    const qreal snapped_ratio =
+        (max_ > min_) ? std::clamp<qreal>(qreal(next - min_) / (max_ - min_), 0.0, 1.0)
+                      : 0.0;
+    if (immediate) {
+        ratio_spring_.setImmediate(snapped_ratio);
+    } else {
+        ratio_spring_.retarget(snapped_ratio);
+    }
     if (next != value_) {
         value_ = next;
         update();
@@ -742,9 +900,7 @@ void FinnSlider::paintEvent(QPaintEvent*) {
         p.setBrush(track_bg);
         p.drawPath(clip_path);
 
-        const qreal ratio =
-            (max_ > min_) ? std::clamp<qreal>(qreal(value_ - min_) / (max_ - min_), 0.0, 1.0)
-                          : 0.0;
+        const qreal ratio = visual_ratio_;
         // Minimum fill matches height (36px) so the left icon stays on the light pill.
         const qreal min_fill_w = std::min<qreal>(width(), height());
         const qreal fill_w = std::max(min_fill_w, ratio * width());
@@ -779,8 +935,7 @@ void FinnSlider::paintEvent(QPaintEvent*) {
     p.setBrush(t.track);
     p.drawRoundedRect(track, 2.5, 2.5);
 
-    const qreal ratio =
-        (max_ > min_) ? qreal(value_ - min_) / (max_ - min_) : 0.0;
+    const qreal ratio = visual_ratio_;
     const qreal handle_x = margin + ratio * track_w;
 
     p.setBrush(isEnabled() ? t.accent : t.mute);
@@ -788,7 +943,7 @@ void FinnSlider::paintEvent(QPaintEvent*) {
                              std::max<qreal>(5.0, handle_x - track.left()), 5.0),
                        2.5, 2.5);
 
-    const qreal r = (dragging_ || hovered_) ? 8.0 : 7.0;
+    const qreal r = knob_radius_;
     p.setBrush(t.knob);
     p.setPen(QPen(t.hair, 1.0));
     p.drawEllipse(QPointF(handle_x, cy), r, r);
@@ -797,25 +952,29 @@ void FinnSlider::paintEvent(QPaintEvent*) {
 void FinnSlider::mousePressEvent(QMouseEvent* event) {
     if (!isEnabled() || event->button() != Qt::LeftButton) return;
     dragging_ = true;
-    updateFromX(qRound(event->position().x()));
+    knob_spring_.retarget(8.5, springs::kSnappy);
+    updateFromX(qRound(event->position().x()), false);
 }
 
 void FinnSlider::mouseMoveEvent(QMouseEvent* event) {
-    if (dragging_) updateFromX(qRound(event->position().x()));
+    if (dragging_) updateFromX(qRound(event->position().x()), true);
 }
 
 void FinnSlider::mouseReleaseEvent(QMouseEvent*) {
     dragging_ = false;
+    knob_spring_.retarget(hovered_ ? 8.5 : 7.0, springs::kBouncy);
     update();
 }
 
 void FinnSlider::enterEvent(QEnterEvent*) {
     hovered_ = true;
+    knob_spring_.retarget(8.5, springs::kSnappy);
     update();
 }
 
 void FinnSlider::leaveEvent(QEvent*) {
     hovered_ = false;
+    if (!dragging_) knob_spring_.retarget(7.0, springs::kSnappy);
     update();
 }
 
@@ -1005,14 +1164,14 @@ FinnNavItem::FinnNavItem(const QString& icon_name, const QString& label,
     setAttribute(Qt::WA_Hover, true);
     setFixedHeight(34);
     setFont(finn_font(10.0, QFont::Medium));
-    hover_anim_ = new QVariantAnimation(this);
-    hover_anim_->setDuration(120);
-    hover_anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(hover_anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                hover_progress_ = v.toReal();
-                update();
-            });
+    hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
+        hover_progress_ = v;
+        update();
+    });
+    press_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        press_scale_ = v;
+        update();
+    });
     connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
             this, qOverload<>(&QWidget::update));
 }
@@ -1051,6 +1210,7 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
     const auto& t = FinnThemeManager::instance().tokens();
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    apply_press_scale(p, this, press_scale_);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     const qreal radius = badge_color_.isValid() ? 5.0 : kRadiusMd;
@@ -1091,14 +1251,14 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
         }
     }
 
-    p.setFont(finn_font(10.5, (selected_ && !badge_color_.isValid()) ? QFont::DemiBold : QFont::Normal));
+    p.setFont(finn_font_px(13, QFont::Normal));
     p.setPen(fg);
     const int badge_reserve = badge_.isEmpty() ? 8 : 42;
     p.drawText(QRect(text_left, 0, width() - text_left - badge_reserve, height()),
                Qt::AlignVCenter | Qt::AlignLeft, text());
 
     if (!badge_.isEmpty()) {
-        p.setFont(finn_font(8.8, QFont::DemiBold));
+        p.setFont(finn_mono_font(8.5, QFont::Normal));
         p.setPen(selected_ ? t.on : t.mute);
         p.drawText(QRect(width() - 40, 0, 30, height()),
                    Qt::AlignVCenter | Qt::AlignRight, badge_);
@@ -1107,12 +1267,27 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
 
 void FinnNavItem::enterEvent(QEnterEvent*) {
     hovered_ = true;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 1.0);
+    hover_spring_.retarget(1.0);
 }
 
 void FinnNavItem::leaveEvent(QEvent*) {
     hovered_ = false;
-    animate_hover_progress(this, hover_anim_, hover_progress_, 0.0);
+    hover_spring_.retarget(0.0);
+    press_spring_.retarget(1.0, springs::kBouncy);
+}
+
+void FinnNavItem::mousePressEvent(QMouseEvent* event) {
+    if (isEnabled() && event->button() == Qt::LeftButton) {
+        press_spring_.retarget(0.985, springs::kSnappy);
+    }
+    QAbstractButton::mousePressEvent(event);
+}
+
+void FinnNavItem::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        press_spring_.retarget(1.0, springs::kBouncy);
+    }
+    QAbstractButton::mouseReleaseEvent(event);
 }
 
 // ---- FinnSidebar ----
@@ -1136,7 +1311,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent) : QWidget(parent) {
             header_label_, sync_header_font);
     root_layout_->addWidget(header_label_);
 
-    search_field_ = new FinnSearchField(QStringLiteral("Search anything"), this);
+    search_field_ = new FinnSearchField(QStringLiteral("Search"), this);
     search_field_->setFixedHeight(30);
     search_field_->setPillMode(true);
     search_field_->setVisible(false);
@@ -1162,6 +1337,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent) : QWidget(parent) {
     items_layout_->setSpacing(5);
 
     scroll->setWidget(container);
+    install_overscroll_physics(scroll);
     root_layout_->addWidget(scroll, 1);
 }
 
@@ -1394,10 +1570,9 @@ void FinnHeroCard::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::Antialiasing, true);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    QLinearGradient grad(r.topLeft(), r.bottomLeft());
-    grad.setColorAt(0.0, t.dark ? QColor(0x1E, 0x29, 0x23) : QColor(0xFF, 0xFF, 0xFF));
-    grad.setColorAt(1.0, t.dark ? QColor(0x15, 0x22, 0x1B) : QColor(0xEB, 0xFF, 0xDF));
-    p.setBrush(grad);
+    // The identity card is the one tinted surface on the screen. Keep the tint
+    // solid: a white-to-green gradient made the chrome look like a landing page.
+    p.setBrush(t.hero_tint);
     p.setPen(QPen(t.hair, 1.0));
     p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
 
@@ -1793,17 +1968,18 @@ FinnToast::FinnToast(QWidget* parent) : FinnGlassPanel(kRadiusLg, parent) {
     label_->setFont(finn_font(10.0, QFont::Medium));
     lay->addWidget(label_);
 
-    entrance_anim_ = new QVariantAnimation(this);
-    entrance_anim_->setDuration(160);
-    entrance_anim_->setEasingCurve(QEasingCurve::OutCubic);
-    connect(entrance_anim_, &QVariantAnimation::valueChanged, this,
-            [this](const QVariant& v) {
-                entrance_progress_ = v.toReal();
-                setOpacityAlpha(qRound(240.0 * entrance_progress_));
-                move(target_pos_.x(),
-                     target_pos_.y() + qRound((1.0 - entrance_progress_) * 8.0));
-                update();
-            });
+    entrance_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        entrance_progress_ = std::clamp(v, 0.0, 1.15);
+        const qreal alpha_u = std::clamp<qreal>(v, 0.0, 1.0);
+        setOpacityAlpha(qRound(240.0 * alpha_u));
+        if (reduced_fade_) {
+            move(target_pos_);
+        } else {
+            move(target_pos_.x(),
+                 target_pos_.y() + qRound((1.0 - v) * 8.0));
+        }
+        update();
+    });
 
     hide_timer_ = new QTimer(this);
     hide_timer_->setSingleShot(true);
@@ -1816,8 +1992,12 @@ void FinnToast::repositionInParent() {
     const int x = (parentWidget()->width() - width()) / 2;
     const int y = parentWidget()->height() - height() - 18;
     target_pos_ = QPoint(std::max(12, x), std::max(56, y));
-    move(target_pos_.x(),
-         target_pos_.y() + qRound((1.0 - entrance_progress_) * 8.0));
+    if (reduced_fade_) {
+        move(target_pos_);
+    } else {
+        move(target_pos_.x(),
+             target_pos_.y() + qRound((1.0 - entrance_progress_) * 8.0));
+    }
 }
 
 void FinnToast::showMessage(const QString& message, Severity severity,
@@ -1830,20 +2010,12 @@ void FinnToast::showMessage(const QString& message, Severity severity,
         const int y = parentWidget()->height() - height() - 18;
         target_pos_ = QPoint(std::max(12, x), std::max(56, y));
     }
-    if (FinnThemeManager::instance().reducedMotion()) {
-        entrance_anim_->stop();
-        entrance_progress_ = 1.0;
-        setOpacityAlpha(240);
-        move(target_pos_);
-    } else {
-        entrance_anim_->stop();
-        entrance_progress_ = 0.0;
-        setOpacityAlpha(0);
-        move(target_pos_.x(), target_pos_.y() + 8);
-        entrance_anim_->setStartValue(0.0);
-        entrance_anim_->setEndValue(1.0);
-        entrance_anim_->start();
-    }
+    reduced_fade_ = is_reduced_motion_active();
+    entrance_progress_ = 0.0;
+    setOpacityAlpha(0);
+    move(target_pos_.x(), reduced_fade_ ? target_pos_.y() : (target_pos_.y() + 8));
+    entrance_spring_.animator.set(0.0, 0.0);
+    entrance_spring_.retargetOrCrossfade(0.0, 1.0, springs::kSnappy);
     show();
     raise();
     update();
@@ -1880,6 +2052,104 @@ void FinnToast::paintEvent(QPaintEvent* event) {
 
 namespace {
 
+class OverscrollFilter final : public QObject {
+public:
+    explicit OverscrollFilter(QScrollArea* scroll)
+        : QObject(scroll), scroll_(scroll) {
+        if (!scroll_ || !scroll_->viewport()) return;
+        scroll_->viewport()->installEventFilter(this);
+        snap_back_.init(scroll_->viewport(), springs::kOverscroll, 0.0,
+                        [this](double v) {
+                            overscroll_y_ = v;
+                            applyVisualOffset();
+                        });
+        idle_timer_ = new QTimer(this);
+        idle_timer_->setSingleShot(true);
+        idle_timer_->setInterval(80);
+        QObject::connect(idle_timer_, &QTimer::timeout, this, [this]() {
+            raw_offset_ = 0.0;
+            snap_back_.retarget(0.0);
+        });
+        if (QScrollBar* vbar = scroll_->verticalScrollBar()) {
+            QObject::connect(vbar, &QScrollBar::valueChanged, this, [this](int) {
+                if (std::abs(overscroll_y_) > 0.01) {
+                    raw_offset_ = 0.0;
+                    overscroll_y_ = 0.0;
+                    snap_back_.setImmediate(0.0);
+                }
+            });
+        }
+    }
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        if (!scroll_ || obj != scroll_->viewport()) {
+            return QObject::eventFilter(obj, ev);
+        }
+        if (ev->type() == QEvent::Wheel) {
+            if (is_reduced_motion_active()) {
+                if (std::abs(overscroll_y_) > 0.01) {
+                    raw_offset_ = 0.0;
+                    overscroll_y_ = 0.0;
+                    snap_back_.setImmediate(0.0);
+                }
+                return false;
+            }
+            auto* we = static_cast<QWheelEvent*>(ev);
+            QScrollBar* vbar = scroll_->verticalScrollBar();
+            if (!vbar || vbar->maximum() <= vbar->minimum()) {
+                return false;
+            }
+            double dy = we->pixelDelta().y();
+            if (dy == 0.0) {
+                dy = static_cast<double>(we->angleDelta().y()) * 0.35;
+            }
+            if (dy == 0.0) return false;
+
+            const bool at_top = (vbar->value() <= vbar->minimum() && dy > 0.0);
+            const bool at_bottom = (vbar->value() >= vbar->maximum() && dy < 0.0);
+            if (at_top || at_bottom || std::abs(overscroll_y_) > 0.5) {
+                const double dim = std::max(
+                    120.0, static_cast<double>(scroll_->viewport()->height()));
+                if (snap_back_.active()) {
+                    raw_offset_ = rubber_band_inverse(overscroll_y_, dim);
+                    if (snap_back_.timer) snap_back_.timer->stop();
+                }
+                raw_offset_ += dy;
+                if ((vbar->value() <= vbar->minimum() && raw_offset_ < 0.0) ||
+                    (vbar->value() >= vbar->maximum() && raw_offset_ > 0.0)) {
+                    raw_offset_ = 0.0;
+                }
+                overscroll_y_ = rubber_band(raw_offset_, dim);
+                snap_back_.animator.set(overscroll_y_, 0.0);
+                applyVisualOffset();
+                idle_timer_->start();
+                if (std::abs(raw_offset_) > 0.0) {
+                    we->accept();
+                    return true;
+                }
+            }
+        } else if (ev->type() == QEvent::Resize) {
+            applyVisualOffset();
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+
+private:
+    void applyVisualOffset() {
+        if (!scroll_ || !scroll_->widget() || !scroll_->verticalScrollBar()) return;
+        const int base_y = -scroll_->verticalScrollBar()->value();
+        scroll_->widget()->move(scroll_->widget()->x(),
+                                base_y + qRound(overscroll_y_));
+    }
+
+    QScrollArea* scroll_ = nullptr;
+    QTimer* idle_timer_ = nullptr;
+    FinnSpringDriver snap_back_;
+    double raw_offset_ = 0.0;
+    double overscroll_y_ = 0.0;
+};
+
 class StackTransitionOverlay final : public QWidget {
 public:
     explicit StackTransitionOverlay(QStackedWidget* stack)
@@ -1893,23 +2163,20 @@ public:
         last_page_ = stack_->currentWidget();
         stack_->installEventFilter(this);
 
-        anim_ = new QVariantAnimation(this);
-        anim_->setDuration(160);
-        anim_->setEasingCurve(QEasingCurve::OutCubic);
-        connect(anim_, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& v) {
-                    if (FinnThemeManager::instance().reducedMotion()) {
-                        finishImmediately();
-                        return;
-                    }
-                    progress_ = v.toReal();
-                    if (active_page_) {
-                        active_page_->move(0, qRound((1.0 - progress_) * 8.0));
-                    }
-                    update();
-                });
-        connect(anim_, &QVariantAnimation::finished, this,
-                [this]() { finishImmediately(); });
+        spring_.init(this, springs::kSmooth, 1.0, [this](double v) {
+            if (is_reduced_motion_active()) {
+                finishImmediately();
+                return;
+            }
+            progress_ = std::clamp(v, 0.0, 1.0);
+            if (active_page_) {
+                active_page_->move(0, qRound((1.0 - progress_) * 8.0));
+            }
+            update();
+            if (spring_.animator.settled()) {
+                finishImmediately();
+            }
+        });
 
         connect(stack_, &QStackedWidget::currentChanged, this,
                 [this](int next_idx) { onPageChanged(next_idx); });
@@ -1938,9 +2205,8 @@ protected:
 
 private:
     void finishImmediately() {
-        if (anim_->state() == QAbstractAnimation::Running) {
-            anim_->stop();
-        }
+        if (spring_.timer) spring_.timer->stop();
+        spring_.animator.set(1.0, 0.0);
         progress_ = 1.0;
         if (active_page_) {
             active_page_->move(0, 0);
@@ -1958,7 +2224,7 @@ private:
         last_page_ = next_page;
 
         const bool should_animate =
-            enabled_ && !FinnThemeManager::instance().reducedMotion() &&
+            enabled_ && !is_reduced_motion_active() &&
             stack_->isVisible() && next_page != nullptr &&
             prev_page != nullptr && prev_page != next_page &&
             stack_->width() > 16 && stack_->height() > 16;
@@ -1985,14 +2251,14 @@ private:
         show();
         raise();
 
-        anim_->stop();
-        anim_->setStartValue(0.0);
-        anim_->setEndValue(1.0);
-        anim_->start();
+        // Preserve any residual velocity when switching pages rapidly mid-flight.
+        const double carry_vel = spring_.active() ? spring_.animator.velocity() : 0.0;
+        spring_.animator.set(0.0, carry_vel);
+        spring_.retarget(1.0, springs::kSmooth);
     }
 
     QStackedWidget* stack_ = nullptr;
-    QVariantAnimation* anim_ = nullptr;
+    FinnSpringDriver spring_;
     QPointer<QWidget> active_page_;
     QPointer<QWidget> last_page_;
     QPixmap outgoing_pixmap_;
@@ -2001,6 +2267,16 @@ private:
 };
 
 }  // namespace
+
+void install_overscroll_physics(QScrollArea* scroll) {
+    if (!scroll || !scroll->viewport()) return;
+    if (scroll->findChild<QObject*>(QStringLiteral("_finn_overscroll_filter"),
+                                    Qt::FindDirectChildrenOnly)) {
+        return;
+    }
+    auto* filter = new OverscrollFilter(scroll);
+    filter->setObjectName(QStringLiteral("_finn_overscroll_filter"));
+}
 
 void install_stack_animator(QStackedWidget* stack) {
     if (!stack) return;
@@ -2066,6 +2342,18 @@ FinnDialog::FinnDialog(const QString& title, const QString& message,
     connect(ok_btn, &QAbstractButton::clicked, this, &QDialog::accept);
     row->addWidget(ok_btn);
     root->addLayout(row);
+
+    opacity_spring_.init(this, springs::kSnappy, 1.0, [this](double v) {
+        setWindowOpacity(std::clamp(v, 0.0, 1.0));
+    });
+}
+
+void FinnDialog::showEvent(QShowEvent* event) {
+    QDialog::showEvent(event);
+    if (shown_once_) return;
+    shown_once_ = true;
+    opacity_spring_.animator.set(0.85, 0.0);
+    opacity_spring_.retargetOrCrossfade(0.5, 1.0, springs::kSnappy);
 }
 
 bool FinnDialog::confirm(QWidget* parent, const QString& title,

@@ -6,6 +6,7 @@
 #include <QAbstractButton>
 #include <QColor>
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
@@ -16,16 +17,47 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
-#include <QVariantAnimation>
 #include <QVector>
 #include <QWidget>
+#include <functional>
 
+#include "ui/finn/spring.hpp"
 #include "ui/finn/tokens.hpp"
 
 class QHBoxLayout;
+class QScrollArea;
+class QShowEvent;
 class QVBoxLayout;
 
 namespace finn::ui {
+
+/* Lightweight QTimer-backed driver connecting SpringAnimator (and <=100ms
+ * ReducedCrossfade fallback) to a QWidget. */
+struct FinnSpringDriver {
+    SpringAnimator animator;
+    ReducedCrossfade crossfade;
+    bool using_crossfade = false;
+    QTimer* timer = nullptr;
+    QElapsedTimer clock;
+    std::function<void(double)> on_step;
+
+    ~FinnSpringDriver() {
+        if (timer) timer->stop();
+    }
+
+    void init(QWidget* owner, const SpringParams& params, double initial,
+              std::function<void(double)> step_cb);
+    void retarget(double target);
+    void retarget(double target, const SpringParams& params);
+    void retargetOrCrossfade(double from_on_reduced, double target,
+                             const SpringParams& params,
+                             double reduced_seconds = kMotionReducedCrossfade);
+    void setImmediate(double value);
+    double value() const {
+        return using_crossfade ? crossfade.value : animator.value();
+    }
+    bool active() const { return timer != nullptr && timer->isActive(); }
+};
 
 class FinnSurface : public QWidget {
     Q_OBJECT
@@ -76,7 +108,9 @@ private:
     bool hovered_ = false;
     bool pressed_ = false;
     qreal hover_progress_ = 0.0;
-    QVariantAnimation* hover_anim_ = nullptr;
+    qreal press_scale_ = 1.0;
+    FinnSpringDriver hover_spring_;
+    FinnSpringDriver press_spring_;
 };
 
 class FinnGlassPanel : public QWidget {
@@ -135,13 +169,17 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     Variant variant_;
     QString icon_name_;
     bool hovered_ = false;
     qreal hover_progress_ = 0.0;
-    QVariantAnimation* hover_anim_ = nullptr;
+    qreal press_scale_ = 1.0;
+    FinnSpringDriver hover_spring_;
+    FinnSpringDriver press_spring_;
 };
 
 class FinnIconButton : public QAbstractButton {
@@ -164,6 +202,8 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     QString icon_name_;
@@ -174,7 +214,9 @@ private:
     bool hovered_ = false;
     bool badge_dot_ = false;
     qreal hover_progress_ = 0.0;
-    QVariantAnimation* hover_anim_ = nullptr;
+    qreal press_scale_ = 1.0;
+    FinnSpringDriver hover_spring_;
+    FinnSpringDriver press_spring_;
     QColor custom_tint_;
     QColor hover_bg_;
     QColor hover_tint_;
@@ -194,7 +236,7 @@ protected:
 
 private:
     qreal progress_ = 0.0;
-    QVariantAnimation* anim_ = nullptr;
+    FinnSpringDriver toggle_spring_;
 };
 
 class FinnSlider : public QWidget {
@@ -225,17 +267,22 @@ protected:
     }
 
 private:
-    void updateFromX(int x);
+    void updateFromX(int x, bool immediate);
+    qreal currentRatio() const;
 
     int min_ = 0;
     int max_ = 100;
     int value_ = 50;
+    qreal visual_ratio_ = 0.5;
+    qreal knob_radius_ = 7.0;
     bool dragging_ = false;
     bool hovered_ = false;
     bool pill_ = false;
     QString pill_icon_;
     int pill_icon_x_ = 6;
     int pill_icon_size_ = 24;
+    FinnSpringDriver ratio_spring_;
+    FinnSpringDriver knob_spring_;
 };
 
 class FinnSearchField : public QWidget {
@@ -333,6 +380,8 @@ protected:
     void paintEvent(QPaintEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     QString icon_name_;
@@ -342,7 +391,9 @@ private:
     bool selected_ = false;
     bool hovered_ = false;
     qreal hover_progress_ = 0.0;
-    QVariantAnimation* hover_anim_ = nullptr;
+    qreal press_scale_ = 1.0;
+    FinnSpringDriver hover_spring_;
+    FinnSpringDriver press_spring_;
 };
 
 class FinnSidebar : public QWidget {
@@ -352,7 +403,7 @@ public:
     explicit FinnSidebar(int width_px = 250, QWidget* parent = nullptr);
 
     void setHeaderTitle(const QString& title);
-    void setSearchEnabled(bool enabled, const QString& placeholder = QStringLiteral("Search anything"));
+    void setSearchEnabled(bool enabled, const QString& placeholder = QStringLiteral("Search"));
     void addSectionHeader(const QString& title);
     void addSectionSpacer(int height_px = 16);
     FinnNavItem* addPinnedItem(const QString& id, const QString& icon_name,
@@ -597,10 +648,12 @@ private:
     Severity severity_ = Severity::Info;
     QTimer* hide_timer_ = nullptr;
     qreal entrance_progress_ = 1.0;
+    bool reduced_fade_ = false;
     QPoint target_pos_;
-    QVariantAnimation* entrance_anim_ = nullptr;
+    FinnSpringDriver entrance_spring_;
 };
 
+void install_overscroll_physics(QScrollArea* scroll);
 void install_stack_animator(QStackedWidget* stack);
 void animate_stack_switch(QStackedWidget* stack, int next_index);
 
@@ -634,6 +687,13 @@ public:
     static QString prompt(QWidget* parent, const QString& title,
                           const QString& label,
                           const QString& initial_value = {});
+
+protected:
+    void showEvent(QShowEvent* event) override;
+
+private:
+    FinnSpringDriver opacity_spring_;
+    bool shown_once_ = false;
 };
 
 // 6-ring 3D vortex-to-slinky coil animation and continuous rounding line that

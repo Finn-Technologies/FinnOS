@@ -72,6 +72,7 @@ public slots:
 
 protected:
     bool event(QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -83,6 +84,7 @@ protected:
 private:
     Qt::Edges hitTestResizeEdges(const QPoint& pos) const;
     void updateMarginsForWindowState();
+    void updateFrameMask();
     void positionToast();
 
     QWidget* frame_root_ = nullptr;
@@ -110,8 +112,12 @@ private:
     FinnToast* toast_ = nullptr;
     QString icon_name_;
     bool sidebar_collapsed_ = false;
+    int sidebar_expanded_width_ = 250;
+    bool shown_once_ = false;
     bool drag_candidate_ = false;
     QPoint drag_start_pos_;
+    FinnSpringDriver sidebar_spring_;
+    FinnSpringDriver entrance_spring_;
 };
 
 class FinnLayerWindow : public QWidget {
