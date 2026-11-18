@@ -152,14 +152,17 @@ Package-level `pacman` verification and OTA image/slot updates solve different
 layers of the update problem:
 
 - **`[finnos]` + `pacman` (`finnos-keyring`)** distributes individual packages
-  and incremental runtime/userland updates using GnuPG signatures checked by
-  `pacman-key`.
-- **OTA updates ([`docs/ota.md`](ota.md))** verify signed OTA manifests and
-  slot payloads (using a separate OTA signing keypair and detached manifest
-  signatures) before staging an inactive system slot and switching boot state
-  with rollback protection.
+  and incremental runtime/userland updates using GnuPG signatures
+  (`repo/gen-signing-key.sh`, `repo/publish.sh`) checked by `pacman-key` from
+  `/usr/share/pacman/keyrings/finnos.gpg`.
+- **OTA updates ([`docs/ota.md`](ota.md))** verify canonical JSON update
+  manifests signed with RFC 8032 Ed25519 (`ota/keygen`, `ota/publish`, verified
+  by `finn-update` against `/etc/finn/ota/pubkey.pem`) plus full/delta artifact
+  SHA-256 checksums before flashing an inactive A/B root slot with boot-count
+  rollback.
 
-Keeping the `pacman` GPG keyring and the OTA manifest signing key separate
-limits blast radius: compromising one build pipeline does not automatically
-compromise the other, and OTA slot updates remain atomic even when `pacman`
-packages are built independently.
+Keeping the `pacman` GPG keyring (`repo/gen-signing-key.sh`) and the OTA
+Ed25519 manifest key (`ota/keygen`) separate limits blast radius: compromising
+one build pipeline does not automatically compromise the other, and A/B OTA
+slot updates remain atomic and rollback-safe even when `pacman` packages are
+built independently.
