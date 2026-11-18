@@ -1,5 +1,6 @@
 #include "tab_model.hpp"
 
+#include <FinnSDK/FinnSDK.hpp>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -30,11 +31,11 @@ void populate_defaults(QVector<BrowserSpace>& spaces,
                        QString& active_space_id) {
     spaces = {
         {QStringLiteral("personal"), QStringLiteral("Personal"),
-         QStringLiteral("home-09"), QColor(0x00, 0x7B, 0xFF)},
+         QStringLiteral("home-09"), QColor::fromRgba(finn::ui::colors::accent_light)},
         {QStringLiteral("work"), QStringLiteral("Work"),
-         QStringLiteral("briefcase-01"), QColor(0x22, 0xC5, 0x5E)},
+         QStringLiteral("briefcase-01"), QColor::fromRgba(finn::ui::colors::success_light)},
         {QStringLiteral("dev"), QStringLiteral("Dev"),
-         QStringLiteral("code-01"), QColor(0xF5, 0x9E, 0x0B)},
+         QStringLiteral("code-01"), QColor::fromRgba(finn::ui::colors::warning_light)},
     };
     active_space_id = spaces.front().id;
 
@@ -140,7 +141,8 @@ void SessionStore::load(QVector<BrowserSpace>& spaces,
         if (!id.isEmpty() && !name.isEmpty()) {
             spaces.push_back({id, name,
                               icon.isEmpty() ? default_space_icon(id) : icon,
-                              accent.isValid() ? accent : QColor(0x00, 0x7B, 0xFF)});
+                              accent.isValid() ? accent
+                                               : QColor::fromRgba(finn::ui::colors::accent_light)});
         }
     }
 

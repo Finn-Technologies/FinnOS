@@ -25,6 +25,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFixedHeight(52);
         setAttribute(Qt::WA_Hover, true);
+        setAccessibleName(space.name);
     }
 
     void setSelectedState(bool selected) {
@@ -231,7 +232,8 @@ protected:
 
 private:
     BrowserSpace space_{QStringLiteral("personal"), QStringLiteral("Personal"),
-                        QStringLiteral("home-09"), QColor(0x00, 0x7B, 0xFF)};
+                        QStringLiteral("home-09"),
+                        QColor::fromRgba(finn::ui::colors::accent_light)};
 };
 
 }  // namespace

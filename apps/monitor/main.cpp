@@ -27,6 +27,7 @@
 #include <cstring>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -38,23 +39,6 @@ QString rgba_css(const QColor& c) {
         .arg(c.green())
         .arg(c.blue())
         .arg(c.alpha());
-}
-
-QString scrollbar_qss(const FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }"
-               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
-               "QScrollBar::handle:horizontal:hover { background: %2; }"
-               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
 }
 
 void apply_header_16px_regular(FinnLabel* lbl) {
@@ -235,13 +219,17 @@ private:
         }
 
         sidebar_->addItem(QStringLiteral("overview"), QStringLiteral("monitor"),
-                          QStringLiteral("System Overview"), QColor(0x00, 0x7B, 0xFF));
+                          QStringLiteral("System Overview"),
+                          finn::ui::nav_accent_light(), finn::ui::nav_accent_dark());
         sidebar_->addItem(QStringLiteral("processes"), QStringLiteral("settings-02"),
-                          QStringLiteral("Processes"), QColor(0x22, 0xC5, 0x5E));
+                          QStringLiteral("Processes"),
+                          finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("performance"), QStringLiteral("sun-01"),
-                          QStringLiteral("Performance"), QColor(0xF5, 0x9E, 0x0B));
+                          QStringLiteral("Performance"),
+                          finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("disks"), QStringLiteral("folder"),
-                          QStringLiteral("Storage & Disks"), QColor(0x58, 0x56, 0xD6));
+                          QStringLiteral("Storage & Disks"),
+                          finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
@@ -255,7 +243,7 @@ private:
         root->setContentsMargins(12, 24, 12, 14);
         root->setSpacing(10);
 
-        // Top header row (16px Regular title + live CPU/RAM summary pill +
+        // Top header row (16px Regular title + quiet mono CPU/RAM summary +
         // Refresh / End Process button to the left of the 96px floating FinnWindowControls reserve)
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
@@ -266,17 +254,20 @@ private:
             FinnLabel::Tone::Ink, content);
         apply_header_16px_regular(page_title_);
 
-        summary_pill_ = new FinnBadge(
-            QStringLiteral("CPU 0% · RAM 0%"), FinnBadge::Tone::Accent, content);
+        summary_pill_ = new FinnLabel(
+            QStringLiteral("CPU 0% · RAM 0%"), FinnLabel::Role::Mono,
+            FinnLabel::Tone::Mute, content);
 
         auto* refresh_btn = new FinnButton(
             QStringLiteral("Refresh"), FinnButton::Variant::Secondary,
             QStringLiteral("refresh"), content);
+        refresh_btn->setAccessibleName(QStringLiteral("Refresh system monitor"));
         refresh_btn->setFixedHeight(28);
 
         end_btn_ = new FinnButton(
             QStringLiteral("End Process"), FinnButton::Variant::Danger,
             {}, content);
+        end_btn_->setAccessibleName(QStringLiteral("End selected process"));
         end_btn_->setFixedHeight(28);
         end_btn_->setEnabled(false);
 
@@ -374,6 +365,7 @@ private:
                                 QStringLiteral("State"), QStringLiteral("CPU %"),
                                 QStringLiteral("Memory")});
         tree_->setRootIsDecorated(false);
+        tree_->setAccessibleName(QStringLiteral("Running processes"));
         tree_->setAlternatingRowColors(false);
         tree_->setSortingEnabled(true);
         tree_->sortByColumn(3, Qt::DescendingOrder);
@@ -560,7 +552,7 @@ private:
                 "border-bottom: 1px solid %5; padding: 6px 8px; font-weight: 500; }%6")
                 .arg(t.ink.name(), rgba_css(t.surface_hover),
                      rgba_css(t.tile_on), rgba_css(t.dim),
-                     rgba_css(t.hair), scrollbar_qss(t)));
+                     rgba_css(t.hair), finn::ui::scrollbar_qss(t)));
     }
 
     void poll() {
@@ -636,27 +628,32 @@ private:
                 QStringLiteral("%1 · %2").arg(load_parts[1], load_parts[2]));
         }
 
-        // 4. Processes
-        int selected_pid = -1;
-        if (!tree_->selectedItems().isEmpty()) {
-            selected_pid = tree_->selectedItems().first()->data(0, Qt::UserRole).toInt();
-        }
-
+        // 4. Processes (diff rows by PID in-place to avoid full tree tear-down flicker)
         const auto procs = finn::sys::read_processes();
         proc_stat_card_->setValueParts(
             QString::number(procs.size()), QStringLiteral("tasks"));
 
         std::unordered_map<int, std::uint64_t> next_ticks;
         next_ticks.reserve(procs.size());
+        std::unordered_set<int> alive_pids;
+        alive_pids.reserve(procs.size());
+
+        std::unordered_map<int, QTreeWidgetItem*> existing_rows;
+        const int existing_count = tree_->topLevelItemCount();
+        existing_rows.reserve(static_cast<std::size_t>(existing_count));
+        for (int i = 0; i < existing_count; ++i) {
+            QTreeWidgetItem* item = tree_->topLevelItem(i);
+            if (!item) continue;
+            existing_rows.emplace(item->data(0, Qt::UserRole).toInt(), item);
+        }
 
         const int prev_scroll = tree_->verticalScrollBar()->value();
-
         tree_->setUpdatesEnabled(false);
         tree_->setSortingEnabled(false);
-        tree_->clear();
 
         for (const auto& pr : procs) {
             next_ticks[pr.pid] = pr.cpu_ticks;
+            alive_pids.insert(pr.pid);
             double proc_cpu = 0.0;
             if (total_delta > 0.0) {
                 const auto it = prev_proc_ticks_.find(pr.pid);
@@ -664,18 +661,32 @@ private:
                     proc_cpu = qBound(0.0, 100.0 * static_cast<double>(pr.cpu_ticks - it->second) / total_delta, 100.0);
                 }
             }
-            auto* item = new ProcessTreeItem(tree_);
-            item->setText(0, QString::number(pr.pid));
-            item->setData(0, Qt::UserRole, pr.pid);
-            item->setText(1, QString::fromStdString(pr.name));
-            item->setText(2, QString::fromStdString(pr.state));
-            item->setText(3, QStringLiteral("%1%").arg(proc_cpu, 0, 'f', 1));
-            item->setData(3, Qt::UserRole, proc_cpu);
-            item->setText(4, format_kib(pr.rss_kib));
-            item->setData(4, Qt::UserRole, static_cast<double>(pr.rss_kib));
 
-            if (pr.pid == selected_pid) {
-                item->setSelected(true);
+            QTreeWidgetItem* item = nullptr;
+            const auto row_it = existing_rows.find(pr.pid);
+            if (row_it != existing_rows.end()) {
+                item = row_it->second;
+            } else {
+                item = new ProcessTreeItem(tree_);
+                item->setText(0, QString::number(pr.pid));
+                item->setData(0, Qt::UserRole, pr.pid);
+            }
+
+            const QString pname = QString::fromStdString(pr.name);
+            if (item->text(1) != pname) item->setText(1, pname);
+            const QString pstate = QString::fromStdString(pr.state);
+            if (item->text(2) != pstate) item->setText(2, pstate);
+            const QString cpu_str = QStringLiteral("%1%").arg(proc_cpu, 0, 'f', 1);
+            if (item->text(3) != cpu_str) item->setText(3, cpu_str);
+            item->setData(3, Qt::UserRole, proc_cpu);
+            const QString rss_str = format_kib(pr.rss_kib);
+            if (item->text(4) != rss_str) item->setText(4, rss_str);
+            item->setData(4, Qt::UserRole, static_cast<double>(pr.rss_kib));
+        }
+
+        for (const auto& kv : existing_rows) {
+            if (alive_pids.find(kv.first) == alive_pids.end()) {
+                delete kv.second;
             }
         }
         prev_proc_ticks_ = std::move(next_ticks);
@@ -736,7 +747,7 @@ private:
 
     FinnSidebar* sidebar_ = nullptr;
     FinnLabel* page_title_ = nullptr;
-    FinnBadge* summary_pill_ = nullptr;
+    FinnLabel* summary_pill_ = nullptr;
     FinnButton* end_btn_ = nullptr;
     QStackedWidget* stack_ = nullptr;
 
