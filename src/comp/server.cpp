@@ -1535,7 +1535,7 @@ void Server::on_cursor_tablet_tip(wl_listener* listener, void* data) {
 void Server::on_cursor_tablet_button(wl_listener* listener, void* data) {
     Server* server = wl_container_of(listener, server, cursor_tablet_button_);
     const auto* ev = static_cast<const wlr_tablet_tool_button_event*>(data);
-    const auto state = (ev->state == WLR_TABLET_TOOL_BUTTON_PRESSED)
+    const auto state = (ev->state == WLR_BUTTON_PRESSED)
                            ? WL_POINTER_BUTTON_STATE_PRESSED
                            : WL_POINTER_BUTTON_STATE_RELEASED;
     const uint32_t btn = (ev->button == BTN_STYLUS) ? BTN_RIGHT : ev->button;

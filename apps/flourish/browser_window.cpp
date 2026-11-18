@@ -760,7 +760,7 @@ void BrowserWindow::createNewSpace() {
     const auto presets = finn::ui::FinnThemeManager::avatarPresets();
     const QColor accent = presets.isEmpty()
                               ? finn::ui::FinnThemeManager::instance().tokens().accent
-                              : presets[spaces_.size() % presets.size()].top;
+                              : presets[spaces_.size() % presets.size()].top_color;
     const QString id = new_tab_id();
     spaces_.push_back({id, name.trimmed(), QStringLiteral("folder"), accent});
     switchSpace(id);

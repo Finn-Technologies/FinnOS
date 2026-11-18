@@ -1,6 +1,7 @@
 #include "sidebar_panel.hpp"
 
 #include <QAbstractButton>
+#include <QEasingCurve>
 #include <QEnterEvent>
 #include <QFrame>
 #include <QGridLayout>
@@ -11,6 +12,7 @@
 #include <QPainter>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QVariantAnimation>
 
 namespace flourish {
 
