@@ -6,8 +6,8 @@
 
 | ID | Summary | Status | Fixing Commit(s) |
 |---|---|---|---|
-| `B1` | No OTA update mechanism (`FinnOS Update` unimplemented) | **Resolved** | `013e7d1`, `f0d1696`, `ccfc896`, `0eab9fa` |
-| `B2` | Phone and tablet form factors & touch/tablet input unsupported | **Resolved** | `f669ae2`, `c615d6b`, `b78fc05`, `307f688`, `0eab9fa` |
+| `B1` | No OTA update mechanism (`FinnOS Update` unimplemented) | **Resolved** | `013e7d1`, `f0d1696`, `ccfc896`, `0eab9fa`, `ede37f7` |
+| `B2` | Phone and tablet form factors & touch/tablet input unsupported | **Resolved** | `f669ae2`, `c615d6b`, `b78fc05`, `307f688`, `0eab9fa`, `59932a5` |
 | `B3` | `[finnos]` repo URL `https://repo.finnos.org` placeholder / no repo tooling | **Resolved** | `69ee0a1`, `74f1a18`, `f0d1696` |
 | `B4` | Missing `NOTICE` and `CREDITS` legal attribution files | **Resolved** | `ca377e4` |
 | `B5` | Host verification limits & hardcoded path constants | **Resolved** | `cf80397`, `32d7fce`, `013e7d1`, `064d4eb`, `60926af` |
@@ -20,7 +20,7 @@
 | `B12` | `[finnos]` `SigLevel = Required` offline failure & `root`/`finn` shared password | **Resolved** | `f0d1696` |
 | `M1` | User-visible upstream distribution branding in UI/docs | **Resolved** | `2e9e12b`, `0b67881`, `7109731` |
 | `M2` | `wiki.archlinux.org` reference leaks in Flourish defaults | **Resolved** | `e100fed`, `83f0e8a` |
-| `M3` | Eased-only motion, no spring physics, one-shot `FINN_REDUCED_MOTION` read | **Resolved** | `cf80397`, `32d7fce`, `0eab9fa` |
+| `M3` | Eased-only motion, no spring physics, one-shot `FINN_REDUCED_MOTION` read | **Resolved** | `cf80397`, `32d7fce`, `0eab9fa`, `59932a5` |
 | `M4` | `os-release` `BUG_REPORT_URL` GitHub slug mismatch | **Resolved** | `e100fed` |
 | `M5` | Oversized multi-responsibility source files | **Resolved** | `cf80397`, `013e7d1`, `0eab9fa` |
 | `M6` | Thin automated test coverage | **Resolved** | `cf80397`, `32d7fce`, `c615d6b`, `013e7d1`, `69ee0a1`, `f0d1696`, `04e9e84`, `307f688` |
@@ -35,7 +35,7 @@
 | `M15` | `finn-store` wrong `windows.conf` path, disabled Install button, unconfirmed AppImage `chmod +x` | **Resolved** | `04e9e84` |
 | `M16` | Unimplemented Accessibility settings advertised as shipped | **Resolved** | `ccfc896`, `60926af` |
 | `M17` | Hardcoded duplicated paths & `/etc/finn` watch | **Resolved** | `064d4eb`, `83f0e8a`, `f0d1696`, `ccfc896`, `307f688`, `0eab9fa` |
-| `M18` | Zero `setAccessibleName` & missing focus rings / keyboard navigation | **Resolved** | `b78fc05`, `83f0e8a`, `f0d1696`, `04e9e84`, `ccfc896`, `0eab9fa` |
+| `M18` | Zero `setAccessibleName` & missing focus rings / keyboard navigation | **Resolved** | `b78fc05`, `83f0e8a`, `f0d1696`, `04e9e84`, `ccfc896`, `0eab9fa`, `59932a5` |
 | `M19` | Per-paint 3-pass CPU software blur in OOBE & widget tear-down polling in Monitor/Settings | **Resolved** | `04e9e84`, `83f0e8a`, `ccfc896` |
 | `m1` | `.gitignore` missing unit-test binaries | **Resolved** | `e100fed` |
 | `m2` | OptiPlex / Arch profile comments in `base/packages.x86_64` & docs | **Resolved** | `2e9e12b`, `69ee0a1` |
