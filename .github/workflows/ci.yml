@@ -21,6 +21,8 @@ jobs:
         run: make test-unit
       - name: the style checks
         run: make lint
+      - name: the branding checks
+        run: bash tools/check-branding.sh
 
   build:
     name: the build

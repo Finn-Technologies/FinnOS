@@ -1,0 +1,4 @@
+# FinnOS trusted signing key fingerprints for `pacman-key --populate finnos`.
+# Format: <40-hex-char-fingerprint>:<ownertrust-level>:
+# Populated by the release operator from `repo/gen-signing-key.sh` output.
+# No production signing key has been generated or committed yet.

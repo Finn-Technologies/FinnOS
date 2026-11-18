@@ -232,16 +232,59 @@ post
 
 # 1. the tools.
 step "[1/8] PREREQS"
-# The live environment ships a list of mirrors and the first one is not
-# always the quickest for the machine that is installing; the geo mirror
-# is anycast and picks one near the caller. The rest stay in the list for
-# the machine that is installed.
-if [ -f /etc/pacman.d/mirrorlist ]; then
+# Install the FinnOS repository mirrorlist (/etc/pacman.d/finnos-mirrorlist)
+# from the tree (or fallback template when fetched over HTTP). Optional
+# FINN_REPO_URL prepends a local/staging mirror for [finnos].
+mkdir -p /etc/pacman.d
+if [ -n "$SRC" ] && [ -f "$SRC/repo/finnos-mirrorlist" ]; then
+    install -m 644 "$SRC/repo/finnos-mirrorlist" /etc/pacman.d/finnos-mirrorlist
+else
+    cat > /etc/pacman.d/finnos-mirrorlist <<'EOF'
+# FinnOS pacman repository mirrorlist (/etc/pacman.d/finnos-mirrorlist)
+# Placeholder URL until live repository hosting is provisioned (see docs/repo.md).
+Server = https://repo.finnos.org/$repo/os/$arch
+EOF
+fi
+if [ -n "${FINN_REPO_URL:-}" ]; then
     {
-        echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch'
-        grep -v '^Server = https://geo.mirror.pkgbuild.com' /etc/pacman.d/mirrorlist
-    } > /etc/pacman.d/mirrorlist.new
-    mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+        printf '# Operator override via FINN_REPO_URL\nServer = %s\n' "$FINN_REPO_URL"
+        cat /etc/pacman.d/finnos-mirrorlist
+    } > /etc/pacman.d/finnos-mirrorlist.new
+    mv /etc/pacman.d/finnos-mirrorlist.new /etc/pacman.d/finnos-mirrorlist
+fi
+
+# Upstream Arch mirrors in /etc/pacman.d/mirrorlist remain ONLY as an explicit
+# fallback for [core], [extra], and (x86_64) [multilib] packages that FinnOS
+# does not yet rebuild (kernel, systemd, glibc, mesa, Qt6, Wine; see
+# docs/repo.md). Do not hard-code a single upstream geo mirror here: keep the
+# live medium's mirrorlist, or prepend FINN_ARCH_FALLBACK_MIRROR if supplied.
+if [ -f /etc/pacman.d/mirrorlist ]; then
+    if ! grep -q '^# FinnOS upstream fallback mirrorlist' /etc/pacman.d/mirrorlist; then
+        {
+            echo '# FinnOS upstream fallback mirrorlist (for [core]/[extra]/[multilib] only)'
+            echo '# Kept only for packages FinnOS does not yet rebuild; see docs/repo.md.'
+            if [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+                printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+            fi
+            cat /etc/pacman.d/mirrorlist
+        } > /etc/pacman.d/mirrorlist.new
+        mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+    elif [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+        {
+            printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+            cat /etc/pacman.d/mirrorlist
+        } > /etc/pacman.d/mirrorlist.new
+        mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+    fi
+elif [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+    {
+        echo '# FinnOS upstream fallback mirrorlist (for [core]/[extra]/[multilib] only)'
+        echo '# Kept only for packages FinnOS does not yet rebuild; see docs/repo.md.'
+        printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+    } > /etc/pacman.d/mirrorlist
+fi
+if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/mirrorlist 2>/dev/null; then
+    die "no fallback mirror configured in /etc/pacman.d/mirrorlist (set FINN_ARCH_FALLBACK_MIRROR or populate /etc/pacman.d/mirrorlist)"
 fi
 # Wine's 32-bit GL and Vulkan stack lives in [multilib]. The live root is
 # Arch's, and its pacman.conf may have the section or not; the disc carries
@@ -520,6 +563,7 @@ post
 
 # 7. the chroot: the machine is configured there, and it builds the shell.
 step "[7/8] CHROOT"
+install -Dm644 /etc/pacman.d/finnos-mirrorlist /mnt/etc/pacman.d/finnos-mirrorlist
 mkdir -p /mnt/root
 if [ -n "$SRC" ]; then
     # The disc carries the whole tree: the chroot script, the assets and the

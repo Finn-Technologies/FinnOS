@@ -12,10 +12,10 @@
 # What it does not do is build the shell — that is `make && make install`
 # in /opt/finnos, on a machine that has the DRM headers and a display.
 #
-# The units it installs are the same files the disc carries; the only copy
-# that is not used here is airootfs/etc/mkinitcpio.conf, which is the live
-# medium's initramfs and would be wrong on a machine that boots from a
-# partition.
+# The units it installs are the same files the disc carries. The one config
+# it does not take from airootfs/ is mkinitcpio.conf: the live medium's copy
+# has archiso hooks and would be wrong on a machine that boots from a
+# partition, so installed/etc/mkinitcpio.conf is used instead.
 set -euo pipefail
 set -x
 
@@ -56,6 +56,9 @@ if [ "$ARCH" = "x86_64" ]; then
 fi
 install -m644 "$PACMAN_CONF_TMP" /etc/pacman.conf
 rm -f "$PACMAN_CONF_TMP"
+if [ -f "$ROOT/repo/finnos-mirrorlist" ]; then
+    install -Dm644 "$ROOT/repo/finnos-mirrorlist" /etc/pacman.d/finnos-mirrorlist
+fi
 
 # The x86_64 list names lib32-mesa and wine, which live in [multilib]. A
 # missing repository section is not a smaller install: pacman cannot resolve
@@ -165,6 +168,26 @@ fc-cache -f >/dev/null
 fc-match "Fixel Display" || echo "WARN: Fixel Display not matched, fallback active"
 ls /usr/share/finn/icons/ | wc -l
 
+# 8b. the boot splash. The Finn mark lives in the initramfs, so Plymouth is
+#     on the framebuffer before the text console can blink a cursor. Install
+#     the theme, its config and the machine's initramfs config from base/,
+#     then rebuild: a theme on disk that never reached the image is a theme
+#     nobody sees. The live medium carries the same four theme files.
+mkdir -p /usr/share/plymouth/themes/finnos /etc/plymouth
+for f in finnos.plymouth finnos.script mark.png bar-track.png bar-fill.png bar-cap-l.png bar-cap-r.png; do
+    install -m644 "$HERE/airootfs/usr/share/plymouth/themes/finnos/$f" \
+        "/usr/share/plymouth/themes/finnos/$f"
+done
+install -m644 "$HERE/airootfs/etc/plymouth/plymouthd.conf" /etc/plymouth/plymouthd.conf
+install -m644 "$HERE/installed/etc/mkinitcpio.conf" /etc/mkinitcpio.conf
+systemctl enable plymouth-start.service 2>/dev/null ||
+    echo "WARN: plymouth-start.service is not available"
+if command -v mkinitcpio >/dev/null 2>&1; then
+    mkinitcpio -P 2>/dev/null || echo "WARN: initramfs rebuild failed; the boot mark is not in the image yet"
+else
+    echo "WARN: mkinitcpio is missing; the installed kernel keeps its old initramfs"
+fi
+
 # 9. the branding. os-release is what tools read to know what this machine
 #    is; issue and motd are what a person reads at the console. The issue
 #    and motd under airootfs are the install medium's, and say so; a machine
@@ -190,7 +213,7 @@ fi
 # 10. the sources, so the machine can build the compositor and the control
 #     plane. This is the machine with the DRM headers.
 mkdir -p /opt/finnos
-for d in src assets ui apps sdk docs base vm tools; do
+for d in src assets ui apps sdk docs base vm tools repo; do
     cp -r "$ROOT/$d" /opt/finnos/ 2>/dev/null || true
 done
 for f in Makefile CMakeLists.txt VERSION README.md NAMING.md; do

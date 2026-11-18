@@ -95,6 +95,7 @@ get /etc/os-release base/airootfs/etc/os-release
 get /etc/issue base/installed/etc/issue
 get /etc/motd base/installed/etc/motd
 get /etc/pacman.conf base/pacman.conf
+get /etc/pacman.d/finnos-mirrorlist repo/finnos-mirrorlist
 if [ "$(uname -m)" = 'x86_64' ]; then
     MULTILIB_CONF="$(mktemp)"
     get "$MULTILIB_CONF" base/pacman.multilib.conf
@@ -186,6 +187,21 @@ else
 fi
 chown -R root:finn /usr/share/finn /var/lib/finn
 ls /usr/share/finn/icons/
+
+step "the boot splash"
+# The Finn mark is on the framebuffer before the text console can draw its
+# blinking underscore. These are the same files the live disc and
+# base/setup.sh install; mkinitcpio -P below folds them into this machine's
+# initramfs, so the mark survives a reboot of the installed system.
+get /etc/plymouth/plymouthd.conf base/airootfs/etc/plymouth/plymouthd.conf
+get /etc/mkinitcpio.conf base/installed/etc/mkinitcpio.conf
+mkdir -p /usr/share/plymouth/themes/finnos
+for f in finnos.plymouth finnos.script mark.png bar-track.png bar-fill.png bar-cap-l.png bar-cap-r.png; do
+    get "/usr/share/plymouth/themes/finnos/$f" \
+        "base/airootfs/usr/share/plymouth/themes/finnos/$f"
+done
+systemctl enable plymouth-start.service 2>/dev/null ||
+    echo "WARN: plymouth-start.service is not available"
 
 step "the system units"
 get /etc/systemd/system/finn-comp.service base/finn-comp.service
@@ -296,7 +312,7 @@ cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_DISTRIBUTOR="FinnOS"
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3$serial_args"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3$serial_args"
 GRUB_DISABLE_OS_PROBER=true
 EOF
 
@@ -312,7 +328,7 @@ else
     if bootctl --esp-path=/boot install 2>&1 | tail -5; then
         mkdir -p /boot/loader/entries
         printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
-        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet loglevel=3%s\n' \
+        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
             "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
         efi=1
         echo "BOOTLOADER=systemd-boot"

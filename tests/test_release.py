@@ -6,9 +6,12 @@ must agree with the control plane: the version, the asset name, and the files
 the package has to carry for a running system to be replaceable.
 """
 
+import hashlib
 import os
 import re
 import stat
+import subprocess
+import tempfile
 import unittest
 
 
@@ -62,6 +65,147 @@ class RuntimeReleaseTest(unittest.TestCase):
         body = self.read("docs", "hardware.md")
         self.assertIn("aarch64 development VM", body)
         self.assertIn("Not verified", body)
+
+
+class FinnRepoToolingTest(unittest.TestCase):
+    """Verify FinnOS package repo layout, key custody guards, and mirrorlists."""
+
+    def read(self, *parts):
+        with open(os.path.join(ROOT, *parts), "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_pacman_conf_puts_signed_finnos_repo_before_upstream(self):
+        conf = self.read("base", "pacman.conf")
+        finnos_m = re.search(r"(?m)^\[finnos\]\s*$", conf)
+        core_m = re.search(r"(?m)^\[core\]\s*$", conf)
+        extra_m = re.search(r"(?m)^\[extra\]\s*$", conf)
+        self.assertIsNotNone(finnos_m)
+        self.assertIsNotNone(core_m)
+        self.assertIsNotNone(extra_m)
+        self.assertLess(finnos_m.start(), core_m.start())
+        self.assertLess(finnos_m.start(), extra_m.start())
+
+        section = conf[finnos_m.start():core_m.start()]
+        self.assertIn("SigLevel = Required", section)
+        self.assertIn("Server = https://repo.finnos.org/$repo/os/$arch", section)
+
+    def test_repo_directory_and_mirrorlist_template_exist(self):
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, "repo", "README.md")))
+        mirrorlist = self.read("repo", "finnos-mirrorlist")
+        self.assertIn("https://repo.finnos.org/$repo/os/$arch", mirrorlist)
+        self.assertNotIn("geo.mirror.pkgbuild.com", mirrorlist)
+
+        for script in ("gen-signing-key.sh", "publish.sh"):
+            path = os.path.join(ROOT, "repo", script)
+            self.assertTrue(os.path.isfile(path), script)
+            self.assertTrue(os.stat(path).st_mode & stat.S_IXUSR, script)
+            syntax = subprocess.run(
+                ["bash", "-n", path],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(syntax.returncode, 0, syntax.stderr)
+
+    def test_gen_signing_key_refuses_in_repo_directory_and_allows_outside_dry_run(self):
+        script = os.path.join(ROOT, "repo", "gen-signing-key.sh")
+        in_repo = subprocess.run(
+            [script, "--key-dir", os.path.join(ROOT, "repo", "private"), "--dry-run"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertNotEqual(in_repo.returncode, 0)
+        self.assertIn("inside the git repository", in_repo.stderr)
+
+        with tempfile.TemporaryDirectory() as outside:
+            ok = subprocess.run(
+                [script, "--key-dir", outside, "--dry-run"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertIn("verified outside repo", ok.stdout)
+
+    def test_publish_script_dry_run_and_validation(self):
+        script = os.path.join(ROOT, "repo", "publish.sh")
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = os.path.join(tmp, "finn-filesystem-0.1.0-1-x86_64.pkg.tar.zst")
+            with open(pkg, "wb") as handle:
+                handle.write(b"stub-package")
+            repo_dir = os.path.join(tmp, "repo")
+            res = subprocess.run(
+                [
+                    script,
+                    "--arch",
+                    "x86_64",
+                    "--gpg-key",
+                    "0123456789ABCDEF",
+                    "--repo-dir",
+                    repo_dir,
+                    "--rsync",
+                    "deploy@repo.finnos.org:/srv/repo/",
+                    "--dry-run",
+                    pkg,
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn(os.path.join(repo_dir, "finnos", "os", "x86_64"), res.stdout)
+            self.assertIn("repo-add --verify --sign --key 0123456789ABCDEF", res.stdout)
+            self.assertIn("rsync -avz --delete-after --delay-updates", res.stdout)
+
+            missing_key = subprocess.run(
+                [script, "--arch", "x86_64", "--dry-run", pkg],
+                env={k: v for k, v in os.environ.items() if k != "FINN_GPG_KEY"},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(missing_key.returncode, 0)
+
+    def test_finnos_keyring_pkgbuild_and_checksums(self):
+        pkgdir = os.path.join(ROOT, "base", "pkgbuilds", "finnos-keyring")
+        pkgbuild = self.read("base", "pkgbuilds", "finnos-keyring", "PKGBUILD")
+        self.assertIn("pkgname=finnos-keyring", pkgbuild)
+        self.assertIn("install=finnos-keyring.install", pkgbuild)
+        self.assertIn("etc/pacman.d/finnos-mirrorlist", pkgbuild)
+        self.assertIn("if [ ! -s \"$srcdir/finnos.gpg\" ]", pkgbuild)
+
+        for fname in ("finnos.gpg", "finnos-trusted", "finnos-revoked"):
+            path = os.path.join(pkgdir, fname)
+            self.assertTrue(os.path.isfile(path), fname)
+            with open(path, "rb") as handle:
+                digest = hashlib.sha256(handle.read()).hexdigest()
+            self.assertIn(digest, pkgbuild, fname)
+
+    def test_installer_replaces_hardcoded_geo_mirror_with_finnos_mirrorlist(self):
+        installer = self.read("vm", "finn-install.sh")
+        self.assertNotIn("geo.mirror.pkgbuild.com", installer)
+        self.assertIn("/etc/pacman.d/finnos-mirrorlist", installer)
+        self.assertIn("/mnt/etc/pacman.d/finnos-mirrorlist", installer)
+        self.assertIn("fallback", installer.lower())
+
+        setup = self.read("base", "setup.sh")
+        chroot = self.read("vm", "finn-chroot.sh")
+        self.assertIn("/etc/pacman.d/finnos-mirrorlist", setup)
+        self.assertIn("/etc/pacman.d/finnos-mirrorlist", chroot)
+
+    def test_docs_repo_exists_and_links_ota(self):
+        doc = self.read("docs", "repo.md")
+        self.assertIn("(ota.md)", doc)
+        self.assertIn("repo/gen-signing-key.sh", doc)
+        self.assertIn("repo/publish.sh", doc)
+        self.assertIn("finnos-keyring", doc)
+        self.assertIn("SigLevel = Required", doc)
 
 
 if __name__ == "__main__":
