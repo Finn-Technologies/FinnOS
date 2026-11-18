@@ -7,12 +7,14 @@
 #include <FinnSDK/FinnSDK.hpp>
 #include <QDBusAbstractAdaptor>
 #include <QDateTime>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
 #include <QVector>
 
+class QTimer;
 class QVBoxLayout;
 
 namespace finn::shell {
@@ -51,9 +53,12 @@ signals:
     void notificationClosedSignal(quint32 id, quint32 reason);
 
 private:
+    void cancelPopupTimer(quint32 id);
+
     quint32 next_id_ = 1;
     QVector<NotificationEntry> history_;
     QVector<NotificationEntry> active_popups_;
+    QHash<quint32, QTimer*> active_timers_;
     NotificationOverlay* overlay_ = nullptr;
 };
 

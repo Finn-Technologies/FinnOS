@@ -9,17 +9,20 @@
 #include <QString>
 #include <QVector>
 #include <functional>
+#include <memory>
 
 #include "session/app_registry.hpp"
 #include "shell/foreign_windows.hpp"
 #include "shell/notifications.hpp"
+#include "shell/shell_layout.hpp"
 
 class QGridLayout;
 class QHBoxLayout;
 class QLabel;
 class QLineEdit;
+class QPixmap;
+class QProcess;
 class QVBoxLayout;
-class QVariantAnimation;
 
 namespace finn::shell {
 
@@ -60,6 +63,8 @@ private:
     };
 
     void rebuildHits();
+    void activateHit(const HitItem& h);
+    void applyResponsiveLayout();
     std::vector<const finn::App*> favoriteApps() const;
     std::vector<const finn::App*> categoryApps(const QString& category) const;
     std::vector<const finn::App*> recentApps() const;
@@ -68,9 +73,10 @@ private:
     ShellActions actions_;
     QString active_category_;
     QVector<HitItem> hits_;
-    QVariantAnimation* open_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> open_anim_;
     qreal open_progress_ = 1.0;
     int hovered_hit_ = -1;
+    int focused_hit_ = -1;
 };
 
 class SpotlightPopover final : public finn::ui::FinnLayerWindow {
@@ -109,12 +115,13 @@ private:
     void updateResults(const QString& query);
     void activateSelected();
     void applyQueryEditTheme();
+    void applyResponsiveLayout();
     void updatePopoverInputRegions();
 
     const std::vector<finn::App>* apps_;
     ShellActions actions_;
     QLineEdit* query_edit_ = nullptr;
-    QVariantAnimation* open_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> open_anim_;
     qreal open_progress_ = 1.0;
     QVector<SearchHit> empty_app_hits_;
     QVector<SearchHit> empty_query_hits_;
@@ -157,15 +164,18 @@ private:
     };
 
     void syncSystemState();
+    void applyResponsiveLayout();
+    void activateTarget(ControlTarget target);
     ControlTarget targetAt(const QPointF& pos) const;
     void updateHoverTooltip(ControlTarget target);
 
     ShellActions actions_;
     finn::ui::FinnSlider* brightness_slider_ = nullptr;
     finn::ui::FinnSlider* volume_slider_ = nullptr;
-    QVariantAnimation* open_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> open_anim_;
     qreal open_progress_ = 1.0;
     ControlTarget hovered_ = ControlTarget::None;
+    int focused_target_idx_ = -1;
 };
 
 class OpenWindowsPopover final : public finn::ui::FinnLayerWindow {
@@ -185,13 +195,14 @@ protected:
 
 private:
     void rebuildCards();
+    void applyResponsiveLayout();
 
     ForeignWindowsManager* windows_;
     QVBoxLayout* outer_layout_ = nullptr;
     finn::ui::FinnGlassPanel* panel_ = nullptr;
     QWidget* grid_host_ = nullptr;
     QGridLayout* grid_layout_ = nullptr;
-    QVariantAnimation* open_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> open_anim_;
     qreal open_progress_ = 1.0;
 };
 
@@ -200,7 +211,8 @@ class LockScreenWindow final : public finn::ui::FinnLayerWindow {
 
 public:
     explicit LockScreenWindow(QWidget* parent = nullptr);
-    void lockNow();
+    ~LockScreenWindow() override;
+    Q_INVOKABLE void lockNow();
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -217,6 +229,12 @@ private:
     void loadUsers();
     void selectUser(const QString& username);
     void attemptUnlock();
+    void startPasswordlessCheck(const QString& target_user);
+    void startSuCheck(const QString& target_user, const QString& password);
+    void finishUnlockSuccess();
+    void finishUnlockFailure(const QString& reason);
+    void setVerifying(bool verifying);
+    void switchUserSession(const QString& username);
     void shakeInput();
     void refreshTheme();
 
@@ -226,29 +244,22 @@ private:
     finn::ui::FinnLabel* user_name_lbl_ = nullptr;
     QLineEdit* password_edit_ = nullptr;
     finn::ui::FinnLabel* error_lbl_ = nullptr;
+    finn::ui::FinnIconButton* restart_btn_ = nullptr;
+    finn::ui::FinnIconButton* power_btn_ = nullptr;
     QHBoxLayout* users_row_ = nullptr;
     QWidget* auth_box_ = nullptr;
     QVector<UserAccount> users_;
     QString selected_user_;
-};
-
-class BootSplashWindow final : public finn::ui::FinnLayerWindow {
-    Q_OBJECT
-
-public:
-    explicit BootSplashWindow(QWidget* parent = nullptr);
-
-    void startBootAnimation(bool hold_open = false);
-
-protected:
-    void paintEvent(QPaintEvent* event) override;
-    void mousePressEvent(QMouseEvent* event) override;
-    void keyPressEvent(QKeyEvent* event) override;
-
-private:
-    finn::ui::FinnRibbonAnimation* ribbon_ = nullptr;
-    QVariantAnimation* fade_anim_ = nullptr;
-    qreal opacity_ = 1.0;
+    QPixmap lock_wallpaper_;
+    QProcess* auth_proc_ = nullptr;
+    QProcess* switch_proc_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> shake_anim_;
+    qreal shake_offset_ = 0.0;
+    bool verifying_ = false;
+    bool clock_dark_bg_ = true;
+    bool auth_dark_bg_ = true;
+    bool actions_dark_bg_ = true;
+    bool bg_is_dark_ = true;
 };
 
 }  // namespace finn::shell

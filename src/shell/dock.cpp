@@ -5,38 +5,32 @@
 
 #include <QAbstractButton>
 #include <QDateTime>
-#include <QEasingCurve>
 #include <QEnterEvent>
 #include <QEvent>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QStringList>
 #include <QTimer>
-#include <QVariantAnimation>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <utility>
 
+#include "shell/shell_layout.hpp"
 #include "system/desktop_services.hpp"
 
 namespace finn::shell {
 namespace {
 
-QColor dockGlassFill(bool dark) {
-    return dark ? QColor(0x28, 0x2C, 0x37, 0xCC) : QColor(255, 255, 255, 0xB2);
-}
-
-QColor dockHighlightFill(bool dark) {
-    return dark ? QColor(0x3A, 0x40, 0x50) : QColor(255, 255, 255);
-}
-
-void paintPillBackground(QPainter& p, const QRectF& rect, qreal radius, bool dark) {
-    p.setPen(Qt::NoPen);
-    p.setBrush(dockGlassFill(dark));
-    p.drawRoundedRect(rect, radius, radius);
+void paintPillBackground(QPainter& p, const QRectF& rect, qreal radius,
+                         const finn::ui::FinnTokens& t) {
+    p.setPen(QPen(t.hair, 1.0));
+    p.setBrush(shell_dock_fill(t));
+    p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
 }
 
 void paintDockGlyph(QPainter& p, const QRectF& rect, const QString& icon_name,
@@ -60,24 +54,19 @@ public:
           activated_(activated) {
         setFixedSize(32, 38);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(app_id_);
 
-        hover_anim_ = new QVariantAnimation(this);
-        hover_anim_->setDuration(140);
-        hover_anim_->setEasingCurve(QEasingCurve::OutCubic);
-        connect(hover_anim_, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& val) {
-                    hover_progress_ = val.toReal();
-                    update();
-                });
-
-        bounce_anim_ = new QVariantAnimation(this);
-        bounce_anim_->setDuration(260);
-        bounce_anim_->setEasingCurve(QEasingCurve::OutCubic);
-        connect(bounce_anim_, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& val) {
-                    bounce_offset_ = val.toReal();
-                    update();
-                });
+        hover_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kSnappy, 0.0, [this](double val) {
+                hover_progress_ = std::clamp(val, 0.0, 1.2);
+                update();
+            });
+        bounce_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kBouncy, 0.0, [this](double val) {
+                bounce_offset_ = std::clamp(val, -6.0, 2.0);
+                update();
+            });
     }
 
     const QString& appId() const { return app_id_; }
@@ -96,44 +85,33 @@ public:
     }
 
     void triggerBounce() {
-        if (finn::ui::FinnThemeManager::instance().reducedMotion()) return;
-        bounce_anim_->stop();
-        bounce_anim_->setStartValue(0.0);
-        bounce_anim_->setKeyValueAt(0.42, -4.0);
-        bounce_anim_->setEndValue(0.0);
-        bounce_anim_->start();
+        if (finn::ui::reduced_motion()) return;
+        bounce_anim_->impulse(-140.0, 0.0);
     }
 
 protected:
     void enterEvent(QEnterEvent* event) override {
         hovered_ = true;
-        if (finn::ui::FinnThemeManager::instance().reducedMotion()) {
-            hover_anim_->stop();
-            hover_progress_ = 1.0;
-            update();
-        } else {
-            hover_anim_->stop();
-            hover_anim_->setStartValue(hover_progress_);
-            hover_anim_->setEndValue(1.0);
-            hover_anim_->start();
-        }
+        hover_anim_->retarget(1.0);
         QAbstractButton::enterEvent(event);
     }
 
     void leaveEvent(QEvent* event) override {
         hovered_ = false;
         pressed_ = false;
-        if (finn::ui::FinnThemeManager::instance().reducedMotion()) {
-            hover_anim_->stop();
-            hover_progress_ = 0.0;
-            update();
-        } else {
-            hover_anim_->stop();
-            hover_anim_->setStartValue(hover_progress_);
-            hover_anim_->setEndValue(0.0);
-            hover_anim_->start();
-        }
+        hover_anim_->retarget(0.0);
         QAbstractButton::leaveEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+            event->key() == Qt::Key_Space) {
+            triggerBounce();
+            if (on_activate_) on_activate_();
+            event->accept();
+            return;
+        }
+        QAbstractButton::keyPressEvent(event);
     }
 
     void mousePressEvent(QMouseEvent* event) override {
@@ -157,6 +135,7 @@ protected:
     }
 
     void paintEvent(QPaintEvent*) override {
+        const auto& t = finn::ui::FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -171,7 +150,7 @@ protected:
 
         const QRectF r(0.0, 0.0, 32.0, 32.0);
         QPainterPath clip;
-        clip.addRoundedRect(r, 8.0, 8.0);
+        clip.addRoundedRect(r, finn::ui::radii::r_md, finn::ui::radii::r_md);
         p.setClipPath(clip);
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
@@ -182,23 +161,22 @@ protected:
         }
 
         if (hovered_ || pressed_) {
-            const bool dark = finn::ui::FinnThemeManager::instance().isDark();
-            const QColor veil = pressed_
-                                    ? (dark ? QColor(255, 255, 255, 42)
-                                            : QColor(0, 0, 0, 28))
-                                    : (dark ? QColor(255, 255, 255, 24)
-                                            : QColor(255, 255, 255, 48));
-            p.fillRect(r, veil);
+            p.fillRect(r, pressed_ ? shell_pressed_fill(t) : shell_hover_fill(t));
         }
         p.restore();
+
+        if (hasFocus()) {
+            draw_focus_ring(p, QRectF(0.0, 3.0, 32.0, 34.0),
+                            finn::ui::radii::r_md, t);
+        }
     }
 
 private:
     QString app_id_;
     QString icon_name_;
     std::function<void()> on_activate_;
-    QVariantAnimation* hover_anim_ = nullptr;
-    QVariantAnimation* bounce_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> hover_anim_;
+    std::unique_ptr<ShellSpringDriver> bounce_anim_;
     qreal hover_progress_ = 0.0;
     qreal bounce_offset_ = 0.0;
     bool running_ = false;
@@ -219,7 +197,7 @@ protected:
         const auto& t = finn::ui::FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        paintPillBackground(p, QRectF(rect()), 12.0, t.dark);
+        paintPillBackground(p, QRectF(rect()), finn::ui::radii::r_lg, t);
 
         const auto buttons = findChildren<QAbstractButton*>();
         for (const QAbstractButton* abtn : buttons) {
@@ -227,7 +205,7 @@ protected:
             if (!btn || !btn->isRunning()) continue;
             const QColor dot = btn->isActivated()
                                    ? t.accent
-                                   : QColor(t.ink.red(), t.ink.green(), t.ink.blue(), 150);
+                                   : with_alpha(t.ink, 150);
             p.setPen(Qt::NoPen);
             p.setBrush(dot);
             p.drawRoundedRect(QRectF(btn->x() + 13.0, 40.0, 6.0, 2.0), 1.0, 1.0);
@@ -264,24 +242,19 @@ public:
         setFixedSize(130, 44);
         setMouseTracking(true);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("Search, Home, and Open Windows"));
 
-        highlight_x_anim_ = new QVariantAnimation(this);
-        highlight_x_anim_->setDuration(160);
-        highlight_x_anim_->setEasingCurve(QEasingCurve::OutCubic);
-        connect(highlight_x_anim_, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& val) {
-                    highlight_x_ = val.toReal();
-                    update();
-                });
-
-        highlight_opacity_anim_ = new QVariantAnimation(this);
-        highlight_opacity_anim_->setDuration(160);
-        highlight_opacity_anim_->setEasingCurve(QEasingCurve::OutCubic);
-        connect(highlight_opacity_anim_, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& val) {
-                    highlight_opacity_ = val.toReal();
-                    update();
-                });
+        highlight_x_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kSnappy, 43.0, [this](double val) {
+                highlight_x_ = val;
+                update();
+            });
+        highlight_opacity_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kSnappy, 0.0, [this](double val) {
+                highlight_opacity_ = std::clamp(val, 0.0, 1.0);
+                update();
+            });
     }
 
     void setActivePopovers(bool search, bool home, bool windows_open) {
@@ -296,43 +269,18 @@ public:
         constexpr qreal kSlotX[3] = {0.0, 43.0, 86.0};
         const int next_slot =
             search ? 0 : (home ? 1 : (windows_open ? 2 : -1));
-        const bool reduced = finn::ui::FinnThemeManager::instance().reducedMotion();
 
         if (next_slot >= 0) {
             const qreal target_x = kSlotX[next_slot];
-            if (reduced) {
-                highlight_x_anim_->stop();
-                highlight_opacity_anim_->stop();
-                highlight_x_ = target_x;
-                highlight_opacity_ = 1.0;
-            } else if (active_slot_ >= 0 && active_slot_ != next_slot) {
-                highlight_x_anim_->stop();
-                highlight_x_anim_->setStartValue(highlight_x_);
-                highlight_x_anim_->setEndValue(target_x);
-                highlight_x_anim_->start();
-
-                highlight_opacity_anim_->stop();
-                highlight_opacity_ = 1.0;
+            if (active_slot_ >= 0 && active_slot_ != next_slot) {
+                highlight_x_anim_->retarget(target_x);
+                highlight_opacity_anim_->set(1.0);
             } else {
-                highlight_x_ = target_x;
-                highlight_opacity_anim_->stop();
-                highlight_opacity_anim_->setDuration(160);
-                highlight_opacity_anim_->setStartValue(highlight_opacity_);
-                highlight_opacity_anim_->setEndValue(1.0);
-                highlight_opacity_anim_->start();
+                highlight_x_anim_->set(target_x);
+                highlight_opacity_anim_->retarget(1.0);
             }
         } else {
-            if (reduced) {
-                highlight_x_anim_->stop();
-                highlight_opacity_anim_->stop();
-                highlight_opacity_ = 0.0;
-            } else {
-                highlight_opacity_anim_->stop();
-                highlight_opacity_anim_->setDuration(140);
-                highlight_opacity_anim_->setStartValue(highlight_opacity_);
-                highlight_opacity_anim_->setEndValue(0.0);
-                highlight_opacity_anim_->start();
-            }
+            highlight_opacity_anim_->retarget(0.0);
         }
         active_slot_ = next_slot;
         update();
@@ -349,20 +297,7 @@ protected:
         const int next = slotAtX(event->position().x());
         if (next != hover_slot_) {
             hover_slot_ = next;
-            switch (hover_slot_) {
-                case 0:
-                    setToolTip(QStringLiteral("Search (Alt+Space)"));
-                    break;
-                case 1:
-                    setToolTip(QStringLiteral("Home (Super)"));
-                    break;
-                case 2:
-                    setToolTip(QStringLiteral("Open Windows"));
-                    break;
-                default:
-                    setToolTip({});
-                    break;
-            }
+            updateSlotTooltip(hover_slot_);
             update();
         }
         QWidget::mouseMoveEvent(event);
@@ -376,21 +311,36 @@ protected:
         QWidget::leaveEvent(event);
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Left) {
+            focused_slot_ = (focused_slot_ + 2) % 3;
+            updateSlotTooltip(focused_slot_);
+            update();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Right) {
+            focused_slot_ = (focused_slot_ + 1) % 3;
+            updateSlotTooltip(focused_slot_);
+            update();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+            event->key() == Qt::Key_Space) {
+            activateSlot(focused_slot_);
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton) {
-            switch (slotAtX(event->position().x())) {
-                case 0:
-                    if (on_search_) on_search_();
-                    return;
-                case 1:
-                    if (on_home_) on_home_();
-                    return;
-                case 2:
-                    if (on_windows_) on_windows_();
-                    return;
-                default:
-                    break;
-            }
+            const int slot = slotAtX(event->position().x());
+            focused_slot_ = slot;
+            activateSlot(slot);
+            return;
         }
         QWidget::mousePressEvent(event);
     }
@@ -400,23 +350,24 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        paintPillBackground(p, QRectF(0.0, 0.0, 130.0, 44.0), 12.0, t.dark);
+        paintPillBackground(p, QRectF(0.0, 0.0, 130.0, 44.0),
+                            finn::ui::radii::r_lg, t);
 
         constexpr qreal slot_x[3] = {0.0, 43.0, 86.0};
         if (hover_slot_ >= 0 && hover_slot_ < 3 && hover_slot_ != active_slot_) {
             const QRectF box(slot_x[hover_slot_], 0.0, 44.0, 44.0);
             p.setPen(Qt::NoPen);
-            p.setBrush(t.dark ? QColor(255, 255, 255, 26)
-                              : QColor(255, 255, 255, 82));
-            p.drawRoundedRect(box, 12.0, 12.0);
+            p.setBrush(shell_hover_fill(t));
+            p.drawRoundedRect(box, finn::ui::radii::r_lg, finn::ui::radii::r_lg);
         }
 
         if (highlight_opacity_ > 0.01) {
-            QColor hl = dockHighlightFill(t.dark);
+            QColor hl = with_alpha(t.tile_on, t.dark ? 220 : 236);
             hl.setAlphaF(hl.alphaF() * std::clamp(highlight_opacity_, 0.0, 1.0));
             p.setPen(Qt::NoPen);
             p.setBrush(hl);
-            p.drawRoundedRect(QRectF(highlight_x_, 0.0, 44.0, 44.0), 12.0, 12.0);
+            p.drawRoundedRect(QRectF(highlight_x_, 0.0, 44.0, 44.0),
+                              finn::ui::radii::r_lg, finn::ui::radii::r_lg);
         }
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
@@ -429,10 +380,14 @@ protected:
 
         if (has_running_windows_) {
             p.setPen(Qt::NoPen);
-            p.setBrush(windows_active_
-                           ? t.accent
-                           : QColor(t.ink.red(), t.ink.green(), t.ink.blue(), 150));
+            p.setBrush(windows_active_ ? t.accent : with_alpha(t.ink, 150));
             p.drawRoundedRect(QRectF(105.0, 40.0, 6.0, 2.0), 1.0, 1.0);
+        }
+
+        if (hasFocus()) {
+            const QRectF focus_box(slot_x[std::clamp(focused_slot_, 0, 2)], 1.0,
+                                   44.0, 42.0);
+            draw_focus_ring(p, focus_box, finn::ui::radii::r_lg, t);
         }
     }
 
@@ -443,14 +398,48 @@ private:
         return 2;
     }
 
+    void updateSlotTooltip(int slot) {
+        switch (slot) {
+            case 0:
+                setToolTip(QStringLiteral("Search (Alt+Space)"));
+                break;
+            case 1:
+                setToolTip(QStringLiteral("Home (Super)"));
+                break;
+            case 2:
+                setToolTip(QStringLiteral("Open Windows"));
+                break;
+            default:
+                setToolTip({});
+                break;
+        }
+    }
+
+    void activateSlot(int slot) {
+        switch (slot) {
+            case 0:
+                if (on_search_) on_search_();
+                break;
+            case 1:
+                if (on_home_) on_home_();
+                break;
+            case 2:
+                if (on_windows_) on_windows_();
+                break;
+            default:
+                break;
+        }
+    }
+
     std::function<void()> on_search_;
     std::function<void()> on_home_;
     std::function<void()> on_windows_;
-    QVariantAnimation* highlight_x_anim_ = nullptr;
-    QVariantAnimation* highlight_opacity_anim_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> highlight_x_anim_;
+    std::unique_ptr<ShellSpringDriver> highlight_opacity_anim_;
     qreal highlight_x_ = 43.0;
     qreal highlight_opacity_ = 0.0;
     int active_slot_ = -1;
+    int focused_slot_ = 1;
     bool search_active_ = false;
     bool home_active_ = false;
     bool windows_active_ = false;
@@ -465,6 +454,8 @@ public:
         setAttribute(Qt::WA_TranslucentBackground);
         setFixedSize(130, 44);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("Control Center and System Status"));
     }
 
     void setActive(bool active) {
@@ -519,6 +510,17 @@ protected:
         QWidget::leaveEvent(event);
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+             event->key() == Qt::Key_Space) &&
+            on_click_) {
+            on_click_();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton && on_click_) {
             on_click_();
@@ -532,22 +534,21 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        paintPillBackground(p, QRectF(0.0, 0.0, 130.0, 44.0), 12.0, t.dark);
+        paintPillBackground(p, QRectF(0.0, 0.0, 130.0, 44.0),
+                            finn::ui::radii::r_lg, t);
 
         if (active_) {
             p.setPen(Qt::NoPen);
-            p.setBrush(t.dark ? QColor(0x3A, 0x40, 0x50, 0xCC)
-                              : QColor(255, 255, 255, 0xB2));
+            p.setBrush(with_alpha(t.tile_on, t.dark ? 216 : 228));
             p.drawRoundedRect(QRectF(3.0, 3.0, 124.0, 38.0), 9.0, 9.0);
         } else if (hovered_) {
             p.setPen(Qt::NoPen);
-            p.setBrush(t.dark ? QColor(255, 255, 255, 22)
-                              : QColor(255, 255, 255, 72));
+            p.setBrush(shell_hover_fill(t));
             p.drawRoundedRect(QRectF(3.0, 3.0, 124.0, 38.0), 9.0, 9.0);
         }
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
-        const QColor dim_ink(t.ink.red(), t.ink.green(), t.ink.blue(), 115);
+        const QColor dim_ink = with_alpha(t.ink, 115);
 
         paintDockGlyph(p, QRectF(8.0, 8.0, 28.0, 28.0),
                        QStringLiteral("volume-02"),
@@ -558,6 +559,11 @@ protected:
                        wifi_dimmed_ ? dim_ink : t.ink, dpr);
         paintDockGlyph(p, QRectF(94.0, 8.0, 28.0, 28.0),
                        QStringLiteral("battery"), t.ink, dpr);
+
+        if (hasFocus()) {
+            draw_focus_ring(p, QRectF(0.0, 0.0, 130.0, 44.0),
+                            finn::ui::radii::r_lg, t);
+        }
     }
 
 private:
@@ -575,13 +581,26 @@ public:
         setAttribute(Qt::WA_TranslucentBackground);
         setFixedSize(154, 44);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("Date, Time, and Notifications"));
+        refreshTime();
+    }
+
+    void setCompact(bool compact) {
+        if (compact_ == compact) return;
+        compact_ = compact;
+        date_str_.clear();
+        time_str_.clear();
         refreshTime();
     }
 
     void refreshTime() {
         const QDateTime now = QDateTime::currentDateTime();
-        const QString next_date = now.toString(QStringLiteral("ddd d MMM"));
-        const QString next_time = now.toString(QStringLiteral("  HH:mm"));
+        const QString next_date =
+            compact_ ? QString() : now.toString(QStringLiteral("ddd d MMM"));
+        const QString next_time =
+            compact_ ? now.toString(QStringLiteral("HH:mm"))
+                     : now.toString(QStringLiteral("  HH:mm"));
         if (next_date == date_str_ && next_time == time_str_) return;
 
         date_str_ = next_date;
@@ -592,7 +611,7 @@ public:
         font.setWeight(QFont::Normal);
         const QFontMetrics fm(font);
         const int needed = fm.horizontalAdvance(date_str_ + time_str_) + 18;
-        setFixedWidth(std::max(154, needed));
+        setFixedWidth(std::max(compact_ ? 74 : 154, needed));
         update();
     }
 
@@ -607,6 +626,17 @@ protected:
         hovered_ = false;
         update();
         QWidget::leaveEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+             event->key() == Qt::Key_Space) &&
+            on_click_) {
+            on_click_();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
     }
 
     void mousePressEvent(QMouseEvent* event) override {
@@ -624,12 +654,11 @@ protected:
         p.setRenderHint(QPainter::TextAntialiasing, true);
 
         const QRectF full(0.0, 0.0, static_cast<qreal>(width()), 44.0);
-        paintPillBackground(p, full, 12.0, t.dark);
+        paintPillBackground(p, full, finn::ui::radii::r_lg, t);
 
         if (hovered_) {
             p.setPen(Qt::NoPen);
-            p.setBrush(t.dark ? QColor(255, 255, 255, 20)
-                              : QColor(255, 255, 255, 64));
+            p.setBrush(shell_hover_fill(t));
             p.drawRoundedRect(full.adjusted(3.0, 3.0, -3.0, -3.0), 9.0, 9.0);
         }
 
@@ -641,19 +670,21 @@ protected:
         const QFontMetricsF fm(font);
         const qreal date_w = fm.horizontalAdvance(date_str_);
         const qreal time_w = fm.horizontalAdvance(time_str_);
-        const qreal start_x = (static_cast<qreal>(width()) - (date_w + time_w)) * 0.5;
+        const qreal start_x =
+            (static_cast<qreal>(width()) - (date_w + time_w)) * 0.5;
 
-        const QColor date_color =
-            t.dark ? QColor(255, 255, 255, 0xB2) : QColor(0, 0, 0, 0xB2);
-        const QColor time_color =
-            t.dark ? QColor(255, 255, 255) : QColor(0, 0, 0);
-
-        p.setPen(date_color);
-        p.drawText(QRectF(start_x, 0.0, date_w + 1.0, 44.0),
-                   Qt::AlignVCenter | Qt::AlignLeft, date_str_);
-        p.setPen(time_color);
+        p.setPen(t.dim);
+        if (!date_str_.isEmpty()) {
+            p.drawText(QRectF(start_x, 0.0, date_w + 1.0, 44.0),
+                       Qt::AlignVCenter | Qt::AlignLeft, date_str_);
+        }
+        p.setPen(t.ink);
         p.drawText(QRectF(start_x + date_w, 0.0, time_w + 1.0, 44.0),
                    Qt::AlignVCenter | Qt::AlignLeft, time_str_);
+
+        if (hasFocus()) {
+            draw_focus_ring(p, full, finn::ui::radii::r_lg, t);
+        }
     }
 
 private:
@@ -661,6 +692,71 @@ private:
     QString date_str_;
     QString time_str_;
     bool hovered_ = false;
+    bool compact_ = false;
+};
+
+class PhoneStatusBarWindow final : public finn::ui::FinnLayerWindow {
+public:
+    explicit PhoneStatusBarWindow(std::function<void()> on_click)
+        : FinnLayerWindow(Layer::Top, QStringLiteral("finn-phone-statusbar")),
+          on_click_(std::move(on_click)) {
+        setAnchors(AnchorTop | AnchorLeft | AnchorRight);
+        setKeyboardMode(KeyboardMode::None);
+        setExclusiveZone(36);
+        setDesiredSize(QSize(0, 36));
+        setCursor(Qt::PointingHandCursor);
+        setAccessibleName(QStringLiteral("Phone Status Bar"));
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() == Qt::LeftButton && on_click_) {
+            on_click_();
+            return;
+        }
+        FinnLayerWindow::mousePressEvent(event);
+    }
+
+    void paintEvent(QPaintEvent*) override {
+        const auto& t = finn::ui::FinnThemeManager::instance().tokens();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::TextAntialiasing, true);
+        p.fillRect(rect(), shell_dock_fill(t));
+        p.setPen(QPen(t.hair, 1.0));
+        p.drawLine(0, height() - 1, width(), height() - 1);
+
+        QFont font(finn::ui::primary_font_family());
+        font.setPixelSize(14);
+        font.setWeight(QFont::DemiBold);
+        p.setFont(font);
+        p.setPen(t.ink);
+        const QString time_str =
+            QDateTime::currentDateTime().toString(QStringLiteral("HH:mm"));
+        p.drawText(QRect(16, 0, 80, height()), Qt::AlignVCenter | Qt::AlignLeft,
+                   time_str);
+
+        const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
+        const auto& svc = finn::sys::FinnDesktopServices::instance();
+        const QColor dim_ink = with_alpha(t.ink, 115);
+        paintDockGlyph(p, QRectF(width() - 78.0, 9.0, 18.0, 18.0),
+                       QStringLiteral("wifi-02"),
+                       (svc.network().wifi_hardware &&
+                        !svc.network().wifi_enabled)
+                           ? dim_ink
+                           : t.ink,
+                       dpr);
+        paintDockGlyph(p, QRectF(width() - 52.0, 9.0, 18.0, 18.0),
+                       QStringLiteral("volume-02"),
+                       (svc.audio().available && svc.audio().muted) ? dim_ink
+                                                                    : t.ink,
+                       dpr);
+        paintDockGlyph(p, QRectF(width() - 28.0, 9.0, 18.0, 18.0),
+                       QStringLiteral("battery"), t.ink, dpr);
+    }
+
+private:
+    std::function<void()> on_click_;
 };
 
 DockWindow::DockWindow(const std::vector<finn::App>* apps,
@@ -675,18 +771,19 @@ DockWindow::DockWindow(const std::vector<finn::App>* apps,
     setExclusiveZone(59);
     setLayerMargins(QMargins(0, 0, 0, 15));
     setDesiredSize(QSize(0, 44));
+    setAccessibleName(QStringLiteral("Dock"));
 
-    auto* root = new QHBoxLayout(this);
-    root->setContentsMargins(16, 0, 16, 0);
-    root->setSpacing(15);
-    root->addStretch(1);
+    root_layout_ = new QHBoxLayout(this);
+    root_layout_->setContentsMargins(16, 0, 16, 0);
+    root_layout_->setSpacing(15);
+    root_layout_->addStretch(1);
 
     // Pill 1: Apps (Figma 2:285 — 254x44 for 6 pins, r=12)
     apps_pill_ = new AppsPill(this);
     apps_pill_layout_ = new QHBoxLayout(apps_pill_);
     apps_pill_layout_->setContentsMargins(6, 2, 6, 4);
     apps_pill_layout_->setSpacing(10);
-    root->addWidget(apps_pill_);
+    root_layout_->addWidget(apps_pill_);
 
     // Pill 2: Home Buttons (Figma 2:285 — 130x44, r=12)
     home_pill_ = new HomeButtonsPill(
@@ -694,17 +791,17 @@ DockWindow::DockWindow(const std::vector<finn::App>* apps,
         [this]() { emit homeClicked(); },
         [this]() { emit windowsClicked(); },
         this);
-    root->addWidget(home_pill_);
+    root_layout_->addWidget(home_pill_);
 
     // Pill 3: Hardware Options (Figma 2:285 — 130x44, r=12)
     status_pill_ = new HardwarePill([this]() { emit statusClicked(); }, this);
-    root->addWidget(status_pill_);
+    root_layout_->addWidget(status_pill_);
 
     // Pill 4: Time (Figma 2:285 — 154x44, r=12)
     time_pill_ = new TimePill([this]() { emit statusClicked(); }, this);
-    root->addWidget(time_pill_);
+    root_layout_->addWidget(time_pill_);
 
-    root->addStretch(1);
+    root_layout_->addStretch(1);
 
     auto* clock_timer = new QTimer(this);
     clock_timer->setInterval(1000);
@@ -722,8 +819,56 @@ DockWindow::DockWindow(const std::vector<finn::App>* apps,
                 &DockWindow::rebuildAppsPill);
     }
 
+    applyResponsiveLayout();
     rebuildAppsPill();
     updateStatusPill();
+}
+
+DockWindow::~DockWindow() {
+    delete phone_status_bar_;
+    phone_status_bar_ = nullptr;
+}
+
+void DockWindow::applyResponsiveLayout() {
+    const FormFactor ff = current_form_factor();
+    const int sw = primary_screen_size().width();
+
+    if (ff == FormFactor::Phone) {
+        if (!phone_status_bar_) {
+            phone_status_bar_ =
+                new PhoneStatusBarWindow([this]() { emit statusClicked(); });
+        }
+        phone_status_bar_->show();
+
+        setExclusiveZone(54);
+        setLayerMargins(QMargins(0, 0, 0, 10));
+        if (root_layout_) {
+            root_layout_->setContentsMargins(8, 0, 8, 0);
+            root_layout_->setSpacing(8);
+        }
+        if (status_pill_) status_pill_->setVisible(false);
+        if (time_pill_) time_pill_->setVisible(false);
+    } else {
+        if (phone_status_bar_) {
+            phone_status_bar_->hide();
+        }
+        const bool compact_tablet =
+            (ff == FormFactor::Tablet) && (sw < 840);
+        setExclusiveZone(ff == FormFactor::Tablet ? 52 : 59);
+        setLayerMargins(QMargins(0, 0, 0, ff == FormFactor::Tablet ? 8 : 15));
+        if (root_layout_) {
+            root_layout_->setContentsMargins(ff == FormFactor::Tablet ? 10 : 16,
+                                             0,
+                                             ff == FormFactor::Tablet ? 10 : 16,
+                                             0);
+            root_layout_->setSpacing(ff == FormFactor::Tablet ? 10 : 15);
+        }
+        if (status_pill_) status_pill_->setVisible(true);
+        if (time_pill_) {
+            time_pill_->setVisible(true);
+            time_pill_->setCompact(compact_tablet);
+        }
+    }
 }
 
 void DockWindow::updateThemeVisuals() {
@@ -731,6 +876,7 @@ void DockWindow::updateThemeVisuals() {
     if (home_pill_) home_pill_->update();
     if (status_pill_) status_pill_->update();
     if (time_pill_) time_pill_->update();
+    if (phone_status_bar_) phone_status_bar_->update();
 }
 
 void DockWindow::rebuildAppsPill() {
@@ -752,6 +898,13 @@ void DockWindow::rebuildAppsPill() {
                 shown.push_back(aid);
             }
         }
+    }
+
+    const FormFactor ff = current_form_factor();
+    const int max_visible =
+        (ff == FormFactor::Phone) ? 4 : ((ff == FormFactor::Tablet) ? 6 : 12);
+    if (shown.size() > max_visible) {
+        shown = shown.mid(0, max_visible);
     }
 
     if (shown == shown_app_ids_ && apps_pill_layout_->count() == shown.size()) {
@@ -849,20 +1002,31 @@ void DockWindow::setActivePopovers(bool home, bool windows_open, bool search,
 void DockWindow::updateStatusPill() {
     if (time_pill_) time_pill_->refreshTime();
     if (status_pill_) status_pill_->refreshServices();
+    if (phone_status_bar_) phone_status_bar_->update();
     QTimer::singleShot(0, this, &DockWindow::updateInputMask);
 }
 
 void DockWindow::updateInputMask() {
     QVector<QRect> regions;
-    if (apps_pill_) regions.push_back(apps_pill_->geometry());
-    if (home_pill_) regions.push_back(home_pill_->geometry());
-    if (status_pill_) regions.push_back(status_pill_->geometry());
-    if (time_pill_) regions.push_back(time_pill_->geometry());
+    if (apps_pill_ && apps_pill_->isVisible()) {
+        regions.push_back(apps_pill_->geometry());
+    }
+    if (home_pill_ && home_pill_->isVisible()) {
+        regions.push_back(home_pill_->geometry());
+    }
+    if (status_pill_ && status_pill_->isVisible()) {
+        regions.push_back(status_pill_->geometry());
+    }
+    if (time_pill_ && time_pill_->isVisible()) {
+        regions.push_back(time_pill_->geometry());
+    }
     setInputRegions(regions);
 }
 
 void DockWindow::resizeEvent(QResizeEvent* event) {
     FinnLayerWindow::resizeEvent(event);
+    applyResponsiveLayout();
+    rebuildAppsPill();
     updateInputMask();
 }
 
