@@ -1,4 +1,4 @@
-// Finn Store: native software hub for FinnOS Native, Linux (Arch/Flatpak/AppImage),
+// Finn Store: native software hub for FinnOS Native, Linux (pacman/Flatpak/AppImage),
 // Windows (Wine/Proton), and Android (Waydroid) applications.
 // Redesigned to match Figma Settings (20:64) 1:1 with ChromeMode::FigmaSplit,
 // 250px FinnSidebar with 26x26 circular colored icon badges, FinnHeroCard spotlight,
@@ -47,23 +47,6 @@ QString rgba_css(const QColor& c) {
         .arg(c.alpha());
 }
 
-QString scrollbar_qss(const FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }"
-               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
-               "QScrollBar::handle:horizontal:hover { background: %2; }"
-               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
-}
-
 void apply_header_16px_regular(FinnLabel* lbl) {
     if (!lbl) return;
     auto sync = [lbl]() {
@@ -86,7 +69,7 @@ void apply_log_edit_style(QPlainTextEdit* edit, const FinnTokens& t) {
                             "selection-background-color: %4; selection-color: %2; }%5")
                             .arg(t.tile.name(), t.ink.name(),
                                  rgba_css(t.hair), rgba_css(t.tile_on),
-                                 scrollbar_qss(t)));
+                                 finn::ui::scrollbar_qss(t)));
 }
 
 class StoreIconWidget final : public QWidget {
@@ -220,16 +203,6 @@ QString source_label(finn::AppSource src) {
     return QStringLiteral("App");
 }
 
-FinnBadge::Tone source_tone(finn::AppSource src) {
-    switch (src) {
-        case finn::AppSource::kNative:  return FinnBadge::Tone::Accent;
-        case finn::AppSource::kFlatpak: return FinnBadge::Tone::Success;
-        case finn::AppSource::kDesktop: return FinnBadge::Tone::Neutral;
-        case finn::AppSource::kWindows: return FinnBadge::Tone::Warning;
-        default:                        return FinnBadge::Tone::Neutral;
-    }
-}
-
 QString slugify(const QString& text) {
     QString out = text.toLower().trimmed();
     out.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
@@ -267,22 +240,23 @@ public:
                     });
         }
 
+        // The glyph says what the source is; colour is not a category here.
         sidebar_->addItem(QStringLiteral("discover"), QStringLiteral("boot-mark"),
-                          QStringLiteral("Discover"), QColor(0x00, 0x7B, 0xFF));
+                          QStringLiteral("Discover"), nav_accent_light(), nav_accent_dark());
         sidebar_->addItem(QStringLiteral("all"), QStringLiteral("store"),
-                          QStringLiteral("All Apps"), QColor(0x58, 0x56, 0xD6));
+                          QStringLiteral("All Apps"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
         sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("linux"),
-                          QStringLiteral("Linux & Flatpak"), QColor(0x22, 0xC5, 0x5E));
+                          QStringLiteral("Linux & Flatpak"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("view-open-windows"),
-                          QStringLiteral("Windows (Wine)"), QColor(0x0E, 0xA5, 0xE9));
+                          QStringLiteral("Windows (Wine)"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("android"), QStringLiteral("android"),
-                          QStringLiteral("Android"), QColor(0x10, 0xB9, 0x81));
+                          QStringLiteral("Android"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
-                          QStringLiteral("Installed & Updates"), QColor(0xF5, 0x9E, 0x0B));
+                          QStringLiteral("Installed & Updates"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal"),
-                          QStringLiteral("FinnSDK Studio"), QColor(0x64, 0x74, 0x8B));
+                          QStringLiteral("FinnSDK Studio"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
@@ -556,7 +530,7 @@ private:
         auto* name = new ElidedFinnLabel(
             QString::fromStdString(app.name),
             FinnLabel::Role::Body, FinnLabel::Tone::Ink, card);
-        name->setFont(finn_font(10.5, QFont::Medium));
+        name->setFont(finn_font_px(13, QFont::Normal));
         auto* note = new ElidedFinnLabel(
             QString::fromStdString(app.note),
             FinnLabel::Role::Caption, FinnLabel::Tone::Dim, card);
@@ -566,9 +540,11 @@ private:
         auto* meta_row = new QHBoxLayout();
         meta_row->setContentsMargins(0, 0, 0, 0);
         meta_row->setSpacing(6);
-        auto* badge = new FinnBadge(source_label(app.source),
-                                    source_tone(app.source), card);
-        meta_row->addWidget(badge);
+        // Quiet mono source text, not a blue badge on every tile.
+        auto* source = new FinnLabel(source_label(app.source),
+                                     FinnLabel::Role::Mono,
+                                     FinnLabel::Tone::Mute, card);
+        meta_row->addWidget(source);
         meta_row->addStretch(1);
         col->addLayout(meta_row);
         lay->addLayout(col, 1);
@@ -855,7 +831,7 @@ private:
         });
         root->addWidget(new FinnSettingRow(
             QStringLiteral("System & Application Updates"),
-            QStringLiteral("Query Arch Linux pacman repositories and Flathub remotes"),
+            QStringLiteral("Query pacman repositories and Flathub remotes"),
             QStringLiteral("download"), check_btn, page));
 
         updates_log_ = new QPlainTextEdit(page);
@@ -872,7 +848,7 @@ private:
         pac.start(QStringLiteral("pacman"), {QStringLiteral("-Qu")});
         if (pac.waitForFinished(2500)) {
             const QString p = QString::fromUtf8(pac.readAllStandardOutput()).trimmed();
-            out += QStringLiteral("=== Arch Packages (pacman -Qu) ===\n");
+            out += QStringLiteral("=== System Packages (pacman -Qu) ===\n");
             out += p.isEmpty() ? QStringLiteral("All system packages are up to date.\n") : p + QLatin1Char('\n');
         }
         if (!QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty()) {

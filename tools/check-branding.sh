@@ -45,6 +45,14 @@ hits="$(grep -rnI -i -E 'arch[ _-]?linux|archwiki|wiki\.archlinux|github\.com/fi
     2>/dev/null || true)"
 report_fail "apps/src/sdk" "$hits"
 
+# 2b. User-visible string literals mentioning standalone "Arch" in apps/ or src/.
+ui_hits="$(grep -rnI -E '"[^"]*\bArch\b[^"]*"' \
+    apps src \
+    --include='*.cpp' --include='*.hpp' --include='*.c' --include='*.h' \
+    --exclude-dir=build --exclude-dir='*.dSYM' \
+    2>/dev/null || true)"
+report_fail "apps/src UI strings" "$ui_hits"
+
 # 3. Top-level READMEs and docs (excluding NOTICE, CREDITS, rebrand-checklist.md,
 # and the intentional engineering-base disclosure in docs/design/contract.md:8).
 doc_hits="$(grep -rnI -i -E 'arch[ _-]?linux|archwiki|wiki\.archlinux|github\.com/finnos/finnos' \

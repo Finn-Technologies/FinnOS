@@ -270,54 +270,52 @@ public:
         resize(820, 520);
         setChromeMode(ChromeMode::FigmaSplit);
 
-        const QColor blue(0x00, 0x7B, 0xFF);
-        const QColor gray(0xAB, 0xAB, 0xAB);
-        const QColor black(0x00, 0x00, 0x00);
-        const QColor slate_dark(0x3A, 0x40, 0x50);
-        const QColor slate_mid(0x5B, 0x64, 0x72);
-        const QColor emerald(0x2E, 0x8B, 0x57);
-        const QColor amber(0xC9, 0x7A, 0x16);
+        // One accent for the live connectivity rows, one neutral for the rest.
+        const QColor accent_light = finn::ui::nav_accent_light();
+        const QColor accent_dark = finn::ui::nav_accent_dark();
+        const QColor neutral_light = finn::ui::nav_neutral_light();
+        const QColor neutral_dark = finn::ui::nav_neutral_dark();
 
         sidebar_ = new finn::ui::FinnSidebar(250, this);
         sidebar_->setHeaderTitle(QStringLiteral("Settings"));
         apply_header_16px_regular(sidebar_->headerLabel());
-        sidebar_->setSearchEnabled(true, QStringLiteral("Search anything"));
+        sidebar_->setSearchEnabled(true, QStringLiteral("Search"));
 
         sidebar_->addItem(QStringLiteral("wifi"), QStringLiteral("wifi-02"),
-                          QStringLiteral("Wi-Fi"), blue);
+                          QStringLiteral("Wi-Fi"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("bluetooth"), QStringLiteral("bluetooth"),
-                          QStringLiteral("Bluetooth"), blue);
+                          QStringLiteral("Bluetooth"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("network"), QStringLiteral("internet"),
-                          QStringLiteral("Network"), blue);
+                          QStringLiteral("Network"), accent_light, accent_dark);
         sidebar_->addSectionSpacer(20);
 
         sidebar_->addItem(QStringLiteral("general"), QStringLiteral("settings-02"),
-                          QStringLiteral("General"), gray, slate_mid);
+                          QStringLiteral("General"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("appearance"), QStringLiteral("paint-brush"),
-                          QStringLiteral("Appearance"), black, slate_dark);
+                          QStringLiteral("Appearance"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("displays"), QStringLiteral("display"),
-                          QStringLiteral("Display"), blue);
+                          QStringLiteral("Display"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("sound"), QStringLiteral("volume-02"),
-                          QStringLiteral("Sound"), blue);
+                          QStringLiteral("Sound"), accent_light, accent_dark);
         sidebar_->addSectionSpacer(12);
 
         sidebar_->addItem(QStringLiteral("accessibility"), QStringLiteral("accessibility"),
-                          QStringLiteral("Accessibility"), slate_mid);
+                          QStringLiteral("Accessibility"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("accounts"), QStringLiteral("user"),
-                          QStringLiteral("Accounts"), slate_dark);
+                          QStringLiteral("Accounts"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("privacy"), QStringLiteral("shield"),
-                          QStringLiteral("Privacy & Security"), emerald);
+                          QStringLiteral("Privacy & Security"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("update"),
-                          QStringLiteral("Updates"), amber);
+                          QStringLiteral("Updates"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("compat"), QStringLiteral("windows"),
-                          QStringLiteral("Compatibility"), gray, slate_mid);
+                          QStringLiteral("Compatibility"), neutral_light, neutral_dark);
         sidebar_->addStretch();
 
         // Pin About at the bottom of the sidebar (addFooterWidget) so it stays visible
         // below the scroll area and keeps Wi-Fi at the top matching Figma 20:64.
         about_item_ = new finn::ui::FinnNavItem(
             QStringLiteral("info"), QStringLiteral("About"), sidebar_);
-        about_item_->setBadgeColor(blue);
+        about_item_->setBadgeColor(accent_light, accent_dark);
         connect(about_item_, &QAbstractButton::clicked, this, [this]() {
             selectPage(QStringLiteral("about"));
         });
@@ -594,6 +592,34 @@ private:
             QStringLiteral("Desktop Wallpaper"),
             QStringLiteral("Displayed on the background layer behind FinnUX"),
             QStringLiteral("display"), wp_btns, page));
+
+        auto* lock_wp_btns = new QWidget(page);
+        auto* lock_wlay = new QHBoxLayout(lock_wp_btns);
+        lock_wlay->setContentsMargins(0, 0, 0, 0);
+        lock_wlay->setSpacing(6);
+        auto* choose_lock_wp = new finn::ui::FinnButton(
+            QStringLiteral("Choose Image..."), finn::ui::FinnButton::Variant::Secondary, {}, lock_wp_btns);
+        connect(choose_lock_wp, &QAbstractButton::clicked, this, [this]() {
+            const QString file = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select Lock Screen Wallpaper"), QDir::homePath(),
+                QStringLiteral("Images (*.png *.jpg *.jpeg *.webp)"));
+            if (!file.isEmpty()) {
+                finn::ui::FinnThemeManager::instance().setLockWallpaper(file);
+                showToast(QStringLiteral("Lock screen wallpaper updated"));
+            }
+        });
+        auto* reset_lock_wp = new finn::ui::FinnButton(
+            QStringLiteral("Default"), finn::ui::FinnButton::Variant::Ghost, {}, lock_wp_btns);
+        connect(reset_lock_wp, &QAbstractButton::clicked, this, [this]() {
+            finn::ui::FinnThemeManager::instance().setLockWallpaper({});
+            showToast(QStringLiteral("Restored the default lock screen wallpaper"));
+        });
+        lock_wlay->addWidget(choose_lock_wp);
+        lock_wlay->addWidget(reset_lock_wp);
+        root->addWidget(new finn::ui::FinnSettingRow(
+            QStringLiteral("Lock Screen Wallpaper"),
+            QStringLiteral("Full-screen image behind the lock screen; hidden until you unlock"),
+            QStringLiteral("lock"), lock_wp_btns, page));
 
         root->addStretch(1);
         return page;
@@ -881,7 +907,7 @@ private:
         root->addWidget(makePageHeader(QStringLiteral("Updates"), page));
 
         auto* status_row = new finn::ui::FinnSettingRow(
-            QStringLiteral("Arch Linux & FinnOS Packages"),
+            QStringLiteral("Pacman & FinnOS Packages"),
             QStringLiteral("Click Check Now to query pacman & Flatpak remotes"),
             QStringLiteral("update"), nullptr, page);
         check_updates_btn_ = new finn::ui::FinnButton(
@@ -945,7 +971,7 @@ private:
 
         const bool has_flatpak = !QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty();
         root->addWidget(new finn::ui::FinnSettingRow(
-            QStringLiteral("Linux Applications (Arch / Flatpak / AppImage)"),
+            QStringLiteral("Linux Applications (FinnOS / Flatpak / AppImage)"),
             has_flatpak ? QStringLiteral("Native Wayland/Xwayland + Flatpak runtime active")
                         : QStringLiteral("Native Wayland/Xwayland active"),
             QStringLiteral("linux"),

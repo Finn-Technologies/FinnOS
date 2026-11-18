@@ -51,6 +51,7 @@ check: test test-unit
 
 lint:
 	@scripts/lint.sh
+	@./tools/check-branding.sh
 
 install: all
 	$(MAKE) -C src/comp install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)

@@ -74,15 +74,20 @@ hooks that cannot be renamed while FinnOS builds from `archiso` and `pacman`.
 | M1 | `docs/hardware.md:17` | `"Arch Linux ARM64 has no native x86 wine package"` | `"Upstream aarch64 package repositories have no native x86 wine package"` |
 | M1 | `docs/security.md:37` | `"rely on Arch's pacman signing"` | `"rely on upstream pacman signing"` |
 | M1 | `docs/testing.md:35,58` | `"Arch + Qt6"`, `"Arch Linux ARM64"` | `"a pacman-based Linux host + Qt6"`, `"aarch64"` |
+| M1 (app UI) | `apps/settings/main.cpp:974` | `"Linux Applications (Arch / Flatpak / AppImage)"` | `"Linux Applications (FinnOS / Flatpak / AppImage)"` |
+| M1 (app UI) | `apps/store/main.cpp:1,851` | `"Linux (Arch/Flatpak/AppImage)"`, `"=== Arch Packages (pacman -Qu) ==="` | `"Linux (pacman/Flatpak/AppImage)"`, `"=== System Packages (pacman -Qu) ==="` |
 | m4 | `vm/README.md:25,40` | `"Arch Linux ARM under QEMU"`, `"Arch Linux ARM cloud image"` | `"upstream aarch64 cloud image under QEMU ... dev-only bootstrap tooling"`, `"upstream ARM64 cloud image"` |
 | m1 | `.gitignore:15-29` | Missing binary ignores for additional apps & unit tests | Added `/apps/*/finn-*`, `/tests/unit/test_spring`, `/tests/unit/test_ota` (alongside existing `test_search`, `test_compat`, `test_sys_files`) |
+
+> Note: `src/compat/wine_runner.hpp` and `src/compat/wine_runner.cpp` were
+> audited and contain no user-facing distribution branding (only CPU
+> architecture tokens `PeArch`, `host_arch`, `aarch64`, `x86_64`, `WINEARCH`).
 
 #### Remaining references outside `@rebrand` ownership (reported to `@coordinator` / owners)
 | Finding | Location (`file:line`) | Text | Owner |
 |---|---|---|---|
-| M1 (app UI) | `apps/settings/main.cpp:974` | `"Linux Applications (Arch / Flatpak / AppImage)"` | App UI (`@coordinator` to assign) |
-| M1 (app UI) | `apps/store/main.cpp:851` | `"=== Arch Packages (pacman -Qu) ==="` | App UI (`@coordinator` to assign) |
-| m2 (comments) | `base/packages.x86_64:7-10,37,50,103` | Comments naming `"Dell OptiPlex 3020"` and `"general Arch x86_64 profile"` | `@repo` |
+| M1 (SDK doc) | `docs/sdk/audit.md:71` | `"until run on the Arch Linux VM or target hardware"` | `@sdk` |
+| m2 (comments) | `base/packages.x86_64:7-10,37,50,103` | Comments naming `"Dell OptiPlex 3020"` and `"general Arch x86_64 profile"` | `@repo` (cleaned in `69ee0a1`) |
 | M1 (contract) | `docs/design/contract.md:8` | `"Arch Linux: the kernel, firmware, systemd..."` (explicitly marked engineering-base exception on lines 15–16) | `@design` |
 | B3 (fallback) | `vm/finn-install.sh:256,287,504` | Fallback comments/env (`FINN_ARCH_FALLBACK_MIRROR`) | `@repo` |
 
@@ -114,16 +119,17 @@ or embedded metadata are marked `UNVERIFIED` in [NOTICE](../NOTICE):
 
 ---
 
-## 5. Reproducible Check Proof (`tools/check-branding.sh`)
+## 5. Reproducible Check Proof (`tools/check-branding.sh` and `make lint`)
 
-Command run from repo root:
+`tools/check-branding.sh` is wired into `Makefile` (`lint:` target) and scans
+boot/identity/login surfaces, `apps/` and `src/` string literals (including
+standalone `"Arch"` in C++/header UI strings), `sdk/`, and top-level `README`/
+`docs/` (excluding `rebrand-checklist.md`, `docs/audit/`, and the intentional
+base disclosure in `docs/design/contract.md:8`).
 
-```sh
-./tools/check-branding.sh
-```
-
-Output:
-
-```text
-branding: clean (boot/identity, apps/src/sdk, README/docs, os-release)
-```
+Current status on `audit-and-ota`:
+- All owned surfaces (`os-release`, `issue`, `motd`, `boot/`, `plymouth`,
+  `apps/`, `src/`, `README.md`, `CONTRIBUTING.md`, `base/README.md`,
+  `vm/README.md`, `docs/`) pass.
+- Running `make lint` / `./tools/check-branding.sh` currently flags only
+  `docs/sdk/audit.md:71` (`"Arch Linux VM"`, owned by `@sdk`, notified on board).
