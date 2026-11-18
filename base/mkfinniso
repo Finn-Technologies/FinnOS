@@ -338,6 +338,9 @@ EOF
               "finn-shell.service:etc/systemd/system/finn-shell.service" \
               "finn-wallpaper.service:etc/systemd/system/finn-wallpaper.service" \
               "finn-failure.service:etc/systemd/system/finn-failure.service" \
+              "finn-update-check.service:etc/systemd/system/finn-update-check.service" \
+              "finn-update-check.timer:etc/systemd/system/finn-update-check.timer" \
+              "finn-boot-health.service:etc/systemd/system/finn-boot-health.service" \
               "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
     [ -f "$src" ] || { problem "missing $src"; continue; }
@@ -385,6 +388,9 @@ EOF
   say "checking the held-out files"
   [ -x "$HERE/../vm/finn-install.sh" ] || problem "vm/finn-install.sh is not executable"
   [ -f "$HERE/../vm/finn-chroot.sh" ] || problem "vm/finn-chroot.sh is missing"
+  [ -x "$ROOT/src/ota/finn-update" ] || problem "src/ota/finn-update is missing or not executable"
+  [ -f "$ROOT/src/ota/finn_ota/__init__.py" ] || problem "src/ota/finn_ota/__init__.py is missing"
+  [ -f "$ROOT/ota/grub-ab.cfg" ] || problem "ota/grub-ab.cfg is missing"
   grep -q '^ID=finnos$' "$HERE/airootfs/etc/os-release" || problem "os-release is not ID=finnos"
   grep -q '^PRETTY_NAME="FinnOS"$' "$HERE/airootfs/etc/os-release" || problem "os-release is not PRETTY_NAME=FinnOS"
   [ "$(cat "$HERE/airootfs/etc/hostname")" = 'finnos' ] || problem "the live hostname is not finnos"
@@ -468,6 +474,25 @@ build_native() {
   mkdir -p "$profile"
   cp "$HERE/profiledef.sh" "$PKGS" "$profile/"
   cp "$HERE/pacman.conf" "$profile/pacman.conf"
+  if [ -n "${FINN_REPO_URL:-}" ]; then
+    awk -v url="$FINN_REPO_URL" '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+      { print }
+    ' "$profile/pacman.conf" > "$profile/pacman.conf.tmp" &&
+      mv "$profile/pacman.conf.tmp" "$profile/pacman.conf"
+  elif ! command -v curl >/dev/null 2>&1 ||
+       ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$ARCH/finnos.db" >/dev/null 2>&1; then
+    warn "[finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in staged ISO pacman.conf so upstream fallback succeeds"
+    awk '
+      /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+      in_finnos && /^\[/ { in_finnos=0 }
+      in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+      { print }
+    ' "$profile/pacman.conf" > "$profile/pacman.conf.tmp" &&
+      mv "$profile/pacman.conf.tmp" "$profile/pacman.conf"
+  fi
   local profile_packages="$profile/$(basename "$PKGS")"
   # The live initramfs uses hooks from mkinitcpio-archiso; archiso supplies
   # the profile tooling, and BIOS-mode x86 media also needs syslinux. These

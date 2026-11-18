@@ -79,6 +79,18 @@ install: all
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m755 tools/finn-display $(DESTDIR)$(PREFIX)/bin/finn-display
 	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
+	install -m755 src/ota/finn-update $(DESTDIR)$(PREFIX)/bin/finn-update
+	install -d $(DESTDIR)$(PREFIX)/bin/finn_ota
+	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/
+	install -d $(DESTDIR)/usr/share/finn/ota
+	install -m644 ota/grub-ab.cfg $(DESTDIR)/usr/share/finn/ota/grub-ab.cfg
+	install -d $(DESTDIR)/usr/lib/systemd/system
+	install -m644 base/finn-update-check.service \
+		$(DESTDIR)/usr/lib/systemd/system/finn-update-check.service
+	install -m644 base/finn-update-check.timer \
+		$(DESTDIR)/usr/lib/systemd/system/finn-update-check.timer
+	install -m644 base/finn-boot-health.service \
+		$(DESTDIR)/usr/lib/systemd/system/finn-boot-health.service
 	install -d $(DESTDIR)/usr/bin
 	ln -sf $(PREFIX)/bin/finn-display $(DESTDIR)/usr/bin/finn-display
 	ln -sf $(PREFIX)/bin/finn-sdk $(DESTDIR)/usr/bin/finn-sdk

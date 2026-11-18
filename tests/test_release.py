@@ -207,6 +207,63 @@ class FinnRepoToolingTest(unittest.TestCase):
         self.assertIn("finnos-keyring", doc)
         self.assertIn("SigLevel = Required", doc)
 
+    def test_ota_units_and_makefile_install_are_wired(self):
+        makefile = self.read("Makefile")
+        for needle in (
+            "src/ota/finn-update",
+            "src/ota/finn_ota/*.py",
+            "ota/grub-ab.cfg",
+            "finn-update-check.service",
+            "finn-update-check.timer",
+            "finn-boot-health.service",
+        ):
+            self.assertIn(needle, makefile)
+
+        for unit in (
+            "finn-update-check.service",
+            "finn-update-check.timer",
+            "finn-boot-health.service",
+        ):
+            self.assertEqual(
+                self.read("base", unit),
+                self.read("base", "airootfs", "etc", "systemd", "system", unit),
+                unit,
+            )
+
+    def test_installer_and_chroot_support_ab_slots_and_security_defaults(self):
+        installer_sh = self.read("vm", "finn-install.sh")
+        for flag in ("--hostname", "--timezone", "--ab-slots", "FINNOS_A", "FINNOS_B", "FINNOS_DATA"):
+            self.assertIn(flag, installer_sh)
+
+        chroot_sh = self.read("vm", "finn-chroot.sh")
+        self.assertIn("passwd -l root", chroot_sh)
+        self.assertNotIn("root:%s", chroot_sh)
+        self.assertIn("FINN_AB_SLOTS", chroot_sh)
+        self.assertIn("09_finnos_ab", chroot_sh)
+        self.assertIn("finn-update-check.timer", chroot_sh)
+        self.assertIn("finn-boot-health.service", chroot_sh)
+
+        setup_sh = self.read("base", "setup.sh")
+        self.assertIn("FINN_DEV_VM", setup_sh)
+        self.assertIn("%wheel ALL=(ALL:ALL) ALL", setup_sh)
+        self.assertIn("finn-update-check.timer", setup_sh)
+        self.assertIn("offline/unprovisioned", setup_sh)
+
+    def test_gui_installer_fixes_invocation_and_zoneinfo(self):
+        cpp = self.read("apps", "installer", "main.cpp")
+        self.assertIn("finn::kFinnInstallBin", cpp)
+        self.assertIn("ext4 + FAT32 ESP", cpp)
+        self.assertNotIn("btrfs + FAT32 ESP", cpp)
+        self.assertIn("/usr/share/zoneinfo", cpp)
+        self.assertIn('"--disk"', cpp)
+        self.assertIn('"--hostname"', cpp)
+        self.assertIn('"--timezone"', cpp)
+        self.assertIn('"--ab-slots"', cpp)
+        self.assertIn('"--yes"', cpp)
+        self.assertIn("readyReadStandardError", cpp)
+        self.assertIn("QProcess::NormalExit", cpp)
+        self.assertIn("setInstallRunning", cpp)
+
 
 if __name__ == "__main__":
     unittest.main()

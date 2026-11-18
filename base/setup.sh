@@ -51,6 +51,37 @@ pacman -Rns --noconfirm xorg-server xorg-server-common \
 PACMAN_CONF_TMP="$(mktemp)"
 trap 'rm -f "$PACMAN_CONF_TMP"' EXIT
 cat "$HERE/pacman.conf" > "$PACMAN_CONF_TMP"
+if [ -n "${FINN_REPO_URL:-}" ]; then
+    awk -v url="$FINN_REPO_URL" '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+      { print }
+    ' "$PACMAN_CONF_TMP" > "${PACMAN_CONF_TMP}.new" && mv "${PACMAN_CONF_TMP}.new" "$PACMAN_CONF_TMP"
+elif [ -f "/var/lib/finn/repo/finnos/os/$ARCH/finnos.db" ]; then
+    awk '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = file:///var/lib/finn/repo/$repo/os/$arch"; next }
+      { print }
+    ' "$PACMAN_CONF_TMP" > "${PACMAN_CONF_TMP}.new" && mv "${PACMAN_CONF_TMP}.new" "$PACMAN_CONF_TMP"
+elif [ -f "$ROOT/repo/local/finnos/os/$ARCH/finnos.db" ]; then
+    awk -v root="$ROOT" '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = file://" root "/repo/local/$repo/os/$arch"; next }
+      { print }
+    ' "$PACMAN_CONF_TMP" > "${PACMAN_CONF_TMP}.new" && mv "${PACMAN_CONF_TMP}.new" "$PACMAN_CONF_TMP"
+elif ! command -v curl >/dev/null 2>&1 ||
+     ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$ARCH/finnos.db" >/dev/null 2>&1; then
+    echo "WARN: [finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in /etc/pacman.conf so upstream fallback succeeds"
+    awk '
+      /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+      in_finnos && /^\[/ { in_finnos=0 }
+      in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+      { print }
+    ' "$PACMAN_CONF_TMP" > "${PACMAN_CONF_TMP}.new" && mv "${PACMAN_CONF_TMP}.new" "$PACMAN_CONF_TMP"
+fi
 if [ "$ARCH" = "x86_64" ]; then
     cat "$HERE/pacman.multilib.conf" >> "$PACMAN_CONF_TMP"
 fi
@@ -75,15 +106,17 @@ pacman -Syu --noconfirm
 # shellcheck disable=SC2046
 pacman -S --needed --noconfirm $(list "$PKGS")
 
-# 4. the dev user: in the groups that own input, video and the seat, with
-#    sudo that does not ask. This is the dev machine, and vm/deploy.sh drives
-#    `sudo` over ssh with no terminal to ask on. It is not the installed
-#    image: the installer sets a generated password and sudo asks for it,
-#    because a passwordless root on a machine with a network is remote root
-#    after one guess.
+# 4. the user account: in the groups that own input, video and the seat.
+#    By default wheel members authenticate with their password; set
+#    FINN_DEV_VM=1 only on a local dev VM where vm/deploy.sh drives sudo
+#    non-interactively over SSH.
 id finn 2>/dev/null || useradd -m -G wheel,input,video,seat,render -s /bin/bash finn
 install -d -m755 /etc/sudoers.d
-printf 'finn ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/finn
+if [ "${FINN_DEV_VM:-0}" = "1" ]; then
+    printf 'finn ALL=(ALL:ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/finn
+else
+    printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
+fi
 chmod 0440 /etc/sudoers.d/finn
 
 # 5. the services the base needs before anything is drawn. sshd is installed
@@ -114,7 +147,18 @@ install -Dm644 "$HERE/finn-session.service" /etc/systemd/system/finn-session.ser
 install -Dm644 "$HERE/finn-shell.service"   /etc/systemd/system/finn-shell.service
 install -Dm644 "$HERE/finn-wallpaper.service" /etc/systemd/system/finn-wallpaper.service
 install -Dm644 "$HERE/finn-failure.service" /etc/systemd/system/finn-failure.service
+install -Dm644 "$HERE/finn-update-check.service" /etc/systemd/system/finn-update-check.service
+install -Dm644 "$HERE/finn-update-check.timer" /etc/systemd/system/finn-update-check.timer
+install -Dm644 "$HERE/finn-boot-health.service" /etc/systemd/system/finn-boot-health.service
 install -Dm644 "$HERE/finn-tmpfiles.conf"   /usr/lib/tmpfiles.d/finn.conf
+if [ -x "$ROOT/src/ota/finn-update" ] && [ -d "$ROOT/src/ota/finn_ota" ]; then
+    install -Dm755 "$ROOT/src/ota/finn-update" /usr/local/bin/finn-update
+    install -d /usr/local/bin/finn_ota
+    install -m644 "$ROOT/src/ota/finn_ota/"*.py /usr/local/bin/finn_ota/
+fi
+if [ -f "$ROOT/ota/grub-ab.cfg" ]; then
+    install -Dm644 "$ROOT/ota/grub-ab.cfg" /usr/share/finn/ota/grub-ab.cfg
+fi
 systemctl daemon-reload
 
 # tty2 is the rescue console: the compositor owns tty1, so tty1 is not a way
@@ -140,6 +184,9 @@ if [ -z "$missing" ]; then
         systemctl enable finn-wallpaper
     else
         echo "WARN: finn-wallpaper is missing; the desktop will use the solid theme background"
+    fi
+    if [ -x /usr/local/bin/finn-update ]; then
+        systemctl enable finn-update-check.timer finn-boot-health.service 2>/dev/null || true
     fi
     systemctl set-default graphical.target
     echo "session enabled: finn-comp on tty1, finn-session and finn-shell behind it"
@@ -213,7 +260,7 @@ fi
 # 10. the sources, so the machine can build the compositor and the control
 #     plane. This is the machine with the DRM headers.
 mkdir -p /opt/finnos
-for d in src assets ui apps sdk docs base vm tools repo; do
+for d in src assets ui apps sdk docs base vm tools repo ota; do
     cp -r "$ROOT/$d" /opt/finnos/ 2>/dev/null || true
 done
 for f in Makefile CMakeLists.txt VERSION README.md NAMING.md; do

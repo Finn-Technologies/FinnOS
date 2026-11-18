@@ -37,7 +37,8 @@ class ChrootPasswordTest(unittest.TestCase):
 
     def test_generated_password_is_reported_once(self):
         marker, output = self.run_credentials(supplied=False)
-        self.assertEqual(output.count(marker), 2)
+        self.assertEqual(output.count(marker), 1)
+        self.assertIn("locked", output)
 
 
 if __name__ == "__main__":

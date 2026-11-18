@@ -43,8 +43,8 @@ credentials() {
 
   Credentials, shown once:
     user  finn   password  $PW
-    root  root   password  $PW
-  Both accounts have the same password. Change it with: passwd
+    root  locked (use sudo as finn)
+  Change finn's password with: passwd
   sshd is installed and not enabled.
 EOF
 }
@@ -78,7 +78,12 @@ echo "ROOTUUID=$ROOTUUID"
 echo "FINN_DISK=$FINN_DISK"
 
 step "base config"
-ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+TZ_NAME="${FINN_TIMEZONE:-UTC}"
+if [ ! -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
+    echo "WARN: timezone '$TZ_NAME' not found under /usr/share/zoneinfo; falling back to UTC"
+    TZ_NAME="UTC"
+fi
+ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime
 hwclock --systohc 2>/dev/null || true
 echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
 locale-gen
@@ -89,6 +94,8 @@ echo "LANG=en_US.UTF-8" > /etc/locale.conf
 # base's too, so the desktop the base refuses is refused on the machine as
 # well, and not only on the medium it was installed from.
 get /etc/hostname base/airootfs/etc/hostname
+HOST_NAME="${FINN_HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo finnos)}"
+printf '%s\n' "$HOST_NAME" > /etc/hostname
 get /etc/os-release base/airootfs/etc/os-release
 # The live medium's issue and motd describe the medium; the machine gets
 # the installed pair, which does not tell the user to run the installer.
@@ -96,6 +103,31 @@ get /etc/issue base/installed/etc/issue
 get /etc/motd base/installed/etc/motd
 get /etc/pacman.conf base/pacman.conf
 get /etc/pacman.d/finnos-mirrorlist repo/finnos-mirrorlist
+CHROOT_ARCH="$(uname -m)"
+if [ -n "${FINN_REPO_URL:-}" ]; then
+    awk -v url="$FINN_REPO_URL" '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+      { print }
+    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+elif [ -f "/var/lib/finn/repo/finnos/os/$CHROOT_ARCH/finnos.db" ]; then
+    awk '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = file:///var/lib/finn/repo/$repo/os/$arch"; next }
+      { print }
+    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+elif ! command -v curl >/dev/null 2>&1 ||
+     ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$CHROOT_ARCH/finnos.db" >/dev/null 2>&1; then
+    echo "note: [finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in /etc/pacman.conf so upstream fallback succeeds"
+    awk '
+      /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+      in_finnos && /^\[/ { in_finnos=0 }
+      in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+      { print }
+    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+fi
 if [ "$(uname -m)" = 'x86_64' ]; then
     MULTILIB_CONF="$(mktemp)"
     get "$MULTILIB_CONF" base/pacman.multilib.conf
@@ -107,13 +139,13 @@ if [ "$(uname -m)" = 'x86_64' ]; then
     grep -Fqx '[multilib]' /etc/pacman.conf ||
         { echo "error: [multilib] was not applied to /etc/pacman.conf" >&2; exit 1; }
 fi
-printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 finnos.localdomain finnos\n' > /etc/hosts
+printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s.localdomain %s\n' "$HOST_NAME" "$HOST_NAME" > /etc/hosts
 
 step "accounts"
 # There used to be a default here - root:finn, finn:finn, passwordless sudo -
 # and on any network that is remote root after one guess. There is none now:
-# the password is the one the installer was given, or a random one, and sudo
-# asks for it.
+# finn gets the operator-supplied or generated password, root is locked, and
+# sudo asks for finn's password.
 id finn >/dev/null 2>&1 || useradd -m -G wheel,input,video,seat -s /bin/bash finn
 PW="${FINN_PASSWORD:-}"
 if [ -z "$PW" ]; then
@@ -122,8 +154,9 @@ fi
 case "$PW" in
     *:*|*$'\n'*) echo "error: the password may not contain ':' or a newline" >&2; exit 1 ;;
 esac
-printf 'root:%s\nfinn:%s\n' "$PW" "$PW" | chpasswd
-printf 'finn ALL=(ALL) ALL\n' > /etc/sudoers.d/finn
+printf 'finn:%s\n' "$PW" | chpasswd
+passwd -l root
+printf 'finn ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
 chmod 0440 /etc/sudoers.d/finn
 
 step "services"
@@ -209,6 +242,10 @@ get /etc/systemd/system/finn-session.service base/finn-session.service
 get /etc/systemd/system/finn-shell.service base/finn-shell.service
 get /etc/systemd/system/finn-wallpaper.service base/finn-wallpaper.service
 get /etc/systemd/system/finn-failure.service base/finn-failure.service
+get /etc/systemd/system/finn-update-check.service base/finn-update-check.service
+get /etc/systemd/system/finn-update-check.timer base/finn-update-check.timer
+get /etc/systemd/system/finn-boot-health.service base/finn-boot-health.service
+get /usr/share/finn/ota/grub-ab.cfg ota/grub-ab.cfg
 get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
 # A chroot has no systemd of its own to reload, and the target's systemd
 # reads its units at boot; the reload is for the live environment, so it is
@@ -268,6 +305,9 @@ if [ "$SHELL_STATE" = installed ]; then
     mkdir -p /var/lib/systemd/linger
     touch /var/lib/systemd/linger/finn
     systemctl enable finn-comp finn-session finn-shell finn-wallpaper
+    if [ -x /usr/local/bin/finn-update ]; then
+        systemctl enable finn-update-check.timer finn-boot-health.service 2>/dev/null || true
+    fi
     systemctl set-default graphical.target
     # Enabled is a file on disk, so it is checked as one: a session that was
     # never enabled is a machine that boots to a console after saying the
@@ -316,6 +356,24 @@ GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 plymouth.ign
 GRUB_DISABLE_OS_PROBER=true
 EOF
 
+if [ "${FINN_AB_SLOTS:-0}" = 1 ]; then
+    install -d /etc/grub.d /boot/grub /boot/finnos/a
+    cp /boot/vmlinuz-linux /boot/finnos/a/vmlinuz
+    cp /boot/initramfs-linux.img /boot/finnos/a/initramfs.img
+    if [ -f /usr/share/finn/ota/grub-ab.cfg ]; then
+        cat > /etc/grub.d/09_finnos_ab <<'ABEOF'
+#!/bin/sh
+cat /usr/share/finn/ota/grub-ab.cfg
+ABEOF
+        chmod 755 /etc/grub.d/09_finnos_ab
+    fi
+    if command -v grub-editenv >/dev/null 2>&1; then
+        [ -f /boot/grub/grubenv ] || grub-editenv /boot/grub/grubenv create
+        SLOT_VER="$(cat /usr/share/finn/version 2>/dev/null || echo 0.2.0)"
+        grub-editenv /boot/grub/grubenv set finn_active_slot=a finn_tries_left=0 "finn_version_a=$SLOT_VER"
+    fi
+fi
+
 efi=0
 if grub-install --target=x86_64-efi --efi-directory=/boot \
         --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
@@ -327,9 +385,15 @@ else
     echo "grub-efi did not install; trying systemd-boot"
     if bootctl --esp-path=/boot install 2>&1 | tail -5; then
         mkdir -p /boot/loader/entries
-        printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
-        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
-            "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
+        if [ "${FINN_AB_SLOTS:-0}" = 1 ]; then
+            printf 'default finnos-a.conf\ntimeout 3\n' > /boot/loader/loader.conf
+            printf 'title FinnOS (A)\nlinux /finnos/a/vmlinuz\ninitrd /finnos/a/initramfs.img\noptions root=PARTLABEL=FINNOS_A rw finn.slot=a quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
+                "$serial_args" > /boot/loader/entries/finnos-a.conf
+        else
+            printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
+            printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
+                "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
+        fi
         efi=1
         echo "BOOTLOADER=systemd-boot"
     fi
@@ -354,13 +418,14 @@ fi
 # A boot menu is the only way into the machine, so an install that produced
 # none is not an install. The test is the UUID, not the presence of a file:
 # a grub.cfg with root=UUID= (empty) boots nothing.
-if [ -f /boot/grub/grub.cfg ] && grep -q "root=UUID=$ROOTUUID" /boot/grub/grub.cfg; then
+if [ -f /boot/grub/grub.cfg ] &&
+   { grep -q "root=UUID=$ROOTUUID" /boot/grub/grub.cfg || grep -q "root=PARTLABEL=FINNOS_A" /boot/grub/grub.cfg; }; then
     :
 elif compgen -G '/boot/loader/entries/*.conf' >/dev/null &&
-     grep -q "root=UUID=$ROOTUUID" /boot/loader/entries/*.conf; then
+     { grep -q "root=UUID=$ROOTUUID" /boot/loader/entries/*.conf || grep -q "root=PARTLABEL=FINNOS_A" /boot/loader/entries/*.conf; }; then
     :
 else
-    echo "error: no boot menu names root=UUID=$ROOTUUID" >&2
+    echo "error: no boot menu names root=UUID=$ROOTUUID or root=PARTLABEL=FINNOS_A" >&2
     exit 1
 fi
 

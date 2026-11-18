@@ -1,0 +1,19 @@
+[Unit]
+Description=FinnOS Boot Health Verification and OTA Slot Commit
+Documentation=man:finn-update(1)
+# Runs after the compositor and session broker start so a broken update that
+# crashes into finn-failure.service never commits the trial A/B slot.
+After=finn-comp.service finn-session.service
+Wants=finn-comp.service finn-session.service
+ConditionPathExists=/usr/local/bin/finn-update
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/finn-update health-check --wait 60 --commit --json
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical.target
