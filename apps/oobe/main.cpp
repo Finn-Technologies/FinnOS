@@ -9,6 +9,7 @@
 #include "system/desktop_services.hpp"
 
 #include <QDir>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QEnterEvent>
 #include <QFile>
@@ -25,6 +26,7 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -35,17 +37,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <memory>
 
 namespace {
 
 using namespace finn::ui;
 
 QFont oobe_font(int pixel_size, QFont::Weight weight = QFont::Normal) {
-    QFont f(primary_font_family());
-    f.setPixelSize(pixel_size);
-    f.setWeight(weight);
-    f.setHintingPreference(QFont::PreferNoHinting);
-    return f;
+    return finn_font_px(pixel_size, weight);
 }
 
 QString oobe_tr(const QString& key, const QString& locale) {
@@ -55,29 +55,30 @@ QString oobe_tr(const QString& key, const QString& locale) {
         const char* wifi_prompt;
         const char* wifi_scan;
         const char* account_prompt;
+        const char* appearance_prompt;
         const char* a11y_prompt;
         const char* complete_title;
         const char* get_started;
     };
     static constexpr Entry kTable[] = {
-        {"es", "¿Cómo hablamos?", "¿Dónde nos conectamos?", "Buscando redes cercanas...", "¿Cómo te llamamos?", "Accesibilidad", "Todo listo", "Empezar"},
-        {"it", "Come parliamo?", "Dove ci connettiamo?", "Ricerca reti vicine...", "Come ti chiamiamo?", "Accessibilità", "Tutto pronto", "Inizia"},
-        {"fr", "Comment parlons-nous ?", "Où se connecter ?", "Recherche des réseaux...", "Comment vous appelez-vous ?", "Accessibilité", "Tout est prêt", "Commencer"},
-        {"ca", "Com parlem?", "On ens connectem?", "Cercant xarxes properes...", "Com et diem?", "Accessibilitat", "Tot a punt", "Començar"},
-        {"de", "Wie sprechen wir?", "Wo verbinden wir uns?", "Suche nach Netzwerken...", "Wie sollen wir dich nennen?", "Barrierefreiheit", "Alles bereit", "Los geht’s"},
-        {"af", "Hoe praat ons?", "Waar koppel ons?", "Soek na nabygeleë netwerke...", "Wat moet ons jou noem?", "Toeganklikheid", "Alles gereed", "Begin"},
-        {"zh_CN", "我们使用哪种语言？", "连接到哪里？", "正在扫描附近网络…", "我们怎么称呼你？", "辅助功能", "一切就绪", "开始使用"},
-        {"zh_TW", "我們使用哪種語言？", "連線到哪裡？", "正在掃描附近網路…", "我們該怎麼稱呼你？", "輔助使用", "一切就緒", "開始使用"},
-        {"hi", "हम किस भाषा में बात करें?", "हम कहाँ जुड़ें?", "आस-पास के नेटवर्क खोजे जा रहे हैं...", "हम आपको क्या कहकर बुलाएँ?", "सुगम्यता", "सब तैयार है", "शुरू करें"},
-        {"ko", "어떤 언어를 사용할까요?", "어디에 연결할까요?", "주변 네트워크 검색 중...", "어떻게 불러드릴까요?", "손쉬운 사용", "모두 준비되었습니다", "시작하기"},
-        {"ja", "どの言語を使いますか？", "どこに接続しますか？", "近くのネットワークを検索中…", "お名前を教えてください", "アクセシビリティ", "準備が整いました", "始める"},
-        {"ar", "بأي لغة نتحدث؟", "أين نتصل؟", "جارٍ البحث عن الشبكات القريبة...", "ماذا نناديك؟", "إمكانية الوصول", "كل شيء جاهز", "ابدأ الآن"},
-        {"pt", "Como falamos?", "Onde nos ligamos?", "A procurar redes próximas...", "Como devemos chamar-te?", "Acessibilidade", "Tudo pronto", "Começar"},
-        {"nl", "Hoe spreken we?", "Waar verbinden we?", "Zoeken naar netwerken...", "Hoe mogen we je noemen?", "Toegankelijkheid", "Alles klaar", "Aan de slag"},
-        {"pl", "W jakim języku rozmawiamy?", "Gdzie się łączymy?", "Skanowanie pobliskich sieci...", "Jak mamy się do Ciebie zwracać?", "Dostępność", "Wszystko gotowe", "Rozpocznij"},
-        {"ru", "На каком языке мы говорим?", "Куда подключимся?", "Поиск ближайших сетей...", "Как к вам обращаться?", "Специальные возможности", "Всё готово", "Начать"},
-        {"uk", "Якою мовою спілкуємось?", "Де підключимося?", "Пошук мереж поруч...", "Як до вас звертатися?", "Доступність", "Усе готово", "Почати"},
-        {"tr", "Hangi dilde konuşalım?", "Nereye bağlanalım?", "Yakındaki ağlar taranıyor...", "Size nasıl hitap edelim?", "Erişilebilirlik", "Her şey hazır", "Başla"},
+        {"es", "¿Cómo hablamos?", "¿Dónde nos conectamos?", "Buscando redes cercanas...", "¿Cómo te llamamos?", "¿Oscuro o claro? Tú eliges.", "¿Algo que lo haga más fácil?", "Todo listo", "Empezar"},
+        {"it", "Come parliamo?", "Dove ci connettiamo?", "Ricerca reti vicine...", "Come ti chiamiamo?", "Scuro o chiaro? Scegli tu.", "Qualcosa per renderlo più facile?", "Tutto pronto", "Inizia"},
+        {"fr", "Comment parlons-nous ?", "Où se connecter ?", "Recherche des réseaux...", "Comment vous appelez-vous ?", "Sombre ou clair ? À vous de choisir.", "Quelque chose pour vous faciliter la vie ?", "Tout est prêt", "Commencer"},
+        {"ca", "Com parlem?", "On ens connectem?", "Cercant xarxes properes...", "Com et diem?", "Fosc o clar? Tu tries.", "Alguna cosa per fer-ho més fàcil?", "Tot a punt", "Començar"},
+        {"de", "Wie sprechen wir?", "Wo verbinden wir uns?", "Suche nach Netzwerken...", "Wie sollen wir dich nennen?", "Dunkel oder hell? Deine Wahl.", "Was es dir leichter macht?", "Alles bereit", "Los geht’s"},
+        {"af", "Hoe praat ons?", "Waar koppel ons?", "Soek na nabygeleë netwerke...", "Wat moet ons jou noem?", "Donker of lig? Jou keuse.", "Iets om dit makliker te maak?", "Alles gereed", "Begin"},
+        {"zh_CN", "我们使用哪种语言？", "连接到哪里？", "正在扫描附近网络…", "我们怎么称呼你？", "深色还是浅色？由你决定。", "需要帮你调得更顺手吗？", "一切就绪", "开始使用"},
+        {"zh_TW", "我們使用哪種語言？", "連線到哪裡？", "正在掃描附近網路…", "我們該怎麼稱呼你？", "深色還是淺色？由你決定。", "需要幫你調得更順手嗎？", "一切就緒", "開始使用"},
+        {"hi", "हम किस भाषा में बात करें?", "हम कहाँ जुड़ें?", "आस-पास के नेटवर्क खोजे जा रहे हैं...", "हम आपको क्या कहकर बुलाएँ?", "डार्क या लाइट? आपकी पसंद।", "इसे थोड़ा आसान बनाएँ?", "सब तैयार है", "शुरू करें"},
+        {"ko", "어떤 언어를 사용할까요?", "어디에 연결할까요?", "주변 네트워크 검색 중...", "어떻게 불러드릴까요?", "어둡게, 아니면 밝게? 선택해 보세요.", "조금 더 편하게 맞춰드릴까요?", "모두 준비되었습니다", "시작하기"},
+        {"ja", "どの言語を使いますか？", "どこに接続しますか？", "近くのネットワークを検索中…", "お名前を教えてください", "ダークかライトか、お好みで。", "もっと使いやすくしますか？", "準備が整いました", "始める"},
+        {"ar", "بأي لغة نتحدث؟", "أين نتصل؟", "جارٍ البحث عن الشبكات القريبة...", "ماذا نناديك؟", "داكن أم فاتح؟ الخيار لك.", "هل نجعل الأمور أسهل لك؟", "كل شيء جاهز", "ابدأ الآن"},
+        {"pt", "Como falamos?", "Onde nos ligamos?", "A procurar redes próximas...", "Como devemos chamar-te?", "Escuro ou claro? Tu escolhes.", "Algo para tornar mais fácil?", "Tudo pronto", "Começar"},
+        {"nl", "Hoe spreken we?", "Waar verbinden we?", "Zoeken naar netwerken...", "Hoe mogen we je noemen?", "Donker of licht? Aan jou de keus.", "Iets om het makkelijker te maken?", "Alles klaar", "Aan de slag"},
+        {"pl", "W jakim języku rozmawiamy?", "Gdzie się łączymy?", "Skanowanie pobliskich sieci...", "Jak mamy się do Ciebie zwracać?", "Ciemny czy jasny? Twój wybór.", "Coś, co ułatwi korzystanie?", "Wszystko gotowe", "Rozpocznij"},
+        {"ru", "На каком языке мы говорим?", "Куда подключимся?", "Поиск ближайших сетей...", "Как к вам обращаться?", "Тёмная или светлая? Выбор за вами.", "Сделать управление удобнее?", "Всё готово", "Начать"},
+        {"uk", "Якою мовою спілкуємось?", "Де підключимося?", "Пошук мереж поруч...", "Як до вас звертатися?", "Темна чи світла? Обирайте.", "Зробити користування зручнішим?", "Усе готово", "Почати"},
+        {"tr", "Hangi dilde konuşalım?", "Nereye bağlanalım?", "Yakındaki ağlar taranıyor...", "Size nasıl hitap edelim?", "Koyu mu açık mı? Seçim sizin.", "Daha kolay hale getirelim mi?", "Her şey hazır", "Başla"},
     };
 
     const QString short_loc = locale.section(QLatin1Char('.'), 0, 0);
@@ -97,8 +98,10 @@ QString oobe_tr(const QString& key, const QString& locale) {
         return match ? QString::fromUtf8(match->wifi_scan) : QStringLiteral("Scanning nearby networks...");
     if (key == QLatin1String("account_prompt"))
         return match ? QString::fromUtf8(match->account_prompt) : QStringLiteral("What should we call you?");
+    if (key == QLatin1String("appearance_prompt"))
+        return match ? QString::fromUtf8(match->appearance_prompt) : QStringLiteral("Dark or light? Your choice.");
     if (key == QLatin1String("a11y_prompt"))
-        return match ? QString::fromUtf8(match->a11y_prompt) : QStringLiteral("Accessibility");
+        return match ? QString::fromUtf8(match->a11y_prompt) : QStringLiteral("Need a hand?");
     if (key == QLatin1String("complete_title"))
         return match ? QString::fromUtf8(match->complete_title) : QStringLiteral("You\u2019re all set");
     if (key == QLatin1String("get_started"))
@@ -130,7 +133,7 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setOpacity(opacity_);
 
-        const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+        const QColor ink = t.ink;
         FinnThemeManager::instance().paintIcon(
             &p, QRectF(0.0, 2.0, 20.0, 20.0),
             t.dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
@@ -157,6 +160,8 @@ public:
           is_back_(is_back),
           filled_default_(filled_by_default) {
         setFixedSize(56, 56);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(is_back ? QStringLiteral("Back") : QStringLiteral("Next"));
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover, true);
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
@@ -202,15 +207,15 @@ protected:
 
         QColor fill = Qt::transparent;
         if (filled_default_) {
-            fill = t.dark ? QColor(0x16, 0x18, 0x1E) : QColor(0xFF, 0xFF, 0xFF);
+            fill = t.tile;
             if (press_t_ > 0.02) {
-                const QColor down_c = t.dark ? QColor(0x22, 0x26, 0x30) : QColor(0xEB, 0xEB, 0xEB);
+                const QColor down_c = t.surface_pressed;
                 fill = QColor(
                     qRound(fill.red() + (down_c.red() - fill.red()) * press_t_),
                     qRound(fill.green() + (down_c.green() - fill.green()) * press_t_),
                     qRound(fill.blue() + (down_c.blue() - fill.blue()) * press_t_));
-            } else if (hover_t_ > 0.02 && t.dark) {
-                const QColor hov_c(0x1D, 0x20, 0x28);
+            } else if (hover_t_ > 0.02) {
+                const QColor hov_c = t.surface_hover;
                 fill = QColor(
                     qRound(fill.red() + (hov_c.red() - fill.red()) * hover_t_),
                     qRound(fill.green() + (hov_c.green() - fill.green()) * hover_t_),
@@ -219,7 +224,8 @@ protected:
         } else if (en) {
             const qreal a = hover_t_ * (t.dark ? 22.0 : 195.0) + press_t_ * (t.dark ? 16.0 : 40.0);
             if (a > 0.5) {
-                fill = QColor(255, 255, 255, std::min(255, qRound(a)));
+                fill = QColor(t.fill.red(), t.fill.green(), t.fill.blue(),
+                              std::min(255, qRound(a)));
             }
         }
 
@@ -228,10 +234,15 @@ protected:
             p.setBrush(fill);
             p.drawEllipse(circle_r);
         }
+        if (hasFocus()) {
+            p.setPen(QPen(t.accent, 2.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(circle_r.adjusted(1.0, 1.0, -1.0, -1.0));
+        }
 
         // Exact chevron vector from Figma 36:46 (36x36 box inside 56x56 at offset 10,10):
         // M13 29 C13 29 24 20.8987 24 18 C24 15.1011 13 7 13 7 (stroke-width 2.75)
-        QColor stroke_col = t.dark ? t.ink : QColor(0, 0, 0);
+        QColor stroke_col = t.ink;
         if (!en) stroke_col.setAlpha(72);
 
         p.save();
@@ -288,6 +299,8 @@ public:
     explicit OobeGetStartedPill(const QString& label, QWidget* parent = nullptr)
         : QAbstractButton(parent) {
         setText(label);
+        setAccessibleName(label);
+        setFocusPolicy(Qt::TabFocus);
         setFixedSize(142, 48);
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover, true);
@@ -302,18 +315,18 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        QColor bg = t.dark ? QColor(0x26, 0x2B, 0x38) : QColor(0xFF, 0xFF, 0xFF);
+        QColor bg = t.tile;
         if (isDown()) {
-            bg = t.dark ? QColor(0x32, 0x38, 0x48) : QColor(0xEC, 0xEE, 0xF2);
+            bg = t.surface_pressed;
         } else if (hovered_) {
-            bg = t.dark ? QColor(0x2D, 0x33, 0x43) : QColor(0xFA, 0xFB, 0xFC);
+            bg = t.surface_hover;
         }
         p.setBrush(bg);
-        p.setPen(QPen(t.dark ? QColor(255, 255, 255, 24) : QColor(0, 0, 0, 12), 1.0));
+        p.setPen(QPen(hasFocus() ? t.accent : t.hair, hasFocus() ? 2.0 : 1.0));
         p.drawRoundedRect(r, 24.0, 24.0);
 
         p.setFont(oobe_font(15, QFont::Medium));
-        p.setPen(t.dark ? t.ink : QColor(0x18, 0x18, 0x20));
+        p.setPen(t.ink);
         p.drawText(rect(), Qt::AlignCenter, text());
     }
 
@@ -344,6 +357,8 @@ public:
           detail_(detail),
           selected_(selected) {
         setFixedSize(350, 37);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(detail.isEmpty() ? label : QStringLiteral("%1, %2").arg(label, detail));
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover, true);
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
@@ -388,16 +403,21 @@ protected:
             ? (hover_t_ * 14.0 + sel_t_ * 28.0 + (pressed_ ? 12.0 : 0.0))
             : (hover_t_ * 110.0 + sel_t_ * 255.0 + (pressed_ ? 50.0 : 0.0));
         if (base_a > 0.5) {
-            const QColor bg = t.dark
-                ? QColor(0x20, 0x24, 0x2E, std::min(255, qRound(base_a * 8.0)))
-                : QColor(255, 255, 255, std::min(255, qRound(base_a)));
+            const QColor pill_base = t.dark ? t.tile_on : t.tile;
+            const QColor bg(pill_base.red(), pill_base.green(), pill_base.blue(),
+                            std::min(255, qRound(t.dark ? base_a * 8.0 : base_a)));
             p.setPen(Qt::NoPen);
             p.setBrush(bg);
             p.drawRoundedRect(r, 10.0, 10.0);
         }
+        if (hasFocus()) {
+            p.setPen(QPen(t.accent, 1.5));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(r.adjusted(1.0, 1.0, -1.0, -1.0), 10.0, 10.0);
+        }
 
         const qreal nudge_x = 2.5 * hover_t_ + 3.0 * sel_t_;
-        const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+        const QColor ink = t.ink;
         p.setFont(oobe_font(18, QFont::Normal));
         p.setPen(ink);
         const QRectF text_r(8.0 + nudge_x, 0.0, width() - 16.0 - nudge_x, height());
@@ -438,6 +458,15 @@ protected:
         }
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+            event->key() == Qt::Key_Space) {
+            emit clicked();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
 private:
     QString label_;
     QString detail_;
@@ -462,13 +491,13 @@ public:
 
 protected:
     void paintEvent(QPaintEvent*) override {
-        const bool dark = FinnThemeManager::instance().isDark();
+        const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        const QColor stage_bg = dark ? QColor(0x00, 0x00, 0x00) : QColor(0xFF, 0xFF, 0xFF);
-        const QColor border = dark ? QColor(255, 255, 255, 28) : QColor(0, 0, 0, 18);
+        const QColor stage_bg = t.bone;
+        const QColor border = t.hair;
 
         p.setPen(QPen(border, 1.0));
         p.setBrush(stage_bg);
@@ -476,13 +505,12 @@ protected:
 
         // Soft ambient glow behind the logo stage (placeholder until 3D model integration).
         QRadialGradient glow(bounds.center(), bounds.width() * 0.42);
-        if (dark) {
-            glow.setColorAt(0.0, QColor(255, 255, 255, 22));
-            glow.setColorAt(1.0, QColor(255, 255, 255, 0));
-        } else {
-            glow.setColorAt(0.0, QColor(0, 0, 0, 12));
-            glow.setColorAt(1.0, QColor(0, 0, 0, 0));
-        }
+        QColor glow_c = t.ink;
+        glow_c.setAlpha(t.dark ? 22 : 12);
+        QColor glow_end = t.ink;
+        glow_end.setAlpha(0);
+        glow.setColorAt(0.0, glow_c);
+        glow.setColorAt(1.0, glow_end);
         p.setPen(Qt::NoPen);
         p.setBrush(glow);
         p.drawRoundedRect(bounds, 16.0, 16.0);
@@ -493,14 +521,14 @@ protected:
                                logo_sz, logo_sz);
         FinnThemeManager::instance().paintIcon(
             &p, logo_rect,
-            dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
-            dark ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x00, 0x00, 0x00));
+            t.dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
+            t.ink);
 
         p.setFont(oobe_font(12, QFont::Medium));
-        p.setPen(dark ? QColor(255, 255, 255, 130) : QColor(0, 0, 0, 110));
+        p.setPen(t.dim);
         p.drawText(QRectF(bounds.left(), bounds.bottom() - 32.0, bounds.width(), 22.0),
                    Qt::AlignCenter,
-                   dark ? QStringLiteral("Dark Mode") : QStringLiteral("Light Mode"));
+                   t.dark ? QStringLiteral("Dark Mode") : QStringLiteral("Light Mode"));
     }
 };
 
@@ -516,6 +544,8 @@ public:
           label_(label),
           selected_(selected) {
         setFixedSize(169, 122);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("%1 theme").arg(label));
         setCursor(Qt::PointingHandCursor);
         setAttribute(Qt::WA_Hover, true);
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
@@ -538,23 +568,22 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         const QRectF r = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
-        QColor card_bg = t.dark ? QColor(0x22, 0x27, 0x34) : QColor(0xFF, 0xFF, 0xFF);
+        QColor card_bg = t.tile;
         if (pressed_) {
-            card_bg = t.dark ? QColor(0x2C, 0x32, 0x42) : QColor(0xEE, 0xF0, 0xF4);
+            card_bg = t.surface_pressed;
         } else if (hovered_ && !selected_) {
-            card_bg = t.dark ? QColor(0x27, 0x2D, 0x3B) : QColor(0xFA, 0xFA, 0xFC);
+            card_bg = t.surface_hover;
         }
 
-        const QColor border = selected_
-            ? t.accent
-            : (t.dark ? QColor(255, 255, 255, 26) : QColor(0, 0, 0, 20));
-        p.setPen(QPen(border, selected_ ? 2.5 : 1.0));
+        const QColor border = (selected_ || hasFocus()) ? t.accent : t.hair;
+        p.setPen(QPen(border, (selected_ || hasFocus()) ? 2.5 : 1.0));
         p.setBrush(card_bg);
         p.drawRoundedRect(r, 14.0, 14.0);
 
         const QRectF swatch(r.left() + 10.0, r.top() + 10.0, r.width() - 20.0, 70.0);
-        const QColor swatch_bg = dark_card_ ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
-        const QColor swatch_border = dark_card_ ? QColor(255, 255, 255, 20) : QColor(0, 0, 0, 14);
+        const QColor swatch_bg = QColor::fromRgba(dark_card_ ? colors::bone_dark : colors::bone_light);
+        const QColor swatch_border = QColor::fromRgba(dark_card_ ? colors::hair_dark : colors::hair_light);
+        const QColor swatch_ink = QColor::fromRgba(dark_card_ ? colors::ink_dark : colors::ink_light);
         p.setPen(QPen(swatch_border, 1.0));
         p.setBrush(swatch_bg);
         p.drawRoundedRect(swatch, 9.0, 9.0);
@@ -566,10 +595,10 @@ protected:
         FinnThemeManager::instance().paintIcon(
             &p, logo_r,
             dark_card_ ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
-            dark_card_ ? QColor(0xFF, 0xFF, 0xFF) : QColor(0x00, 0x00, 0x00));
+            swatch_ink);
 
         p.setFont(oobe_font(15, selected_ ? QFont::DemiBold : QFont::Normal));
-        p.setPen(t.dark ? t.ink : QColor(0x18, 0x18, 0x20));
+        p.setPen(t.ink);
         p.drawText(QRectF(r.left(), swatch.bottom() + 4.0, r.width(), 28.0),
                    Qt::AlignCenter, label_);
     }
@@ -601,6 +630,15 @@ protected:
         }
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+            event->key() == Qt::Key_Space) {
+            emit clicked();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
 private:
     bool dark_card_ = false;
     QString label_;
@@ -628,6 +666,7 @@ public:
         edit_ = new QLineEdit(this);
         edit_->setFrame(false);
         edit_->setPlaceholderText(placeholder);
+        edit_->setAccessibleName(placeholder);
         edit_->setFont(oobe_font(17, QFont::Normal));
         if (password) edit_->setEchoMode(QLineEdit::Password);
         edit_->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
@@ -648,17 +687,16 @@ protected:
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const QColor bg = t.dark ? QColor(0x28, 0x2E, 0x3D) : QColor(0xFF, 0xFF, 0xFF);
-        p.setPen(Qt::NoPen);
-        p.setBrush(bg);
-        p.drawRoundedRect(QRectF(0, 0, width(), height()), 10.0, 10.0);
+        p.setPen(edit_->hasFocus() ? QPen(t.accent, 1.5) : QPen(t.hair, 1.0));
+        p.setBrush(t.surface_input);
+        p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 10.0, 10.0);
     }
 
 private:
     void syncColors() {
         const auto& t = FinnThemeManager::instance().tokens();
         QPalette pal = edit_->palette();
-        pal.setColor(QPalette::Text, t.dark ? t.ink : QColor(0, 0, 0));
+        pal.setColor(QPalette::Text, t.ink);
         pal.setColor(QPalette::PlaceholderText, t.mute);
         edit_->setPalette(pal);
         update();
@@ -685,6 +723,8 @@ public:
         lay->addWidget(label_, 1);
 
         toggle_ = new FinnToggle(initial_checked, this);
+        toggle_->setAccessibleName(label);
+        toggle_->setFocusPolicy(Qt::TabFocus);
         lay->addWidget(toggle_);
 
         connect(toggle_, &QAbstractButton::toggled, this,
@@ -703,13 +743,71 @@ private:
     void syncColors() {
         const auto& t = FinnThemeManager::instance().tokens();
         QPalette pal = label_->palette();
-        pal.setColor(QPalette::WindowText, t.dark ? t.ink : QColor(0, 0, 0));
+        pal.setColor(QPalette::WindowText, t.ink);
         label_->setPalette(pal);
         update();
     }
 
     QLabel* label_ = nullptr;
     FinnToggle* toggle_ = nullptr;
+};
+
+// Circular gradient swatch for picking the Figma-based PFP color variant.
+class OobePfpSwatch final : public QAbstractButton {
+    Q_OBJECT
+
+public:
+    OobePfpSwatch(const AvatarPreset& preset, QWidget* parent = nullptr)
+        : QAbstractButton(parent), preset_(preset) {
+        setFixedSize(32, 32);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("%1 avatar color").arg(preset.name));
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(preset.name);
+        setCheckable(true);
+    }
+
+    const QString& presetId() const { return preset_.id; }
+
+protected:
+    void enterEvent(QEnterEvent*) override {
+        hovered_ = true;
+        update();
+    }
+    void leaveEvent(QEvent*) override {
+        hovered_ = false;
+        update();
+    }
+    void paintEvent(QPaintEvent*) override {
+        const auto& t = FinnThemeManager::instance().tokens();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        const QRectF outer = QRectF(rect()).adjusted(2.0, 2.0, -2.0, -2.0);
+        if (isChecked() || hasFocus()) {
+            const QColor ring = hasFocus() ? t.accent : t.ink;
+            p.setPen(QPen(ring, 2.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(outer);
+        } else if (hovered_) {
+            p.setPen(QPen(t.hair, 1.5));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(outer);
+        }
+
+        const qreal inset = isChecked() ? 5.0 : 4.0;
+        const QRectF dot = QRectF(rect()).adjusted(inset, inset, -inset, -inset);
+        QLinearGradient grad(dot.topLeft(), dot.bottomLeft());
+        grad.setColorAt(0.0, preset_.top_color);
+        grad.setColorAt(1.0, preset_.bottom_color);
+        p.setPen(Qt::NoPen);
+        p.setBrush(grad);
+        p.drawEllipse(dot);
+    }
+
+private:
+    AvatarPreset preset_;
+    bool hovered_ = false;
 };
 
 // Progressive bottom blur overlay matching Figma 37:96 (LAYER_BLUR PROGRESSIVE,
@@ -808,6 +906,8 @@ public:
 
     QVBoxLayout* listLayout() const { return list_lay_; }
     QWidget* hostWidget() const { return host_; }
+    QScrollBar* verticalScrollBar() const { return scroll_ ? scroll_->verticalScrollBar() : nullptr; }
+    int scrollOffset() const { return scroll_ && scroll_->verticalScrollBar() ? scroll_->verticalScrollBar()->value() : 0; }
 
 protected:
     void resizeEvent(QResizeEvent* event) override {
@@ -831,60 +931,87 @@ private:
 
 // Overlay widget placed over the bottom of OobeProgressiveList to apply the
 // progressive blur & fade from y=60.7% to 100% without blocking mouse events.
+// Caches the 3-pass software blur and invalidates only on geometry, scroll, theme,
+// or explicit list-content changes (M19).
 class ProgressiveBlurOverlay final : public QWidget {
     Q_OBJECT
 
 public:
-    explicit ProgressiveBlurOverlay(QWidget* target_list, QWidget* parent = nullptr)
+    explicit ProgressiveBlurOverlay(OobeProgressiveList* target_list, QWidget* parent = nullptr)
         : QWidget(parent), target_(target_list) {
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
         setAttribute(Qt::WA_NoSystemBackground, true);
+        if (target_ && target_->verticalScrollBar()) {
+            connect(target_->verticalScrollBar(), &QScrollBar::valueChanged,
+                    this, &ProgressiveBlurOverlay::invalidateCache);
+        }
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                this, &ProgressiveBlurOverlay::invalidateCache);
+    }
+
+    void invalidateCache() {
+        cache_dirty_ = true;
+        update();
     }
 
 protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        cache_dirty_ = true;
+    }
+
     void paintEvent(QPaintEvent*) override {
         if (!target_ || height() < 40 || in_capture_) return;
         const auto& t = FinnThemeManager::instance().tokens();
-        const QColor bg = t.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
+        const QColor bg = t.bone;
 
         const int blur_top = qRound(height() * 0.607);
         const int blur_h = height() - blur_top;
         if (blur_h <= 8) return;
 
-        in_capture_ = true;
-        QImage snap(width(), blur_h, QImage::Format_ARGB32_Premultiplied);
-        snap.fill(bg);
-        target_->render(&snap, QPoint(0, 0), QRegion(0, blur_top, width(), blur_h),
-                        QWidget::DrawChildren);
-        in_capture_ = false;
+        const int scroll_y = target_->scrollOffset();
+        if (cache_dirty_ || cached_comp_.isNull() || cached_size_ != size() ||
+            cached_dark_ != t.dark || cached_scroll_ != scroll_y) {
+            in_capture_ = true;
+            QImage snap(width(), blur_h, QImage::Format_ARGB32_Premultiplied);
+            snap.fill(bg);
+            target_->render(&snap, QPoint(0, 0), QRegion(0, blur_top, width(), blur_h),
+                            QWidget::DrawChildren);
+            in_capture_ = false;
 
-        const QImage b1 = box_blur_image(snap, 2);
-        const QImage b2 = box_blur_image(b1, 4);
-        const QImage b3 = box_blur_image(b2, 6);
+            const QImage b1 = box_blur_image(snap, 2);
+            const QImage b2 = box_blur_image(b1, 4);
+            const QImage b3 = box_blur_image(b2, 6);
 
-        const int band = blur_h / 4;
-        const int feather = std::max(12, blur_h / 5);
+            const int band = blur_h / 4;
+            const int feather = std::max(12, blur_h / 5);
 
-        QImage comp(width(), blur_h, QImage::Format_ARGB32_Premultiplied);
-        comp.fill(Qt::transparent);
-        {
-            QPainter cp(&comp);
-            cp.setRenderHint(QPainter::Antialiasing, true);
-            cp.drawImage(0, 0, b1, 0, 0, width(), band * 2);
-            cp.drawImage(0, band, b2, 0, band, width(), band * 2);
-            cp.drawImage(0, band * 2, b3, 0, band * 2, width(), blur_h - band * 2);
+            QImage comp(width(), blur_h, QImage::Format_ARGB32_Premultiplied);
+            comp.fill(Qt::transparent);
+            {
+                QPainter cp(&comp);
+                cp.setRenderHint(QPainter::Antialiasing, true);
+                cp.drawImage(0, 0, b1, 0, 0, width(), band * 2);
+                cp.drawImage(0, band, b2, 0, band, width(), band * 2);
+                cp.drawImage(0, band * 2, b3, 0, band * 2, width(), blur_h - band * 2);
 
-            // Feather top entry of the blur region so there is no hard horizontal step.
-            QLinearGradient mask(0, 0, 0, feather);
-            mask.setColorAt(0.0, QColor(0, 0, 0, 0));
-            mask.setColorAt(1.0, QColor(0, 0, 0, 255));
-            cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            cp.fillRect(QRect(0, 0, width(), feather), mask);
+                // Feather top entry of the blur region so there is no hard horizontal step.
+                QLinearGradient mask(0, 0, 0, feather);
+                mask.setColorAt(0.0, QColor(0, 0, 0, 0));
+                mask.setColorAt(1.0, QColor(0, 0, 0, 255));
+                cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                cp.fillRect(QRect(0, 0, width(), feather), mask);
+            }
+            cached_comp_ = std::move(comp);
+            cached_size_ = size();
+            cached_dark_ = t.dark;
+            cached_scroll_ = scroll_y;
+            cache_dirty_ = false;
         }
 
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.drawImage(0, blur_top, comp);
+        p.drawImage(0, blur_top, cached_comp_);
 
         // Smooth progressive surface fade all the way to opaque bg at bottom edge.
         QLinearGradient fade(0, blur_top, 0, height());
@@ -901,8 +1028,13 @@ protected:
     }
 
 private:
-    QWidget* target_ = nullptr;
+    OobeProgressiveList* target_ = nullptr;
     bool in_capture_ = false;
+    bool cache_dirty_ = true;
+    QImage cached_comp_;
+    QSize cached_size_;
+    bool cached_dark_ = false;
+    int cached_scroll_ = -1;
 };
 
 // Seamless transition overlay when advancing from Step 0 ("hi.") to Step 1
@@ -1172,13 +1304,13 @@ protected:
 
         constexpr double kPi = 3.14159265358979323846;
         const auto& tok = FinnThemeManager::instance().tokens();
-        const QColor bg = tok.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
-        const QColor ink = tok.dark ? tok.ink : QColor(0, 0, 0);
-        const QColor text_col = tok.dark ? QColor(0xF4, 0xF6, 0xFA) : QColor(0x11, 0x13, 0x18);
+        const QColor bg = tok.bone;
+        const QColor ink = tok.ink;
+        const QColor text_col = tok.ink;
         const QColor coral(0xFF, 0x57, 0x22);
         const QColor amber(0xFF, 0x95, 0x00);
         const QColor violet(0x8B, 0x5C, 0xF6);
-        const QColor blue = tok.accent.isValid() ? tok.accent : QColor(0x00, 0x7B, 0xFF);
+        const QColor blue = tok.accent;
 
         auto clamp01 = [](double v) { return std::clamp(v, 0.0, 1.0); };
         auto smooth01 = [&](double a, double b) {
@@ -1415,6 +1547,7 @@ public:
         setAnchors(AnchorTop | AnchorBottom | AnchorLeft | AnchorRight);
         setExclusiveZone(-1);
         setKeyboardMode(KeyboardMode::Exclusive);
+        setAccessibleName(QStringLiteral("FinnOS First-Time Setup"));
 
         auto* root = new QVBoxLayout(this);
         root->setContentsMargins(0, 0, 0, 0);
@@ -1470,9 +1603,7 @@ protected:
     void paintEvent(QPaintEvent*) override {
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
-        // Exact #F5F5F5 canvas from Figma First Time Setup ("hi" & "How do we talk?")
-        const QColor bg = t.dark ? QColor(0x00, 0x00, 0x00) : QColor(0xF5, 0xF5, 0xF5);
-        p.fillRect(rect(), bg);
+        p.fillRect(rect(), t.bone);
     }
 
     void keyPressEvent(QKeyEvent* event) override {
@@ -1481,6 +1612,13 @@ protected:
             return;
         }
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            QWidget* fw = focusWidget();
+            if (qobject_cast<QAbstractButton*>(fw) ||
+                qobject_cast<OobeOptionRow*>(fw) ||
+                qobject_cast<OobeAppearanceCard*>(fw)) {
+                FinnLayerWindow::keyPressEvent(event);
+                return;
+            }
             advanceStep();
             return;
         }
@@ -1528,6 +1666,7 @@ private:
         prompt_lbl->setAlignment(Qt::AlignCenter);
         prompt_lbl->setWordWrap(true);
         prompt_lbl->setFixedWidth(300);
+        prompt_lbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
         if (out_prompt_label) *out_prompt_label = prompt_lbl;
         left_col->addWidget(prompt_lbl, 0, Qt::AlignHCenter);
 
@@ -1547,7 +1686,7 @@ private:
 
         auto sync_left_colors = [icon_lbl, icon_name, prompt_lbl, sub_lbl]() {
             const auto& t = FinnThemeManager::instance().tokens();
-            const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+            const QColor ink = t.ink;
             const qreal dpr = icon_lbl->devicePixelRatioF();
             icon_lbl->setPixmap(FinnThemeManager::instance().iconPixmap(
                 icon_name, QSize(46, 46), ink, dpr));
@@ -1752,7 +1891,7 @@ private:
                             language_rows_[j]->setSelected(j == i);
                         }
                         applyLanguageSelection(lang_name, locale_code);
-                        blur_ov->update();
+                        blur_ov->invalidateCache();
                     });
             prog_list->listLayout()->addWidget(row);
         }
@@ -1787,13 +1926,52 @@ private:
                                    list_wrap, nullptr, false, &wifi_prompt_lbl_);
     }
 
-    // Step 3: Account setup in the same Figma 36:53 split layout
+    // Step 3: Account setup with Figma PFP color picker + account fields
     QWidget* buildAccountPage() {
         auto* col_host = new QWidget();
         col_host->setFixedWidth(356);
         auto* col = new QVBoxLayout(col_host);
         col->setContentsMargins(0, 0, 6, 0);
-        col->setSpacing(12);
+        col->setSpacing(0);
+
+        // Live Figma PFP preview + color variant swatches
+        pfp_preview_lbl_ = new QLabel(col_host);
+        pfp_preview_lbl_->setFixedSize(72, 72);
+        pfp_preview_lbl_->setAlignment(Qt::AlignCenter);
+        col->addWidget(pfp_preview_lbl_, 0, Qt::AlignHCenter);
+        col->addSpacing(14);
+
+        auto* swatch_row = new QWidget(col_host);
+        auto* swatch_lay = new QHBoxLayout(swatch_row);
+        swatch_lay->setContentsMargins(0, 0, 0, 0);
+        swatch_lay->setSpacing(6);
+
+        pfp_swatches_.clear();
+        for (const auto& preset : FinnThemeManager::avatarPresets()) {
+            auto* sw = new OobePfpSwatch(preset, swatch_row);
+            connect(sw, &QAbstractButton::clicked, this, [id = preset.id]() {
+                FinnThemeManager::instance().setAvatarColor(id);
+            });
+            pfp_swatches_.push_back(sw);
+            swatch_lay->addWidget(sw);
+        }
+        col->addWidget(swatch_row, 0, Qt::AlignHCenter);
+        col->addSpacing(18);
+
+        auto sync_pfp = [this]() {
+            auto& tm = FinnThemeManager::instance();
+            const QString current_id = tm.avatarColor();
+            if (pfp_preview_lbl_) {
+                pfp_preview_lbl_->setPixmap(
+                    tm.avatarPixmap(QSize(72, 72), pfp_preview_lbl_->devicePixelRatioF()));
+            }
+            for (auto* sw : pfp_swatches_) {
+                if (sw) sw->setChecked(sw->presetId() == current_id);
+            }
+        };
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                col_host, sync_pfp);
+        sync_pfp();
 
         fullname_edit_ = new OobeInputField(QStringLiteral("Full Name"), false, col_host);
         username_edit_ = new OobeInputField(QStringLiteral("Account Name"), false, col_host);
@@ -1801,10 +1979,36 @@ private:
         pw_edit_ = new OobeInputField(QStringLiteral("Password"), true, col_host);
         pw_verify_edit_ = new OobeInputField(QStringLiteral("Verify Password"), true, col_host);
 
+        pw_hint_lbl_ = new QLabel(QStringLiteral("Passwords don\u2019t match"), col_host);
+        pw_hint_lbl_->setFont(oobe_font(12, QFont::Normal));
+        pw_hint_lbl_->setContentsMargins(6, 0, 0, 0);
+        pw_hint_lbl_->setVisible(false);
+
+        auto sync_pw_hint = [this]() {
+            if (!pw_hint_lbl_ || !pw_edit_ || !pw_verify_edit_) return;
+            const QString p1 = pw_edit_->text();
+            const QString p2 = pw_verify_edit_->text();
+            const bool mismatch = !p2.isEmpty() && p1 != p2;
+            pw_hint_lbl_->setVisible(mismatch);
+            const auto& t = FinnThemeManager::instance().tokens();
+            QPalette pal = pw_hint_lbl_->palette();
+            pal.setColor(QPalette::WindowText, t.danger);
+            pw_hint_lbl_->setPalette(pal);
+        };
+        connect(pw_edit_->lineEdit(), &QLineEdit::textChanged, col_host, sync_pw_hint);
+        connect(pw_verify_edit_->lineEdit(), &QLineEdit::textChanged, col_host, sync_pw_hint);
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                col_host, sync_pw_hint);
+
         col->addWidget(fullname_edit_);
+        col->addSpacing(10);
         col->addWidget(username_edit_);
+        col->addSpacing(10);
         col->addWidget(pw_edit_);
+        col->addSpacing(10);
         col->addWidget(pw_verify_edit_);
+        col->addSpacing(6);
+        col->addWidget(pw_hint_lbl_);
         col->addStretch(1);
 
         return createSplitStepPage(QStringLiteral("user"),
@@ -1841,7 +2045,8 @@ private:
         left_col->addWidget(icon_lbl, 0, Qt::AlignHCenter);
         left_col->addSpacing(40);
 
-        appearance_prompt_lbl_ = new QLabel(QStringLiteral("Dark or light? Your choice."), left_host);
+        appearance_prompt_lbl_ = new QLabel(
+            oobe_tr(QStringLiteral("appearance_prompt"), selected_locale_), left_host);
         appearance_prompt_lbl_->setFont(oobe_font(24, QFont::Normal));
         appearance_prompt_lbl_->setAlignment(Qt::AlignCenter);
         appearance_prompt_lbl_->setWordWrap(true);
@@ -1851,7 +2056,7 @@ private:
 
         auto sync_left_colors = [icon_lbl, this]() {
             const auto& t = FinnThemeManager::instance().tokens();
-            const QColor ink = t.dark ? t.ink : QColor(0, 0, 0);
+            const QColor ink = t.ink;
             const qreal dpr = icon_lbl->devicePixelRatioF();
             icon_lbl->setPixmap(FinnThemeManager::instance().iconPixmap(
                 QStringLiteral("oobe-appearance"), QSize(46, 46), ink, dpr));
@@ -1968,13 +2173,17 @@ private:
             if (!complete_title_) return;
             const auto& t = FinnThemeManager::instance().tokens();
             QPalette pal = complete_title_->palette();
-            pal.setColor(QPalette::WindowText,
-                         t.dark ? t.ink : QColor(0x18, 0x18, 0x20));
+            pal.setColor(QPalette::WindowText, t.ink);
             complete_title_->setPalette(pal);
+            if (complete_status_lbl_) {
+                QPalette spal = complete_status_lbl_->palette();
+                spal.setColor(QPalette::WindowText,
+                              complete_has_error_ ? t.danger : t.dim);
+                complete_status_lbl_->setPalette(spal);
+            }
         };
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 page, sync_title_col);
-        sync_title_col();
 
         col->addSpacing(28);
 
@@ -1984,8 +2193,67 @@ private:
                 &OobeWindow::finishSetup);
         col->addWidget(start_btn_, 0, Qt::AlignHCenter);
 
+        col->addSpacing(12);
+        complete_status_lbl_ = new QLabel(QString(), page);
+        complete_status_lbl_->setFont(oobe_font(13, QFont::Normal));
+        complete_status_lbl_->setAlignment(Qt::AlignCenter);
+        complete_status_lbl_->setWordWrap(true);
+        complete_status_lbl_->setFixedWidth(460);
+        complete_status_lbl_->setVisible(false);
+        col->addWidget(complete_status_lbl_, 0, Qt::AlignHCenter);
+
+        sync_title_col();
+
         col->addStretch(14);
         return page;
+    }
+
+    QString promptWifiPassphrase(const QString& ssid) {
+        const auto& t = FinnThemeManager::instance().tokens();
+        QDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("Wi-Fi Password"));
+        dlg.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+        dlg.setModal(true);
+        dlg.setAccessibleName(QStringLiteral("Wi-Fi password prompt for %1").arg(ssid));
+
+        auto* root = new QVBoxLayout(&dlg);
+        root->setContentsMargins(20, 18, 20, 18);
+        root->setSpacing(12);
+
+        auto* title = new FinnLabel(
+            QStringLiteral("Connect to %1").arg(ssid),
+            FinnLabel::Role::Headline, FinnLabel::Tone::Ink, &dlg);
+        root->addWidget(title);
+
+        auto* field = new OobeInputField(QStringLiteral("Wi-Fi Password"), true, &dlg);
+        field->lineEdit()->setAccessibleName(QStringLiteral("Wi-Fi password for %1").arg(ssid));
+        root->addWidget(field);
+
+        auto* btn_row = new QHBoxLayout();
+        btn_row->setSpacing(8);
+        btn_row->addStretch(1);
+        auto* cancel_btn = new FinnButton(
+            QStringLiteral("Cancel"), FinnButton::Variant::Secondary, {}, &dlg);
+        auto* join_btn = new FinnButton(
+            QStringLiteral("Connect"), FinnButton::Variant::Primary, {}, &dlg);
+        cancel_btn->setAccessibleName(QStringLiteral("Cancel Wi-Fi connection"));
+        join_btn->setAccessibleName(QStringLiteral("Connect to %1").arg(ssid));
+        btn_row->addWidget(cancel_btn);
+        btn_row->addWidget(join_btn);
+        root->addLayout(btn_row);
+
+        QPalette dpal = dlg.palette();
+        dpal.setColor(QPalette::Window, t.tile);
+        dpal.setColor(QPalette::WindowText, t.ink);
+        dlg.setPalette(dpal);
+        dlg.setAutoFillBackground(true);
+
+        connect(cancel_btn, &QAbstractButton::clicked, &dlg, &QDialog::reject);
+        connect(join_btn, &QAbstractButton::clicked, &dlg, &QDialog::accept);
+        connect(field->lineEdit(), &QLineEdit::returnPressed, &dlg, &QDialog::accept);
+        field->lineEdit()->setFocus();
+
+        return (dlg.exec() == QDialog::Accepted) ? field->text() : QString();
     }
 
     void syncNetwork() {
@@ -2015,9 +2283,7 @@ private:
                 if (w.active) return;
                 QString pwd;
                 if (w.secured) {
-                    pwd = FinnDialog::prompt(
-                        this, QStringLiteral("Wi-Fi Password"),
-                        QStringLiteral("Password for %1:").arg(w.ssid));
+                    pwd = promptWifiPassphrase(w.ssid);
                     if (pwd.isEmpty()) return;
                 }
                 finn::sys::FinnDesktopServices::instance().connectWifi(w.ssid, pwd);
@@ -2038,7 +2304,7 @@ private:
             const int row_count = (net.wired_connected ? 1 : 0) +
                                   static_cast<int>(net.networks.size()) + 1;
             wifi_blur_ov_->setVisible(row_count > 6);
-            wifi_blur_ov_->update();
+            wifi_blur_ov_->invalidateCache();
         }
     }
 
@@ -2053,6 +2319,15 @@ private:
             setStep(1, false);
             hi_lang_overlay_ = new OobeHiToLangOverlay(this, lang_prompt_lbl_);
             return;
+        }
+        if (cur == 3 && pw_edit_ && pw_verify_edit_) {
+            const QString p1 = pw_edit_->text();
+            const QString p2 = pw_verify_edit_->text();
+            if ((!p1.isEmpty() || !p2.isEmpty()) && p1 != p2) {
+                if (pw_hint_lbl_) pw_hint_lbl_->setVisible(true);
+                pw_verify_edit_->lineEdit()->setFocus();
+                return;
+            }
         }
         if (cur + 1 < stack_->count()) {
             setStep(cur + 1);
@@ -2155,6 +2430,8 @@ private:
             wifi_prompt_lbl_->setText(oobe_tr(QStringLiteral("wifi_prompt"), locale_code));
         if (account_prompt_lbl_)
             account_prompt_lbl_->setText(oobe_tr(QStringLiteral("account_prompt"), locale_code));
+        if (appearance_prompt_lbl_)
+            appearance_prompt_lbl_->setText(oobe_tr(QStringLiteral("appearance_prompt"), locale_code));
         if (a11y_prompt_lbl_)
             a11y_prompt_lbl_->setText(oobe_tr(QStringLiteral("a11y_prompt"), locale_code));
         if (complete_title_ && !update_mode_)
@@ -2175,14 +2452,7 @@ private:
         }
     }
 
-    void finishSetup() {
-        applyLanguageSelection(selected_language_, selected_locale_);
-        if (!selected_locale_.isEmpty()) {
-            QProcess::startDetached(
-                QStringLiteral("localectl"),
-                {QStringLiteral("set-locale"),
-                 QStringLiteral("LANG=") + selected_locale_});
-        }
+    void writeCompleteMarkerAndClose() {
         const QString marker =
             QDir::homePath() + QLatin1Char('/') +
             QString::fromLatin1(finn::kOobeCompleteRel);
@@ -2192,6 +2462,158 @@ private:
             f.write("done\n");
         }
         close();
+    }
+
+    void setCompleteStatus(const QString& msg, bool is_error) {
+        complete_has_error_ = is_error;
+        if (!complete_status_lbl_) return;
+        const auto& t = FinnThemeManager::instance().tokens();
+        QPalette spal = complete_status_lbl_->palette();
+        spal.setColor(QPalette::WindowText, is_error ? t.danger : t.dim);
+        complete_status_lbl_->setPalette(spal);
+        complete_status_lbl_->setText(msg);
+        complete_status_lbl_->setVisible(!msg.isEmpty());
+    }
+
+    void finishSetup() {
+        if (finish_in_progress_) return;
+        if (finish_allow_continue_) {
+            writeCompleteMarkerAndClose();
+            return;
+        }
+
+        const QString full_name =
+            fullname_edit_ ? fullname_edit_->text().trimmed() : QString();
+        const QString env_user = QString::fromLocal8Bit(qgetenv("USER")).trimmed();
+        const QString raw_user =
+            username_edit_ ? username_edit_->text().trimmed() : env_user;
+        const QString target_user = raw_user.isEmpty() ? env_user : raw_user;
+        const QString pw1 = pw_edit_ ? pw_edit_->text() : QString();
+        const QString pw2 = pw_verify_edit_ ? pw_verify_edit_->text() : QString();
+
+        if ((!pw1.isEmpty() || !pw2.isEmpty()) && pw1 != pw2) {
+            setStep(3);
+            if (pw_hint_lbl_) {
+                pw_hint_lbl_->setText(QStringLiteral("Passwords don\u2019t match"));
+                pw_hint_lbl_->setVisible(true);
+            }
+            if (pw_verify_edit_) pw_verify_edit_->lineEdit()->setFocus();
+            return;
+        }
+        static const QRegularExpression kUserRe(QStringLiteral("^[a-z_][a-z0-9_-]{0,31}$"));
+        if (!target_user.isEmpty() && !kUserRe.match(target_user).hasMatch()) {
+            setStep(3);
+            if (pw_hint_lbl_) {
+                pw_hint_lbl_->setText(
+                    QStringLiteral("Account name must match [a-z_][a-z0-9_-]*"));
+                pw_hint_lbl_->setVisible(true);
+            }
+            if (username_edit_) username_edit_->lineEdit()->setFocus();
+            return;
+        }
+
+        applyLanguageSelection(selected_language_, selected_locale_);
+
+        // Persist user profile metadata locally so settings/shell can read it even
+        // before any privileged system account update.
+        const QString account_conf =
+            QDir::homePath() + QStringLiteral("/.config/finn/account.conf");
+        QDir().mkpath(QFileInfo(account_conf).absolutePath());
+        {
+            QFile af(account_conf);
+            if (af.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                const QString body =
+                    QStringLiteral("username=%1\nfull_name=%2\navatar_color=%3\nlocale=%4\n")
+                        .arg(target_user, full_name,
+                             FinnThemeManager::instance().avatarColor(),
+                             selected_locale_);
+                af.write(body.toUtf8());
+            }
+        }
+
+        struct PendingOp {
+            QString bin;
+            QStringList args;
+            QByteArray stdin_data;
+            QString label;
+        };
+        auto ops = std::make_shared<QVector<PendingOp>>();
+        if (!selected_locale_.isEmpty()) {
+            ops->push_back({QStringLiteral("localectl"),
+                            {QStringLiteral("set-locale"),
+                             QStringLiteral("LANG=") + selected_locale_},
+                            {},
+                            QStringLiteral("System locale (%1)").arg(selected_locale_)});
+        }
+        if (!target_user.isEmpty() && !pw1.isEmpty()) {
+            const QByteArray payload = (target_user + QLatin1Char(':') + pw1 + QLatin1Char('\n')).toUtf8();
+            ops->push_back({QStringLiteral("pkexec"),
+                            {QStringLiteral("chpasswd")},
+                            payload,
+                            QStringLiteral("Account password")});
+        }
+        if (!target_user.isEmpty() && !full_name.isEmpty()) {
+            ops->push_back({QStringLiteral("chfn"),
+                            {QStringLiteral("-f"), full_name, target_user},
+                            {},
+                            QStringLiteral("Full name")});
+        }
+
+        if (ops->isEmpty()) {
+            writeCompleteMarkerAndClose();
+            return;
+        }
+
+        finish_in_progress_ = true;
+        if (start_btn_) start_btn_->setEnabled(false);
+        setCompleteStatus(QStringLiteral("Applying language and account settings..."), false);
+
+        auto errs = std::make_shared<QStringList>();
+        auto run_next = std::make_shared<std::function<void(int)>>();
+        *run_next = [this, ops, errs, run_next](int idx) {
+            if (idx >= ops->size()) {
+                finish_in_progress_ = false;
+                if (start_btn_) start_btn_->setEnabled(true);
+                if (errs->isEmpty()) {
+                    writeCompleteMarkerAndClose();
+                } else {
+                    finish_allow_continue_ = true;
+                    if (start_btn_) start_btn_->setText(QStringLiteral("Continue"));
+                    setCompleteStatus(
+                        QStringLiteral("Saved local config, but system step(s) failed: %1")
+                            .arg(errs->join(QStringLiteral("; "))),
+                        true);
+                }
+                return;
+            }
+            const PendingOp op = (*ops)[idx];
+            auto* proc = new QProcess(this);
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                    this, [proc, op, errs, run_next, idx](int code, QProcess::ExitStatus status) {
+                        if (status != QProcess::NormalExit || code != 0) {
+                            const QString e = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                            errs->append(e.isEmpty()
+                                             ? QStringLiteral("%1 (exit %2)").arg(op.label).arg(code)
+                                             : QStringLiteral("%1: %2").arg(op.label, e));
+                        }
+                        proc->deleteLater();
+                        (*run_next)(idx + 1);
+                    });
+            connect(proc, &QProcess::errorOccurred, this,
+                    [proc, op, errs, run_next, idx](QProcess::ProcessError) {
+                        errs->append(QStringLiteral("%1 (%2 unavailable)").arg(op.label, op.bin));
+                        proc->deleteLater();
+                        (*run_next)(idx + 1);
+                    });
+            if (!op.stdin_data.isEmpty()) {
+                connect(proc, &QProcess::started, this, [proc, data = op.stdin_data]() {
+                    proc->write(data);
+                    proc->closeWriteChannel();
+                });
+            }
+            proc->start(op.bin, op.args);
+        };
+        (*run_next)(0);
     }
 
     bool update_mode_ = false;
@@ -2212,16 +2634,23 @@ private:
     QLabel* a11y_prompt_lbl_ = nullptr;
     FinnRibbonAnimation* complete_ribbon_ = nullptr;
     QLabel* complete_title_ = nullptr;
+    QLabel* complete_status_lbl_ = nullptr;
     OobeGetStartedPill* start_btn_ = nullptr;
+    bool finish_in_progress_ = false;
+    bool finish_allow_continue_ = false;
+    bool complete_has_error_ = false;
 
     QVector<OobeOptionRow*> language_rows_;
     OobeProgressiveList* wifi_prog_list_ = nullptr;
     ProgressiveBlurOverlay* wifi_blur_ov_ = nullptr;
 
+    QLabel* pfp_preview_lbl_ = nullptr;
+    QVector<OobePfpSwatch*> pfp_swatches_;
     OobeInputField* fullname_edit_ = nullptr;
     OobeInputField* username_edit_ = nullptr;
     OobeInputField* pw_edit_ = nullptr;
     OobeInputField* pw_verify_edit_ = nullptr;
+    QLabel* pw_hint_lbl_ = nullptr;
 };
 
 }  // namespace

@@ -131,6 +131,21 @@ PeInfo inspect_pe_file(const std::string& path) {
     std::string buf(4096, '\0');
     in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
     buf.resize(static_cast<std::size_t>(in.gcount()));
+    if (buf.size() == 4096 && buf[0] == 'M' && buf[1] == 'Z') {
+        const std::uint32_t pe_off = read_u32(buf, 60);
+        constexpr std::size_t kMaxPeScanBytes = 1024 * 1024;
+        if (pe_off < kMaxPeScanBytes) {
+            const std::size_t need = std::min<std::size_t>(
+                kMaxPeScanBytes, static_cast<std::size_t>(pe_off) + 512);
+            if (need > buf.size()) {
+                const std::size_t prev = buf.size();
+                buf.resize(need, '\0');
+                in.read(buf.data() + prev,
+                        static_cast<std::streamsize>(need - prev));
+                buf.resize(prev + static_cast<std::size_t>(in.gcount()));
+            }
+        }
+    }
     return inspect_pe_bytes(buf);
 }
 
