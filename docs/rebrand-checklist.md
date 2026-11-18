@@ -83,11 +83,10 @@ hooks that cannot be renamed while FinnOS builds from `archiso` and `pacman`.
 > audited and contain no user-facing distribution branding (only CPU
 > architecture tokens `PeArch`, `host_arch`, `aarch64`, `x86_64`, `WINEARCH`).
 
-#### Remaining references outside `@rebrand` ownership (reported to `@coordinator` / owners)
+#### Remaining references outside `@rebrand` ownership (for reference)
 | Finding | Location (`file:line`) | Text | Owner |
 |---|---|---|---|
-| M1 (SDK doc) | `docs/sdk/audit.md:71` | `"until run on the Arch Linux VM or target hardware"` | `@sdk` |
-| m2 (comments) | `base/packages.x86_64:7-10,37,50,103` | Comments naming `"Dell OptiPlex 3020"` and `"general Arch x86_64 profile"` | `@repo` (cleaned in `69ee0a1`) |
+| m2 (comments) | `base/packages.x86_64` | Cleaned in `69ee0a1` | `@repo` |
 | M1 (contract) | `docs/design/contract.md:8` | `"Arch Linux: the kernel, firmware, systemd..."` (explicitly marked engineering-base exception on lines 15–16) | `@design` |
 | B3 (fallback) | `vm/finn-install.sh:256,287,504` | Fallback comments/env (`FINN_ARCH_FALLBACK_MIRROR`) | `@repo` |
 
@@ -127,9 +126,15 @@ standalone `"Arch"` in C++/header UI strings), `sdk/`, and top-level `README`/
 `docs/` (excluding `rebrand-checklist.md`, `docs/audit/`, and the intentional
 base disclosure in `docs/design/contract.md:8`).
 
-Current status on `audit-and-ota`:
-- All owned surfaces (`os-release`, `issue`, `motd`, `boot/`, `plymouth`,
-  `apps/`, `src/`, `README.md`, `CONTRIBUTING.md`, `base/README.md`,
-  `vm/README.md`, `docs/`) pass.
-- Running `make lint` / `./tools/check-branding.sh` currently flags only
-  `docs/sdk/audit.md:71` (`"Arch Linux VM"`, owned by `@sdk`, notified on board).
+Command run from repo root:
+
+```sh
+make lint
+```
+
+Output (`exit 0`):
+
+```text
+style: clean
+branding: clean (boot/identity, apps/src/sdk, README/docs, os-release)
+```
