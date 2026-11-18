@@ -1,57 +1,367 @@
-#!/bin/sh
-set -eu
+#!/usr/bin/env python3
+"""FinnSDK CLI: scaffold, build, validate, package, verify, register, check, and simulate FinnOS apps."""
 
-usage() {
-    cat <<'EOF'
-Usage: finn-sdk <command> [args]
+from __future__ import annotations
 
-Commands:
-  new <id> [--dir <path>] [--name <title>]   Create a new native C++20 Qt6 FinnOS app project
-  build [dir]                                Configure and compile with CMake + Ninja
-  run [dir] [-- <args...>]                   Build if needed and run on the FinnOS compositor
-  register <id> <name> <binary> [icon] [note]
-                                             Install user desktop entry into ~/.local/share/applications
-  check                                      Verify FinnSDK, Qt6 plugins, Wayland, and compat tooling
-EOF
+import argparse
+import hashlib
+import io
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+SDK_VERSION = "0.2.0"
+
+ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}(\.[a-z][a-z0-9-]{0,63})*$")
+SEMVER_RE = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+SDK_VER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+HEX64_RE = re.compile(r"^[a-f0-9]{64}$")
+HOMEPAGE_RE = re.compile(r"^https?://\S+$")
+
+ALLOWED_CATEGORIES = {
+    "System",
+    "Developer",
+    "Productivity",
+    "Media",
+    "Utility",
+    "Network",
+    "Graphics",
+    "Education",
+    "Games",
+}
+ALLOWED_ARCHES = {"x86_64", "aarch64"}
+ALLOWED_FORM_FACTORS = {"desktop", "tablet", "phone"}
+ALLOWED_PERMISSIONS = {
+    "filesystem:home-read",
+    "filesystem:home-write",
+    "network:internet",
+    "session:launch",
+    "audio:playback",
+    "audio:record",
+    "bluetooth",
+    "notifications",
+}
+ALLOWED_MANIFEST_KEYS = {
+    "schema_version",
+    "id",
+    "name",
+    "version",
+    "summary",
+    "executable",
+    "icon",
+    "desktop_entry",
+    "category",
+    "sdk_min_version",
+    "arch",
+    "form_factors",
+    "permissions",
+    "license",
+    "author",
+    "homepage",
+    "assets",
+    "package",
+}
+ALLOWED_PACKAGE_KEYS = {
+    "format",
+    "arch",
+    "payload",
+    "payload_sha256",
+    "payload_size",
+    "signed",
+    "signature_alg",
+    "built_at_epoch",
 }
 
-sanitize_id() {
-    printf '%s' "$1" | tr '[:upper:] _' '[:lower:]--' | tr -cd 'a-z0-9-'
+FORM_FACTOR_PRESETS = {
+    "phone": {
+        "default_orientation": "portrait",
+        "portrait": (390, 844),
+        "landscape": (844, 390),
+        "default_scale": 2.0,
+    },
+    "tablet": {
+        "default_orientation": "portrait",
+        "portrait": (768, 1024),
+        "landscape": (1024, 768),
+        "default_scale": 2.0,
+    },
+    "desktop": {
+        "default_orientation": "landscape",
+        "portrait": (900, 1440),
+        "landscape": (1440, 900),
+        "default_scale": 1.0,
+    },
 }
 
-cmd_new() {
-    if [ "$#" -lt 1 ]; then
-        usage >&2
-        exit 2
-    fi
-    raw_id="$1"
-    shift
-    id="$(sanitize_id "$raw_id")"
-    if [ -z "$id" ]; then
-        echo "finn-sdk: invalid app id: $raw_id" >&2
-        exit 2
-    fi
-    dir="./$id"
-    title="$id"
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --dir) dir="$2"; shift 2 ;;
-            --name) title="$2"; shift 2 ;;
-            *) echo "finn-sdk: unknown option: $1" >&2; exit 2 ;;
-        esac
-    done
 
-    if [ -e "$dir" ]; then
-        echo "finn-sdk: destination already exists: $dir" >&2
-        exit 1
-    fi
+def sanitize_id(raw: str) -> str:
+    lowered = raw.lower().replace(" ", "-").replace("_", "-")
+    return re.sub(r"[^a-z0-9-]", "", lowered).strip("-")
 
-    mkdir -p "$dir"
-    bin_name="finn-$id"
 
-    cat > "$dir/CMakeLists.txt" <<EOF
-cmake_minimum_required(VERSION 3.22)
-project(${id} VERSION 0.1.0 LANGUAGES CXX)
+def normalize_host_arch() -> str:
+    m = platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "x86_64"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return m
+
+
+def is_safe_rel_path(val: str) -> bool:
+    if not val or "\x00" in val or val.startswith("/") or val.startswith("\\"):
+        return False
+    parts = Path(val).parts
+    if any(p in ("..", "") for p in parts):
+        return False
+    return True
+
+
+def validate_manifest_data(
+    data: Any,
+    base_dir: Path | None = None,
+    *,
+    strict: bool = False,
+    require_package: bool = False,
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(data, dict):
+        return ["Manifest root must be a JSON object."], warnings
+
+    unknown = sorted(set(data.keys()) - ALLOWED_MANIFEST_KEYS)
+    if unknown:
+        errors.append(f"Unknown manifest field(s): {', '.join(unknown)}")
+
+    required = ["schema_version", "id", "name", "version", "summary", "executable"]
+    for req in required:
+        if req not in data:
+            errors.append(f"Missing required field '{req}'.")
+
+    sv = data.get("schema_version")
+    if "schema_version" in data and (isinstance(sv, bool) or sv != 1):
+        errors.append("'schema_version' must be integer 1.")
+
+    app_id = data.get("id")
+    if "id" in data:
+        if not isinstance(app_id, str) or not (2 <= len(app_id) <= 128) or not ID_RE.match(app_id):
+            errors.append(
+                "'id' must be 2..128 chars matching lowercase slug or reverse-DNS "
+                "(e.g. 'counter' or 'com.example.counter')."
+            )
+
+    name = data.get("name")
+    if "name" in data:
+        if not isinstance(name, str) or not (1 <= len(name.strip()) <= 80):
+            errors.append("'name' must be a non-empty string (max 80 chars).")
+
+    version = data.get("version")
+    if "version" in data:
+        if not isinstance(version, str) or not SEMVER_RE.match(version):
+            errors.append("'version' must be a valid SemVer 2.0.0 string (e.g. '0.1.0').")
+
+    summary = data.get("summary")
+    if "summary" in data:
+        if not isinstance(summary, str) or not (1 <= len(summary.strip()) <= 200):
+            errors.append("'summary' must be a non-empty string (max 200 chars).")
+
+    exe = data.get("executable")
+    if "executable" in data:
+        if not isinstance(exe, str) or len(exe) > 256 or not is_safe_rel_path(exe):
+            errors.append("'executable' must be a safe relative path or binary name.")
+        elif strict and base_dir is not None:
+            cand1 = base_dir / exe
+            cand2 = base_dir / "build" / Path(exe).name
+            if not (cand1.is_file() or cand2.is_file()):
+                errors.append(
+                    f"Strict check failed: executable '{exe}' not found in '{base_dir}' or '{base_dir / 'build'}'."
+                )
+
+    if "icon" in data:
+        icon = data["icon"]
+        if not isinstance(icon, str) or not (1 <= len(icon) <= 256) or "\x00" in icon:
+            errors.append("'icon' must be a non-empty string (max 256 chars).")
+        elif "/" in icon or icon.endswith((".svg", ".png")):
+            if not is_safe_rel_path(icon):
+                errors.append("'icon' path must be a safe relative path without '..' or leading '/'.")
+            elif base_dir is not None and not (base_dir / icon).is_file():
+                msg = f"Referenced icon file '{icon}' does not exist under '{base_dir}'."
+                if strict:
+                    errors.append(msg)
+                else:
+                    warnings.append(msg)
+
+    if "desktop_entry" in data:
+        de = data["desktop_entry"]
+        if (
+            not isinstance(de, str)
+            or len(de) > 256
+            or not is_safe_rel_path(de)
+            or not de.endswith(".desktop")
+        ):
+            errors.append("'desktop_entry' must be a safe relative path ending in '.desktop'.")
+        elif base_dir is not None and not (base_dir / de).is_file():
+            errors.append(f"Referenced desktop_entry '{de}' does not exist under '{base_dir}'.")
+
+    if "category" in data:
+        cat = data["category"]
+        if not isinstance(cat, str) or cat not in ALLOWED_CATEGORIES:
+            errors.append(f"'category' must be one of: {', '.join(sorted(ALLOWED_CATEGORIES))}.")
+
+    if "sdk_min_version" in data:
+        smv = data["sdk_min_version"]
+        if not isinstance(smv, str) or not SDK_VER_RE.match(smv):
+            errors.append("'sdk_min_version' must be MAJOR.MINOR.PATCH (e.g. '0.2.0').")
+
+    for arr_field, allowed_set in (
+        ("arch", ALLOWED_ARCHES),
+        ("form_factors", ALLOWED_FORM_FACTORS),
+    ):
+        if arr_field in data:
+            val = data[arr_field]
+            if not isinstance(val, list) or len(val) < 1:
+                errors.append(f"'{arr_field}' must be a non-empty array.")
+            elif len(set(val)) != len(val) or any(
+                not isinstance(x, str) or x not in allowed_set for x in val
+            ):
+                errors.append(
+                    f"'{arr_field}' entries must be unique values from: {', '.join(sorted(allowed_set))}."
+                )
+
+    if "permissions" in data:
+        perms = data["permissions"]
+        if not isinstance(perms, list):
+            errors.append("'permissions' must be an array of permission strings.")
+        elif len(set(perms)) != len(perms) or any(
+            not isinstance(x, str) or x not in ALLOWED_PERMISSIONS for x in perms
+        ):
+            errors.append(
+                f"'permissions' entries must be unique values from: {', '.join(sorted(ALLOWED_PERMISSIONS))}."
+            )
+
+    if "license" in data:
+        lic = data["license"]
+        if not isinstance(lic, str) or not (1 <= len(lic.strip()) <= 128):
+            errors.append("'license' must be a non-empty string (max 128 chars).")
+
+    if "author" in data:
+        auth = data["author"]
+        if not isinstance(auth, str) or not (1 <= len(auth.strip()) <= 120):
+            errors.append("'author' must be a non-empty string (max 120 chars).")
+
+    if "homepage" in data:
+        hp = data["homepage"]
+        if not isinstance(hp, str) or not HOMEPAGE_RE.match(hp):
+            errors.append("'homepage' must be an http:// or https:// URL.")
+
+    if "assets" in data:
+        assets = data["assets"]
+        if not isinstance(assets, list):
+            errors.append("'assets' must be an array of relative file paths.")
+        elif len(set(assets)) != len(assets):
+            errors.append("'assets' entries must be unique.")
+        else:
+            for item in assets:
+                if not isinstance(item, str) or len(item) > 256 or not is_safe_rel_path(item):
+                    errors.append(f"Invalid asset path '{item}'.")
+                elif base_dir is not None and not (base_dir / item).exists():
+                    errors.append(f"Asset '{item}' does not exist under '{base_dir}'.")
+
+    pkg = data.get("package")
+    if require_package and pkg is None:
+        errors.append("Missing required 'package' metadata block inside packaged manifest.")
+    if pkg is not None:
+        if not isinstance(pkg, dict):
+            errors.append("'package' must be an object.")
+        else:
+            unknown_pkg = sorted(set(pkg.keys()) - ALLOWED_PACKAGE_KEYS)
+            if unknown_pkg:
+                errors.append(f"Unknown 'package' field(s): {', '.join(unknown_pkg)}")
+            for req_pkg in (
+                "format",
+                "arch",
+                "payload",
+                "payload_sha256",
+                "payload_size",
+                "signed",
+                "built_at_epoch",
+            ):
+                if req_pkg not in pkg:
+                    errors.append(f"Missing 'package.{req_pkg}'.")
+            if pkg.get("format") != "finnapp-v1":
+                errors.append("'package.format' must be 'finnapp-v1'.")
+            if pkg.get("arch") not in ALLOWED_ARCHES:
+                errors.append(f"'package.arch' must be one of: {', '.join(sorted(ALLOWED_ARCHES))}.")
+            if pkg.get("payload") != "payload.tar.zst":
+                errors.append("'package.payload' must be 'payload.tar.zst'.")
+            if not isinstance(pkg.get("payload_sha256"), str) or not HEX64_RE.match(
+                pkg["payload_sha256"]
+            ):
+                errors.append("'package.payload_sha256' must be a 64-char lowercase hex SHA-256.")
+            ps = pkg.get("payload_size")
+            if isinstance(ps, bool) or not isinstance(ps, int) or ps < 1:
+                errors.append("'package.payload_size' must be a positive integer.")
+            if not isinstance(pkg.get("signed"), bool):
+                errors.append("'package.signed' must be a boolean.")
+            if "signature_alg" in pkg and pkg["signature_alg"] not in ("ed25519", "none"):
+                errors.append("'package.signature_alg' must be 'ed25519' or 'none'.")
+            be = pkg.get("built_at_epoch")
+            if isinstance(be, bool) or not isinstance(be, int) or be < 0:
+                errors.append("'package.built_at_epoch' must be a non-negative integer.")
+
+    return errors, warnings
+
+
+def resolve_manifest_path(target: str) -> tuple[Path, Path]:
+    p = Path(target)
+    if p.is_dir():
+        return p / "finn-app.json", p
+    return p, p.parent
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    raw_id = args.id
+    dir_override = args.dir
+
+    if not dir_override and ("/" in raw_id or "\\" in raw_id):
+        dest_dir = Path(raw_id)
+        base_name = dest_dir.name
+        app_id = sanitize_id(base_name)
+    else:
+        app_id = sanitize_id(raw_id)
+        dest_dir = Path(dir_override) if dir_override else Path(f"./{app_id}")
+
+    if not app_id or not ID_RE.match(app_id):
+        print(f"finn-sdk: invalid app id: {raw_id}", file=sys.stderr)
+        return 2
+
+    title = args.name if args.name else app_id
+
+    if dest_dir.exists():
+        print(f"finn-sdk: destination already exists: {dest_dir}", file=sys.stderr)
+        return 1
+
+    bin_name = f"finn-{app_id}"
+    (dest_dir / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+
+    (dest_dir / "CMakeLists.txt").write_text(
+        f"""cmake_minimum_required(VERSION 3.22)
+project({app_id} VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,43 +369,47 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(FinnSDK REQUIRED)
 
-add_executable(${bin_name}
+add_executable({bin_name}
     main.cpp
 )
 
-target_link_libraries(${bin_name} PRIVATE FinnSDK::FinnUI)
-EOF
+target_link_libraries({bin_name} PRIVATE FinnSDK::FinnUI)
+""",
+        encoding="utf-8",
+    )
 
-    cat > "$dir/Makefile" <<EOF
-BUILD_DIR ?= build
+    (dest_dir / "Makefile").write_text(
+        f"""BUILD_DIR ?= build
 
 .PHONY: all run clean
 
 all:
-	cmake -B \$(BUILD_DIR) -G Ninja
-	cmake --build \$(BUILD_DIR)
+\tcmake -B $(BUILD_DIR) -G Ninja
+\tcmake --build $(BUILD_DIR)
 
 run: all
-	WAYLAND_DISPLAY=\$\${WAYLAND_DISPLAY:-/run/finn/wayland-0} \\
-	QT_QPA_PLATFORMTHEME=\$\${QT_QPA_PLATFORMTHEME:-finn} \\
-	QT_STYLE_OVERRIDE=\$\${QT_STYLE_OVERRIDE:-finn} \\
-	./\$(BUILD_DIR)/${bin_name}
+\tWAYLAND_DISPLAY=$${{WAYLAND_DISPLAY:-/run/finn/wayland-0}} \\
+\tQT_QPA_PLATFORMTHEME=$${{QT_QPA_PLATFORMTHEME:-finn}} \\
+\tQT_STYLE_OVERRIDE=$${{QT_STYLE_OVERRIDE:-finn}} \\
+\t./$(BUILD_DIR)/{bin_name}
 
 clean:
-	rm -rf \$(BUILD_DIR)
-EOF
+\trm -rf $(BUILD_DIR)
+""",
+        encoding="utf-8",
+    )
 
-    cat > "$dir/main.cpp" <<EOF
-#include <FinnSDK/FinnSDK.hpp>
+    (dest_dir / "main.cpp").write_text(
+        f"""#include <FinnSDK/FinnSDK.hpp>
 
 #include <QVBoxLayout>
 #include <QWidget>
 
-int main(int argc, char** argv) {
-    finn::ui::FinnApplication app(argc, argv, QStringLiteral("${id}"),
-                                  QStringLiteral("${title}"));
+int main(int argc, char** argv) {{
+    finn::ui::FinnApplication app(argc, argv, QStringLiteral("{app_id}"),
+                                  QStringLiteral("{title}"));
 
-    finn::ui::FinnWindow win(QStringLiteral("${title}"),
+    finn::ui::FinnWindow win(QStringLiteral("{title}"),
                              QStringLiteral("native-apps"));
     win.resize(740, 480);
 
@@ -105,7 +419,7 @@ int main(int argc, char** argv) {
     lay->setSpacing(12);
 
     lay->addWidget(new finn::ui::FinnLabel(
-        QStringLiteral("${title}"),
+        QStringLiteral("{title}"),
         finn::ui::FinnLabel::Role::TitleLarge,
         finn::ui::FinnLabel::Tone::Ink, page));
     lay->addWidget(new finn::ui::FinnLabel(
@@ -116,141 +430,904 @@ int main(int argc, char** argv) {
     auto* btn = new finn::ui::FinnButton(
         QStringLiteral("Say Hello"),
         finn::ui::FinnButton::Variant::Primary, QString(), page);
-    QObject::connect(btn, &QAbstractButton::clicked, &win, [&win]() {
+    QObject::connect(btn, &QAbstractButton::clicked, &win, [&win]() {{
         win.showToast(QStringLiteral("Running natively on FinnOS Qt6"),
                       finn::ui::FinnToast::Severity::Success);
-    });
+    }});
     lay->addWidget(btn, 0, Qt::AlignLeft);
     lay->addStretch(1);
 
     win.setContentWidget(page);
     win.show();
     return app.exec();
-}
-EOF
+}}
+""",
+        encoding="utf-8",
+    )
 
-    cat > "$dir/finn-app.desktop" <<EOF
-[Desktop Entry]
+    (dest_dir / "finn-app.desktop").write_text(
+        f"""[Desktop Entry]
 Type=Application
-Name=${title}
+Name={title}
 Comment=Native FinnOS application
-Exec=${bin_name}
+Exec={bin_name}
 Icon=native-apps
 Categories=Utility;
-X-Finn-Id=${id}
-EOF
+X-Finn-Id={app_id}
+""",
+        encoding="utf-8",
+    )
 
-    echo "Created FinnSDK app '${title}' in ${dir}"
-    echo "Next: finn-sdk build ${dir} && finn-sdk run ${dir}"
-}
-
-find_executable_in_build() {
-    bdir="$1"
-    cmake_file="$2/CMakeLists.txt"
-    target=""
-    if [ -f "$cmake_file" ]; then
-        target="$(sed -n 's/^[[:space:]]*add_executable([[:space:]]*\([^[:space:])]*\).*/\1/p' "$cmake_file" | head -n 1)"
-    fi
-    if [ -n "$target" ] && [ -x "$bdir/$target" ]; then
-        printf '%s\n' "$bdir/$target"
-        return 0
-    fi
-    found="$(find "$bdir" -maxdepth 2 -type f -perm -111 ! -name 'CMake*' 2>/dev/null | head -n 1 || true)"
-    printf '%s\n' "$found"
-}
-
-cmd_build() {
-    dir="${1:-.}"
-    if [ ! -f "$dir/CMakeLists.txt" ]; then
-        echo "finn-sdk: no CMakeLists.txt in $dir" >&2
-        exit 1
-    fi
-    cmake -S "$dir" -B "$dir/build" -G Ninja
-    cmake --build "$dir/build"
-}
-
-cmd_run() {
-    dir="."
-    if [ "$#" -gt 0 ] && [ "$1" != "--" ]; then
-        dir="$1"
-        shift
-    fi
-    if [ "${1:-}" = "--" ]; then shift; fi
-    cmd_build "$dir"
-    bin="$(find_executable_in_build "$dir/build" "$dir")"
-    if [ -z "$bin" ] || [ ! -x "$bin" ]; then
-        echo "finn-sdk: built executable not found in $dir/build" >&2
-        exit 1
-    fi
-    export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-/run/finn/wayland-0}"
-    export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
-    export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-finn}"
-    export QT_STYLE_OVERRIDE="${QT_STYLE_OVERRIDE:-finn}"
-    exec "$bin" "$@"
-}
-
-cmd_register() {
-    if [ "$#" -lt 3 ]; then
-        echo "Usage: finn-sdk register <id> <name> <binary> [icon] [note]" >&2
-        exit 2
-    fi
-    id="$(sanitize_id "$1")"
-    name="$2"
-    binary="$3"
-    icon="${4:-native-apps}"
-    note="${5:-Native FinnOS app}"
-    apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-    mkdir -p "$apps_dir"
-    out="$apps_dir/finn-$id.desktop"
-    cat > "$out" <<EOF
-[Desktop Entry]
-Type=Application
-Name=$name
-Comment=$note
-Exec=$binary
-Icon=$icon
-Categories=Utility;
-X-Finn-Id=$id
-EOF
-    echo "Registered $out"
-}
-
-cmd_check() {
-    ok=0
-    check_item() {
-        label="$1"
-        shift
-        if "$@" >/dev/null 2>&1; then
-            printf '[ok]      %s\n' "$label"
-        else
-            printf '[missing] %s\n' "$label"
-            ok=1
-        fi
+    manifest = {
+        "schema_version": 1,
+        "id": app_id,
+        "name": title,
+        "version": "0.1.0",
+        "summary": "Native FinnOS application",
+        "executable": bin_name,
+        "icon": "native-apps",
+        "desktop_entry": "finn-app.desktop",
+        "category": "Utility",
+        "sdk_min_version": SDK_VERSION,
+        "arch": ["x86_64", "aarch64"],
+        "form_factors": ["desktop"],
+        "permissions": [],
+        "license": "MIT",
     }
-    check_item "cmake" command -v cmake
-    check_item "ninja" command -v ninja
-    check_item "g++ / c++" command -v c++
-    check_item "pkgconf / pkg-config" command -v pkg-config
-    check_item "FinnSDK CMake package" sh -c 'test -f /usr/lib/cmake/FinnSDK/FinnSDKConfig.cmake || test -f /usr/local/lib/cmake/FinnSDK/FinnSDKConfig.cmake'
-    check_item "libfinnplatformtheme.so" sh -c 'test -f /usr/lib/qt6/plugins/platformthemes/libfinnplatformtheme.so'
-    check_item "libfinnstyle.so" sh -c 'test -f /usr/lib/qt6/plugins/styles/libfinnstyle.so'
-    check_item "liblayer-shell.so" sh -c 'test -f /usr/lib/qt6/plugins/wayland-shell-integration/liblayer-shell.so'
-    check_item "finn-session binary" command -v finn-session
-    check_item "Wayland socket (/run/finn/wayland-0)" test -S /run/finn/wayland-0 || true
-    check_item "Xwayland binary (optional Linux X11)" command -v Xwayland || true
-    check_item "Wine runtime (optional Windows apps)" command -v wine || command -v wine64 || true
+    (dest_dir / "finn-app.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+
+    (dest_dir / ".github" / "workflows" / "ci.yml").write_text(
+        f"""name: {title} CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate finn-app.json
+        run: |
+          if command -v finn-sdk >/dev/null 2>&1; then
+            finn-sdk validate .
+          else
+            python3 -c "import json, pathlib; d = json.loads(pathlib.Path('finn-app.json').read_text()); assert d.get('schema_version') == 1 and d.get('id') and d.get('name')"
+          fi
+
+  build-and-package:
+    name: Build & Package (x86_64)
+    needs: validate
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git cmake ninja python zstd openssl \\
+            qt6-base qt6-wayland qt6-svg layer-shell-qt
+      - uses: actions/checkout@v4
+      - name: Install FinnSDK from FinnOS repo (until finnos-sdk package is hosted)
+        run: |
+          git clone --depth 1 https://github.com/Finn-Technologies/FinnOS.git /tmp/finnos
+          cmake -S /tmp/finnos -B /tmp/finnos/build -G Ninja \\
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \\
+            -DQT_NO_PRIVATE_MODULE_WARNING=ON \\
+            -DFINN_BUILD_SHELL=OFF -DFINN_BUILD_APPS=OFF \\
+            -DFINN_BUILD_QT_PLUGIN=OFF -DFINN_BUILD_TOOLS=OFF
+          cmake --build /tmp/finnos/build
+          cmake --install /tmp/finnos/build
+          install -m755 /tmp/finnos/tools/finn-sdk /usr/local/bin/finn-sdk
+      - name: Validate, Build, and Package (.finnapp)
+        run: |
+          finn-sdk validate .
+          finn-sdk build .
+          finn-sdk package . --unsigned --arch x86_64
+          finn-sdk verify dist/*.finnapp --allow-unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finnapp-unsigned
+          path: dist/*.finnapp
+""",
+        encoding="utf-8",
+    )
+
+    print(f"Created FinnSDK app '{title}' in {dest_dir}")
+    print(f"Next: finn-sdk validate {dest_dir} && finn-sdk build {dest_dir}")
     return 0
-}
 
-sub="${1:-help}"
-[ "$#" -gt 0 ] && shift || true
 
-case "$sub" in
-    new) cmd_new "$@" ;;
-    build) cmd_build "$@" ;;
-    run) cmd_run "$@" ;;
-    register) cmd_register "$@" ;;
-    check) cmd_check ;;
-    help|-h|--help) usage ;;
-    *) echo "finn-sdk: unknown command: $sub" >&2; usage >&2; exit 2 ;;
-esac
+def find_executable_in_build(build_dir: Path, project_dir: Path) -> Path | None:
+    cmake_file = project_dir / "CMakeLists.txt"
+    if cmake_file.is_file():
+        text = cmake_file.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^\s*add_executable\(\s*([^\s)]+)", text, re.MULTILINE)
+        if m:
+            cand = build_dir / m.group(1)
+            if cand.is_file() and os.access(cand, os.X_OK):
+                return cand
+    if build_dir.is_dir():
+        for p in sorted(build_dir.rglob("*")):
+            if p.is_file() and os.access(p, os.X_OK) and not p.name.startswith("CMake"):
+                rel_parts = p.relative_to(build_dir).parts
+                if len(rel_parts) <= 2 and "CMakeFiles" not in rel_parts:
+                    return p
+    return None
+
+
+def build_project(project_dir: Path) -> int:
+    cmake_file = project_dir / "CMakeLists.txt"
+    if not cmake_file.is_file():
+        print(f"finn-sdk: no CMakeLists.txt in {project_dir}", file=sys.stderr)
+        return 1
+    build_dir = project_dir / "build"
+    subprocess.run(
+        ["cmake", "-S", str(project_dir), "-B", str(build_dir), "-G", "Ninja"],
+        check=True,
+    )
+    subprocess.run(["cmake", "--build", str(build_dir)], check=True)
+    return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    project_dir = Path(args.dir)
+    try:
+        return build_project(project_dir)
+    except FileNotFoundError as exc:
+        print(f"finn-sdk: missing build tool: {exc.filename}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    project_dir = Path(args.dir)
+    try:
+        build_project(project_dir)
+    except FileNotFoundError as exc:
+        print(f"finn-sdk: missing build tool: {exc.filename}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+    exe = find_executable_in_build(project_dir / "build", project_dir)
+    if exe is None:
+        print(f"finn-sdk: built executable not found in {project_dir / 'build'}", file=sys.stderr)
+        return 1
+
+    env = os.environ.copy()
+    env.setdefault("WAYLAND_DISPLAY", "/run/finn/wayland-0")
+    env.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+    env.setdefault("QT_QPA_PLATFORMTHEME", "finn")
+    env.setdefault("QT_STYLE_OVERRIDE", "finn")
+    os.execve(str(exe), [str(exe), *args.extra], env)
+    return 0
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    app_id = sanitize_id(args.id)
+    if not app_id:
+        print(f"finn-sdk: invalid app id: {args.id}", file=sys.stderr)
+        return 2
+    xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    apps_dir = xdg_data / "applications"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    out = apps_dir / f"finn-{app_id}.desktop"
+    out.write_text(
+        f"""[Desktop Entry]
+Type=Application
+Name={args.name}
+Comment={args.note}
+Exec={args.binary}
+Icon={args.icon}
+Categories=Utility;
+X-Finn-Id={app_id}
+""",
+        encoding="utf-8",
+    )
+    print(f"Registered {out}")
+    return 0
+
+
+def cmd_check(_args: argparse.Namespace) -> int:
+    def check_item(label: str, ok: bool) -> None:
+        tag = "[ok]     " if ok else "[missing]"
+        print(f"{tag} {label}")
+
+    check_item("cmake", shutil.which("cmake") is not None)
+    check_item("ninja", shutil.which("ninja") is not None)
+    check_item("g++ / c++", shutil.which("c++") is not None or shutil.which("g++") is not None)
+    check_item("pkgconf / pkg-config", shutil.which("pkg-config") is not None)
+    check_item(
+        "FinnSDK CMake package",
+        Path("/usr/lib/cmake/FinnSDK/FinnSDKConfig.cmake").is_file()
+        or Path("/usr/local/lib/cmake/FinnSDK/FinnSDKConfig.cmake").is_file(),
+    )
+    check_item(
+        "libfinnplatformtheme.so",
+        Path("/usr/lib/qt6/plugins/platformthemes/libfinnplatformtheme.so").is_file(),
+    )
+    check_item(
+        "libfinnstyle.so",
+        Path("/usr/lib/qt6/plugins/styles/libfinnstyle.so").is_file(),
+    )
+    check_item(
+        "liblayer-shell.so",
+        Path("/usr/lib/qt6/plugins/wayland-shell-integration/liblayer-shell.so").is_file(),
+    )
+    check_item("finn-session binary", shutil.which("finn-session") is not None)
+    check_item("openssl (package signing)", shutil.which("openssl") is not None)
+    check_item("zstd (package compression)", shutil.which("zstd") is not None)
+    check_item("Wayland socket (/run/finn/wayland-0)", Path("/run/finn/wayland-0").is_socket())
+    check_item(
+        "finn-comp (optional headless simulator)",
+        shutil.which("finn-comp") is not None,
+    )
+    check_item("Xwayland binary (optional Linux X11)", shutil.which("Xwayland") is not None)
+    check_item(
+        "Wine runtime (optional Windows apps)",
+        shutil.which("wine") is not None or shutil.which("wine64") is not None,
+    )
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    manifest_path, base_dir = resolve_manifest_path(args.target)
+    if not manifest_path.is_file():
+        err = f"Manifest not found: {manifest_path}"
+        if args.json:
+            print(json.dumps({"valid": False, "manifest": str(manifest_path), "errors": [err], "warnings": []}))
+        else:
+            print(f"finn-sdk validate: {err}", file=sys.stderr)
+        return 1
+
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        err = f"Invalid JSON in {manifest_path}: {exc}"
+        if args.json:
+            print(json.dumps({"valid": False, "manifest": str(manifest_path), "errors": [err], "warnings": []}))
+        else:
+            print(f"finn-sdk validate: {err}", file=sys.stderr)
+        return 1
+
+    errors, warnings = validate_manifest_data(data, base_dir=base_dir, strict=args.strict)
+    valid = len(errors) == 0
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "valid": valid,
+                    "manifest": str(manifest_path),
+                    "id": data.get("id") if isinstance(data, dict) else None,
+                    "version": data.get("version") if isinstance(data, dict) else None,
+                    "errors": errors,
+                    "warnings": warnings,
+                },
+                indent=2,
+            )
+        )
+    else:
+        for w in warnings:
+            print(f"[warn]  {w}", file=sys.stderr)
+        for e in errors:
+            print(f"[error] {e}", file=sys.stderr)
+        if valid:
+            print(f"[ok]    {manifest_path} ({data['id']} {data['version']})")
+
+    return 0 if valid else 1
+
+
+def _inside_git_repo(path: Path) -> bool:
+    cur = path.resolve()
+    for parent in (cur, *cur.parents):
+        if (parent / ".git").exists():
+            return True
+    return False
+
+
+def cmd_keygen(args: argparse.Namespace) -> int:
+    if shutil.which("openssl") is None:
+        print("finn-sdk keygen: openssl is required.", file=sys.stderr)
+        return 1
+
+    prefix = Path(args.prefix)
+    if _inside_git_repo(prefix):
+        print(
+            "finn-sdk keygen: refusing to write private keys inside a git repository.",
+            file=sys.stderr,
+        )
+        return 2
+
+    priv = Path(f"{prefix}.key.pem")
+    pub = Path(f"{prefix}.pub.pem")
+
+    if not args.force and (priv.exists() or pub.exists()):
+        print(
+            f"finn-sdk keygen: target exists ({priv} / {pub}); pass --force to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+
+    priv.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["openssl", "genpkey", "-algorithm", "Ed25519", "-out", str(priv)],
+        check=True,
+    )
+    os.chmod(priv, 0o600)
+    subprocess.run(
+        ["openssl", "pkey", "-in", str(priv), "-pubout", "-out", str(pub)],
+        check=True,
+    )
+    os.chmod(pub, 0o644)
+    print(f"Generated Ed25519 keypair:\n  private (keep secret, never commit): {priv}\n  public: {pub}")
+    return 0
+
+
+def _add_bytes_to_tar(
+    tf: tarfile.TarFile, name: str, data: bytes, mode: int, epoch: int
+) -> None:
+    info = tarfile.TarInfo(name=name)
+    info.size = len(data)
+    info.mode = mode
+    info.mtime = epoch
+    info.uid = 0
+    info.gid = 0
+    info.uname = "root"
+    info.gname = "root"
+    info.type = tarfile.REGTYPE
+    tf.addfile(info, io.BytesIO(data))
+
+
+def _resolve_package_binary(project_dir: Path, build_dir: Path, exe: str, stage_bin: str | None) -> Path | None:
+    if stage_bin:
+        p = Path(stage_bin)
+        return p if p.is_file() else None
+    exe_name = Path(exe).name
+    for cand in (build_dir / exe, build_dir / exe_name, project_dir / exe):
+        if cand.is_file():
+            return cand
+    return None
+
+
+def cmd_package(args: argparse.Namespace) -> int:
+    if not args.key and not args.unsigned:
+        print(
+            "finn-sdk package: specify --key <priv.pem> for a signed package or --unsigned for local dev.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.key and args.unsigned:
+        print("finn-sdk package: pass either --key or --unsigned, not both.", file=sys.stderr)
+        return 2
+    if shutil.which("zstd") is None:
+        print("finn-sdk package: zstd binary is required.", file=sys.stderr)
+        return 1
+    if args.key and shutil.which("openssl") is None:
+        print("finn-sdk package: openssl binary is required for signing.", file=sys.stderr)
+        return 1
+    if args.key and not Path(args.key).is_file():
+        print(f"finn-sdk package: signing key not found: {args.key}", file=sys.stderr)
+        return 1
+
+    project_dir = Path(args.dir)
+    manifest_path = project_dir / "finn-app.json"
+    if not manifest_path.is_file():
+        print(f"finn-sdk package: missing {manifest_path}", file=sys.stderr)
+        return 1
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    errors, _warnings = validate_manifest_data(data, base_dir=project_dir, strict=False)
+    if errors:
+        for e in errors:
+            print(f"[error] {e}", file=sys.stderr)
+        return 1
+
+    arch = args.arch or normalize_host_arch()
+    if arch not in ALLOWED_ARCHES:
+        print(
+            f"finn-sdk package: unsupported arch '{arch}' (pass --arch x86_64 or --arch aarch64).",
+            file=sys.stderr,
+        )
+        return 2
+    if "arch" in data and arch not in data["arch"]:
+        print(
+            f"finn-sdk package: manifest arch list {data['arch']} does not include '{arch}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    build_dir = Path(args.build_dir) if args.build_dir else (project_dir / "build")
+    bin_path = _resolve_package_binary(project_dir, build_dir, data["executable"], args.stage_bin)
+    if bin_path is None:
+        print(
+            f"finn-sdk package: executable '{data['executable']}' not found in '{build_dir}' or '{project_dir}'. "
+            "Run 'finn-sdk build' first or pass --stage-bin.",
+            file=sys.stderr,
+        )
+        return 1
+
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
+    if epoch < 0:
+        epoch = 0
+
+    staged_files: list[tuple[str, bytes, int]] = []
+    staged_files.append((f"bin/{Path(data['executable']).name}", bin_path.read_bytes(), 0o755))
+
+    de_rel = data.get("desktop_entry")
+    if de_rel:
+        de_path = project_dir / de_rel
+        if not de_path.is_file():
+            print(f"finn-sdk package: desktop_entry not found: {de_path}", file=sys.stderr)
+            return 1
+        staged_files.append((f"share/applications/{data['id']}.desktop", de_path.read_bytes(), 0o644))
+
+    icon_val = data.get("icon", "")
+    if icon_val and ("/" in icon_val or icon_val.endswith((".svg", ".png"))):
+        icon_path = project_dir / icon_val
+        if icon_path.is_file():
+            staged_files.append((f"share/icons/{icon_path.name}", icon_path.read_bytes(), 0o644))
+
+    for asset_rel in data.get("assets", []):
+        asset_path = project_dir / asset_rel
+        if asset_path.is_file():
+            staged_files.append((f"share/finn/apps/{data['id']}/{asset_rel}", asset_path.read_bytes(), 0o644))
+        elif asset_path.is_dir():
+            for child in sorted(asset_path.rglob("*")):
+                if child.is_file():
+                    rel_child = child.relative_to(project_dir).as_posix()
+                    staged_files.append(
+                        (f"share/finn/apps/{data['id']}/{rel_child}", child.read_bytes(), 0o644)
+                    )
+
+    staged_files.sort(key=lambda item: item[0])
+
+    payload_tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=payload_tar_buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        for arcname, content, mode in staged_files:
+            _add_bytes_to_tar(tf, arcname, content, mode, epoch)
+
+    zstd_proc = subprocess.run(
+        ["zstd", "-q", "-c", "-3", "-"],
+        input=payload_tar_buf.getvalue(),
+        capture_output=True,
+        check=True,
+    )
+    payload_zst = zstd_proc.stdout
+    payload_sha256 = hashlib.sha256(payload_zst).hexdigest()
+
+    pkg_manifest = dict(data)
+    pkg_manifest["package"] = {
+        "format": "finnapp-v1",
+        "arch": arch,
+        "payload": "payload.tar.zst",
+        "payload_sha256": payload_sha256,
+        "payload_size": len(payload_zst),
+        "signed": bool(args.key),
+        "signature_alg": "ed25519" if args.key else "none",
+        "built_at_epoch": epoch,
+    }
+    manifest_bytes = (
+        json.dumps(pkg_manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+
+    sig_bytes: bytes | None = None
+    if args.key:
+        with tempfile.TemporaryDirectory() as tmpd:
+            m_tmp = Path(tmpd) / "manifest.json"
+            s_tmp = Path(tmpd) / "manifest.sig"
+            m_tmp.write_bytes(manifest_bytes)
+            try:
+                subprocess.run(
+                    [
+                        "openssl",
+                        "pkeyutl",
+                        "-sign",
+                        "-inkey",
+                        args.key,
+                        "-rawin",
+                        "-in",
+                        str(m_tmp),
+                        "-out",
+                        str(s_tmp),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                print(
+                    f"finn-sdk package: signing failed: {exc.stderr.decode('utf-8', 'replace').strip()}",
+                    file=sys.stderr,
+                )
+                return 1
+            sig_bytes = s_tmp.read_bytes()
+
+    if args.output:
+        out_path = Path(args.output)
+    else:
+        out_path = project_dir / "dist" / f"{data['id']}-{data['version']}-{arch}.finnapp"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    outer_items: list[tuple[str, bytes, int]] = [
+        ("manifest.json", manifest_bytes, 0o644),
+        ("payload.tar.zst", payload_zst, 0o644),
+    ]
+    if sig_bytes is not None:
+        outer_items.append(("manifest.sig", sig_bytes, 0o644))
+    outer_items.sort(key=lambda item: item[0])
+
+    outer_buf = io.BytesIO()
+    with tarfile.open(fileobj=outer_buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        for arcname, content, mode in outer_items:
+            _add_bytes_to_tar(tf, arcname, content, mode, epoch)
+
+    out_path.write_bytes(outer_buf.getvalue())
+    archive_sha = hashlib.sha256(out_path.read_bytes()).hexdigest()
+    state = "signed (Ed25519)" if args.key else "unsigned (dev)"
+    print(f"Packaged {out_path} [{state}]")
+    print(f"  archive sha256: {archive_sha}")
+    print(f"  payload sha256: {payload_sha256}")
+    return 0
+
+
+def _validate_tar_members(tf: tarfile.TarFile, *, allow_dirs: bool = False) -> list[str]:
+    errs: list[str] = []
+    for member in tf.getmembers():
+        if not is_safe_rel_path(member.name):
+            errs.append(f"Unsafe archive member path: {member.name}")
+        if member.issym() or member.islnk():
+            errs.append(f"Symlink/hardlink not permitted in archive: {member.name}")
+        elif member.isdir():
+            if not allow_dirs:
+                errs.append(f"Unexpected directory entry in outer archive: {member.name}")
+        elif not member.isreg():
+            errs.append(f"Unsupported tar entry type for '{member.name}'.")
+    return errs
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    archive_path = Path(args.archive)
+    if not archive_path.is_file():
+        print(f"finn-sdk verify: file not found: {archive_path}", file=sys.stderr)
+        return 1
+
+    errors: list[str] = []
+    members: dict[str, bytes] = {}
+    try:
+        with tarfile.open(archive_path, mode="r:*") as tf:
+            errors.extend(_validate_tar_members(tf, allow_dirs=False))
+            for m in tf.getmembers():
+                if m.isreg():
+                    extracted = tf.extractfile(m)
+                    if extracted is not None:
+                        members[m.name] = extracted.read()
+    except (tarfile.TarError, OSError) as exc:
+        errors.append(f"Failed to read .finnapp archive: {exc}")
+
+    if "manifest.json" not in members:
+        errors.append("Missing 'manifest.json' in archive.")
+    if "payload.tar.zst" not in members:
+        errors.append("Missing 'payload.tar.zst' in archive.")
+
+    manifest: dict[str, Any] | None = None
+    if "manifest.json" in members:
+        try:
+            manifest = json.loads(members["manifest.json"].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            errors.append(f"Invalid manifest.json: {exc}")
+
+    if manifest is not None:
+        m_errs, _ = validate_manifest_data(manifest, base_dir=None, strict=False, require_package=True)
+        errors.extend(m_errs)
+
+    if manifest is not None and "payload.tar.zst" in members and isinstance(manifest.get("package"), dict):
+        pkg = manifest["package"]
+        payload_bytes = members["payload.tar.zst"]
+        actual_sha = hashlib.sha256(payload_bytes).hexdigest()
+        if actual_sha != pkg.get("payload_sha256"):
+            errors.append(
+                f"Payload SHA-256 mismatch: expected {pkg.get('payload_sha256')}, got {actual_sha}."
+            )
+        if len(payload_bytes) != pkg.get("payload_size"):
+            errors.append(
+                f"Payload size mismatch: expected {pkg.get('payload_size')}, got {len(payload_bytes)}."
+            )
+
+        if shutil.which("zstd") is None:
+            errors.append("zstd binary is required to verify compressed payload.")
+        else:
+            decomp = subprocess.run(["zstd", "-dc"], input=payload_bytes, capture_output=True)
+            if decomp.returncode != 0:
+                errors.append(
+                    f"Corrupt zstd payload: {decomp.stderr.decode('utf-8', 'replace').strip()}"
+                )
+            else:
+                try:
+                    with tarfile.open(fileobj=io.BytesIO(decomp.stdout), mode="r:") as ptf:
+                        errors.extend(_validate_tar_members(ptf, allow_dirs=True))
+                except tarfile.TarError as exc:
+                    errors.append(f"Corrupt inner payload tar: {exc}")
+
+        is_signed = bool(pkg.get("signed")) or ("manifest.sig" in members)
+        if is_signed:
+            if "manifest.sig" not in members:
+                errors.append("Manifest claims package is signed, but 'manifest.sig' is missing.")
+            elif not args.pubkey:
+                errors.append("Archive is signed; pass --pubkey <pub.pem> to verify signature.")
+            elif not Path(args.pubkey).is_file():
+                errors.append(f"Public key not found: {args.pubkey}")
+            elif shutil.which("openssl") is None:
+                errors.append("openssl binary is required to verify signatures.")
+            else:
+                with tempfile.TemporaryDirectory() as tmpd:
+                    m_tmp = Path(tmpd) / "manifest.json"
+                    s_tmp = Path(tmpd) / "manifest.sig"
+                    m_tmp.write_bytes(members["manifest.json"])
+                    s_tmp.write_bytes(members["manifest.sig"])
+                    vproc = subprocess.run(
+                        [
+                            "openssl",
+                            "pkeyutl",
+                            "-verify",
+                            "-pubin",
+                            "-inkey",
+                            args.pubkey,
+                            "-rawin",
+                            "-in",
+                            str(m_tmp),
+                            "-sigfile",
+                            str(s_tmp),
+                        ],
+                        capture_output=True,
+                    )
+                    if vproc.returncode != 0:
+                        errors.append("Signature verification FAILED (tampered manifest or wrong public key).")
+        else:
+            if not args.allow_unsigned:
+                errors.append("Archive is unsigned (pass --allow-unsigned to accept local dev builds).")
+
+    ok = len(errors) == 0
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "valid": ok,
+                    "archive": str(archive_path),
+                    "id": manifest.get("id") if isinstance(manifest, dict) else None,
+                    "version": manifest.get("version") if isinstance(manifest, dict) else None,
+                    "signed": ("manifest.sig" in members),
+                    "errors": errors,
+                },
+                indent=2,
+            )
+        )
+    else:
+        for e in errors:
+            print(f"[error] {e}", file=sys.stderr)
+        if ok:
+            sig_label = "signed" if "manifest.sig" in members else "unsigned"
+            print(f"[ok]    {archive_path} ({manifest['id']} {manifest['version']}, {sig_label})")
+
+    return 0 if ok else 1
+
+
+def cmd_simulate(args: argparse.Namespace) -> int:
+    preset = FORM_FACTOR_PRESETS[args.form_factor]
+    orientation = args.orientation or preset["default_orientation"]
+    w, h = preset[orientation]
+    scale = args.scale if args.scale is not None else preset["default_scale"]
+    if scale <= 0.0:
+        print("finn-sdk simulate: --scale must be > 0.", file=sys.stderr)
+        return 2
+
+    sim_env = {
+        "FINN_FORM_FACTOR": args.form_factor,
+        "FINN_SIM_ORIENTATION": orientation,
+        "FINN_SIM_WIDTH": str(w),
+        "FINN_SIM_HEIGHT": str(h),
+        "FINN_SIM_SCALE": f"{scale:g}",
+        "FINN_OUTPUT_MODE": f"{w}x{h}",
+        "FINN_OUTPUT_WIDTH": str(w),
+        "FINN_OUTPUT_HEIGHT": str(h),
+        "FINN_OUTPUT_SCALE": f"{scale:g}",
+        "QT_QPA_PLATFORMTHEME": os.environ.get("QT_QPA_PLATFORMTHEME", "finn"),
+        "QT_STYLE_OVERRIDE": os.environ.get("QT_STYLE_OVERRIDE", "finn"),
+    }
+
+    project_dir = Path(args.dir)
+    if args.dry_run:
+        exe = find_executable_in_build(project_dir / "build", project_dir)
+        payload = {
+            "form_factor": args.form_factor,
+            "orientation": orientation,
+            "width": w,
+            "height": h,
+            "scale": scale,
+            "headless_compositor": args.headless,
+            "project_dir": str(project_dir),
+            "executable": str(exe) if exe else None,
+            "env": sim_env,
+            "note": (
+                "FINN_OUTPUT_* configures finn-comp output geometry; "
+                "libfinnui responsive adaptation to FINN_FORM_FACTOR is proposed in docs/sdk/simulator.md."
+            ),
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(f"Simulation plan: {args.form_factor} ({orientation}) {w}x{h} @ {scale:g}x")
+            for k, v in sim_env.items():
+                print(f"  {k}={v}")
+            print(f"  headless={args.headless} executable={payload['executable'] or '<not built yet>'}")
+        return 0
+
+    try:
+        build_project(project_dir)
+    except FileNotFoundError as exc:
+        print(f"finn-sdk simulate: missing build tool: {exc.filename}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        return exc.returncode
+
+    exe = find_executable_in_build(project_dir / "build", project_dir)
+    if exe is None:
+        print(f"finn-sdk simulate: built executable not found in {project_dir / 'build'}", file=sys.stderr)
+        return 1
+
+    env = os.environ.copy()
+    env.update(sim_env)
+
+    if not args.headless:
+        env.setdefault("WAYLAND_DISPLAY", "/run/finn/wayland-0")
+        env.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
+        print(
+            f"[finn-sdk] Launching {exe.name} in {args.form_factor} ({orientation}) {w}x{h} @ {scale:g}x\n"
+            "[finn-sdk] Note: current libfinnui does not auto-resize FinnWindow from FINN_FORM_FACTOR; "
+            "use --headless with finn-comp or see docs/sdk/simulator.md.",
+            file=sys.stderr,
+        )
+        os.execve(str(exe), [str(exe), *args.extra], env)
+        return 0
+
+    if shutil.which("finn-comp") is None:
+        print(
+            "finn-sdk simulate --headless: 'finn-comp' binary not found in PATH.",
+            file=sys.stderr,
+        )
+        return 1
+
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or tempfile.mkdtemp(prefix="finn-sim-runtime-")
+    env["XDG_RUNTIME_DIR"] = runtime_dir
+    sock_name = f"finn-sim-{os.getpid()}"
+    sock_path = Path(runtime_dir) / sock_name
+
+    comp_env = env.copy()
+    comp_env["WLR_BACKENDS"] = "headless"
+    comp_env["FINN_WAYLAND_SOCKET"] = sock_name
+    comp_proc = subprocess.Popen(["finn-comp"], env=comp_env)
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sock_path.exists():
+            if comp_proc.poll() is not None:
+                print("finn-sdk simulate: finn-comp exited early.", file=sys.stderr)
+                return comp_proc.returncode or 1
+            if time.monotonic() >= deadline:
+                print(f"finn-sdk simulate: timed out waiting for {sock_path}", file=sys.stderr)
+                return 1
+            time.sleep(0.05)
+
+        app_env = env.copy()
+        app_env["WAYLAND_DISPLAY"] = str(sock_path)
+        app_env["QT_QPA_PLATFORM"] = "wayland"
+        app_proc = subprocess.run([str(exe), *args.extra], env=app_env)
+        return app_proc.returncode
+    finally:
+        if comp_proc.poll() is None:
+            comp_proc.send_signal(signal.SIGTERM)
+            try:
+                comp_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                comp_proc.kill()
+        if sock_path.exists():
+            sock_path.unlink(missing_ok=True)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="finn-sdk",
+        description="FinnOS FinnSDK developer CLI.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_new = sub.add_parser("new", help="Create a new native C++20 Qt6 FinnOS app project")
+    p_new.add_argument("id", help="App id (e.g. myapp) or destination path")
+    p_new.add_argument("--dir", help="Destination directory")
+    p_new.add_argument("--name", help="Human-readable app title")
+    p_new.set_defaults(func=cmd_new)
+
+    p_build = sub.add_parser("build", help="Configure and compile with CMake + Ninja")
+    p_build.add_argument("dir", nargs="?", default=".", help="Project directory")
+    p_build.set_defaults(func=cmd_build)
+
+    p_run = sub.add_parser("run", help="Build if needed and run on the FinnOS compositor")
+    p_run.add_argument("dir", nargs="?", default=".", help="Project directory")
+    p_run.add_argument("extra", nargs=argparse.REMAINDER, help="Arguments passed to app after --")
+    p_run.set_defaults(func=cmd_run)
+
+    p_reg = sub.add_parser("register", help="Install user .desktop entry into ~/.local/share/applications")
+    p_reg.add_argument("id")
+    p_reg.add_argument("name")
+    p_reg.add_argument("binary")
+    p_reg.add_argument("icon", nargs="?", default="native-apps")
+    p_reg.add_argument("note", nargs="?", default="Native FinnOS app")
+    p_reg.set_defaults(func=cmd_register)
+
+    p_chk = sub.add_parser("check", help="Verify FinnSDK, Qt6 plugins, Wayland, and packaging tools")
+    p_chk.set_defaults(func=cmd_check)
+
+    p_val = sub.add_parser("validate", help="Validate finn-app.json against the FinnOS app schema")
+    p_val.add_argument("target", nargs="?", default=".", help="Project dir or finn-app.json path")
+    p_val.add_argument("--strict", action="store_true", help="Also verify built executable and icon files exist")
+    p_val.add_argument("--json", action="store_true", help="Emit JSON result")
+    p_val.set_defaults(func=cmd_validate)
+
+    p_kg = sub.add_parser("keygen", help="Generate an Ed25519 keypair for signing .finnapp packages")
+    p_kg.add_argument("prefix", help="Output path prefix (writes <prefix>.key.pem and <prefix>.pub.pem)")
+    p_kg.add_argument("--force", action="store_true", help="Overwrite existing key files")
+    p_kg.set_defaults(func=cmd_keygen)
+
+    p_pkg = sub.add_parser("package", help="Build a deterministic signed .finnapp archive")
+    p_pkg.add_argument("dir", nargs="?", default=".", help="Project directory containing finn-app.json")
+    p_pkg.add_argument("--build-dir", help="Build directory containing compiled binary")
+    p_pkg.add_argument("--stage-bin", help="Explicit executable path to package (overrides build-dir lookup)")
+    p_pkg.add_argument("--output", "-o", help="Output .finnapp file path")
+    p_pkg.add_argument("--key", help="Ed25519 private key PEM path for signing")
+    p_pkg.add_argument("--unsigned", action="store_true", help="Create an unsigned dev .finnapp archive")
+    p_pkg.add_argument("--arch", choices=sorted(ALLOWED_ARCHES), help="Target CPU architecture")
+    p_pkg.set_defaults(func=cmd_package)
+
+    p_ver = sub.add_parser("verify", help="Verify a .finnapp archive integrity and Ed25519 signature")
+    p_ver.add_argument("archive", help="Path to .finnapp file")
+    p_ver.add_argument("--pubkey", help="Trusted Ed25519 public key PEM path")
+    p_ver.add_argument("--allow-unsigned", action="store_true", help="Accept unsigned dev archives")
+    p_ver.add_argument("--json", action="store_true", help="Emit JSON result")
+    p_ver.set_defaults(func=cmd_verify)
+
+    p_sim = sub.add_parser("simulate", help="Simulate phone, tablet, or desktop form factors")
+    p_sim.add_argument(
+        "--form-factor",
+        required=True,
+        choices=["phone", "tablet", "desktop"],
+        help="Target form factor",
+    )
+    p_sim.add_argument("--orientation", choices=["portrait", "landscape"], help="Screen orientation")
+    p_sim.add_argument("--scale", type=float, help="Output scale factor (e.g. 1.0 or 2.0)")
+    p_sim.add_argument("--headless", action="store_true", help="Launch isolated headless finn-comp output")
+    p_sim.add_argument("--dry-run", action="store_true", help="Print resolved simulator environment and exit")
+    p_sim.add_argument("--json", action="store_true", help="Emit JSON output (with --dry-run)")
+    p_sim.add_argument("dir", nargs="?", default=".", help="Project directory")
+    p_sim.add_argument("extra", nargs=argparse.REMAINDER, help="Arguments passed to app after --")
+    p_sim.set_defaults(func=cmd_simulate)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if hasattr(args, "extra") and args.extra and args.extra[0] == "--":
+        args.extra = args.extra[1:]
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

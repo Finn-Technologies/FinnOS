@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "counter",
+  "name": "Counter",
+  "version": "0.1.0",
+  "summary": "Native FinnOS FinnSDK example application",
+  "executable": "finn-counter",
+  "icon": "native-apps",
+  "desktop_entry": "finn-app.desktop",
+  "category": "Utility",
+  "sdk_min_version": "0.2.0",
+  "arch": [
+    "x86_64",
+    "aarch64"
+  ],
+  "form_factors": [
+    "desktop"
+  ],
+  "permissions": [],
+  "license": "MIT"
+}

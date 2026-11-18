@@ -1,0 +1,57 @@
+name: FinnSDK App CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate finn-app.json
+        run: |
+          if command -v finn-sdk >/dev/null 2>&1; then
+            finn-sdk validate .
+          else
+            python3 -c "import json, pathlib; d = json.loads(pathlib.Path('finn-app.json').read_text()); assert d.get('schema_version') == 1 and d.get('id') and d.get('name')"
+          fi
+
+  build-and-package:
+    name: Build & Package (x86_64)
+    needs: validate
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git cmake ninja python zstd openssl \
+            qt6-base qt6-wayland qt6-svg layer-shell-qt
+      - uses: actions/checkout@v4
+      - name: Install FinnSDK from FinnOS repo (until finnos-sdk package is hosted)
+        run: |
+          git clone --depth 1 https://github.com/Finn-Technologies/FinnOS.git /tmp/finnos
+          cmake -S /tmp/finnos -B /tmp/finnos/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+            -DQT_NO_PRIVATE_MODULE_WARNING=ON \
+            -DFINN_BUILD_SHELL=OFF -DFINN_BUILD_APPS=OFF \
+            -DFINN_BUILD_QT_PLUGIN=OFF -DFINN_BUILD_TOOLS=OFF
+          cmake --build /tmp/finnos/build
+          cmake --install /tmp/finnos/build
+          install -m755 /tmp/finnos/tools/finn-sdk /usr/local/bin/finn-sdk
+      - name: Validate, Build, and Package (.finnapp)
+        run: |
+          finn-sdk validate .
+          finn-sdk build .
+          finn-sdk package . --unsigned --arch x86_64
+          finn-sdk verify dist/*.finnapp --allow-unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finnapp-unsigned
+          path: dist/*.finnapp
