@@ -1,0 +1,231 @@
+# Third-Party Notices and Licenses
+
+FinnOS itself is licensed under the MIT License (see [LICENSE](LICENSE)).
+
+FinnOS builds upon, links against, bundles, and redistributes third-party
+software, protocols, fonts, and icons under their respective licenses. This file
+records those components and preserves required copyright and permission notices.
+
+Where a component's exact license text or provenance could not be verified from
+this repository on the build host (for example, binary assets without embedded
+metadata or distribution packages whose `/usr/share/licenses/<pkg>/` files live
+only on a built target rootfs), it is explicitly marked `UNVERIFIED` and tracked
+in [docs/rebrand-checklist.md](docs/rebrand-checklist.md).
+
+---
+
+## 1. In-tree third-party files (required notices preserved)
+
+### Fixel Display font (`assets/fonts/FixelDisplay/*.otf`)
+- Upstream: Fixel Display v1.211 (AlfaBravo + MacPaw, `https://macpaw.com/`, `https://alfabravo.design/`)
+- Authors: Kyrylo Tkachov, Marchela Mozhyna, Serhii Makarenko, Maria Weinstein, Zakhar Kryvoshyya
+- License: SIL Open Font License, Version 1.1 (`OFL-1.1`)
+- Embedded notice from `assets/fonts/FixelDisplay/*.otf`:
+
+```text
+Copyright (c) 2023 MacPaw Inc. (Authors: Alfabravo + MacPaw)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is available with a FAQ at: http://scripts.sil.org/OFL
+```
+
+### HugeIcons Free Core Icons (`assets/icons/shell/display.svg`, `assets/icons/shell/moon.svg`)
+- Upstream: `@hugeicons/core-free-icons` 4.3.5 (`https://github.com/hugeicons/hugeicons`)
+- Documented in: `assets/icons/LICENSE-hugeicons.md`
+- License: MIT License
+
+```text
+MIT License
+
+Copyright (c) 2025 Hugeicons
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+> Note on remaining icons in `assets/icons/`: `assets/icons/LICENSE-hugeicons.md`
+> states that `display.svg` (`MonitorIcon`) and `moon.svg` (`Moon02Icon`) are
+> derived from HugeIcons and the rest are authored for FinnOS. However, several
+> shell SVGs (`briefcase-01.svg`, `code-01.svg`, `edit-01.svg`, `home-09.svg`,
+> `language-skill.svg`, `search-01.svg`, `settings-02.svg`, `sun-01.svg`,
+> `sun-03.svg`, `volume-02.svg`, `wifi-02.svg`) use HugeIcons-style names
+> without per-file attribution headers; their exact upstream vs. first-party
+> provenance is marked `UNVERIFIED`.
+
+### Wayland `xdg-shell` protocol (`src/protocol/xdg-shell.xml`)
+- License: MIT / Expat
+
+```text
+Copyright © 2008-2013 Kristian Høgsberg
+Copyright © 2013      Rafael Antognolli
+Copyright © 2013      Jasper St. Pierre
+Copyright © 2010-2013 Intel Corporation
+Copyright © 2015-2017 Samsung Electronics Co., Ltd
+Copyright © 2015-2017 Red Hat Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### wlroots `wlr-layer-shell` protocol (`src/protocol/wlr-layer-shell-unstable-v1.xml`)
+- License: MIT / ISC-style permissive
+
+```text
+Copyright © 2017 Drew DeVault
+
+Permission to use, copy, modify, distribute, and sell this
+software and its documentation for any purpose is hereby granted
+without fee, provided that the above copyright notice appear in
+all copies and that both that copyright notice and this permission
+notice appear in supporting documentation, and that the name of
+the copyright holders not be used in advertising or publicity
+pertaining to distribution of the software without specific,
+written prior permission.  The copyright holders make no
+representations about the suitability of this software for any
+purpose.  It is provided "as is" without express or implied
+warranty.
+
+THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
+SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+### wlroots `wlr-foreign-toplevel-management` protocol (`src/protocol/wlr-foreign-toplevel-management-unstable-v1.xml`)
+- License: HPND-sell-variant / permissive
+
+```text
+Copyright © 2018 Ilia Bozhinov
+
+Permission to use, copy, modify, distribute, and sell this
+software and its documentation for any purpose is hereby granted
+without fee, provided that the above copyright notice appear in
+all copies and that both that copyright notice and this permission
+notice appear in supporting documentation, and that the name of
+the copyright holders not be used in advertising or publicity
+pertaining to distribution of the software without specific,
+written prior permission.  The copyright holders make no
+representations about the suitability of this software for any
+purpose.  It is provided "as is" without express or implied
+warranty.
+```
+
+---
+
+## 2. In-tree binary assets with unverified provenance/license
+
+| Asset path | Notes from inspection | License status |
+|---|---|---|
+| `assets/wallpaper/default.webp` | No embedded EXIF/XMP/copyright metadata; git history notes export from Figma bundle (`8612b8e8`) | `UNVERIFIED` |
+| `assets/wallpaper/setup.webp` | No embedded EXIF/XMP/copyright metadata; git history notes export from Figma bundle (`39efb2b3`) | `UNVERIFIED` |
+| `assets/models/finn_lamp_lit.glb`, `finn_lamp_unlit.glb` | glTF 2.0 (`Khronos glTF Blender I/O v5.3.43`); no embedded copyright/license field in glTF JSON | `UNVERIFIED` |
+| `assets/icons/shell/*` (excluding `display.svg`, `moon.svg`) | No per-file headers; `LICENSE-hugeicons.md` states FinnOS-authored, but HugeIcons-style filenames exist | `UNVERIFIED` |
+| `assets/icons/apps/*`, `assets/pointers/*` | No per-file headers; assumed FinnOS-authored under `LICENSE`, not independently audited | `UNVERIFIED` |
+
+---
+
+## 3. Linked libraries & build-time dependencies (`src/`, `apps/`, `tools/`)
+
+The FinnOS C++20 userland (`finn-comp`, `finn-session`, `libfinnui`, `finnplatformtheme`, `finnstyle`, `finn-shell`, native apps, and `tools/`) compiles and dynamically links against the following upstream components:
+
+| Component | Used by | License (standard upstream SPDX) |
+|---|---|---|
+| **Qt6** (`qt6-base`, `qt6-wayland`, `qt6-svg`, `qt6-imageformats`, `qt6-tools`, `qt6-declarative`) | `libfinnui`, `src/qtplugin`, `finn-shell`, `apps/*`, `tools/finn-cursors` | `LGPL-3.0-only` OR `GPL-2.0-or-later` OR `GPL-3.0-only` |
+| **Qt6 WebEngine** (`qt6-webengine`, embeds Chromium/Blink/V8/FFmpeg) | `apps/flourish` (`CMakeLists.txt` optional in `apps/CMakeLists.txt`) | `LGPL-3.0-only` / `GPL-3.0-only` + Chromium third-party licenses (`BSD-3-Clause`, `MIT`, `MPL-2.0`, etc.) |
+| **LayerShellQt** (`layer-shell-qt`) | `libfinnui`, `finn-shell`, `finn-wallpaper` | `LGPL-3.0-or-later` AND `BSD-3-Clause` |
+| **wlroots 0.20** (`wlroots-0.20`) | `finn-comp` | `MIT` |
+| **Wayland** (`wayland-server`, `wayland-client`, `wayland-protocols`, `wayland-scanner`) | `finn-comp`, `finn-shell`, Qt6 Wayland | `MIT` |
+| **libxkbcommon** (`xkbcommon`) | `finn-comp` | `MIT` |
+| **Pixman** (`pixman-1`) | `finn-comp` | `MIT` |
+| **libxcb** (`xcb`) | `finn-comp` (Xwayland) | `MIT` |
+| **systemd / libsystemd** (`systemd`) | `finn-comp` (`sd_notify`, watchdog), `finn-shell` (`logind` D-Bus), session units | `LGPL-2.1-or-later` AND `GPL-2.0-or-later` |
+
+---
+
+## 4. Shipped base OS & distribution packages (`base/packages.x86_64`, `base/packages.aarch64`, `base/boot/`, `base/mkfinniso`)
+
+FinnOS install media and target root filesystems are constructed from Arch Linux / Arch Linux ARM packages via `mkarchiso`, `pacman`, and `arch-install-scripts`. Corresponding license files for installed package versions reside at `/usr/share/licenses/<package>/` on any built image. Because this repository is audited on a non-Arch host without an unpacked rootfs, package-level licenses not directly inspected in-tree are noted honestly; packages whose exact Arch packaging license files have not been inspected from a built image are marked `UNVERIFIED` for exact sub-licenses.
+
+### Core OS, Kernel, Boot, and Firmware
+| Package / Component | Role in FinnOS | License |
+|---|---|---|
+| **Linux kernel** (`linux`, `linux-aarch64`) | Operating system kernel | `GPL-2.0-only` (with `Linux-syscall-note`) |
+| **systemd**, `systemd-sysvcompat` | Init system, service manager, `logind`, `systemd-boot` | `LGPL-2.1-or-later` / `GPL-2.0-or-later` |
+| **Plymouth** (`plymouth`) | Initramfs boot splash (`finnos` theme) | `GPL-2.0-or-later` |
+| **GRUB** (`grub`), `efibootmgr` | UEFI/BIOS bootloader for installed systems & ISO | `GPL-3.0-or-later` (`grub`); `GPL-2.0-or-later` (`efibootmgr`) |
+| **Syslinux** (ISO BIOS boot, `base/boot/syslinux/`) | BIOS ISO bootloader via `mkarchiso` | `GPL-2.0-or-later` |
+| **pacman**, **archiso**, **mkinitcpio-archiso**, **arch-install-scripts** | Package manager, live ISO builder, chroot/pacstrap tooling | `GPL-2.0-or-later` |
+| `linux-firmware` | GPU, Wi-Fi, and Bluetooth device firmware | Redistributable vendor firmware licenses (`UNVERIFIED` per-blob sub-licenses until inspected in `/usr/share/licenses/linux-firmware/`) |
+| `intel-ucode` | Intel CPU microcode updates (`x86_64`) | Intel Proprietary Redistributable (`UNVERIFIED` exact text until inspected in `/usr/share/licenses/intel-ucode/`) |
+| `amd-ucode` | AMD CPU microcode updates (`x86_64`) | AMD Redistributable (`UNVERIFIED` exact text until inspected in `/usr/share/licenses/amd-ucode/`) |
+| `base`, `sudo`, `util-linux`, `kbd` | Core Linux base, privilege escalation, console utilities | Mixed (`GPL-2.0-or-later`, `ISC`, etc. — `UNVERIFIED` per-member from host) |
+
+### Graphics, Input, Seat, Audio, and Desktop Plumbing
+| Package / Component | Role in FinnOS | License |
+|---|---|---|
+| **Mesa** (`mesa`, `lib32-mesa`), `libglvnd`, `vulkan-intel`, `lib32-vulkan-intel`, `lib32-vulkan-icd-loader` | OpenGL/EGL/GBM and Vulkan drivers & dispatch | `MIT` (Mesa, libglvnd); `Apache-2.0` / `MIT` (`vulkan-icd-loader`) (`UNVERIFIED` exact Arch split on host) |
+| `libdrm`, `libinput`, `seatd`, `xorg-xwayland` | DRM/KMS, input handling, seat management, X11 bridge | `MIT` |
+| `freetype2`, `fontconfig` | Font rasterization and discovery | `FTL` OR `GPL-2.0-or-later` (`freetype2`); `MIT-Modern-Variant` (`fontconfig`) |
+| `libwebp` | WebP decoding (wallpaper) | `BSD-3-Clause` |
+| **PipeWire** (`pipewire`, `pipewire-pulse`), **WirePlumber** (`wireplumber`) | Audio server, PulseAudio shim, session manager | `MIT` |
+| `alsa-lib`, `alsa-ucm-conf` | ALSA userspace & UCM profiles | `LGPL-2.1-or-later` (`alsa-lib`); `BSD-3-Clause` (`alsa-ucm-conf`) |
+| `networkmanager`, `wpa_supplicant`, `bluez`, `bluez-utils`, `upower` | Networking, Wi-Fi, Bluetooth, power state | `UNVERIFIED` exact SPDX from host (upstream: GPL-2.0 / BSD-3-Clause) |
+| `xdg-desktop-portal`, `xdg-desktop-portal-wlr`, `flatpak`, `desktop-file-utils`, `shared-mime-info` | Portals, Flatpak app runtime, Freedesktop desktop/MIME specs | `UNVERIFIED` exact SPDX from host (upstream: LGPL-2.1 / GPL-2.0) |
+
+### Shipped Fonts (`base/packages.*`)
+| Package | Role | License |
+|---|---|---|
+| `ttf-dejavu` | Fallback system font | Bitstream Vera / Arev (`UNVERIFIED` exact text from host) |
+| `noto-fonts`, `noto-fonts-cjk`, `noto-fonts-emoji` | Multi-script, CJK, and emoji coverage | `OFL-1.1` / `Apache-2.0` (`UNVERIFIED` exact per-package text from host) |
+
+### Compatibility, Storage, Networking, and Developer Tools (`base/packages.*`)
+| Package | Role | License |
+|---|---|---|
+| `wine`, `winetricks`, `wine-mono`, `wine-gecko` (`x86_64` only) | Windows PE compatibility runtime & runtimes | `LGPL-2.1-or-later` (`wine`/`winetricks`); mixed (`wine-mono`, `wine-gecko`) — `UNVERIFIED` exact breakdown from host |
+| `openssh`, `curl`, `jq`, `zstd`, `dosfstools`, `e2fsprogs`, `parted`, `gptfdisk` | Networking, archive compression, disk partitioning/formatting | `UNVERIFIED` exact SPDX per package from host |
+| `python`, `git`, `nano`, `vim`, `base-devel`, `pkgconf`, `cmake`, `ninja` | On-device build/SDK toolchain | `UNVERIFIED` exact SPDX per package from host |
+
+---
+
+## 5. GPL / LGPL Source Offer Note
+
+For any distributed FinnOS ISO or system image containing GPL-licensed or
+LGPL-licensed binaries (including the Linux kernel, GRUB, Syslinux, Plymouth,
+pacman, systemd, Qt6, and GNU toolchain components), complete corresponding
+source code and build recipes must accompany the release or be provided upon
+written request in accordance with the applicable GPL/LGPL terms.
