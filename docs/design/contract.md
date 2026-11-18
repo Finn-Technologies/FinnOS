@@ -9,6 +9,23 @@ Arch Linux: the kernel, firmware, systemd, pacman, mesa, libdrm, libinput,
 Wayland, and Qt6. The installer, the ISO build and the package lists in `base/`
 stay. The FinnOS userland builds cleanly on top of this base.
 
+The base is an engineering fact, not a brand. Nothing a person reads while
+booting or using FinnOS names it: the menus, the console, the Plymouth theme,
+the identity files and the app copy are FinnOS's, and `base/mkfinniso --check`
+refuses another distribution's name in those surfaces. The documentation is
+the exception on purpose — it says what the machine is actually built from.
+
+## The boot chain
+
+The kernel command line carries `quiet splash vt.global_cursor_default=0`, so
+Plymouth owns the display from inside the initramfs and there is no blinking
+text cursor. The `finnos` theme shows the Finn mark immediately, holds it
+with a bar driven only by real progress reports (an unmeasured sweep until
+one arrives, never a fake percentage), and hands off to `finn-comp`. The
+bootloader menus wait three seconds. Both the live and the installed initramfs
+carry the theme, and `base/setup.sh` and `vm/finn-chroot.sh` install the same
+files so a machine and the medium cannot show different marks.
+
 ## The programs
 
 | Program | Owns | Runs as |

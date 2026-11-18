@@ -12,14 +12,14 @@ theme FinnTokens {
   // ---- the palette ----------------------------------------------------
   // Bone and ink. The chrome is bone; the text on it is ink.
 
-  color: bone_light #FFFFFF, bone_dark #000000
-  color: tile_light #FFFFFF, tile_dark #121418
-  color: tile_on_light #D3E6FF, tile_on_dark #2B4A78
-  color: hair_light #1A000000, hair_dark #22FFFFFF
+  color: bone_light #FBFBFD, bone_dark #0D0F14
+  color: tile_light #FFFFFF, tile_dark #161922
+  color: tile_on_light #DCEBFF, tile_on_dark #223B61
+  color: hair_light #14000000, hair_dark #1CFFFFFF
 
-  color: ink_light #000000, ink_dark #F2F4F8
-  color: mute_light #969696, mute_dark #8891A0
-  color: dim_light #5D5C5C, dim_dark #9EA6B5
+  color: ink_light #0F141A, ink_dark #F2F4F8
+  color: mute_light #868E9B, mute_dark #8891A0
+  color: dim_light #525866, dim_dark #9EA6B5
 
   // The family accent is the same in both appearances: it is the brand's
   // colour, not the appearance's (#007BFF in Figma).
@@ -34,21 +34,44 @@ theme FinnTokens {
 
   // The tint of the frosted chrome: near-white in the light appearance,
   // and the deep charcoal/bone in the dark one (#414141B2 in Figma dark notifications).
-  color: glass_light #FFFFFF, glass_dark #14161C
-  color: nav_sel_light #1A505050, nav_sel_dark #29FFFFFF
+  color: glass_light #FBFBFD, glass_dark #161922
+  color: nav_sel_light #120F141A, nav_sel_dark #24FFFFFF
   color: hero_tint_light #EBFFDF, hero_tint_dark #15221B
+
+  // Semantic surfaces, states, and feedback tones (synced with FinnTokens).
+  color: surface_canvas_light #F2F4F8, surface_canvas_dark #111319
+  color: surface_input_light #F4F6FA, surface_input_dark #1C202B
+  color: surface_hover_light #0E000000, surface_hover_dark #14FFFFFF
+  color: surface_pressed_light #18000000, surface_pressed_dark #22FFFFFF
+  color: danger_light #EF4444, danger_dark #F87171
+  color: danger_hover_light #FF0202, danger_hover_dark #FF0202
+  color: success_light #16A34A, success_dark #22C55E
+  color: warning_light #D97706, warning_dark #F59E0B
+
+  // ---- the spacing scale (4px / 4dp base) ----------------------------
+  // Every layout padding, margin, and gap snaps to a 4px multiple
+  // (with 2px reserved strictly for hairline/micro offsets).
+
+  spacing: sp_0 0, sp_half 2, sp_1 4, sp_2 8, sp_3 12, sp_4 16, sp_5 20, sp_6 24, sp_8 32, sp_10 40, sp_12 48, sp_16 64
 
   // ---- the radii ------------------------------------------------------
   // A surface's radius is a fraction of its smallest dimension.
+  // Canonical discrete scale (r_xs..r_xl) plus Figma-measured aliases.
 
-  radius: r_bubble 10.4    // the dock's pills (ref 8)
-  radius: r_panel 10.4     // the Control Center and Start Menu (ref 8)
-  radius: r_tile 5.37      // a status tile inside Control Center (ref 4.14)
-  radius: r_note 10.4      // a notification card or menu card (ref 8)
-  radius: r_card 10.4      // the Start Menu and Window panel (ref 8)
-  radius: r_app 7.67       // an app's chip in the dock / Start Menu (ref 5.91)
-  radius: r_hero 39.0      // the Setup hero card (ref 30)
-  radius: r_pill 999       // a slider row or action pill: half its height
+  radius: r_xs 4.0       // checkboxes, window control buttons, small indicators
+  radius: r_sm 6.0       // cards, buttons, inputs, Control Center sub-tiles
+  radius: r_md 8.0       // app icon tiles, hover fills, in-app toasts
+  radius: r_lg 12.0      // windows, dock pills, Home/Search/Control Center panels
+  radius: r_xl 20.0      // notification cards, mobile/tablet bottom sheets
+  radius: r_bubble 10.4  // legacy ref-8 alias for dock pills
+  radius: r_panel 10.4   // legacy ref-8 alias for Control Center and Home Menu
+  radius: r_tile 5.37    // legacy ref-4.14 alias for status sub-tiles
+  radius: r_note 10.4    // legacy ref-8 alias for menu cards
+  radius: r_card 10.4    // legacy ref-8 alias for window panels
+  radius: r_app 7.67     // legacy ref-5.91 alias for app chips
+  radius: r_hero 39.0    // the Setup hero card (ref 30)
+  radius: r_pill 999     // a slider row or action pill: half its height
+  weight: corner_smoothing 0.6
 
   // ---- the type -------------------------------------------------------
   // One family, one weight. Hierarchy comes from size and from ink
@@ -74,6 +97,20 @@ theme FinnTokens {
 
   weight: glass_panel 0.65, glass_tile 0.85, glass_tile_pass 0.5714286, glass_well 0.53
   weight: surface_scale 0.92
+
+  // ---- blur & elevation -----------------------------------------------
+  // Note: compositor-level Gaussian backdrop blur in finn-comp is specified
+  // here (35px) and listed in docs/architecture.md as unimplemented yet;
+  // progressive list blur (20px) is implemented in apps/oobe.
+
+  blur: blur_glass 35, blur_notification 15, blur_progressive 20
+  elevation: elev_flat 0, elev_card 1, elev_window 4, elev_popover 4, elev_notification 4
+
+  // ---- responsive breakpoints (dp) ------------------------------------
+  // Desktop is implemented; phone (<600dp) and tablet (600-1024dp) are
+  // specified in docs/design-language.md.
+
+  breakpoint: bp_phone_max 599, bp_tablet_min 600, bp_tablet_max 1024, bp_desktop_min 1025
 
   // ---- the wallpaper --------------------------------------------------
 
