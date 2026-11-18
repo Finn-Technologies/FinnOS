@@ -1,7 +1,7 @@
 # Development
 
 The host can run pure C++20 unit tests and Python checks. Full Wayland, Qt6,
-and compositor builds run on an Arch Linux machine or the dev VM.
+and compositor builds run on a pacman-based Linux host or the dev VM.
 
 ## Build and test
 
@@ -13,7 +13,7 @@ make lint         # style, generated tokens check, no app ids in src/comp
 make install      # installs binaries, libfinnui, FinnSDK CMake config, Qt6 plugins, assets
 ```
 
-Arch dependencies (matching `base/packages.*`):
+Package dependencies (matching `base/packages.*`):
 
 ```sh
 sudo pacman -S base-devel cmake ninja pkgconf wlroots0.20 libsystemd wayland \
@@ -41,7 +41,7 @@ vm/shot.sh /tmp/shot.png
 ```
 
 `vm/deploy.sh` streams the source tree over tar to `~/finnos`, installs any
-missing Arch packages, runs `make` and `sudo make install`, runs `ldconfig`,
+missing packages, runs `make` and `sudo make install`, runs `ldconfig`,
 updates `/var/lib/finn/installed`, installs the units, enables linger for
 `finn`, and restarts the session.
 

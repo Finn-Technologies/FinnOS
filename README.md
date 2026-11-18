@@ -1,6 +1,6 @@
 # FinnOS
 
-A clean, honest desktop operating system built on Arch Linux. FinnOS owns the display compositor, a custom-styled Qt6 + C++20 userland (`FinnSDK`, `libfinnplatformtheme.so`, `libfinnstyle.so`), the desktop shell, native everyday apps, and unified Linux/Windows app compatibility — while leaving the kernel, systemd, pacman, Mesa, PipeWire, and firmware intact.
+A desktop operating system built on a minimal Linux base. FinnOS owns the display compositor, a custom-styled Qt6 + C++20 userland (`FinnSDK`, `libfinnplatformtheme.so`, `libfinnstyle.so`), the desktop shell, native apps, and Linux/Windows app compatibility — while leaving the kernel, systemd, pacman, Mesa, PipeWire, and firmware intact.
 
 ![The desktop](docs/images/desktop-light.png)
 
@@ -16,7 +16,7 @@ A clean, honest desktop operating system built on Arch Linux. FinnOS owns the di
 
 ## Build
 
-The compositor and Qt6 userland build on Arch Linux or the Lima dev VM:
+The compositor and Qt6 userland build on a pacman-based Linux host or in the Lima dev VM:
 
 ```sh
 make                 # compositor, session, Qt6 plugins, FinnUI, shell, all native apps, tools
@@ -68,7 +68,8 @@ See [docs/apps.md](docs/apps.md), [docs/sdk.md](docs/sdk.md), and [sdk/template]
 - [docs/testing.md](docs/testing.md) — automated checks and manual hardware matrix.
 - [docs/install.md](docs/install.md) — base image, packages, and systemd units.
 - [docs/roadmap.md](docs/roadmap.md) — what comes next.
+- [docs/rebrand-checklist.md](docs/rebrand-checklist.md) — upstream base hooks, branding checks, and license verification status.
 
 ## Licence
 
-MIT — see source headers and packaging manifests.
+MIT ([LICENSE](LICENSE)) — see [NOTICE](NOTICE) and [CREDITS](CREDITS) for third-party components, fonts, icons, and base system attributions.

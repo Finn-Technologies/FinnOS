@@ -14,7 +14,7 @@
 
 - **Bare-metal x86_64 GPU & multi-monitor**: physical bare-metal laptops and
   mixed multi-monitor per-output scales have not been verified yet.
-- **Wine on ARM64**: Arch Linux ARM64 has no native x86 `wine` package by
+- **Wine on ARM64**: Upstream `aarch64` package repositories have no native x86 `wine` package by
   default. `finn::inspect_pe` reads PE headers (`x86`, `x86_64`, `ARM64`), and
   FinnOS honestly reports Wine as unavailable when `wine` / `wine64` is absent
   from `$PATH`.
