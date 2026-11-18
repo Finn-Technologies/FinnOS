@@ -125,6 +125,7 @@ FinnThemeManager::FinnThemeManager(QObject* parent) : QObject(parent) {
     QPixmapCache::setCacheLimit(32 * 1024);
     settings_ = finn::sys::load_merged_settings();
     tokens_ = tokens_from_settings(settings_);
+    set_active_text_scale(tokens_.text_scale);
     if (QCoreApplication::instance()) {
         setupWatcher();
     }
@@ -148,7 +149,6 @@ void FinnThemeManager::setupWatcher() {
     const QString sys_settings = QString::fromUtf8(kSettingsPath);
     add_watch(sys_settings);
     add_watch(QFileInfo(sys_settings).absolutePath());
-    add_watch(QStringLiteral("/etc/finn"));
 
     const QString cfg_base =
         QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
@@ -189,13 +189,16 @@ void FinnThemeManager::reload() {
         next_settings.auto_lock_minutes == settings_.auto_lock_minutes &&
         next_settings.lock_on_sleep == settings_.lock_on_sleep &&
         next_settings.accent == settings_.accent &&
+        next_settings.avatar_color == settings_.avatar_color &&
         next_settings.wallpaper == settings_.wallpaper &&
+        next_settings.lock_wallpaper == settings_.lock_wallpaper &&
         std::abs(next_settings.scale - settings_.scale) < 1e-3 &&
         next_settings.dock_pins == settings_.dock_pins;
     if (same) return;
 
     settings_ = next_settings;
     tokens_ = tokens_from_settings(settings_);
+    set_active_text_scale(tokens_.text_scale);
     QPixmapCache::clear();
     emit themeChanged(tokens_);
 }
@@ -212,6 +215,7 @@ bool FinnThemeManager::saveUpdated(const finn::sys::SettingsData& next) {
     if (!finn::sys::save_settings(next)) return false;
     settings_ = next;
     tokens_ = tokens_from_settings(settings_);
+    set_active_text_scale(tokens_.text_scale);
     QPixmapCache::clear();
     emit themeChanged(tokens_);
     return true;
@@ -292,9 +296,22 @@ bool FinnThemeManager::setAccent(const QString& hex_or_empty) {
     return saveUpdated(next);
 }
 
+bool FinnThemeManager::setAvatarColor(const QString& color_id) {
+    auto next = settings_;
+    const QString cleaned = color_id.trimmed().toLower();
+    next.avatar_color = cleaned.isEmpty() ? "blue" : cleaned.toStdString();
+    return saveUpdated(next);
+}
+
 bool FinnThemeManager::setWallpaper(const QString& path) {
     auto next = settings_;
     next.wallpaper = path.toStdString();
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setLockWallpaper(const QString& path) {
+    auto next = settings_;
+    next.lock_wallpaper = path.toStdString();
     return saveUpdated(next);
 }
 
@@ -313,6 +330,90 @@ bool FinnThemeManager::setScale(double scale) {
     auto next = settings_;
     next.scale = std::clamp(scale, 0.75, 3.0);
     return saveUpdated(next);
+}
+
+const QVector<AvatarPreset>& FinnThemeManager::avatarPresets() {
+    static const QVector<AvatarPreset> kPresets = {
+        {QStringLiteral("blue"), QStringLiteral("Blue"), QColor(0x62, 0xA6, 0xFF), QColor(0x00, 0x6F, 0xFF)},
+        {QStringLiteral("indigo"), QStringLiteral("Indigo"), QColor(0xA7, 0x8B, 0xFA), QColor(0x6D, 0x28, 0xD9)},
+        {QStringLiteral("mint"), QStringLiteral("Mint"), QColor(0x34, 0xD3, 0x99), QColor(0x05, 0x96, 0x69)},
+        {QStringLiteral("amber"), QStringLiteral("Amber"), QColor(0xFB, 0xBF, 0x24), QColor(0xD9, 0x77, 0x06)},
+        {QStringLiteral("coral"), QStringLiteral("Coral"), QColor(0xFB, 0x71, 0x85), QColor(0xE1, 0x1D, 0x48)},
+        {QStringLiteral("pink"), QStringLiteral("Pink"), QColor(0xF4, 0x72, 0xB6), QColor(0xDB, 0x27, 0x77)},
+        {QStringLiteral("teal"), QStringLiteral("Teal"), QColor(0x2D, 0xD4, 0xBF), QColor(0x0D, 0x94, 0x88)},
+        {QStringLiteral("slate"), QStringLiteral("Slate"), QColor(0x94, 0xA3, 0xB8), QColor(0x47, 0x55, 0x69)},
+    };
+    return kPresets;
+}
+
+QPixmap FinnThemeManager::avatarPixmap(const QSize& logical_size, qreal dpr,
+                                       const QString& color_override) const {
+    if (logical_size.isEmpty()) return {};
+
+    const QString requested =
+        color_override.isEmpty() ? avatarColor() : color_override.trimmed().toLower();
+    const auto& presets = avatarPresets();
+    const AvatarPreset* chosen = &presets.front();
+    for (const auto& preset : presets) {
+        if (preset.id == requested) {
+            chosen = &preset;
+            break;
+        }
+    }
+
+    const qreal effective_dpr = std::max<qreal>(1.0, dpr);
+    const int pw = std::max(1, qRound(logical_size.width() * effective_dpr));
+    const int ph = std::max(1, qRound(logical_size.height() * effective_dpr));
+
+    const QString cache_key = QStringLiteral("finn_pfp|%1|%2x%3|%4")
+                                  .arg(chosen->id)
+                                  .arg(pw)
+                                  .arg(ph)
+                                  .arg(QString::number(effective_dpr, 'f', 2));
+    QPixmap cached;
+    if (QPixmapCache::find(cache_key, &cached)) {
+        return cached;
+    }
+
+    // Exact Figma 50:2 pfp geometry with parameterised background gradient stops.
+    static constexpr const char* kPfpSvgTemplate =
+        "<svg width=\"30\" height=\"30\" viewBox=\"0 0 30 30\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">"
+        "<g clip-path=\"url(#clip0_50_2)\">"
+        "<rect width=\"30\" height=\"30\" rx=\"15\" transform=\"matrix(1 0 0 -1 0 30)\" fill=\"url(#paint0_linear_50_2)\"/>"
+        "<path d=\"M15.0002 21.8125C18.6835 21.8125 21.6746 22.7332 23.762 24.1562C25.8446 25.5763 27.0627 27.5287 27.0627 29.5625C27.0627 31.461 25.5237 32.9999 23.6252 33H6.37524C4.47677 33 2.93774 31.461 2.93774 29.5625C2.93776 27.5287 4.15582 25.5763 6.23853 24.1562C8.32595 22.7332 11.3169 21.8125 15.0002 21.8125ZM15.0002 6C18.4864 6.00016 21.3127 8.8263 21.3127 12.3125C21.3127 15.7987 18.4864 18.6248 15.0002 18.625C11.5139 18.625 8.68774 15.7988 8.68774 12.3125C8.68774 8.8262 11.5139 6 15.0002 6Z\" fill=\"url(#paint1_linear_50_2)\"/>"
+        "</g>"
+        "<defs>"
+        "<linearGradient id=\"paint0_linear_50_2\" x1=\"15\" y1=\"0\" x2=\"15\" y2=\"30\" gradientUnits=\"userSpaceOnUse\">"
+        "<stop stop-color=\"%1\"/>"
+        "<stop offset=\"1\" stop-color=\"%2\"/>"
+        "</linearGradient>"
+        "<linearGradient id=\"paint1_linear_50_2\" x1=\"15.0002\" y1=\"6\" x2=\"15.0002\" y2=\"33\" gradientUnits=\"userSpaceOnUse\">"
+        "<stop stop-color=\"white\"/>"
+        "<stop offset=\"1\" stop-color=\"white\" stop-opacity=\"0.84\"/>"
+        "</linearGradient>"
+        "<clipPath id=\"clip0_50_2\">"
+        "<rect width=\"30\" height=\"30\" rx=\"15\" transform=\"matrix(1 0 0 -1 0 30)\" fill=\"white\"/>"
+        "</clipPath>"
+        "</defs>"
+        "</svg>";
+
+    const QString svg_str = QString::fromLatin1(kPfpSvgTemplate)
+                                .arg(chosen->bottom_color.name(QColor::HexRgb),
+                                     chosen->top_color.name(QColor::HexRgb));
+
+    QImage img(pw, ph, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QSvgRenderer svg(svg_str.toUtf8());
+    svg.render(&p, QRectF(0, 0, pw, ph));
+    p.end();
+
+    QPixmap pm = QPixmap::fromImage(img);
+    pm.setDevicePixelRatio(effective_dpr);
+    QPixmapCache::insert(cache_key, pm);
+    return pm;
 }
 
 QPixmap FinnThemeManager::iconPixmap(const QString& name_or_path,

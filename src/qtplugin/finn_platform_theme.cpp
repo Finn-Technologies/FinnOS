@@ -111,8 +111,9 @@ private:
         auto watch_if_exists = [watcher](const QString& p) {
             if (QFileInfo::exists(p)) watcher->addPath(p);
         };
-        watch_if_exists(QString::fromUtf8(kSettingsPath));
-        watch_if_exists(QStringLiteral("/etc/finn"));
+        const QString sys_settings = QString::fromUtf8(kSettingsPath);
+        watch_if_exists(sys_settings);
+        watch_if_exists(QFileInfo(sys_settings).absolutePath());
 
         const QString cfg_base =
             QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
@@ -163,6 +164,7 @@ void FinnPlatformTheme::attach_watcher() {
 
 void FinnPlatformTheme::rebuild_palettes_and_fonts() {
     tokens_ = finn::ui::load_tokens();
+    finn::ui::set_active_text_scale(tokens_.text_scale);
 
     system_palette_ = finn::ui::build_finn_palette(tokens_);
     menu_palette_ = system_palette_;
@@ -189,6 +191,10 @@ void FinnPlatformTheme::reload_settings() {
     const finn::ui::FinnTokens next = finn::ui::load_tokens();
     const bool changed = (next.dark != tokens_.dark ||
                           next.reduced_motion != tokens_.reduced_motion ||
+                          next.high_contrast != tokens_.high_contrast ||
+                          next.color_filter != tokens_.color_filter ||
+                          next.cursor_size != tokens_.cursor_size ||
+                          std::abs(next.text_scale - tokens_.text_scale) > 1e-3 ||
                           next.accent != tokens_.accent ||
                           std::abs(next.scale - tokens_.scale) > 1e-3);
     if (!changed) return;

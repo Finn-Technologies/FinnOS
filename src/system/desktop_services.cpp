@@ -28,6 +28,26 @@ bool has_binary(const QString& name) {
     return !QStandardPaths::findExecutable(name).isEmpty();
 }
 
+/// Splits a `nmcli -t` colon-delimited line while unescaping `\:` and `\\`.
+QStringList split_nmcli_terse_line(const QString& line) {
+    QStringList fields;
+    QString cur;
+    cur.reserve(line.size());
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar ch = line.at(i);
+        if (ch == QLatin1Char('\\') && i + 1 < line.size()) {
+            cur.append(line.at(++i));
+        } else if (ch == QLatin1Char(':')) {
+            fields.push_back(cur);
+            cur.clear();
+        } else {
+            cur.append(ch);
+        }
+    }
+    fields.push_back(cur);
+    return fields;
+}
+
 }  // namespace
 
 FinnDesktopServices& FinnDesktopServices::instance() {
@@ -139,7 +159,7 @@ void FinnDesktopServices::refreshNetwork() {
             }
             next.nm_running = true;
             for (const QString& line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-                const QStringList parts = line.split(QLatin1Char(':'));
+                const QStringList parts = split_nmcli_terse_line(line);
                 if (parts.size() < 4) continue;
                 const QString& dev = parts[0];
                 const QString& type = parts[1];
@@ -185,7 +205,7 @@ void FinnDesktopServices::refreshNetwork() {
                         QVector<WifiNetwork> list;
                         for (const QString& line :
                              wout.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
-                            const QStringList f = line.split(QLatin1Char(':'));
+                            const QStringList f = split_nmcli_terse_line(line);
                             if (f.size() < 4 || f[1].isEmpty()) continue;
                             WifiNetwork w;
                             w.active = (f[0] == QStringLiteral("*"));
@@ -341,14 +361,70 @@ void FinnDesktopServices::setWifiEnabled(bool enabled) {
 
 void FinnDesktopServices::connectWifi(const QString& ssid,
                                       const QString& password) {
-    if (!has_binary(QStringLiteral("nmcli"))) return;
-    QStringList args{QStringLiteral("dev"), QStringLiteral("wifi"),
-                     QStringLiteral("connect"), ssid};
-    if (!password.isEmpty()) {
-        args << QStringLiteral("password") << password;
+    if (ssid.trimmed().isEmpty()) {
+        const QString msg = QStringLiteral("Wi-Fi network name is empty");
+        emit commandError(msg);
+        emit wifiConnectFinished(false, ssid, msg);
+        return;
     }
-    QProcess::startDetached(QStringLiteral("nmcli"), args);
-    QTimer::singleShot(800, this, &FinnDesktopServices::refreshNetwork);
+    if (!has_binary(QStringLiteral("nmcli"))) {
+        const QString msg = QStringLiteral("NetworkManager (nmcli) is not available");
+        emit commandError(msg);
+        emit wifiConnectFinished(false, ssid, msg);
+        return;
+    }
+
+    // Pass passphrases via `nmcli --ask` stdin rather than argv so secrets
+    // never appear in `/proc/<pid>/cmdline`.
+    QStringList args;
+    if (!password.isEmpty()) {
+        args << QStringLiteral("--ask");
+    }
+    args << QStringLiteral("dev") << QStringLiteral("wifi")
+         << QStringLiteral("connect") << ssid;
+
+    auto* proc = new QProcess(this);
+    connect(proc, &QProcess::started, proc, [proc, password]() {
+        if (!password.isEmpty()) {
+            QByteArray secret = password.toUtf8();
+            secret.append('\n');
+            proc->write(secret);
+            secret.fill('\0');
+        }
+        proc->closeWriteChannel();
+    });
+    connect(proc, &QProcess::finished, this,
+            [this, proc, ssid](int code, QProcess::ExitStatus status) {
+                const QString err =
+                    QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                const QString out =
+                    QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                proc->deleteLater();
+                const bool ok = (status == QProcess::NormalExit && code == 0);
+                if (ok) {
+                    emit wifiConnectFinished(
+                        true, ssid, QStringLiteral("Connected to %1").arg(ssid));
+                } else {
+                    const QString detail = !err.isEmpty() ? err : out;
+                    const QString msg =
+                        detail.isEmpty()
+                            ? QStringLiteral("Failed to connect to %1 (exit %2)")
+                                  .arg(ssid)
+                                  .arg(code)
+                            : detail;
+                    emit commandError(msg);
+                    emit wifiConnectFinished(false, ssid, msg);
+                }
+                refreshNetwork();
+            });
+    connect(proc, &QProcess::errorOccurred, this,
+            [this, proc, ssid](QProcess::ProcessError) {
+                const QString msg = QStringLiteral("Failed to launch nmcli for %1").arg(ssid);
+                proc->deleteLater();
+                emit commandError(msg);
+                emit wifiConnectFinished(false, ssid, msg);
+            });
+    proc->start(QStringLiteral("nmcli"), args);
 }
 
 void FinnDesktopServices::setBluetoothPowered(bool powered) {
