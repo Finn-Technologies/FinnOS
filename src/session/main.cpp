@@ -16,6 +16,7 @@
 #include <spawn.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -40,6 +41,89 @@ namespace {
 volatile sig_atomic_t g_quit = 0;
 
 void handle_signal(int) { g_quit = 1; }
+
+void set_cloexec(int fd) {
+    if (fd < 0) return;
+    const int flags = ::fcntl(fd, F_GETFD);
+    if (flags >= 0) (void)::fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
+void set_socket_timeouts(int fd, int seconds) {
+    if (fd < 0) return;
+    struct timeval tv{};
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+struct WatchedStamp {
+    std::string path;
+    bool exists = false;
+    long long mtime = 0;
+    bool operator==(const WatchedStamp& o) const = default;
+};
+
+class RegistryCache {
+public:
+    const finn::AppRegistry& get() {
+        const auto stamp = capture_stamp();
+        if (!loaded_ || stamp != stamp_) {
+            registry_ = finn::AppRegistry::load_all(finn::kCataloguePath,
+                                                    finn::kInstalledPath);
+            stamp_ = stamp;
+            loaded_ = true;
+        }
+        return registry_;
+    }
+
+private:
+    static std::vector<WatchedStamp> capture_stamp() {
+        std::vector<std::string> targets = {
+            finn::kCataloguePath,
+            finn::kInstalledPath,
+        };
+        if (const char* home = std::getenv("HOME"); home && *home) {
+            targets.push_back(std::string(home) + "/" + finn::kUserAppsRel);
+            targets.push_back(std::string(home) + "/" + finn::kUserWindowsConfRel);
+        }
+        for (const auto& [dir, _] : finn::compat::default_desktop_dirs()) {
+            targets.push_back(dir);
+        }
+
+        std::vector<WatchedStamp> out;
+        out.reserve(targets.size());
+        std::error_code ec;
+        for (const std::string& p : targets) {
+            WatchedStamp ws;
+            ws.path = p;
+            ws.exists = fs::exists(p, ec);
+            if (ws.exists) {
+                const auto ft = fs::last_write_time(p, ec);
+                if (!ec) ws.mtime = ft.time_since_epoch().count();
+            }
+            out.push_back(std::move(ws));
+        }
+        return out;
+    }
+
+    bool loaded_ = false;
+    std::vector<WatchedStamp> stamp_;
+    finn::AppRegistry registry_;
+};
+
+RegistryCache& registry_cache() {
+    static RegistryCache cache;
+    return cache;
+}
+
+std::vector<std::string> wrap_terminal_if_needed(bool terminal,
+                                                 std::vector<std::string> argv) {
+    if (!terminal || argv.empty()) return argv;
+    std::vector<std::string> wrapped = {finn::kFinnTerminalBin, "-e"};
+    wrapped.insert(wrapped.end(), argv.begin(), argv.end());
+    return wrapped;
+}
 
 void reap_children() {
     while (waitpid(-1, nullptr, WNOHANG) > 0) {
@@ -213,11 +297,7 @@ bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
         app.source == finn::AppSource::kFlatpak) {
         argv = finn::compat::expand_desktop_exec(app.command, app.icon, app.name,
                                                  app.desktop_file, arg);
-        if (app.terminal && !argv.empty()) {
-            std::vector<std::string> wrapped = {"/usr/local/bin/finn-terminal", "-e"};
-            wrapped.insert(wrapped.end(), argv.begin(), argv.end());
-            argv = std::move(wrapped);
-        }
+        argv = wrap_terminal_if_needed(app.terminal, std::move(argv));
     } else {
         argv = finn::compat::expand_desktop_exec(app.command, {}, {}, {}, arg);
     }
@@ -272,8 +352,9 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
     if (ends_with_ci(t, ".desktop")) {
         const auto entry = finn::compat::parse_desktop_file(t, "desktop", false);
         if (entry.has_value()) {
-            const auto argv = finn::compat::expand_desktop_exec(
+            auto argv = finn::compat::expand_desktop_exec(
                 entry->exec, entry->icon, entry->name, entry->desktop_file, {});
+            argv = wrap_terminal_if_needed(entry->terminal, std::move(argv));
             return spawn_argv(argv, {}, error);
         }
     }
@@ -328,8 +409,47 @@ void handle_client(int fd) {
         return;
     }
 
-    const finn::AppRegistry reg =
-        finn::AppRegistry::load_all(finn::kCataloguePath, finn::kInstalledPath);
+    if (line.rfind("WIN.RUN ", 0) == 0) {
+        const std::string payload = line.substr(8);
+        const std::size_t bar = payload.find('|');
+        const std::string exe = bar == std::string::npos ? payload : payload.substr(0, bar);
+        const std::string prefix = bar == std::string::npos ? "" : payload.substr(bar + 1);
+        const auto plan = finn::compat::build_wine_launch(exe, {}, prefix, read_xdisplay());
+        if (!plan.ok) {
+            (void)write_all(fd, "ERR " + sanitize(plan.error) + "\n");
+            return;
+        }
+        std::string err;
+        if (!spawn_argv(plan.argv, plan.env, &err)) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK launched\n");
+        return;
+    }
+
+    if (line.rfind("POWER.ACTION ", 0) == 0) {
+        const std::string action = line.substr(13);
+        std::string err;
+        bool ok = false;
+        if (action == "reboot") {
+            ok = spawn_argv({"systemctl", "reboot"}, {}, &err);
+        } else if (action == "poweroff") {
+            ok = spawn_argv({"systemctl", "poweroff"}, {}, &err);
+        } else if (action == "suspend") {
+            ok = spawn_argv({"systemctl", "suspend"}, {}, &err);
+        } else {
+            err = "unsupported power action: " + action;
+        }
+        if (!ok) {
+            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK done\n");
+        return;
+    }
+
+    const finn::AppRegistry& reg = registry_cache().get();
 
     if (line == "APP.LIST") {
         std::string reply = "OK count=" + std::to_string(reg.size()) + "\n";
@@ -373,46 +493,6 @@ void handle_client(int fd) {
             return;
         }
         (void)write_all(fd, "OK opened\n");
-        return;
-    }
-
-    if (line.rfind("WIN.RUN ", 0) == 0) {
-        const std::string payload = line.substr(8);
-        const std::size_t bar = payload.find('|');
-        const std::string exe = bar == std::string::npos ? payload : payload.substr(0, bar);
-        const std::string prefix = bar == std::string::npos ? "" : payload.substr(bar + 1);
-        const auto plan = finn::compat::build_wine_launch(exe, {}, prefix, read_xdisplay());
-        if (!plan.ok) {
-            (void)write_all(fd, "ERR " + sanitize(plan.error) + "\n");
-            return;
-        }
-        std::string err;
-        if (!spawn_argv(plan.argv, plan.env, &err)) {
-            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
-            return;
-        }
-        (void)write_all(fd, "OK launched\n");
-        return;
-    }
-
-    if (line.rfind("POWER.ACTION ", 0) == 0) {
-        const std::string action = line.substr(13);
-        std::string err;
-        bool ok = false;
-        if (action == "reboot") {
-            ok = spawn_argv({"systemctl", "reboot"}, {}, &err);
-        } else if (action == "poweroff") {
-            ok = spawn_argv({"systemctl", "poweroff"}, {}, &err);
-        } else if (action == "suspend") {
-            ok = spawn_argv({"systemctl", "suspend"}, {}, &err);
-        } else {
-            err = "unsupported power action: " + action;
-        }
-        if (!ok) {
-            (void)write_all(fd, "ERR " + sanitize(err) + "\n");
-            return;
-        }
-        (void)write_all(fd, "OK done\n");
         return;
     }
 
@@ -480,11 +560,16 @@ int main(int argc, char** argv) {
     fs::create_directories(fs::path(sock_path).parent_path(), ec);
     ::unlink(sock_path.c_str());
 
-    const int server_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    const int server_fd = ::socket(AF_UNIX, SOCK_STREAM
+#ifdef SOCK_CLOEXEC
+                                              | SOCK_CLOEXEC
+#endif
+                                   , 0);
     if (server_fd < 0) {
         std::perror("finn-session: socket");
         return 1;
     }
+    set_cloexec(server_fd);
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     if (sock_path.size() >= sizeof(addr.sun_path)) {
@@ -499,7 +584,7 @@ int main(int argc, char** argv) {
         ::close(server_fd);
         return 1;
     }
-    ::chmod(sock_path.c_str(), 0660);
+    ::chmod(sock_path.c_str(), 0600);
     if (::listen(server_fd, 32) != 0) {
         std::perror("finn-session: listen");
         ::close(server_fd);
@@ -514,6 +599,8 @@ int main(int argc, char** argv) {
             if (errno == EINTR) continue;
             break;
         }
+        set_cloexec(client_fd);
+        set_socket_timeouts(client_fd, 2);
         handle_client(client_fd);
         ::close(client_fd);
     }

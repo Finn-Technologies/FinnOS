@@ -57,6 +57,11 @@ Server::ManagedWindow::~ManagedWindow() {
         wlr_foreign_toplevel_handle_v1_destroy(foreign_handle);
         foreign_handle = nullptr;
     }
+    if (scene_tree) {
+        wlr_scene_node_destroy(&scene_tree->node);
+        scene_tree = nullptr;
+        surface_tree = nullptr;
+    }
 }
 
 wlr_surface* Server::ManagedWindow::main_surface() const {
@@ -118,7 +123,7 @@ void Server::ManagedWindow::update_ssd_layout() {
     }
     if (!ssd_titlebar) return;
 
-    const bool vis = ssd_enabled && mapped && !minimized;
+    const bool vis = ssd_enabled && !fullscreen && mapped && !minimized;
     const int w = std::max(width, 120);
     const int h = std::max(height, 40);
     const int tot_h = h + kSsdTitleHeight;
@@ -323,6 +328,7 @@ void Server::ManagedWindow::set_activated(bool active) {
 
 void Server::ManagedWindow::set_maximized(bool on) {
     if (override_redirect || maximized == on) return;
+    if (fullscreen) set_fullscreen(false);
     stop_animation();
     if (on) {
         saved_geometry = wlr_box{x, y, width, height};
@@ -345,6 +351,50 @@ void Server::ManagedWindow::set_maximized(bool on) {
     }
     sync_foreign_state();
     server->process_cursor_motion(Server::monotonic_msec());
+}
+
+void Server::ManagedWindow::set_fullscreen(bool on) {
+    if (override_redirect) return;
+    if (fullscreen != on) {
+        stop_animation();
+        if (on) {
+            if (!maximized) saved_geometry = wlr_box{x, y, width, height};
+            saved_maximized = maximized;
+            fullscreen = true;
+            if (scene_tree && server && server->fullscreen_tree()) {
+                wlr_scene_node_reparent(&scene_tree->node, server->fullscreen_tree());
+            }
+            int out_w = 1440, out_h = 900;
+            if (wlr_output* out = server ? server->primary_output() : nullptr) {
+                wlr_output_effective_resolution(out, &out_w, &out_h);
+            }
+            set_position(0, 0);
+            configure_size(out_w, out_h);
+        } else {
+            fullscreen = false;
+            if (scene_tree && server && server->toplevel_tree()) {
+                wlr_scene_node_reparent(&scene_tree->node, server->toplevel_tree());
+            }
+            if (saved_maximized) {
+                const wlr_box area = server->usable_area_for();
+                maximized = true;
+                set_position(area.x, area.y);
+                configure_size(area.width, std::max(120, area.height - title_offset()));
+            } else {
+                maximized = false;
+                set_position(saved_geometry.x, saved_geometry.y);
+                configure_size(saved_geometry.width, saved_geometry.height);
+            }
+        }
+        update_ssd_layout();
+    }
+    if (is_xwayland && xwayland_surface) {
+        wlr_xwayland_surface_set_fullscreen(xwayland_surface, fullscreen);
+    } else if (xdg_toplevel) {
+        wlr_xdg_toplevel_set_fullscreen(xdg_toplevel, fullscreen);
+    }
+    sync_foreign_state();
+    if (server) server->process_cursor_motion(Server::monotonic_msec());
 }
 
 void Server::ManagedWindow::set_minimized(bool on) {
@@ -421,6 +471,13 @@ void Server::ManagedWindow::ensure_foreign_handle() {
                             static_cast<const wlr_foreign_toplevel_handle_v1_minimized_event*>(data);
                         w->set_minimized(ev->minimized);
                     });
+    attach_listener(foreign_handle->events.request_fullscreen, ft_req_fullscreen_l,
+                    [](wl_listener* l, void* data) {
+                        ManagedWindow* w = wl_container_of(l, w, ft_req_fullscreen_l);
+                        const auto* ev =
+                            static_cast<const wlr_foreign_toplevel_handle_v1_fullscreen_event*>(data);
+                        w->set_fullscreen(ev->fullscreen);
+                    });
     attach_listener(foreign_handle->events.request_close, ft_req_close_l,
                     [](wl_listener* l, void*) {
                         ManagedWindow* w = wl_container_of(l, w, ft_req_close_l);
@@ -435,6 +492,7 @@ void Server::ManagedWindow::sync_foreign_state() {
     if (!aid.empty()) wlr_foreign_toplevel_handle_v1_set_app_id(foreign_handle, aid.c_str());
     wlr_foreign_toplevel_handle_v1_set_maximized(foreign_handle, maximized);
     wlr_foreign_toplevel_handle_v1_set_minimized(foreign_handle, minimized);
+    wlr_foreign_toplevel_handle_v1_set_fullscreen(foreign_handle, fullscreen);
     wlr_foreign_toplevel_handle_v1_set_activated(foreign_handle,
                                                  server->focused_window() == this);
 }
@@ -451,7 +509,7 @@ Server::ManagedWindow::HitZone Server::ManagedWindow::hit_test(
         return HitZone::kNone;
     }
 
-    if (ssd_enabled && !override_redirect) {
+    if (ssd_enabled && !fullscreen && !override_redirect) {
         const int rx = px - b.x;
         const int ry = py - b.y;
         const int close_x = b.width - kSsdControlsRightPad - kSsdButtonW;
@@ -662,6 +720,13 @@ void setup_xwayland_window(Server::ManagedWindow* w, wlr_xwayland_surface* xsurf
                         const auto* ev =
                             static_cast<const wlr_xwayland_minimize_event*>(data);
                         win->set_minimized(ev->minimize);
+                    });
+
+    attach_listener(xsurface->events.request_fullscreen, w->req_fullscreen_l,
+                    [](wl_listener* l, void*) {
+                        Server::ManagedWindow* win =
+                            wl_container_of(l, win, req_fullscreen_l);
+                        win->set_fullscreen(win->xwayland_surface->fullscreen);
                     });
 
     attach_listener(xsurface->events.request_activate, w->xw_req_activate_l,

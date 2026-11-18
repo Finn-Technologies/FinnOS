@@ -59,6 +59,8 @@ struct Server::ManagedWindow {
     bool mapped = false;
     bool minimized = false;
     bool maximized = false;
+    bool fullscreen = false;
+    bool saved_maximized = false;
     bool ssd_enabled = false;
     bool hover_close = false;
 
@@ -124,7 +126,7 @@ struct Server::ManagedWindow {
     wlr_surface* main_surface() const;
     std::string title() const;
     std::string app_id() const;
-    int title_offset() const { return ssd_enabled ? kSsdTitleHeight : 0; }
+    int title_offset() const { return (ssd_enabled && !fullscreen) ? kSsdTitleHeight : 0; }
     wlr_box total_box() const;
 
     void create_ssd_nodes();
@@ -136,6 +138,7 @@ struct Server::ManagedWindow {
     void set_position(int nx, int ny);
     void set_activated(bool active);
     void set_maximized(bool on);
+    void set_fullscreen(bool on);
     void set_minimized(bool on);
     void snap_half(bool left);
     void close();
@@ -185,8 +188,12 @@ struct Server::LockSurface {
     Server* server = nullptr;
     wlr_session_lock_surface_v1* lock_surface = nullptr;
     wlr_scene_tree* scene_tree = nullptr;
+    wl_listener map_l{};
     wl_listener destroy_l{};
-    ~LockSurface() { remove_listener(destroy_l); }
+    ~LockSurface() {
+        remove_listener(map_l);
+        remove_listener(destroy_l);
+    }
 };
 
 struct Server::OutputDevice {
@@ -224,6 +231,20 @@ struct Server::PointerDevice {
     wlr_pointer* pointer = nullptr;
     wl_listener destroy_l{};
     ~PointerDevice() { remove_listener(destroy_l); }
+};
+
+struct Server::TouchDevice {
+    Server* server = nullptr;
+    wlr_touch* touch = nullptr;
+    wl_listener destroy_l{};
+    ~TouchDevice() { remove_listener(destroy_l); }
+};
+
+struct Server::TabletDevice {
+    Server* server = nullptr;
+    wlr_tablet* tablet = nullptr;
+    wl_listener destroy_l{};
+    ~TabletDevice() { remove_listener(destroy_l); }
 };
 
 void setup_xdg_decoration(Server* server, wlr_xdg_toplevel_decoration_v1* dec);
