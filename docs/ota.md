@@ -273,6 +273,36 @@ Binary: `src/ota/finn-update` (installed target `/usr/local/bin/finn-update`).
     `/usr/share/finn/version` (`healthy: true`).
   - `systemd-analyze verify`: syntax-checked `base/finn-update-check.service`,
     `base/finn-update-check.timer`, and `base/finn-boot-health.service`.
-- **Real A/B disk boot & rollback:** Unproven on a real reboot — the Lima VM
-  and `vm/finn-install.sh` currently use a single root partition rather than
-  `FINNOS_A`/`FINNOS_B` partitions.
+  - **End-to-end Linux A/B OTA pipeline (`ota/verify-ab-linux.sh`)**: executed
+    inside `limactl shell finnos` (`Linux lima-finnos 7.3.4-1-aarch64-ARCH`)
+    with real `ext4` images (`mkfs.ext4 -d`, `e2fsck -fn`, `debugfs`), `losetup`
+    loopback block devices (`/dev/loop0`, `/dev/loop1`), Linux `openssl pkeyutl
+    -rawin` Ed25519 sign/verify, `ota/publish` (`zstd --patch-from`), live
+    `finn-comp.service` + `finn-session.service` + `/run/finn/wayland-0`
+    health checks, and both `SystemdBootBackend` and `GrubBootBackend`:
+
+    ```text
+    ==> loop block devices attached: A=/dev/loop0 B=/dev/loop1
+    ==> OpenSSL Ed25519 sign/verify interop: PASS
+    ==> publishing 0.3.0 (with zstd --patch-from 0.2.0)
+    published FinnOS 0.3.0 (stable/aarch64) key_id=9440855d97f9bbd2 artifacts=2
+    ==> health-check systemd probe mode: live finn-comp+finn-session+wayland-0
+    [PASS] Scenario A (systemd-boot): 0.2.0 -> 0.3.0 delta applied to slot B, ext4 fsck+sha256 verified, health-check committed B
+    [PASS] Scenario B (systemd-boot): 0.4.0 broken image failed 3 health checks, auto-rolled back to slot B (0.3.0)
+    [PASS] Scenario A (grub): 0.2.0 -> 0.3.0 delta applied to slot B, grubenv updated, health-check committed B
+    [PASS] Scenario B (grub): 0.4.0 broken image failed 3 health checks, auto-rolled back to slot B (0.3.0)
+    [PASS] Block-device streaming (/dev/loop0 -> /dev/loop1): 0.3.0 streamed to loop block device, e2fsck+sha256 verified (used_delta=False fallback)
+    ALL LINUX A/B OTA VERIFICATION CHECKS PASSED
+    ```
+
+    Observed Linux block-device delta finding during verification: on Linux
+    `/dev/loopX` block devices, `os.path.getsize(dev)` returns `0` in
+    `src/ota/finn_ota/cli.py:151` and `zstd --patch-from=/dev/loop0` exits
+    with `zstd: error 32 : Dictionary /dev/loop0 must be a regular file`, so
+    `cli._do_apply` uses the `full` artifact when staging onto block devices
+    while regular ext4 slot images exercise `zstd --patch-from` deltas.
+- **Bare-metal / firmware power-cycle A/B reboot:** Unproven across a real
+  UEFI/BIOS power cycle — the Lima VM boots a single root partition (`vda2`),
+  so bootloader pre-boot execution (`systemd-boot` firmware or GRUB2 real-mode
+  `grub-ab.cfg` counter decrement) is verified via loopback + backend state
+  simulation rather than a physical multi-partition reboot.
