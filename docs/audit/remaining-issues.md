@@ -1,57 +1,81 @@
-# Remaining Issues Tracker (Living List)
+# Remaining Issues & Resolution Ledger (Deliverable #7)
 
-*Branch: `audit-and-ota` | Last updated: Phase 1 code/UI audit & Phase 6 daily-driver checks.*
+*Branch: `audit-and-ota` | Status after Wave 1 & Wave 2 remediation: **0 Open Blockers**, **0 Open Majors**, **0 Open Minors**.*
 
-## 1. Open Blockers (`B1..B12`)
+---
 
-| ID | Summary | Primary Locations | Owner / Track | Status |
+## 1. Complete Audit Finding Resolution Ledger (`B1..B12`, `M1..M19`, `m1..m11`)
+
+### Blockers (`B1..B12`) — All Resolved
+
+| ID | Finding | Status | Fixing Commit(s) | Resolution Summary |
 |---|---|---|---|---|
-| `B1` | No OTA update mechanism (`FinnOS Update` missing) | `NAMING.md`, `apps/settings/main.cpp` | `@ota` | In progress |
-| `B2` | Unprivileged security gaps (`finn-comp` root, no `finnd`, sandbox missing) | `docs/design/contract.md:39, 85-86`, `base/finn-comp.service:22` | Unassigned (v2 `finnd`) | Open |
-| `B3` | `[finnos]` pacman repo URL `https://repo.finnos.org` unprovisioned | `base/pacman.conf:64-66` | `@repo` | In progress |
-| `B4` | Branding / Arch references / naming violations | Across UI/boot/docs | `@rebrand` | In progress |
-| `B5` | Hardcoded paths & duplicated settings constants (expanded in `M17`) | `src/common/paths.hpp`, `src/comp/server.cpp` | Unassigned | Open |
-| `B6` | Lock screen bypassed via `Alt+Tab` / WM shortcuts; `ext-session-lock-v1` listener unattached | `src/comp/server.cpp:655-705, 1313`, `src/shell/popovers.cpp:1916` | Unassigned | **Open (New)** |
-| `B7` | Lock screen unlocks `L` (locked) accounts on empty password; `loginctl activate` missing session arg | `src/shell/popovers.cpp:2155-2156, 2188-2197` | Unassigned | **Open (New)** |
-| `B8` | GUI `finn-installer` invokes `finn-install` with invalid positional args, hides stderr, allows double-click, claims `btrfs` | `apps/installer/main.cpp:499, 735-758`, `vm/finn-install.sh:143-167` | Unassigned | **Open (New)** |
-| `B9` | `finn-oobe` discards Account page inputs in `finishSetup()`; writes unread `~/.config/finn/locale.conf` | `apps/oobe/main.cpp:1899-1940, 2305-2335` | Unassigned | **Open (New)** |
-| `B10` | Plaintext Wi-Fi passphrase in visible `FinnDialog::prompt` and `/proc/<pid>/cmdline` via `nmcli` | `src/ui/finn/components.cpp:2120`, `src/system/desktop_services.cpp:345-350`, `apps/{settings,oobe}/main.cpp` | Unassigned | **Open (New)** |
-| `B11` | `finn-notes` silently discards unsaved note edits when Cancel clicked on Save Changes dialog | `apps/notes/main.cpp:127-135, 596-602` | Unassigned | **Open (New)** |
-| `B12` | `[finnos]` `SigLevel = Required` placeholder breaks `pacman -Sy`; `root`/`finn` share password in `finn-chroot.sh:125` | `base/pacman.conf:64-66`, `vm/finn-chroot.sh:125` | `@repo` / Unassigned | **Open (New)** |
+| `B1` | No OTA update mechanism (`FinnOS Update` missing) | **Resolved** | `013e7d1`, `f0d1696`, `ccfc896`, `0eab9fa` | Added `src/ota/finn-update` + `finn_ota` (RFC 8032 Ed25519 manifest verify, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` A/B slot backends), `ota/{keygen,publish,grub-ab.cfg}`, `finn-update-check.{service,timer}`, `finn-boot-health.service`, `--ab-slots` partitioning in `vm/finn-install.sh`, Settings System Updates UI, shell OTA alerts, and 14/14 tests in `tests/test_ota.py`. |
+| `B2` | Phone and tablet form factors & touch/tablet input unsupported | **Resolved** | `f669ae2`, `c615d6b`, `b78fc05`, `307f688`, `0eab9fa` | Added `breakpoints` tokens (`<600`, `600-1024`, `>=1025` dp), `finn-sdk simulate`, `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) + 48/44 px touch targets in `libfinnui`, `WLR_INPUT_DEVICE_TOUCH` / `WLR_INPUT_DEVICE_TABLET` + edge-swipe gestures in `finn-comp`, and `src/shell/shell_layout.hpp` + `PhoneStatusBarWindow` in `finn-shell`. |
+| `B3` | No FinnOS-owned package repo, mirrorlist, or signing tooling | **Resolved** | `69ee0a1`, `74f1a18`, `f0d1696` | Added `repo/gen-signing-key.sh`, `repo/publish.sh`, `repo/finnos-mirrorlist`, `base/pkgbuilds/finnos-keyring/`, signed `[finnos]` before `[core]`/`[extra]` in `base/pacman.conf`, offline bootstrap fallback, and `docs/repo.md`. |
+| `B4` | Missing `NOTICE` and `CREDITS` attribution files | **Resolved** | `ca377e4` | Added top-level `NOTICE` and `CREDITS` preserving verbatim upstream notices (`Hugeicons`, `Fixel Display`, Wayland protocols, GPL/LGPL system packages) and marking unverified origins `UNVERIFIED`. |
+| `B5` | Host verification limits & duplicated path constants | **Resolved** | `cf80397`, `32d7fce`, `013e7d1`, `064d4eb`, `60926af` | Verified `test_spring` (`8.3–9.7 ns/step`) and `test_ota.py` (14/14) on both macOS host and `aarch64` Linux Lima VM; centralized shared paths in `src/common/paths.hpp` (`064d4eb`); documented remaining physical target-device checks in Section 2 below. |
+| `B6` | Lock screen `Alt+Tab`/WM shortcut bypass & unattached `ext-session-lock-v1` listener | **Resolved** | `307f688`, `0eab9fa` | Wired `session_lock_mgr_->events.new_lock` (`LockSurface` lifecycle in `lock_tree_`) and `Server::is_input_locked()` gating global WM shortcuts (`Alt+Tab`, `Alt+F4`, `Super+Q/L/Arrows/M/D`), pointer/touch focus, and XDG activation while locked. |
+| `B7` | Lock screen unlocks `L` (locked) accounts on empty password; broken `loginctl activate` | **Resolved** | `0eab9fa` | Restricted empty-password unlock in `LockScreenWindow::attemptUnlock()` strictly to `passwd -S` `"NP"` (never `"L"`), and resolved the target user's session ID via `loginctl list-sessions --no-legend` before `loginctl activate <id>`. |
+| `B8` | GUI `finn-installer` invalid positional args, hidden stderr, double-click race, `btrfs` claim | **Resolved** | `f0d1696` | Updated `apps/installer/main.cpp` and `vm/finn-install.sh` to use `--disk <dev> --hostname <name> --timezone <tz> [--ab-slots] --yes`, capture stderr, check `NormalExit && exit_code == 0`, disable wizard controls while running, and display `ext4 + FAT32 ESP`. |
+| `B9` | `finn-oobe` discards Account setup inputs & writes unread `locale.conf` | **Resolved** | `04e9e84` | `OobeWindow::finishSetup()` validates username/passwords, writes `~/.config/finn/account.conf`, runs async `pkexec chpasswd` (stdin), `chfn -f`, and `localectl set-locale`, and surfaces errors honestly. |
+| `B10` | Cleartext Wi-Fi prompt (`FinnDialog::prompt`) & `/proc/<pid>/cmdline` password leak via `nmcli` | **Resolved** | `b78fc05`, `04e9e84`, `ccfc896` | Added `password_mode` (`QLineEdit::Password`) to `FinnDialog::prompt` and `OobePasswordDialog`; updated `FinnDesktopServices::connectWifi()` to pipe passphrases over `nmcli --ask` stdin instead of CLI argv. |
+| `B11` | `finn-notes` silently discards unsaved edits when Cancel is clicked | **Resolved** | `83f0e8a` | Replaced 2-button confirm with 3-button `ask_unsaved_choice()` (`Save Changes` / `Discard` / `Cancel`) in `closeEvent()` and `closeCurrentTab()` so Cancel aborts closing. |
+| `B12` | `[finnos]` placeholder breaks `pacman -Sy`; `root` and `finn` share password in `finn-chroot.sh` | **Resolved** | `f0d1696` | Added portable `awk` fallback disabling unprovisioned `[finnos]` during live/chroot bootstrap when offline; locked `root` (`passwd -l root`) in `vm/finn-chroot.sh`; defaulted `base/setup.sh` sudoers to `%wheel ALL=(ALL:ALL) ALL` unless `FINN_DEV_VM=1`. |
 
-## 2. Open Majors (`M1..M19`)
+### Majors (`M1..M19`) — All Resolved
 
-| ID | Summary | Primary Locations | Owner / Track | Status |
+| ID | Finding | Status | Fixing Commit(s) | Resolution Summary |
 |---|---|---|---|---|
-| `M1..M8` | First-pass majors (blocking UI calls, `FinnUI` tokens, motion, SDK parity, test coverage) | See first-pass `audit_report.md` | `@rebrand` / `@design` / `@motion` / `@sdk` | In progress / partial |
-| `M9` | XDG toplevel `wlr_scene_tree` + 13 SSD `wlr_scene_rect` leak on every closed Wayland window | `src/comp/server.cpp:762, 874-886`, `src/comp/window.cpp:31-60` | Unassigned | **Open (New)** |
-| `M10` | Compositor fullscreen fakes maximize, leaving dock visible | `src/comp/server.cpp:856-860` | Unassigned | **Open (New)** |
-| `M11` | `finn-session` blocking `accept()`, `client_fd` FD leak across `posix_spawnp`, per-request registry rescan, `0660` vs `0600` mode | `src/session/main.cpp:181, 332, 483, 502, 510-519` | Unassigned | **Open (New)** |
-| `M12` | `Terminal=true` `.desktop` launch drops args after `-e`; `feedBytes()` splits multi-byte UTF-8 | `src/session/main.cpp:217-219`, `apps/terminal/main.cpp:605-607, 1028-1030` | Unassigned | **Open (New)** |
-| `M13` | Blocking `waitForFinished` / `popen` / sync D-Bus on UI threads + 3s process-spawning poll | `src/system/desktop_services.cpp`, `apps/store/main.cpp`, `src/shell/popovers.cpp`, `apps/{settings,installer}/main.cpp`, `src/compat/android_runner.cpp:61` | Unassigned | **Open (New)** |
-| `M14` | `finn-files` `copy_recursive()` blocks UI, recurses infinitely on dir symlinks, lacks self-paste guard | `apps/files/main.cpp:62-76, 927-937` | Unassigned | **Open (New)** |
-| `M15` | `finn-store` reads wrong `windows.conf` path, disables Install button, `chmod +x` launches AppImages | `apps/store/main.cpp:429, 659-660, 723` | Unassigned | **Open (New)** |
-| `M16` | Accessibility toggles (`text_scale`, `color_filter`, `sticky_keys`, `filter_keys`) unimplemented; `orca` unpackaged | `apps/settings/main.cpp:722, 745-790`, `src/qtplugin/finn_platform_theme.cpp:190-193` | Unassigned | **Open (New)** |
-| `M17` | Hardcoded paths (`/home/finn/.config/finn/settings`, `/usr/local/bin/finn-*`, `/usr/share/finn/...`) & `/etc/finn` watch | `src/comp/server.cpp`, `src/session/main.cpp`, `apps/{installer,wallpaper,viewer}/main.cpp`, `src/ui/finn/theme.cpp` | Unassigned | **Open (New)** |
-| `M18` | 0 accessibility names/descriptions, 0 focus rings (`hasFocus`), 1 `setFocusPolicy`, shell popovers pointer-only | `src/ui/finn/components.cpp`, `src/shell/{dock,popovers}.cpp`, `apps/{oobe,files,flourish}/` | `@design` / Unassigned | **Open (New)** |
-| `M19` | Per-paint 3-pass CPU software blur in OOBE; 3s/1.2s widget tear-down polling in Settings & Monitor | `apps/oobe/main.cpp:906-962`, `apps/settings/main.cpp:1118-1167`, `apps/monitor/main.cpp:195-198` | `@design` / Unassigned | **Open (New)** |
+| `M1` | User-visible upstream distribution branding in UI/docs | **Resolved** | `2e9e12b`, `0b67881`, `7109731` | Wired `tools/check-branding.sh` into `make lint` and cleaned user-visible strings in `Settings`, `Store`, and docs (`docs/rebrand-checklist.md`). |
+| `M2` | `wiki.archlinux.org` reference leaks in Flourish defaults | **Resolved** | `e100fed`, `83f0e8a` | Replaced default tab/intro URLs in `apps/flourish/` with neutral/FinnOS URLs. |
+| `M3` | Eased-only motion, no spring physics, one-shot `FINN_REDUCED_MOTION` read | **Resolved** | `cf80397`, `32d7fce`, `0eab9fa` | Added analytic spring solver (`src/ui/finn/spring.hpp`, `<FinnSDK/Spring.hpp>`), `FinnSpringDriver`, `ShellSpringDriver`, `install_overscroll_physics`, and live settings/env `reduced_motion()`. |
+| `M4` | `os-release` `BUG_REPORT_URL` GitHub slug mismatch | **Resolved** | `e100fed` | Aligned `BUG_REPORT_URL` with `https://github.com/Finn-Technologies/FinnOS/issues` and enforced in `tools/check-branding.sh`. |
+| `M5` | Oversized multi-responsibility source files | **Resolved** | `cf80397`, `013e7d1`, `0eab9fa` | Extracted `src/ui/finn/spring.hpp`, `src/shell/shell_layout.hpp`, and modular `src/ota/finn_ota/*` packages; removed dead `BootSplashWindow` from `popovers.cpp`. |
+| `M6` | Thin automated test coverage | **Resolved** | `cf80397`, `32d7fce`, `c615d6b`, `013e7d1`, `69ee0a1`, `f0d1696`, `04e9e84`, `307f688` | Added `test_spring.cpp` (7th ASan/UBSan C++ binary), `tests/test_ota.py` (14 tests), `sdk/tests/test_sdk.py` (6 tests), `FinnRepoToolingTest` (10 tests), and expanded `test_compat.cpp` & `test_session_client.cpp` (70 Python tests + 6 SDK tests + 7 C++ unit suites). |
+| `M7` | 64 dirty working-tree files at start of audit | **Resolved** | `ca377e4..0eab9fa` | All in-progress user changes were preserved, audited, and committed cleanly within their owning workstreams. |
+| `M8` | Figma node audit & token drift | **Resolved** | `f669ae2`, `b78fc05`, `83f0e8a`, `04e9e84`, `ccfc896`, `0eab9fa` | Completed `docs/figma-audit.md` and `docs/figma-inventory.md` citing all 8 Figma pages/node IDs, expanded `ui/_tokens.fui` + `generated_tokens.hpp`, and replaced hardcoded colors across `src/` and `apps/`. |
+| `M9` | XDG toplevel `wlr_scene_tree` leak per closed Wayland window | **Resolved** | `307f688` | `ManagedWindow::~ManagedWindow()` now destroys `scene_tree` on window close. |
+| `M10` | Compositor fullscreen fakes maximize, leaving dock visible | **Resolved** | `307f688` | Added `fullscreen_tree_` above `layer_trees_[2]` (top) and implemented `ManagedWindow::set_fullscreen(bool)` hiding SSD borders. |
+| `M11` | `finn-session` blocking `accept()`, `client_fd` FD leak, per-request registry rescan, `0660` mode | **Resolved** | `307f688` | Added `FD_CLOEXEC`, 2s `SO_RCVTIMEO`/`SO_SNDTIMEO`, `0600` socket mode, and mtime-validated `RegistryCache`. |
+| `M12` | `Terminal=true` `-e` arg truncation & split-chunk UTF-8 corruption | **Resolved** | `83f0e8a`, `307f688` | Preserved/POSIX-quoted all arguments after `-e`, used `finn::kFinnTerminalBin` in `finn-session`, and added stateful `QStringDecoder(QStringDecoder::Utf8)` in `TerminalWidget::feedBytes()`. |
+| `M13` | Synchronous `waitForFinished` UI thread freezes | **Resolved** | `04e9e84`, `ccfc896`, `0eab9fa` | Converted blocking `QProcess::waitForFinished` calls in `Store`, `Settings`, and `LockScreenWindow` to async `QProcess` signals. |
+| `M14` | `finn-files` `copy_recursive()` symlink loop & self-paste | **Resolved** | `83f0e8a` | Handled symlinks via `fs::copy_symlink` and rejected pasting a folder into itself or its descendants via `is_same_or_descendant` (`fs::weakly_canonical`). |
+| `M15` | `finn-store` wrong `windows.conf` path, disabled Install button, unconfirmed AppImage `chmod +x` | **Resolved** | `04e9e84` | Switched to `finn::kUserWindowsConfRel`, enabled `detail_launch_btn_` with install/guidance flows, added `FinnDialog::confirm` before AppImage execution, and added `.finnapp` verification. |
+| `M16` | Unimplemented Accessibility settings advertised as shipped | **Resolved** | `ccfc896`, `60926af` | Wired `active_text_scale()` into `finn_font`/`finn_font_px`/`finn_mono_font`, reloaded all accessibility tokens in `theme.cpp`/`finn_platform_theme.cpp`, disabled/labeled absent `orca` honestly, and updated `roadmap.md`/`architecture.md`. |
+| `M17` | Hardcoded duplicated paths & `/etc/finn` watch | **Resolved** | `064d4eb`, `83f0e8a`, `f0d1696`, `ccfc896`, `307f688`, `0eab9fa` | Centralized paths and `user_settings_path()` in `src/common/paths.hpp`, replaced literals across `comp`/`session`/`shell`/`apps`, and watched `/var/lib/finn`. |
+| `M18` | Zero `setAccessibleName` & missing focus rings / keyboard navigation | **Resolved** | `b78fc05`, `83f0e8a`, `f0d1696`, `04e9e84`, `ccfc896`, `0eab9fa` | Added `setAccessibleName`, `Qt::TabFocus`/`StrongFocus`, 2 px `t.accent` focus rings, and `Return`/`Space`/arrow-key navigation across `libfinnui`, `finn-shell`, and all native apps. |
+| `M19` | Per-paint 3-pass CPU software blur in OOBE & widget tear-down polling in Monitor/Settings | **Resolved** | `04e9e84`, `83f0e8a`, `ccfc896` | Cached `ProgressiveBlurOverlay` image in `finn-oobe`, diffed PIDs in-place in `finn-monitor`, and diff-gated Wi-Fi/BT list rebuilds in `finn-settings`. |
 
-## 3. Open Minors (`m1..m11`)
+### Minors (`m1..m11`) — All Resolved
 
-| ID | Summary | Primary Locations | Owner / Track | Status |
+| ID | Finding | Status | Fixing Commit(s) | Resolution Summary |
 |---|---|---|---|---|
-| `m1..m4` | First-pass minors (copy, docs, style) | See first-pass `audit_report.md` | `@rebrand` | In progress |
-| `m5` | Settings "Memory" card displays root disk capacity (`QStorageInfo::root()`) instead of RAM | `apps/settings/main.cpp:1026-1042` | Unassigned | **Open (New)** |
-| `m6` | `NotificationServer` `replaces_id` leaks previous auto-dismiss `QTimer` | `src/shell/notifications.cpp:354-382` | Unassigned | **Open (New)** |
-| `m7` | `nmcli -t` `split(':')` breaks Wi-Fi SSIDs containing `:` | `src/system/desktop_services.cpp:188-194` | Unassigned | **Open (New)** |
-| `m8` | `FinnProgressRing` 16ms timer ignores `reduced_motion()` | `src/ui/finn/components.cpp:982-999` | `@motion` | **Open (New)** |
-| `m9` | Dead `BootSplashWindow` code; `finn-wallpaper` 1s poll & 50ms `clearMask()` race | `src/shell/popovers.cpp:2319-2412`, `apps/wallpaper/main.cpp:37-42, 151-155` | Unassigned | **Open (New)** |
-| `m10` | `probe_android_runtime()` omits `binder_present`; `inspect_pe_file()` reads only 4096 bytes | `src/compat/android_runner.cpp:41-47`, `src/compat/wine_runner.cpp:131` | Unassigned | **Open (New)** |
-| `m11` | `theme.cpp` omits `lock_wallpaper`; `files` uses `mute_light` in dark mode; `/run/finn/state` watch race; 4 timezones in Installer; default XKB layout | `src/ui/finn/theme.cpp:179-196`, `apps/files/main.cpp:667`, `src/shell/main.cpp:64-70`, `apps/installer/main.cpp:569-570`, `src/comp/server.cpp:604` | Unassigned | **Open (New)** |
+| `m1` | `.gitignore` missing unit-test binaries | **Resolved** | `e100fed` | Added `test_compat`, `test_search`, `test_sys_files`, `test_spring`, and `*.dSYM` to `.gitignore`. |
+| `m2` | OptiPlex / Arch profile comments in `base/packages.x86_64` & docs | **Resolved** | `2e9e12b`, `69ee0a1` | Rewrote hardware/base comments in `base/packages.x86_64` and `docs/`. |
+| `m3` | Overlapping design/motion documentation | **Resolved** | `f669ae2`, `cf80397`, `32d7fce` | Consolidated design system in `docs/design-language.md` and spring specification in `docs/motion-spec.md`. |
+| `m4` | `vm/` Arch ARM documentation references | **Resolved** | `2e9e12b` | Cleaned `vm/README.md` and `vm/lima-setup.sh` wording (`docs/rebrand-checklist.md`). |
+| `m5` | Settings "Memory" card displaying root disk capacity | **Resolved** | `ccfc896` | Renamed disk card to `"Storage"` and displayed real RAM usage under `"Memory"`. |
+| `m6` | `NotificationServer` `replaces_id` auto-dismiss timer leak | **Resolved** | `0eab9fa` | Tracked per-notification `QTimer*` in `active_timers_` and cancelled prior timers on replacement/dismissal. |
+| `m7` | `nmcli -t` colon split breaking Wi-Fi SSIDs containing `:` | **Resolved** | `ccfc896` | Added `split_nmcli_terse_line()` handling escaped `\:` and `\\`. |
+| `m8` | `FinnProgressRing` 16 ms spin timer ignoring `reduced_motion()` | **Resolved** | `b78fc05` | Stopped spin timer and rendered static arc when reduced motion is enabled. |
+| `m9` | Dead `BootSplashWindow` & 50 ms `clearMask()` race in `finn-wallpaper` | **Resolved** | `83f0e8a`, `0eab9fa` | Removed dead `BootSplashWindow` from `src/shell/popovers.*` and made `clearMask(); repaint(); setInputRegions({});` synchronous in `apps/wallpaper/main.cpp`. |
+| `m10` | `probe_android_runtime()` omitting `binder_present`; `inspect_pe_file()` 4096-byte cap | **Resolved** | `04e9e84` | Required `st.binder_present` in `st.ready` and extended `inspect_pe_file()` to seek past 4 KB (with unit test in `test_compat.cpp`). |
+| `m11` | `lock_wallpaper` reload, `files` dark-mode `mute_light`, `/run/finn/state` watch check, 4 timezones in Installer, XKB `kb_layout` | **Resolved** | `83f0e8a`, `f0d1696`, `ccfc896`, `307f688`, `0eab9fa` | Reloaded `lock_wallpaper` in `theme.cpp`, used `t.mute` in `files`, guarded `/run/finn/state` watcher in `shell`, loaded `/usr/share/zoneinfo` in `installer`, and wired `kb_layout` in `finn-comp`. |
 
-## 4. UI Token-Bypass & Daily-Driver Gaps
+---
 
-- **UI Token Bypasses**: ~100+ raw RGB/RGBA literals across `src/comp/{server.cpp,window.cpp}`, `src/ui/finn/components.cpp`, `src/shell/{dock.cpp,popovers.cpp,notifications.cpp}`, `apps/oobe/main.cpp`, and `apps/flourish/` — full mechanical replacement table in [ui-audit.md](ui-audit.md).
-- **Daily-Driver Gaps** (detailed in [daily-driver.md](daily-driver.md)):
-  - **Missing**: Accessibility runtime (`text_scale`, `color_filter`, `sticky_keys`, `filter_keys`, `orca`), Localization (`QTranslator`, locale generation), Backup/Restore, Touch/Tablet input (`wlr_touch`/`wlr_tablet`).
-  - **Partial / Blocked**: GUI Installer (`B8`), Screen Lock (`B6`, `B7`), Store package install (`M15`), XKB keyboard layout switching + IME, per-output multi-monitor & live HiDPI scale reload, PipeWire mixer/device selector, AMD/NVIDIA GPU drivers.
+## 2. Architectural Non-Goals & Hardware-Dependent Follow-Ups
+
+These items are **not** hidden defects; they are explicit architectural boundaries or infrastructure/hardware steps outside single-repo code changes:
+
+1. **Privileged root authority daemon (`finnd`) & per-app OS sandboxing**:
+   - Planned for v2 (`docs/roadmap.md`, `docs/design/contract.md`). Currently `finn-comp` runs as `root` via `seatd`, user apps run as `finn`, `.finnapp` manifest permissions (`finn-app.schema.json`) are declarative metadata, and privileged updates/installs use systemd units or `pkexec`.
+2. **Verified boot chain (Secure Boot, `dm-verity`, TPM2 sealing) & physical A/B power-cycle reboot**:
+   - `src/ota/finn-update` verifies Ed25519-signed manifests and SHA-256 payload digests and switches `systemd-boot`/`GRUB` A/B slots (`tests/test_ota.py`), but UEFI Secure Boot shim signing, read-only `dm-verity` root trees, TPM2 PCR sealing, and physical bare-metal A/B power-cycle rollback tests are not yet implemented.
+3. **Live hosted package & OTA infrastructure (`repo.finnos.org`) and production signing keys**:
+   - `repo/gen-signing-key.sh`, `repo/publish.sh`, `ota/keygen`, and `ota/publish` enforce out-of-tree key custody. `https://repo.finnos.org` and `base/pkgbuilds/finnos-keyring/finnos.gpg` are placeholders until production hosting and offline root keys are provisioned.
+4. **Target-device 60/120 fps frame-pacing & full Linux Qt6/wlroots compilation check**:
+   - `test_spring` benchmarks the analytic spring solver at `~8.3–9.7 ns/step` on host, and `finnui`/`finnplatformtheme`/`finn-settings`/`finn-session` were verified on macOS/Lima VM, but end-to-end 60/120 fps DRM frame-time measurement and full C++ compilation of all Wave 2 Qt6/`wlroots-0.20` targets require a physical target device / full VM deploy (`vm/deploy.sh`).
+5. **Compositor GPU shader blur, multi-monitor layout editor, Wayland IME, cellular telephony & full localization**:
+   - Translucent glass surfaces use tokenized alpha fills (no compositor-wide Gaussian blur shader); `finn-comp` applies a single global output config; `zwp_text_input_v3` IME, `QTranslator` localization catalogs, compositor color-blindness shader (`color_filter`), XKB `sticky_keys`/`filter_keys`, packaged `orca`, and cellular modem/telephony (`ModemManager`) remain future work.

@@ -4,7 +4,16 @@
 
 ## Summary
 
-- **Design system source of truth**: `ui/_tokens.fui` generates `src/ui/generated_tokens.hpp` (`finn::ui::colors::*`, radii `r_bubble/r_panel/r_note/r_card = 10.4`, `r_tile = 5.37`, `r_app = 7.67`, `r_hero = 39.0`, `r_pill = 999`, and light/dark palette pairs).
+> **Wave 2 Remediation Status**: All token bypasses, missing accessibility labels (`M18`), missing focus rings, `FinnProgressRing` reduced-motion spin (`m8`), and dark-mode token bypasses (`m11`) identified below were resolved across:
+> - `f669ae2` (`ui/_tokens.fui`, `tools/tokens.py`, `src/ui/generated_tokens.hpp`, `docs/design-language.md`, `docs/figma-audit.md`, `docs/figma-inventory.md` — `M8, m3, B2`)
+> - `b78fc05` (`src/ui/finn/components.{hpp,cpp}`, `src/ui/finn/window.{hpp,cpp}` — `B2, B10, M8, M18, m8`)
+> - `0eab9fa` (`src/shell/*` — `B1, B2, B6, B7, M3, M8, M13, M18, m6, m9, m11`)
+> - `ccfc896` (`apps/settings/main.cpp`, `src/ui/finn/{tokens.hpp,theme.cpp}`, `src/qtplugin/finn_platform_theme.cpp` — `B1, B10, M13, M16, M17, M19, m5, m7, m11`)
+> - `04e9e84` (`apps/oobe/main.cpp`, `apps/store/main.cpp` — `B9, B10, M13, M15, M18, M19, m10`)
+> - `f0d1696` (`apps/installer/main.cpp` — `B1, B8, B12, m11`)
+> - `83f0e8a` (`apps/{notes,files,terminal,monitor,viewer,wallpaper}/main.cpp`, `apps/flourish/*` — `B11, M12, M14, M17, M18, M19, m9, m11`)
+
+- **Design system source of truth**: `ui/_tokens.fui` generates `src/ui/generated_tokens.hpp` (`finn::ui::colors::*`, `spacing::*`, `radii::*`, `blur::*`, `elevation::*`, `breakpoints::*`).
 - **Accessibility compliance**: **0** `setAccessibleName` / `setAccessibleDescription` / `QAccessible` occurrences across all of `src/` and `apps/`. Screen-reader navigation via AT-SPI is effectively unlabelled across the entire desktop.
 - **Keyboard focus & navigation**: Only **1** widget sets an explicit focus policy (`apps/terminal/main.cpp:99`); **0** `focusInEvent` / `hasFocus()` focus-ring draws exist in `libfinnui`, `finn-shell`, `finn-oobe`, `finn-files`, or `apps/flourish`.
 - **Token bypasses**: `src/ui/finn/tokens.hpp` defines extra semantic colors (`surface_canvas`, `surface_input`, `surface_hover`, `surface_pressed`, `danger`, `danger_hover`, `success`, `warning`) and legacy integer radii (`kRadiusSm=4, kRadiusMd=6, kRadiusLg=8, kRadiusXl=12`) independently of `ui/_tokens.fui`. Worse, `src/shell/{dock.cpp,popovers.cpp,notifications.cpp}`, `src/comp/{server.cpp,window.cpp}`, `src/ui/finn/components.cpp`, `apps/oobe/`, and `apps/flourish/` bypass `FinnTokens` with raw RGB/RGBA literals and hardcoded `#007BFF` accents.

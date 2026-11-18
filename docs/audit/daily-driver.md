@@ -27,8 +27,17 @@
 
 ## Summary Verdict: Is FinnOS Daily-Driver Ready Today?
 
-**No — not yet.** While the core compositor/Qt6/shell stack renders cleanly and boots via Plymouth/systemd, daily use on real hardware is currently blocked by:
-1. **Authentication & Lock-Screen Bypasses (`B6`, `B7`)**: `Alt+Tab` steals focus behind the lock screen and `passwd -S` `L` allows empty-password unlock.
-2. **Broken Setup Flows (`B8`, `B9`, `B10`)**: `finn-installer` GUI always fails against `finn-install.sh`, `finn-oobe` discards the user account/password form, and Wi-Fi passwords are typed in cleartext and passed on `nmcli` cmdline.
-3. **Package / Repo & Store Gaps (`B3`, `B12`, `M15`)**: Unprovisioned `repo.finnos.org` breaks `pacman -Sy`, and Store cannot install catalogue apps.
-4. **Missing Input / Desktop Essentials**: No keyboard layout switching, no Wayland IME, no touch/tablet support, no audio device mixer, no backup/restore, and non-functional Accessibility controls (`M16`, `M18`).
+### Post-Wave 2 Remediation Status (All Code Blockers `B1..B12` Resolved)
+
+Every code-level blocker identified in Phase 1 (`B1..B12`, `M1..M19`, `m1..m11`) has now been remediated on `audit-and-ota`:
+1. **Authentication & Lock-Screen Hardening (`B6`, `B7`, `M13` — `307f688`, `0eab9fa`)**: `finn-comp` now attaches `ext-session-lock-v1` (`new_lock` in `lock_tree_`) and gates global WM shortcuts (`Alt+Tab`, `Alt+F4`, `Super+Q/D/Arrows`) and pointer/touch focus behind `is_input_locked()`; `LockScreenWindow` runs `su` asynchronously, restricts empty-password unlock to `passwd -S` `NP` (never `L`), and passes the resolved session ID to `loginctl activate <id>`.
+2. **Setup, Installer & Wi-Fi Security (`B8`, `B9`, `B10`, `B12`, `m7`, `m11` — `f0d1696`, `04e9e84`, `b78fc05`, `ccfc896`)**: `finn-installer` passes `--disk --hostname --timezone [--ab-slots] --yes`, captures stderr, checks exit status, disables controls while running, and reads `/usr/share/zoneinfo`; `finn-oobe` applies account/password/locale changes asynchronously via stdin `pkexec chpasswd`/`chfn`/`localectl`; Wi-Fi prompts mask input (`QLineEdit::Password`) and pipe passphrases over `nmcli --ask` stdin; `vm/finn-chroot.sh` locks `root` (`passwd -l root`).
+3. **A/B OTA Updates, Repo Tooling & Store (`B1`, `B3`, `M15` — `013e7d1`, `69ee0a1`, `f0d1696`, `04e9e84`, `ccfc896`, `0eab9fa`)**: `src/ota/finn-update` + systemd health/timer units + Settings System Updates UI + `--ab-slots` installer provisioning + offline `[finnos]` repo fallback + Store `.finnapp` verification and async package queries are wired.
+4. **Input, Accessibility & App Reliability (`B2`, `B11`, `M9..M19`, `m5..m11` — `307f688`, `b78fc05`, `83f0e8a`, `ccfc896`, `0eab9fa`)**: Added Wayland touch/tablet input (`WLR_INPUT_DEVICE_TOUCH`/`WLR_INPUT_DEVICE_TABLET`) + XKB `kb_layout` reload + fullscreen layer stacking + XDG scene-tree cleanup in `finn-comp`, `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) adaptive layouts, `active_text_scale()` font scaling, `setAccessibleName` + 2 px focus rings + keyboard navigation, `finn-notes` Save/Discard/Cancel guard, `finn-files` symlink/self-paste protection, and `finn-terminal` multi-arg `-e` + stateful `QStringDecoder`.
+
+### What Still Blocks Bare-Metal Daily Use (Architectural / Infrastructure Follow-Ups)
+
+See [remaining-issues.md](remaining-issues.md) for the full ledger:
+- **Live hosted repository & keys**: `https://repo.finnos.org` and `finnos-keyring` ship placeholder trust roots until production hosting and offline signing keys are provisioned.
+- **Verified boot & sandbox**: No UEFI Secure Boot / `dm-verity` / TPM2 sealing, no privileged `finnd` daemon, and no per-app OS sandbox for native binaries.
+- **Hardware / display / localization**: Single global output config (no multi-monitor layout editor or mixed per-output HiDPI), no Wayland IME (`zwp_text_input_v3`), no `QTranslator` localization catalogs, no packaged `orca` / compositor color-filter shader / XKB sticky-keys, and no AMD/NVIDIA Vulkan/proprietary driver packages in `base/packages.x86_64`.

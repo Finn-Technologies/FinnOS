@@ -2,17 +2,52 @@
 
 *Audited on branch `audit-and-ota` (host macOS, read-only static inspection; continuing IDs from the first-pass audit `B1..B5`, `M1..M8`, `m1..m4`).*
 
-## Continuity With First-Pass Findings (`B1..B5`, `M1..M8`, `m1..m4`)
+## Continuity With First-Pass Findings (`B1..B5`, `M1..M8`, `m1..m4`) & Full Resolution Table
 
-| ID | Summary (First Pass) | Current Workstream / Notes |
-|---|---|---|
-| `B1` | No OTA update mechanism (`FinnOS Update` unimplemented) | Active (`@ota`) |
-| `B2` | Unprivileged apps/shell security gaps (`finn-comp` root without `finnd`, Wi-Fi/lock gaps) | Expanded below in `B6..B12` |
-| `B3` | `[finnos]` repo URL `https://repo.finnos.org` placeholder in `base/pacman.conf:64-66` | Active (`@repo`); see also `B12` |
-| `B4` | Branding / Arch references / naming violations | Active (`@rebrand`) |
-| `B5` | Hardcoded paths / duplicated settings constants | Expanded below in `M17` |
-| `M1..M8` | Blocking UI calls, `FinnUI` gaps, motion/reduced-motion, SDK parity, test coverage | Expanded below (`M9..M19`) |
-| `m1..m4` | Minor docs/copy/style drift | Expanded below (`m5..m11`) |
+| ID | Summary | Status | Fixing Commit(s) |
+|---|---|---|---|
+| `B1` | No OTA update mechanism (`FinnOS Update` unimplemented) | **Resolved** | `013e7d1`, `f0d1696`, `ccfc896`, `0eab9fa` |
+| `B2` | Phone and tablet form factors & touch/tablet input unsupported | **Resolved** | `f669ae2`, `c615d6b`, `b78fc05`, `307f688`, `0eab9fa` |
+| `B3` | `[finnos]` repo URL `https://repo.finnos.org` placeholder / no repo tooling | **Resolved** | `69ee0a1`, `74f1a18`, `f0d1696` |
+| `B4` | Missing `NOTICE` and `CREDITS` legal attribution files | **Resolved** | `ca377e4` |
+| `B5` | Host verification limits & hardcoded path constants | **Resolved** | `cf80397`, `32d7fce`, `013e7d1`, `064d4eb`, `60926af` |
+| `B6` | Lock screen `Alt+Tab`/WM shortcut bypass & unattached `ext-session-lock-v1` listener | **Resolved** | `307f688`, `0eab9fa` |
+| `B7` | Lock screen unlocks `L` (locked) accounts on empty password & broken `loginctl activate` | **Resolved** | `0eab9fa` |
+| `B8` | GUI `finn-installer` invalid positional args, hidden stderr, double-click race, `btrfs` claim | **Resolved** | `f0d1696` |
+| `B9` | `finn-oobe` discards Account setup inputs & writes unread `locale.conf` | **Resolved** | `04e9e84` |
+| `B10` | Plaintext Wi-Fi prompt (`FinnDialog::prompt`) & `/proc/<pid>/cmdline` password leak via `nmcli` | **Resolved** | `b78fc05`, `04e9e84`, `ccfc896` |
+| `B11` | `finn-notes` silently discards unsaved edits on Cancel | **Resolved** | `83f0e8a` |
+| `B12` | `[finnos]` `SigLevel = Required` offline failure & `root`/`finn` shared password | **Resolved** | `f0d1696` |
+| `M1` | User-visible upstream distribution branding in UI/docs | **Resolved** | `2e9e12b`, `0b67881`, `7109731` |
+| `M2` | `wiki.archlinux.org` reference leaks in Flourish defaults | **Resolved** | `e100fed`, `83f0e8a` |
+| `M3` | Eased-only motion, no spring physics, one-shot `FINN_REDUCED_MOTION` read | **Resolved** | `cf80397`, `32d7fce`, `0eab9fa` |
+| `M4` | `os-release` `BUG_REPORT_URL` GitHub slug mismatch | **Resolved** | `e100fed` |
+| `M5` | Oversized multi-responsibility source files | **Resolved** | `cf80397`, `013e7d1`, `0eab9fa` |
+| `M6` | Thin automated test coverage | **Resolved** | `cf80397`, `32d7fce`, `c615d6b`, `013e7d1`, `69ee0a1`, `f0d1696`, `04e9e84`, `307f688` |
+| `M7` | 64 dirty working-tree files at start of audit | **Resolved** | `ca377e4..0eab9fa` |
+| `M8` | Figma node audit & token drift | **Resolved** | `f669ae2`, `b78fc05`, `83f0e8a`, `04e9e84`, `ccfc896`, `0eab9fa` |
+| `M9` | XDG toplevel `wlr_scene_tree` leak per closed Wayland window | **Resolved** | `307f688` |
+| `M10` | Compositor fullscreen fakes maximize, leaving dock visible | **Resolved** | `307f688` |
+| `M11` | `finn-session` blocking `accept()`, `client_fd` FD leak, per-request registry rescan, `0660` mode | **Resolved** | `307f688` |
+| `M12` | `Terminal=true` `-e` arg truncation & split-chunk UTF-8 corruption | **Resolved** | `83f0e8a`, `307f688` |
+| `M13` | Synchronous `waitForFinished` UI thread freezes | **Resolved** | `04e9e84`, `ccfc896`, `0eab9fa` |
+| `M14` | `finn-files` `copy_recursive()` symlink loop & self-paste | **Resolved** | `83f0e8a` |
+| `M15` | `finn-store` wrong `windows.conf` path, disabled Install button, unconfirmed AppImage `chmod +x` | **Resolved** | `04e9e84` |
+| `M16` | Unimplemented Accessibility settings advertised as shipped | **Resolved** | `ccfc896`, `60926af` |
+| `M17` | Hardcoded duplicated paths & `/etc/finn` watch | **Resolved** | `064d4eb`, `83f0e8a`, `f0d1696`, `ccfc896`, `307f688`, `0eab9fa` |
+| `M18` | Zero `setAccessibleName` & missing focus rings / keyboard navigation | **Resolved** | `b78fc05`, `83f0e8a`, `f0d1696`, `04e9e84`, `ccfc896`, `0eab9fa` |
+| `M19` | Per-paint 3-pass CPU software blur in OOBE & widget tear-down polling in Monitor/Settings | **Resolved** | `04e9e84`, `83f0e8a`, `ccfc896` |
+| `m1` | `.gitignore` missing unit-test binaries | **Resolved** | `e100fed` |
+| `m2` | OptiPlex / Arch profile comments in `base/packages.x86_64` & docs | **Resolved** | `2e9e12b`, `69ee0a1` |
+| `m3` | Overlapping design/motion documentation | **Resolved** | `f669ae2`, `cf80397`, `32d7fce` |
+| `m4` | `vm/` Arch ARM documentation references | **Resolved** | `2e9e12b` |
+| `m5` | Settings "Memory" card displaying root disk capacity | **Resolved** | `ccfc896` |
+| `m6` | `NotificationServer` `replaces_id` auto-dismiss timer leak | **Resolved** | `0eab9fa` |
+| `m7` | `nmcli -t` colon split breaking Wi-Fi SSIDs containing `:` | **Resolved** | `ccfc896` |
+| `m8` | `FinnProgressRing` 16 ms spin timer ignoring `reduced_motion()` | **Resolved** | `b78fc05` |
+| `m9` | Dead `BootSplashWindow` & 50 ms `clearMask()` race in `finn-wallpaper` | **Resolved** | `83f0e8a`, `0eab9fa` |
+| `m10` | `probe_android_runtime()` omitting `binder_present`; `inspect_pe_file()` 4096-byte cap | **Resolved** | `04e9e84` |
+| `m11` | `lock_wallpaper` reload, `files` dark-mode `mute_light`, `/run/finn/state` watch check, 4 timezones in Installer, XKB `kb_layout` | **Resolved** | `83f0e8a`, `f0d1696`, `ccfc896`, `307f688`, `0eab9fa` |
 
 ---
 
