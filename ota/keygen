@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Generate an Ed25519 OTA signing keypair outside the source repository."""
+
+import argparse
+import os
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+_SRC_OTA = os.path.join(_ROOT, "src", "ota")
+if _SRC_OTA not in sys.path:
+    sys.path.insert(0, _SRC_OTA)
+
+from finn_ota import ed25519  # noqa: E402
+
+
+def _inside_git_tree(path: str) -> bool:
+    cur = os.path.dirname(os.path.realpath(path))
+    while cur and cur != os.path.dirname(cur):
+        if os.path.exists(os.path.join(cur, ".git")):
+            return True
+        cur = os.path.dirname(cur)
+    return False
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Generate FinnOS OTA Ed25519 keypair")
+    p.add_argument("--out-dir", required=True, help="directory outside git repo for key files")
+    p.add_argument("--name", default="finnos-ota", help="key basename (default: finnos-ota)")
+    p.add_argument("--force", action="store_true", help="overwrite existing key files")
+    args = p.parse_args()
+
+    out_dir = os.path.realpath(args.out_dir)
+    priv_path = os.path.join(out_dir, f"{args.name}-private.pem")
+    pub_path = os.path.join(out_dir, f"{args.name}-public.pem")
+
+    if _inside_git_tree(priv_path):
+        print(
+            f"error: refusing to write private signing key inside a git repository: {priv_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not args.force and (os.path.exists(priv_path) or os.path.exists(pub_path)):
+        print("error: key file already exists (pass --force to overwrite)", file=sys.stderr)
+        return 1
+
+    os.makedirs(out_dir, exist_ok=True)
+    seed, pub = ed25519.generate_keypair()
+    kid = ed25519.key_id(pub)
+
+    fd = os.open(priv_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(ed25519.encode_private_pem(seed))
+    with open(pub_path, "w", encoding="utf-8") as f:
+        f.write(ed25519.encode_public_pem(pub))
+
+    print(f"key_id:      {kid}")
+    print(f"private_key: {priv_path} (mode 0600 — keep offline, NEVER commit)")
+    print(f"public_key:  {pub_path} (install to /etc/finn/ota/pubkey.pem)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

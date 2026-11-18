@@ -1,0 +1,18 @@
+[Unit]
+Description=FinnOS OTA Update Check (finn-update)
+Documentation=man:finn-update(1)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/finn-update
+ConditionPathExists=/etc/finn/ota/pubkey.pem
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/finn-update check --quiet --json
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/finn/ota
