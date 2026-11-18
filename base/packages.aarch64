@@ -19,6 +19,11 @@ sudo
 util-linux
 kbd
 
+# Plymouth draws the Finn boot mark from inside the initramfs. With quiet and
+# splash on the kernel command line it replaces the text console entirely, so
+# the boot shows the mark instead of a blinking underscore.
+plymouth
+
 # The kernel, its firmware and the DRM/KMS stack the compositor drives.
 linux-aarch64
 linux-firmware
@@ -45,6 +50,7 @@ qt6-svg
 qt6-imageformats
 qt6-tools
 qt6-declarative
+qt6-webengine
 layer-shell-qt
 xorg-xwayland
 xdg-desktop-portal

@@ -8,3 +8,8 @@ add_subdirectory(viewer)
 add_subdirectory(monitor)
 add_subdirectory(installer)
 add_subdirectory(oobe)
+
+find_package(Qt6 COMPONENTS WebEngineWidgets QUIET)
+if(Qt6WebEngineWidgets_FOUND)
+    add_subdirectory(flourish)
+endif()

@@ -46,16 +46,19 @@ bool test_settings_roundtrip() {
     const std::string raw =
         "dark=1\n"
         "accent=#4F46E5\n"
+        "avatar_color=mint\n"
         "dock_pins=settings,files,terminal\n"
         "reduced_motion=1\n"
         "scale=1.25\n";
     const auto s = finn::sys::parse_settings(raw);
     CHECK(s.dark);
     CHECK(s.accent == "#4F46E5");
+    CHECK(s.avatar_color == "mint");
     CHECK(s.reduced_motion);
     CHECK(s.dock_pins.size() == 3);
     const auto s2 = finn::sys::parse_settings(finn::sys::serialize_settings(s));
     CHECK(s2.dark);
+    CHECK(s2.avatar_color == "mint");
     CHECK(s2.reduced_motion);
     return true;
 }

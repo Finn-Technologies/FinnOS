@@ -6,6 +6,10 @@
 # The ordering is the part archiso's releng profile does not need: nothing
 # there starts by itself. Here the autologin shell would race pacman-init,
 # and the installer would report a broken keyring on a perfectly good disc.
+#
+# The unit named in Before= below is a package's own unit name, not text a
+# person reads: quiet + splash keep boot status off the console. It has to be
+# named exactly so the keyring exists before that unit syncs keys.
 [Unit]
 Description=Initializes Pacman keyring
 Requires=etc-pacman.d-gnupg.mount

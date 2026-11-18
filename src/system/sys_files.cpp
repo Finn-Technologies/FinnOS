@@ -212,7 +212,9 @@ SettingsData parse_settings(std::string_view text) {
             if (parse_int(val, &alm) && alm >= 0 && alm <= 120) d.auto_lock_minutes = alm;
         } else if (key == "lock_on_sleep") d.lock_on_sleep = parse_bool(val);
         else if (key == "accent" && !val.empty()) d.accent = val;
+        else if (key == "avatar_color" && !val.empty()) d.avatar_color = val;
         else if (key == "wallpaper") d.wallpaper = val;
+        else if (key == "lock_wallpaper") d.lock_wallpaper = val;
         else if (key == "scale" && !val.empty()) {
             const double parsed = std::strtod(val.c_str(), nullptr);
             if (parsed >= 0.5 && parsed <= 4.0) d.scale = parsed;
@@ -246,7 +248,9 @@ std::string serialize_settings(const SettingsData& data) {
     out << "auto_lock_minutes=" << data.auto_lock_minutes << '\n';
     out << "lock_on_sleep=" << (data.lock_on_sleep ? "1" : "0") << '\n';
     out << "accent=" << (data.accent.empty() ? "#007BFF" : data.accent) << '\n';
+    out << "avatar_color=" << (data.avatar_color.empty() ? "blue" : data.avatar_color) << '\n';
     if (!data.wallpaper.empty()) out << "wallpaper=" << data.wallpaper << '\n';
+    if (!data.lock_wallpaper.empty()) out << "lock_wallpaper=" << data.lock_wallpaper << '\n';
     out << "scale=" << data.scale << '\n';
     out << "dock_pins=";
     for (std::size_t i = 0; i < data.dock_pins.size(); ++i) {

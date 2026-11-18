@@ -20,7 +20,7 @@ Environment=XCURSOR_SIZE=24
 ExecStart=/usr/local/bin/finn-shell
 Restart=on-failure
 RestartSec=2
-NoNewPrivileges=yes
+# NoNewPrivileges is omitted so su/unix_chkpwd can verify passwords on lock.
 
 [Install]
 WantedBy=graphical.target

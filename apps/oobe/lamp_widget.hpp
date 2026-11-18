@@ -758,10 +758,16 @@ protected:
         const qreal btx = (beam_clip.x() * beam_inv_w * 0.5 + 0.75) * W;
         const qreal bty = (0.5 - beam_clip.y() * beam_inv_w * 0.5) * H;
         const qreal dir_dx = btx - bx;
-        const qreal dir_dy = std::max<qreal>(12.0, bty - by);
-        const qreal beam_angle_deg = std::atan2(dir_dy, dir_dx) * (180.0 / 3.14159265358979323846) - 90.0;
+        const qreal raw_dy = bty - by;
+        const qreal beam_angle_deg =
+            (std::hypot(dir_dx, raw_dy) > 1e-4)
+                ? (std::atan2(raw_dy, dir_dx) * (180.0 / 3.14159265358979323846) - 90.0)
+                : 0.0;
         const qreal floor_y = H * 0.975;
-        const qreal floor_bx = bx + (dir_dx / dir_dy) * (floor_y - by);
+        const qreal floor_dy = std::max<qreal>(45.0, raw_dy);
+        const qreal floor_bx = std::clamp(bx + (dir_dx / floor_dy) * (floor_y - by),
+                                          -W * 0.5, W * 1.5);
+        const float floor_vis = static_cast<float>(std::clamp((raw_dy - 12.0) / 55.0, 0.0, 1.0));
 
         // Subtle back-wall depth & blurred ground plane gradient (active in Light Mode; clean AMOLED in Dark Mode)
         const float lit_backdrop = std::clamp(t_lit, 0.0f, 1.0f);
@@ -791,17 +797,19 @@ protected:
             p.drawEllipse(QPointF(0.0, 0.0), 360.0, 360.0);
             p.restore();
 
-            p.save();
-            p.translate(floor_bx, floor_y);
-            p.scale(2.05, 0.26);
-            QRadialGradient moon_floor(QPointF(0.0, 0.0), 170.0);
-            moon_floor.setColorAt(0.0, QColor(38, 48, 72, qRound(38.0 * dark_amt)));
-            moon_floor.setColorAt(0.60, QColor(22, 28, 44, qRound(14.0 * dark_amt)));
-            moon_floor.setColorAt(1.0, QColor(0, 0, 0, 0));
-            p.setPen(Qt::NoPen);
-            p.setBrush(moon_floor);
-            p.drawEllipse(QPointF(0.0, 0.0), 170.0, 170.0);
-            p.restore();
+            if (floor_vis > 0.01f) {
+                p.save();
+                p.translate(floor_bx, floor_y);
+                p.scale(2.05, 0.26);
+                QRadialGradient moon_floor(QPointF(0.0, 0.0), 170.0);
+                moon_floor.setColorAt(0.0, QColor(38, 48, 72, qRound(38.0 * dark_amt * floor_vis)));
+                moon_floor.setColorAt(0.60, QColor(22, 28, 44, qRound(14.0 * dark_amt * floor_vis)));
+                moon_floor.setColorAt(1.0, QColor(0, 0, 0, 0));
+                p.setPen(Qt::NoPen);
+                p.setBrush(moon_floor);
+                p.drawEllipse(QPointF(0.0, 0.0), 170.0, 170.0);
+                p.restore();
+            }
         }
 
         // Warm plaster wall wash (ambient wall bounce behind the shade + directional downward cone)
@@ -943,12 +951,25 @@ protected:
         p.drawImage(rect(), frame_img_);
     }
 
+    float cursorSwingAngle(const QPointF& pos) const {
+        const float W = static_cast<float>(std::max(1, width()));
+        const float H = static_cast<float>(std::max(1, height()));
+        const float aspect = W / H;
+        const float half_h = 7.60f * std::tan(19.0f * 3.14159265f / 180.0f);
+        const float half_w = half_h * aspect;
+        const float wx = (static_cast<float>(pos.x()) / W - 0.75f) * 2.0f * half_w;
+        const float wy = 3.825f + (0.5f - static_cast<float>(pos.y()) / H) * 2.0f * half_h;
+        const float dy = std::max(0.35f, 6.60f - wy);
+        return std::atan2(wx, dy);
+    }
+
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton && event->pos().x() >= width() * 0.40) {
             dragging_ = true;
             toggled_on_drag_ = false;
             press_pos_ = event->pos();
             last_pos_ = event->pos();
+            drag_angle_offset_ = angle_z_ - cursorSwingAngle(event->position());
             setCursor(Qt::ClosedHandCursor);
             ensureAnimating();
         }
@@ -963,10 +984,13 @@ protected:
         pull_y_ = std::clamp(dy / 220.0f, 0.0f, 0.60f);
         pull_vel_y_ = 0.0f;
 
-        vel_z_ += static_cast<float>(delta.x()) * 0.014f;
-        wire_bow_vel_z_ -= static_cast<float>(delta.x()) * 0.025f;
-        wire_bow_z_ = std::clamp(wire_bow_z_ - static_cast<float>(delta.x()) * 0.0025f, -0.55f, 0.55f);
-        angle_z_ = std::clamp(angle_z_ + static_cast<float>(delta.x()) * 0.0024f, -0.34f, 0.34f);
+        const float prev_angle = angle_z_;
+        angle_z_ = std::clamp(cursorSwingAngle(event->position()) + drag_angle_offset_,
+                              -1.42f, 1.42f);
+        const float d_ang = angle_z_ - prev_angle;
+        vel_z_ = std::clamp(vel_z_ * 0.4f + d_ang * 26.0f, -3.5f, 3.5f);
+        wire_bow_vel_z_ = std::clamp(wire_bow_vel_z_ - static_cast<float>(delta.x()) * 0.015f, -2.5f, 2.5f);
+        wire_bow_z_ = std::clamp(wire_bow_z_ - static_cast<float>(delta.x()) * 0.0016f, -0.45f, 0.45f);
 
         if (!toggled_on_drag_ && pull_y_ >= 0.24f) {
             toggled_on_drag_ = true;
@@ -1014,18 +1038,33 @@ private:
         constexpr float dt = 0.016f;
         constexpr float kGravityOverLen = 14.0f;
         constexpr float kPendulumDamp = 2.2f;
-        const float acc_z = -kGravityOverLen * std::sin(angle_z_) - kPendulumDamp * vel_z_;
-        const float acc_x = -kGravityOverLen * std::sin(angle_x_) - kPendulumDamp * vel_x_;
-        vel_z_ += acc_z * dt;
-        vel_x_ += acc_x * dt;
-        angle_z_ += vel_z_ * dt;
-        angle_x_ += vel_x_ * dt;
+        float acc_z = 0.0f;
+        float acc_x = 0.0f;
+        if (!dragging_) {
+            acc_z = -kGravityOverLen * std::sin(angle_z_) - kPendulumDamp * vel_z_;
+            acc_x = -kGravityOverLen * std::sin(angle_x_) - kPendulumDamp * vel_x_;
+            vel_z_ = std::clamp(vel_z_ + acc_z * dt, -5.5f, 5.5f);
+            vel_x_ = std::clamp(vel_x_ + acc_x * dt, -5.5f, 5.5f);
+            angle_z_ += vel_z_ * dt;
+            angle_x_ += vel_x_ * dt;
+            if (angle_z_ > 1.45f || angle_z_ < -1.45f) {
+                angle_z_ = std::clamp(angle_z_, -1.45f, 1.45f);
+                vel_z_ *= -0.25f;
+            }
+            if (angle_x_ > 1.45f || angle_x_ < -1.45f) {
+                angle_x_ = std::clamp(angle_x_, -1.45f, 1.45f);
+                vel_x_ *= -0.25f;
+            }
+        } else {
+            vel_z_ *= 0.85f;
+            vel_x_ *= 0.85f;
+        }
 
         // Subtle cord flex wave coupled to pendulum acceleration
         constexpr float kWireStiff = 28.0f;
         constexpr float kWireDamp = 3.2f;
         const float bow_acc_z = -kWireStiff * wire_bow_z_ - kWireDamp * wire_bow_vel_z_ - 0.18f * acc_z;
-        wire_bow_vel_z_ += bow_acc_z * dt;
+        wire_bow_vel_z_ = std::clamp(wire_bow_vel_z_ + bow_acc_z * dt, -3.0f, 3.0f);
         wire_bow_z_ = std::clamp(wire_bow_z_ + wire_bow_vel_z_ * dt, -0.55f, 0.55f);
 
         // Subtle shade swivel lag at the lamp neck
@@ -1033,8 +1072,8 @@ private:
         constexpr float kHeadDamp = 4.6f;
         const float head_acc_z = -kHeadStiff * head_angle_z_ - kHeadDamp * head_vel_z_ - 0.22f * acc_z;
         const float head_acc_x = -kHeadStiff * head_angle_x_ - kHeadDamp * head_vel_x_ - 0.22f * acc_x;
-        head_vel_z_ += head_acc_z * dt;
-        head_vel_x_ += head_acc_x * dt;
+        head_vel_z_ = std::clamp(head_vel_z_ + head_acc_z * dt, -2.0f, 2.0f);
+        head_vel_x_ = std::clamp(head_vel_x_ + head_acc_x * dt, -2.0f, 2.0f);
         head_angle_z_ = std::clamp(head_angle_z_ + head_vel_z_ * dt, -0.10f, 0.10f);
         head_angle_x_ = std::clamp(head_angle_x_ + head_vel_x_ * dt, -0.10f, 0.10f);
 
@@ -1088,6 +1127,7 @@ private:
     bool toggled_on_drag_ = false;
     QPoint press_pos_;
     QPoint last_pos_;
+    float drag_angle_offset_ = 0.0f;
 
     float angle_z_ = 0.0f;
     float vel_z_ = 0.0f;

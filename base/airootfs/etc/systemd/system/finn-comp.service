@@ -4,7 +4,7 @@ Documentation=man:finn-comp(1)
 # The compositor is the display: it must come up before getty and the shell.
 # It opens DRM and evdev through seatd, so the seat daemon has to be there.
 Wants=seatd.service
-After=systemd-user-sessions.service seatd.service
+After=systemd-user-sessions.service seatd.service plymouth-quit.service
 Before=getty@tty1.service display-manager.service
 Conflicts=getty@tty1.service
 OnFailure=finn-failure.service

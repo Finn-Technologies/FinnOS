@@ -24,7 +24,9 @@ struct SettingsData {
     int auto_lock_minutes = 5;           // 0 = never
     bool lock_on_sleep = true;
     std::string accent = "#007BFF";
+    std::string avatar_color = "blue";   // blue, indigo, mint, amber, coral, pink, teal, slate
     std::string wallpaper;               // Empty means default wallpaper
+    std::string lock_wallpaper;          // Empty means use the desktop wallpaper
     double scale = 1.0;
     std::vector<std::string> dock_pins;  // Ordered app ids pinned to the dock
 };

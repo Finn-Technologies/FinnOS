@@ -314,5 +314,139 @@ class BaseImageTest(unittest.TestCase):
         )
 
 
+class BootChainTest(unittest.TestCase):
+    """The boot shows the Finn mark, and nothing names another distribution."""
+
+    def read(self, *parts):
+        with open(os.path.join(ROOT, *parts), "r", encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_every_boot_menu_is_a_silent_finn_boot(self):
+        menus = [
+            ("base", "boot", "grub", "grub.cfg"),
+            ("base", "boot", "syslinux", "syslinux.cfg"),
+            ("base", "boot", "loader", "entries", "01-finnos-install.conf"),
+            ("base", "boot", "loader", "entries", "02-finnos-live.conf"),
+        ]
+        for menu in menus:
+            with self.subTest(menu=menu[-1]):
+                text = self.read(*menu)
+                self.assertIn("quiet", text)
+                self.assertIn("splash", text)
+                self.assertIn("vt.global_cursor_default=0", text)
+                self.assertIn("plymouth.ignore-serial-consoles", text)
+                self.assertNotIn("Arch Linux", text)
+
+    def test_bootloader_waits_are_short(self):
+        syslinux = self.read("base", "boot", "syslinux", "syslinux.cfg")
+        self.assertIn("TIMEOUT 30", syslinux)
+        loader = self.read("base", "boot", "loader", "loader.conf")
+        self.assertIn("timeout 3", loader)
+        grub = self.read("base", "boot", "grub", "grub.cfg")
+        self.assertIn("set timeout=3", grub)
+        # The install entry used to hold the console for ten seconds before
+        # finn-install; that wait was most of the perceived boot time.
+        self.assertNotIn("sleep 10", self.read("base", "airootfs", "root", ".bash_profile"))
+        self.assertNotIn("sleep 10", self.read("base", "airootfs", "root", ".zprofile"))
+
+    def test_plymouth_theme_is_in_both_initramfs_images(self):
+        theme = ("base", "airootfs", "usr", "share", "plymouth", "themes", "finnos")
+        for name in ("finnos.plymouth", "finnos.script", "mark.png",
+                     "bar-track.png", "bar-fill.png", "bar-cap-l.png",
+                     "bar-cap-r.png"):
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, *theme, name)), name)
+        descriptor = self.read(*theme, "finnos.plymouth")
+        self.assertIn("ModuleName=script", descriptor)
+        script = self.read(*theme, "finnos.script")
+        self.assertIn("Window.SetBackgroundTopColor", script)
+        self.assertIn("Image(\"mark.png\")", script)
+        # A normal boot is the mark plus a macOS-style bar. The bar moves only
+        # on real Plymouth progress reports; the sweep is not a fake percentage.
+        self.assertIn("bar-track.png", script)
+        self.assertIn("bar-fill.png", script)
+        self.assertIn("Plymouth.SetBootProgressFunction", script)
+        self.assertIn("global.has_progress == 0", script)
+
+        config = self.read("base", "airootfs", "etc", "plymouth", "plymouthd.conf")
+        self.assertIn("Theme=finnos", config)
+        self.assertIn("ShowDelay=0", config)
+
+        for which in ("airootfs", "installed"):
+            initrd = self.read("base", which, "etc", "mkinitcpio.conf")
+            with self.subTest(initrd=which):
+                self.assertIn("plymouth", initrd)
+                self.assertIn("/etc/plymouth/plymouthd.conf", initrd)
+                self.assertIn("/usr/share/plymouth/themes/finnos/mark.png", initrd)
+
+    def test_both_manifests_carry_plymouth(self):
+        for architecture in ("x86_64", "aarch64"):
+            manifest = self.read("base", "packages." + architecture)
+            self.assertIn("\nplymouth\n", manifest)
+
+    def test_installed_bootloader_is_a_silent_finn_boot(self):
+        chroot = self.read("vm", "finn-chroot.sh")
+        self.assertIn('GRUB_DISTRIBUTOR="FinnOS"', chroot)
+        self.assertIn("quiet splash vt.global_cursor_default=0", chroot)
+        self.assertIn("base/installed/etc/mkinitcpio.conf", chroot)
+        self.assertIn("base/airootfs/usr/share/plymouth/themes/finnos", chroot)
+        setup = self.read("base", "setup.sh")
+        self.assertIn("$HERE/airootfs/usr/share/plymouth/themes/finnos", setup)
+        self.assertIn("$HERE/installed/etc/mkinitcpio.conf", setup)
+
+    def test_lock_screen_has_real_triggers(self):
+        paths = self.read("src", "common", "paths.hpp")
+        self.assertIn("kLockRequestPath", paths)
+        comp = self.read("src", "comp", "server.cpp")
+        self.assertIn("XKB_KEY_l", comp)
+        self.assertIn("request_lock()", comp)
+        self.assertIn("read_auto_lock_minutes", comp)
+        shell = self.read("src", "shell", "main.cpp")
+        self.assertIn("kLockRequestPath", shell)
+        self.assertIn("PrepareForSuspend", shell)
+        tmpfiles = self.read("base", "finn-tmpfiles.conf")
+        self.assertIn("d /run/finn/state 0775 root finn -", tmpfiles)
+
+    def test_lock_screen_has_its_own_settings_backed_wallpaper(self):
+        settings = self.read("apps", "settings", "main.cpp")
+        self.assertIn("Lock Screen Wallpaper", settings)
+        self.assertIn("setLockWallpaper", settings)
+        theme = self.read("src", "ui", "finn", "theme.hpp")
+        self.assertIn("setLockWallpaper", theme)
+        self.assertIn("lockWallpaperPath", theme)
+        data = self.read("src", "system", "sys_files.hpp")
+        self.assertIn("lock_wallpaper", data)
+        persisted = self.read("src", "system", "sys_files.cpp")
+        self.assertIn("lock_wallpaper=", persisted)
+        screen = self.read("src", "shell", "popovers.cpp")
+        self.assertIn("lock_wallpaper_.load", screen)
+        self.assertIn("p.drawPixmap(target, lock_wallpaper_, src)", screen)
+
+    def test_ribbon_animation_is_first_setup_only(self):
+        # The ribbon "hi." animation plays in finn-oobe's first step. The
+        # shell must not draw it over a completed desktop on a normal boot;
+        # that boot is the Plymouth mark and its progress bar.
+        shell = self.read("src", "shell", "main.cpp")
+        self.assertNotIn("BootSplashWindow", shell)
+        self.assertNotIn("startBootAnimation", shell)
+        self.assertNotIn("FINN_BOOT_SPLASH", shell)
+
+    def test_no_distribution_name_in_visible_boot_or_app_copy(self):
+        surfaces = [
+            ("base", "airootfs", "etc", "os-release"),
+            ("base", "airootfs", "etc", "plymouth", "plymouthd.conf"),
+            ("base", "airootfs", "usr", "share", "plymouth", "themes",
+             "finnos", "finnos.plymouth"),
+            ("base", "airootfs", "usr", "share", "plymouth", "themes",
+             "finnos", "finnos.script"),
+            ("base", "installed", "etc", "issue"),
+            ("base", "installed", "etc", "motd"),
+            ("apps", "settings", "main.cpp"),
+            ("apps", "store", "main.cpp"),
+        ]
+        for surface in surfaces:
+            with self.subTest(surface=surface[-1]):
+                self.assertNotIn("Arch Linux", self.read(*surface))
+
+
 if __name__ == "__main__":
     unittest.main()
