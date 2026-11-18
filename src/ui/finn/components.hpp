@@ -31,6 +31,11 @@ class QVBoxLayout;
 
 namespace finn::ui {
 
+enum class FinnFormFactor { Desktop, Tablet, Phone };
+
+FinnFormFactor resolve_form_factor(int width_dp = -1);
+int touch_target_height(int desktop_height, FinnFormFactor ff);
+
 /* Lightweight QTimer-backed driver connecting SpringAnimator (and <=100ms
  * ReducedCrossfade fallback) to a QWidget. */
 struct FinnSpringDriver {
@@ -100,6 +105,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     qreal radius_;
@@ -171,6 +177,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     Variant variant_;
@@ -196,7 +203,7 @@ public:
     void setCornerRadius(qreal radius);
     void setCustomHoverColor(const QColor& bg, const QColor& icon_tint);
 
-    QSize sizeHint() const override { return QSize(box_size_, box_size_); }
+    QSize sizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -204,6 +211,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     QString icon_name_;
@@ -228,11 +236,12 @@ class FinnToggle : public QAbstractButton {
 public:
     explicit FinnToggle(bool checked = false, QWidget* parent = nullptr);
 
-    QSize sizeHint() const override { return QSize(38, 22); }
+    QSize sizeHint() const override;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void nextCheckState() override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     qreal progress_ = 0.0;
@@ -262,9 +271,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
-    QSize sizeHint() const override {
-        return pill_ ? QSize(432, 36) : QSize(180, 22);
-    }
+    void keyPressEvent(QKeyEvent* event) override;
+    QSize sizeHint() const override;
 
 private:
     void updateFromX(int x, bool immediate);
@@ -322,6 +330,7 @@ class FinnTextField : public QLineEdit {
 public:
     explicit FinnTextField(const QString& placeholder = {},
                            QWidget* parent = nullptr);
+    void setPasswordMode(bool enabled);
 };
 
 class FinnProgressBar : public QWidget {
@@ -382,6 +391,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     QString icon_name_;
@@ -402,6 +412,7 @@ class FinnSidebar : public QWidget {
 public:
     explicit FinnSidebar(int width_px = 250, QWidget* parent = nullptr);
 
+    void setFormFactor(FinnFormFactor form_factor);
     void setHeaderTitle(const QString& title);
     void setSearchEnabled(bool enabled, const QString& placeholder = QStringLiteral("Search"));
     void addSectionHeader(const QString& title);
@@ -444,6 +455,8 @@ private:
     QVector<QPair<QString, FinnNavItem*>> pinned_items_;
     QVector<QPair<QString, FinnNavItem*>> items_;
     QString current_id_;
+    int desktop_width_ = 250;
+    FinnFormFactor form_factor_ = FinnFormFactor::Desktop;
 };
 
 class FinnStatCard : public QWidget {
@@ -686,7 +699,8 @@ public:
                         bool destructive = false);
     static QString prompt(QWidget* parent, const QString& title,
                           const QString& label,
-                          const QString& initial_value = {});
+                          const QString& initial_value = {},
+                          bool password_mode = false);
 
 protected:
     void showEvent(QShowEvent* event) override;
