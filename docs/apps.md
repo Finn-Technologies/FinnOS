@@ -7,8 +7,18 @@ FinnOS applications are standard Qt6 + C++20 GUI programs built against **`FinnS
 ```sh
 finn-sdk check
 finn-sdk new my-app --name "Finn Hello"
+finn-sdk validate my-app
 finn-sdk build my-app
 finn-sdk run my-app
+finn-sdk simulate --form-factor phone my-app
+```
+
+Package and sign distributable `.finnapp` archives (`finn-app.json` schema in [`sdk/schema/finn-app.schema.json`](../sdk/schema/finn-app.schema.json)):
+
+```sh
+finn-sdk keygen /path/outside/repo/my-key
+finn-sdk package my-app --key /path/outside/repo/my-key.key
+finn-sdk verify my-app.finnapp --pubkey /path/outside/repo/my-key.pub --json
 ```
 
 Register your built binary in the local user launcher (`~/.local/share/finn/apps/`):
@@ -63,14 +73,16 @@ See [`sdk/template`](../sdk/template) for a complete starter with CMake, Makefil
 | Class / Header | Role |
 |---|---|
 | `finn::ui::FinnApplication` | Configures Wayland display, app id, Fixel Display fonts, FinnOS `QPalette`, and theme polling |
-| `finn::ui::FinnWindow` | Custom frameless CSD Wayland window with Figma traffic-light controls, collapsible sidebar, edge resize, and toast overlay |
+| `finn::ui::FinnWindow` | Custom frameless CSD Wayland window with traffic-light controls, collapsible sidebar, edge resize, toast overlay, and responsive `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) |
 | `finn::ui::FinnLayerWindow` | `LayerShellQt` panel wrapper with explicit click-through input masking (`setInputRegions`) |
-| `finn::ui::FinnThemeManager` | Live light/dark/accent/scale/reduced-motion state synced with `~/.config/finn/settings` |
-| Widgets (`Components.hpp`) | `FinnCard`, `FinnGlassPanel`, `FinnLabel`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider`, `FinnSearchField`, `FinnTextField`, `FinnProgressBar`, `FinnProgressRing`, `FinnSidebar`, `FinnNavItem`, `FinnSettingRow`, `FinnBadge`, `FinnDivider`, `FinnTabBar`, `FinnBreadcrumbs`, `FinnEmptyState`, `FinnToast`, `FinnDialog` |
+| `finn::ui::FinnThemeManager` | Live light/dark/accent/scale/reduced-motion state synced with `FINN_SETTINGS_PATH` / `~/.config/finn/settings` |
+| Spring Motion (`<FinnSDK/Spring.hpp>`) | `SpringParams`, `SpringAnimator`, `springs::{kSnappy,kSmooth,kBouncy,kOverscroll}`, `rubber_band`, `reduced_motion()` |
+| Widgets (`Components.hpp`) | `FinnCard`, `FinnGlassPanel`, `FinnLabel`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider`, `FinnSearchField`, `FinnTextField` (`setPasswordMode`), `FinnProgressBar`, `FinnProgressRing`, `FinnSidebar`, `FinnNavItem`, `FinnSettingRow`, `FinnBadge`, `FinnDivider`, `FinnTabBar`, `FinnBreadcrumbs`, `FinnEmptyState`, `FinnToast`, `FinnDialog` (`prompt(..., password_mode)`) |
 | `finn::SessionClient` | Typed client for `finn-session` (`list`, `launch`, `open_target`, `run_windows`, `compat_status`, `power_action`) |
 
 ## App contract & honesty rules
 
 - Do not assume elevated privileges or private compositor sockets; communicate with the system via Wayland, XDG portals/DBus, or `SessionClient`.
+- Manifest permissions in `finn-app.json` are declarative metadata in v1 (not enforced by an OS sandbox yet); apps run as user `finn` unless packaged via Flatpak.
 - Never fake hardware or service availability: use `FinnButton::setEnabled(false)` and `FinnBadge` status indicators honestly when a capability is missing.
 - Keep `src/comp` free of application names.

@@ -26,7 +26,7 @@
 | **FinnQt Plugins** | Custom `QPlatformTheme` (`libfinnplatformtheme.so`) and `QProxyStyle` (`libfinnstyle.so`) |
 | **FinnSDK** | Developer C++20/Qt6 headers (`<FinnSDK/FinnSDK.hpp>`), CMake package, project template, and `finn-sdk` CLI |
 | **FinnOS Compose** | The session package: `finn-comp`, `finn-session`, `finn-shell`, `libfinnui`, the Qt6 plugins, the apps, and their data |
-| **FinnOS Update** | Reserved: OTA frontend. Not written |
+| **FinnOS Update** | OTA A/B update client (`finn-update`), signed manifests, and Settings Update pane |
 | **FinnAI** | Reserved and off by default. Not implemented |
 
 ## Programs
@@ -46,22 +46,25 @@
 | `finn-installer` | Bare-Metal GUI Installer (disk partitioning, bootloader, base system deployment) |
 | `finn-oobe` | First-Time Setup (`hi`, `How do we talk?`, Wi-Fi, account, appearance, and 6-ring ribbon completion) |
 | `finn-open` | Unified CLI target/file/URL opener (`finn-session` client) |
-| `finn-sdk` | Developer scaffolding, build, run, register, and Doctor CLI |
+| `finn-sdk` | Developer CLI: scaffolding, manifest validation, signed `.finnapp` packaging, simulator, build, run, register, check |
+| `finn-update` | OTA A/B update CLI (`status`, `check`, `download`, `apply`, `commit`, `rollback`, `health-check`, `config`) |
 | `libfinnui` | The Qt6 app runtime shared library |
 
 ## Modules
 | Module | Role |
 |---|---|
-| `src/comp` | `finn-comp`: server, output, seat, toplevels, layers, Xwayland, screencopy |
-| `src/ui` | `libfinnui` and public `<FinnSDK/*>` headers: tokens, theme, custom CSD window, Figma components, LayerShell wrapper |
+| `src/comp` | `finn-comp`: server, output, seat, pointer/touch/tablet, toplevels, layers, `ext-session-lock-v1`, Xwayland, screencopy |
+| `src/ui` | `libfinnui` and public `<FinnSDK/*>` headers: tokens, theme, spring physics (`spring.hpp`), custom CSD window (`FinnFormFactor`), widgets, LayerShell wrapper |
 | `src/qtplugin` | Custom Qt6 platform theme & widget style plugins (`QT_QPA_PLATFORMTHEME=finn`, `QT_STYLE_OVERRIDE=finn`) |
 | `src/session` | `finn-session`, `SessionClient`, and unified `AppRegistry` |
-| `src/compat` | Linux `.desktop` / Flatpak parser & Windows PE / Wine runner |
+| `src/compat` | Linux `.desktop` / Flatpak parser, Windows PE / Wine runner, and Waydroid Android probe (`android_runner`) |
 | `src/system` | Honest `/proc`, `/sys`, settings readers & async D-Bus/NetworkManager/BlueZ/PipeWire/logind controllers |
-| `src/shell` | `finn-shell` desktop overlay |
+| `src/shell` | `finn-shell` responsive desktop/tablet/phone overlay (`dock`, `popovers`, `notifications`, `LockScreenWindow`) |
+| `src/ota` | `finn-update` and `finn_ota`: Ed25519 manifest verification, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot switching |
 | `src/common` | Paths shared by two modules, and only that |
-| `apps/<id>` | First-party native Qt6 apps (`wallpaper`, `files`, `settings`, `terminal`, `notes`, `store`, `viewer`, `monitor`) |
-| `sdk/template` | Starter native Qt6/C++20 project for `finn-sdk new` |
+| `repo` | First-party `[finnos]` pacman repository scripts (`gen-signing-key.sh`, `publish.sh`, `finnos-mirrorlist`) |
+| `apps/<id>` | First-party native Qt6 apps (`wallpaper`, `settings`, `files`, `terminal`, `notes`, `store`, `viewer`, `monitor`, `installer`, `oobe`, optional `flourish`) |
+| `sdk` | `finn-app.schema.json` manifest schema, `sdk/template/` starter project, and host test suite |
 
 ## First-party apps
 | Name | Binary | Role |
@@ -81,3 +84,10 @@ All seven entries live in `assets/apps.registry`. Reserved future names: **Finn 
 
 ## Visual lockup
 The boot mark is four dots in a 2×2 grid plus a sparkle, in the family accent `#7AB8FF` over `#0B0E14`, or inverted on light surfaces. The wordmark is "FinnOS" in **Fixel Display SemiBold**; never letterspaced, never all-caps, never with a space.
+
+The boot splash shows a small **white** version of that mark on the dark field
+with a fully rounded, white progress bar beneath it — no spinner, status text
+or blinking cursor. The bar advances only on real boot-progress reports. It is drawn from inside the
+initramfs so it is the first thing FinnOS puts on the display; the firmware's
+own logo before the kernel starts is not ours to draw. The ribbon "hi."
+animation belongs to first-time setup (`finn-oobe`), never to a normal boot.

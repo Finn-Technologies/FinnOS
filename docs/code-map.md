@@ -22,8 +22,8 @@ where a key is handled".
 ```
 finn-comp (src/comp)
   main.cpp         argument parsing and process entry
-  server.cpp/hpp   display, scene layers, seat/input, output, timers
-  window.cpp       xdg_toplevel + Xwayland surface handling, entrance motion
+  server.cpp/hpp   display, scene layers, pointer/touch/tablet, ext-session-lock-v1, output, timers
+  window.cpp       xdg_toplevel + Xwayland + fullscreen stacking, SSD, entrance motion
   layer.cpp        wlr-layer-shell surface placement and exclusive zones
   xwayland_shim.c  minimal C helper for Xwayland surface properties
   wlroots.hpp      the C-header shim (the only macro trick in the tree)
@@ -36,11 +36,12 @@ finn-session (src/session)
 libfinnui / FinnSDK (src/ui)
   FinnSDK/         installed SDK umbrella & forwarding headers
   finn/application.* Qt6 Wayland client bootstrap, Fixel Display font, Finn style
-  finn/window.*    custom frameless CSD FinnWindow + FinnLayerWindow
+  finn/window.*    custom frameless CSD FinnWindow (`FinnFormFactor`) + FinnLayerWindow
   finn/theme.*     FinnThemeManager reading settings & FINN_DARK live
   finn/tokens.hpp  typed FinnTokens + generated_tokens.hpp bridge
+  finn/spring.hpp  analytic spring solver, SpringAnimator, rubber-band overscroll
   finn/components.* FinnButton, FinnCard, FinnToggle, FinnSlider, FinnSearchField, etc.
-  finn/animation.hpp motion tokens and easing curves
+  finn/animation.hpp motion tokens, easing curves, and live reduced_motion() reader
 
 Qt6 platform customization (src/qtplugin)
   finn_platform_theme.*  libfinnplatformtheme.so (QT_QPA_PLATFORMTHEME=finn)
@@ -49,33 +50,47 @@ Qt6 platform customization (src/qtplugin)
 Compat & system helpers (src/compat, src/system)
   desktop_entry.*  XDG .desktop & Flatpak discovery + launch line building
   wine_runner.*    PE header inspection & per-app Wine prefix execution
+  android_runner.* Waydroid runtime probe and launcher helper
   sys_files.*      settings, users, mounts, /proc memory & CPU helpers
-  desktop_services.* real NetworkManager/BlueZ/UPower/PipeWire state probes
+  desktop_services.* real NetworkManager/BlueZ/UPower/PipeWire probes + secure nmcli connect
 
 finn-shell (src/shell)
   main.cpp         Qt6 layer-shell bootstrap and compositor surface coordination
-  dock.*           bottom Figma dock bar, running indicators, clock/status pills
-  popovers.*       Home menu, Control Center, Window overview
+  shell_layout.hpp Phone/Tablet/Desktop breakpoints, tokenized colors, focus rings
+  dock.*           responsive bottom dock / mobile gesture bar, running dots, clock/status pills
+  popovers.*       Home menu, Control Center, Window overview, async LockScreenWindow
   search.*         Spotlight search & evaluator
   foreign_windows.* wlr-foreign-toplevel-management tracker
   notifications.*  floating FinnToast notifications
 
+finn-update & repo tooling (src/ota, ota, repo)
+  src/ota/finn-update CLI entry for A/B OTA status, check, download, apply, commit, rollback
+  src/ota/finn_ota/*  Ed25519 verify, HTTP Range download, zstd delta, systemd-boot/GRUB backends
+  ota/                keygen, publish, grub-ab.cfg, example public key
+  repo/               [finnos] pacman repo signing/publishing scripts & finnos-mirrorlist
+
 apps/<id>
   wallpaper        background wlr-layer-shell surface rendering WebP wallpaper
-  settings         system Settings (Appearance, Network, Bluetooth, Sound, Display, Compat, System)
-  files            Finn Files (sidebar locations, search, preview, trash/file ops)
-  terminal         Finn Terminal (PTY shell emulator)
-  notes            Finn Notes (multi-tab UTF-8/Markdown editor with live preview)
-  store            Finn Store (native/Flatpak/pacman/Wine app manager + FinnSDK scaffolder)
+  settings         system Settings (Appearance, Network, Bluetooth, Sound, Display, System Update, Compat, System)
+  files            Finn Files (sidebar locations, search, preview, safe copy/symlink ops)
+  terminal         Finn Terminal (PTY shell emulator with stateful UTF-8 decode)
+  notes            Finn Notes (multi-tab UTF-8/Markdown editor with Save/Discard/Cancel guard)
+  store            Finn Store (native/Flatpak/pacman/Wine/.finnapp manager + FinnSDK hub)
   viewer           Finn Viewer (raster + SVG zoom/pan/rotate viewer)
-  monitor          Finn Monitor (CPU/RAM telemetry and process signals)
+  monitor          Finn Monitor (CPU/RAM telemetry and PID-diffed process manager)
+  installer        finn-installer (GUI wizard invoking finn-install.sh --disk --hostname --timezone)
+  oobe             finn-oobe (first-time setup: language, Wi-Fi, real account setup, appearance)
+  flourish         optional Arc-inspired QtWebEngine browser
 
 tools & sdk
-  tools/finn-sdk       CLI project creator, builder, runner, checker
+  tools/finn-sdk       CLI project creator, validator, signed .finnapp packager, simulator, builder
   tools/finn_open.cpp  URI/file/desktop/.exe launcher (finn-open)
   tools/finn-display   display geometry helper
   tools/tokens.py      ui/_tokens.fui -> src/ui/generated_tokens.hpp
+  tools/check-branding.sh distribution branding & os-release lint guard
+  sdk/schema/          finn-app.schema.json app manifest schema
   sdk/template/        standalone FinnSDK starter app
+  sdk/tests/           host tests for packaging, verification, and simulation
 ```
 
 ## Flows

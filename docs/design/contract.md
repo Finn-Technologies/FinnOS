@@ -36,6 +36,7 @@ files so a machine and the medium cannot show different marks.
 | `finn-shell` | dock, clock, Spotlight search, Home menu, Control Center, notifications | `finn` |
 | `finn-wallpaper` | desktop background layer surface | `finn` |
 | `finn-session` | registry, installed list, launch broker | `finn` |
+| `finn-update` | OTA A/B slot status, signed manifest check/download/apply, boot health commit | `root` (units) / `finn` (read-only status) |
 | `finnd` | audited root machine authority | root — not written yet |
 
 The compositor knows nothing about app ids, packages, the shell or menus.
@@ -75,10 +76,12 @@ CI (`make lint`) fails if any known app id appears under `src/comp`.
 ## Display
 
 wlroots 0.20 with `xdg-shell`, `wlr-layer-shell`,
-`wlr-foreign-toplevel-management`, screencopy, and on-demand `Xwayland`. Native
-Qt6 `FinnSDK` apps use custom client-side CSD (`FinnWindow`); unmodified toolkits
+`wlr-foreign-toplevel-management`, `ext-session-lock-v1`, `wlr_fractional_scale_v1`,
+screencopy, touch/tablet input, and on-demand `Xwayland`. Native
+Qt6 `FinnSDK` apps use custom client-side CSD (`FinnWindow`, with responsive
+`Desktop`/`Tablet`/`Phone` modes); unmodified toolkits
 keep their own titlebars. Scene layers keep one fixed order:
-`background -> background layer -> bottom layer -> app toplevels -> top layer -> overlay`.
+`background -> background layer -> bottom layer -> app toplevels -> top layer -> fullscreen -> overlay -> lock`.
 
 ## Sandbox
 
@@ -98,4 +101,4 @@ Shared paths live in `src/common/paths.hpp`. Palette tokens live in
 
 ## Non-goals for the current release
 
-No multi-monitor independent scale/layout manager. No A/B OTA update slots. No built-in AI model or telemetry.
+No multi-monitor independent scale/layout manager, no compositor GPU shader backdrop blur, no Secure Boot / `dm-verity` / TPM2 sealing, no cellular telephony stack, and no built-in AI model or telemetry.
