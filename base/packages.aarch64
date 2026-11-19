@@ -85,6 +85,7 @@ networkmanager
 wpa_supplicant
 openssh
 curl
+7zip
 
 # Linux desktop apps use Flatpak; setup.sh initializes the system Flathub.
 flatpak

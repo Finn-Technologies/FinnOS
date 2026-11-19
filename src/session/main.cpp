@@ -7,6 +7,7 @@
 #include "compat/desktop_entry.hpp"
 #include "compat/flatpak_installer.hpp"
 #include "compat/macos_runner.hpp"
+#include "compat/ohos_runner.hpp"
 #include "compat/wine_runner.hpp"
 #include "session/app_registry.hpp"
 #include "session/client.hpp"
@@ -307,6 +308,19 @@ bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
         return true;
     }
 
+    if (app.source == finn::AppSource::kOhos) {
+        const auto plan = finn::compat::build_ohos_launch_plan(app.command);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        auto argv = plan.argv;
+        if (!arg.empty()) argv.emplace_back(arg);
+        if (!spawn_argv(argv, {}, error)) return false;
+        finn::sys::record_recent_app(app.id);
+        return true;
+    }
+
     std::vector<std::string> argv;
     if (app.source == finn::AppSource::kDesktop ||
         app.source == finn::AppSource::kFlatpak) {
@@ -361,7 +375,8 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
         }
         return spawn_argv(plan.argv, {}, error);
     }
-    if (ends_with_ci(t, ".dmg") || ends_with_ci(t, ".pkg") || ends_with_ci(t, ".mpkg")) {
+    if (ends_with_ci(t, ".dmg") || ends_with_ci(t, ".pkg") || ends_with_ci(t, ".mpkg") ||
+        finn::compat::is_ohos_package_path(t)) {
         if (const finn::App* store = reg.find("store")) {
             return spawn_argv({store->command, "--install", t}, {}, error);
         }

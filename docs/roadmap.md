@@ -41,7 +41,7 @@ handles DRM/power/brightness actuators, `finn-comp` can also drop root via `seat
 - Wayland IME text input (`zwp_text_input_v3`), clipboard history UI, and runtime accessibility enforcement (`text_scale` across fonts, `color_filter` compositor shader, XKB `sticky_keys`/`filter_keys`, packaged `orca`, and `QTranslator` localization).
 - **Verified boot hardening** (Secure Boot, `dm-verity`, TPM2 sealing) and live hosted `repo.finnos.org` + real-hardware/VM A/B slot reboot rollback verification.
 - **Cellular modem/telephony stack** (`ModemManager`) for phone hardware.
-- **Expanded macOS framework coverage (`finn-darwin`)**: `src/darwin/` provides the clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0 runtime, Foundation, basic AppKit-on-Qt6 bridge, and native `.pkg`/`.dmg`/`.icns` installer; full coverage of Swift runtime, SwiftUI, Metal-over-Vulkan/OpenGL, CoreGraphics/CoreText, QuartzCore, WebKit, and CoreData remains iterative multi-framework work.
+- **Expanded macOS (`finn-darwin`) & OpenHarmony 6.1 LTS (`finn-ohos`) runtime coverage**: `src/darwin/` provides the clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0, Foundation, CoreGraphics/QuartzCore, core Swift ABI, AppKit-on-Qt6 bridge, and HTTP/local `.dmg`/`.pkg`/`.zip`/`.app` installer; `src/ohos/` provides OpenHarmony 6.1 LTS (API 23) `.hap`/`.hsp`/`.app` installation, Panda `modules.abc` VM, `UIAbility`, ArkUI-on-Qt6, and NAPI host bridge. Full Swift stdlib/SwiftUI, Metal-over-Vulkan/OpenGL, WebKit, CoreData, and OpenHarmony hardware/distributed kits (`ArkWeb`, `DistributedDataObject`, Telephony/NFC/Camera/Sensor) remain ongoing iterative work.
 
 ## What "done" means
 

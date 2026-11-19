@@ -13,6 +13,8 @@ add_executable(finn-darwin
     objc_msgsend.S
     libsystem.cpp
     foundation.cpp
+    coregraphics.cpp
+    swift_runtime.cpp
     appkit_bridge.cpp
     macho_loader.cpp
     ../compat/desktop_entry.cpp

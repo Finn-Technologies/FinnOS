@@ -117,6 +117,7 @@ networkmanager
 wpa_supplicant
 openssh
 curl
+7zip
 
 # Flatpak package management and Wine compatibility target the x86_64
 # release image. Flatpak GUI apps require Wayland surfaces hosted by

@@ -12,6 +12,7 @@ add_executable(finn-files
     ../../src/compat/desktop_entry.cpp
     ../../src/compat/flatpak_installer.cpp
     ../../src/compat/macos_runner.cpp
+    ../../src/compat/ohos_runner.cpp
     ../../src/compat/wine_runner.cpp
 )
 target_include_directories(finn-files PRIVATE

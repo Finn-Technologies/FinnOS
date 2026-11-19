@@ -6,6 +6,7 @@ SAN      ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 REGISTRY_SRCS = ../../src/session/app_registry.cpp \
                 ../../src/compat/desktop_entry.cpp \
                 ../../src/compat/macos_runner.cpp \
+                ../../src/compat/ohos_runner.cpp \
                 ../../src/compat/wine_runner.cpp \
                 ../../src/system/sys_files.cpp
 DARWIN_SRCS   = ../../src/darwin/plist.cpp \
@@ -14,11 +15,19 @@ DARWIN_SRCS   = ../../src/darwin/plist.cpp \
                 ../../src/darwin/objc_runtime.cpp \
                 ../../src/darwin/libsystem.cpp \
                 ../../src/darwin/foundation.cpp \
+                ../../src/darwin/coregraphics.cpp \
+                ../../src/darwin/swift_runtime.cpp \
                 ../../src/darwin/appkit_bridge.cpp \
                 ../../src/darwin/macho_loader.cpp \
                 ../../src/compat/desktop_entry.cpp
+OHOS_SRCS     = ../../src/ohos/zip_reader.cpp \
+                ../../src/ohos/arkui_bridge.cpp \
+                ../../src/ohos/abc_runtime.cpp \
+                ../../src/ohos/ohos_installer.cpp \
+                ../../src/compat/ohos_runner.cpp \
+                ../../src/compat/desktop_entry.cpp
 BINS          = test_app_registry test_animation test_spring test_session_client \
-                test_search test_compat test_darwin test_sys_files
+                test_search test_compat test_darwin test_ohos test_sys_files
 
 all: $(BINS)
 
@@ -63,6 +72,11 @@ test_darwin: test_darwin.cpp $(DARWIN_SRCS) test_darwin_msgsend.o
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_darwin.cpp \
 		$(DARWIN_SRCS) test_darwin_msgsend.o -lz -lpthread -ldl
 
+test_ohos: test_ohos.cpp $(OHOS_SRCS)
+	$(MAKE) -C ../../src/ohos
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_ohos.cpp \
+		$(OHOS_SRCS) -lz -lpthread -ldl
+
 test_sys_files: test_sys_files.cpp ../../src/system/sys_files.cpp \
 		../../src/system/sys_files.hpp ../../src/common/paths.hpp
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_sys_files.cpp \
@@ -76,6 +90,7 @@ run: $(BINS)
 	./test_search
 	./test_compat
 	./test_darwin
+	./test_ohos
 	./test_sys_files
 	python3 test_tokens.py
 

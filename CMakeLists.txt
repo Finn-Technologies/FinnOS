@@ -38,6 +38,7 @@ endif()
 if(FINN_BUILD_TOOLS)
     add_subdirectory(tools)
     add_subdirectory(src/darwin)
+    add_subdirectory(src/ohos)
 endif()
 
 install(FILES assets/apps.registry

@@ -3,6 +3,7 @@
 #include "common/paths.hpp"
 #include "compat/desktop_entry.hpp"
 #include "compat/macos_runner.hpp"
+#include "compat/ohos_runner.hpp"
 #include "compat/wine_runner.hpp"
 
 #include <cstdlib>
@@ -58,6 +59,7 @@ const char* app_source_name(AppSource source) {
         case AppSource::kDesktop: return "desktop";
         case AppSource::kWindows: return "windows";
         case AppSource::kMacos: return "macos";
+        case AppSource::kOhos: return "ohos";
         case AppSource::kUnknown:
         default: return "unknown";
     }
@@ -70,6 +72,7 @@ AppSource parse_app_source(std::string_view text) {
     if (text == "desktop" || text == "linux") return AppSource::kDesktop;
     if (text == "windows" || text == "wine") return AppSource::kWindows;
     if (text == "macos" || text == "darwin") return AppSource::kMacos;
+    if (text == "ohos" || text == "openharmony") return AppSource::kOhos;
     return AppSource::kUnknown;
 }
 
@@ -77,7 +80,7 @@ bool App::launchable() const {
     if (command.empty()) return false;
     return source == AppSource::kNative || source == AppSource::kDesktop ||
            source == AppSource::kFlatpak || source == AppSource::kWindows ||
-           source == AppSource::kMacos;
+           source == AppSource::kMacos || source == AppSource::kOhos;
 }
 
 std::optional<AppRegistry> AppRegistry::load(const std::string& catalogue_path,
@@ -132,6 +135,7 @@ AppRegistry AppRegistry::load_all(const std::string& catalogue_path,
     reg.merge_desktop_entries(true);
     reg.merge_windows_entries();
     reg.merge_macos_entries();
+    reg.merge_ohos_entries();
     return reg;
 }
 
@@ -279,6 +283,26 @@ void AppRegistry::merge_macos_entries(const std::string& macos_apps_dir) {
         app.category = "macOS";
         app.source = AppSource::kMacos;
         app.installed = !b.executable_path.empty();
+        apps_.push_back(std::move(app));
+    }
+}
+
+void AppRegistry::merge_ohos_entries(const std::string& ohos_registry_path) {
+    const auto entries = compat::discover_ohos_apps(ohos_registry_path);
+    for (const auto& e : entries) {
+        if (find(e.id) != nullptr) continue;
+        App app;
+        app.id = e.id;
+        app.name = e.name;
+        app.icon = e.icon_path.empty() ? "package.svg" : e.icon_path;
+        app.command = e.bundle_name;
+        app.note = e.version_name.empty()
+                       ? "OpenHarmony 6.1 LTS app via finn-ohos"
+                       : ("OpenHarmony 6.1 LTS v" + e.version_name + " (API " +
+                          std::to_string(e.target_api_version) + ")");
+        app.category = "OpenHarmony";
+        app.source = AppSource::kOhos;
+        app.installed = true;
         apps_.push_back(std::move(app));
     }
 }

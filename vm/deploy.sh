@@ -42,6 +42,7 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='src/comp/build' \
     --exclude='src/session/finn-session' \
     --exclude='src/darwin/finn-darwin' \
+    --exclude='src/ohos/finn-ohos' \
     --exclude='src/shell/finn-shell' \
     --exclude='apps/*/finn-*' \
     --exclude='build' \
@@ -51,6 +52,7 @@ tar --no-mac-metadata -C "$ROOT" -cf - \
     --exclude='tests/unit/test_search' \
     --exclude='tests/unit/test_compat' \
     --exclude='tests/unit/test_darwin' \
+    --exclude='tests/unit/test_ohos' \
     --exclude='tests/unit/test_sys_files' \
     . | rsh "$HOST" "rm -rf $REMOTE && mkdir -p $REMOTE && tar -C $REMOTE -xf -"
 

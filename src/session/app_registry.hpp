@@ -19,6 +19,7 @@ enum class AppSource {
     kDesktop,
     kWindows,
     kMacos,
+    kOhos,
     kUnknown,
 };
 
@@ -60,6 +61,7 @@ public:
     void merge_desktop_entries(bool check_try_exec = true);
     void merge_windows_entries(const std::string& windows_conf_path = {});
     void merge_macos_entries(const std::string& macos_apps_dir = {});
+    void merge_ohos_entries(const std::string& ohos_registry_path = {});
     void merge_user_manifests(const std::string& manifests_dir = {});
 
 private:

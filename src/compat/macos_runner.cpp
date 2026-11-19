@@ -454,8 +454,10 @@ MacosCommandPlan build_macos_launch_plan(const std::string& app_or_binary_path) 
 
 MacosCommandPlan build_macos_install_plan(const std::string& dmg_pkg_or_app_path) {
     MacosCommandPlan plan;
+    const bool is_url = dmg_pkg_or_app_path.rfind("http://", 0) == 0 ||
+                        dmg_pkg_or_app_path.rfind("https://", 0) == 0;
     std::error_code ec;
-    if (!fs::exists(dmg_pkg_or_app_path, ec)) {
+    if (!is_url && !fs::exists(dmg_pkg_or_app_path, ec)) {
         plan.error = "package does not exist: " + dmg_pkg_or_app_path;
         return plan;
     }

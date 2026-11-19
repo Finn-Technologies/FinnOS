@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FinnOS OpenHarmony Installer
+Comment=Inspect and install OpenHarmony 6.1 LTS (.hap, .hsp, .app) packages via finn-ohos
+Exec=/usr/local/bin/finn-store --install %f
+Icon=applications-system
+NoDisplay=true
+Terminal=false
+MimeType=application/vnd.openharmony.hap;application/vnd.openharmony.hsp;application/vnd.openharmony.app;

@@ -11,6 +11,7 @@
 #include "compat/desktop_entry.hpp"
 #include "compat/flatpak_installer.hpp"
 #include "compat/macos_runner.hpp"
+#include "compat/ohos_runner.hpp"
 #include "compat/wine_runner.hpp"
 #include "session/app_registry.hpp"
 
@@ -206,6 +207,7 @@ QString source_label(finn::AppSource src) {
         case finn::AppSource::kWindows: return QStringLiteral("Windows 11");
         case finn::AppSource::kWinget:  return QStringLiteral("Windows");
         case finn::AppSource::kMacos:   return QStringLiteral("macOS");
+        case finn::AppSource::kOhos:    return QStringLiteral("OpenHarmony");
         case finn::AppSource::kUnknown: return QStringLiteral("App");
     }
     return QStringLiteral("App");
@@ -259,6 +261,8 @@ public:
                           QStringLiteral("Windows"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("macos"), QStringLiteral("laptop"),
                           QStringLiteral("macOS"), nav_neutral_light(), nav_neutral_dark());
+        sidebar_->addItem(QStringLiteral("ohos"), QStringLiteral("smartphone"),
+                          QStringLiteral("OpenHarmony"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
                           QStringLiteral("Updates"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal-square"),
@@ -308,6 +312,7 @@ public:
         stack_->addWidget(wrapScroll(buildSdkPage()));       // 6
         stack_->addWidget(wrapScroll(buildDetailPage()));    // 7
         stack_->addWidget(wrapScroll(buildMacosPage()));     // 8
+        stack_->addWidget(wrapScroll(buildOhosPage()));      // 9
         right_col->addWidget(stack_, 1);
 
         setContentWidget(right_host_);
@@ -345,8 +350,14 @@ public:
             launchWindowsInstaller(clean);
             return;
         }
+        if (finn::compat::is_ohos_package_path(std_path)) {
+            openPage(QStringLiteral("ohos"));
+            installOhosTarget(clean);
+            return;
+        }
         if (low.endsWith(QStringLiteral(".dmg")) || low.endsWith(QStringLiteral(".pkg")) ||
-            low.endsWith(QStringLiteral(".mpkg")) || low.endsWith(QStringLiteral(".app"))) {
+            low.endsWith(QStringLiteral(".mpkg")) || low.endsWith(QStringLiteral(".app")) ||
+            low.endsWith(QStringLiteral(".zip"))) {
             openPage(QStringLiteral("macos"));
             inspectMacosTarget(clean);
             return;
@@ -368,6 +379,7 @@ private:
         apply_log_edit_style(linux_log_, t);
         apply_log_edit_style(android_log_, t);
         apply_log_edit_style(macos_log_, t);
+        apply_log_edit_style(ohos_log_, t);
         apply_log_edit_style(updates_log_, t);
         apply_log_edit_style(finnapp_log_, t);
     }
@@ -413,6 +425,11 @@ private:
             page_title_->setText(QStringLiteral("macOS"));
             refreshMacosPage();
             stack_->setCurrentIndex(8);
+        } else if (id == QLatin1String("ohos")) {
+            last_list_page_ = QStringLiteral("ohos");
+            page_title_->setText(QStringLiteral("OpenHarmony 6.1 LTS"));
+            refreshOhosPage();
+            stack_->setCurrentIndex(9);
         } else if (id == QLatin1String("updates")) {
             page_title_->setText(QStringLiteral("Installed & Updates"));
             refreshUpdatesList();
@@ -439,6 +456,7 @@ private:
         refreshWindowsPage();
         refreshAndroidPage();
         refreshMacosPage();
+        refreshOhosPage();
         refreshUpdatesList();
     }
 
@@ -1251,8 +1269,33 @@ private:
             if (!dir.isEmpty()) inspectMacosTarget(dir);
         });
 
+        auto* url_btn = new FinnButton(
+            QStringLiteral("Install URL"), FinnButton::Variant::Ghost,
+            QStringLiteral("globe"), actions);
+        url_btn->setFixedHeight(28);
+        url_btn->setToolTip(QStringLiteral("Download and install a macOS .dmg, .pkg, or .zip from URL"));
+        connect(url_btn, &QAbstractButton::clicked, this, [this]() {
+            const QString url = FinnDialog::prompt(
+                this, QStringLiteral("Install macOS Package from URL"),
+                QStringLiteral("Enter HTTP/HTTPS URL (.dmg, .pkg, or .zip):"),
+                QStringLiteral("https://"));
+            if (url.trimmed().isEmpty()) return;
+            const auto ip = finn::compat::build_macos_install_plan(url.trimmed().toStdString());
+            if (!ip.ok || ip.argv.empty()) {
+                showToast(QString::fromStdString(ip.error), FinnToast::Severity::Warning, 4500);
+                return;
+            }
+            if (macos_log_) macos_log_->clear();
+            QStringList args;
+            for (size_t i = 1; i < ip.argv.size(); ++i) {
+                args << QString::fromStdString(ip.argv[i]);
+            }
+            runCommandIntoLog(QString::fromStdString(ip.argv[0]), args, macos_log_);
+        });
+
         act_lay->addWidget(macos_install_btn_);
         act_lay->addWidget(macos_run_btn_);
+        act_lay->addWidget(url_btn);
         macos_status_row_->setTrailingWidget(actions);
 
         macos_detail_row_ = new FinnSettingRow(
@@ -1498,6 +1541,200 @@ private:
             }
             runCommandIntoLog(QString::fromStdString(plan.argv[0]), args, macos_log_);
         }
+    }
+
+    QWidget* buildOhosPage() {
+        auto* page = new QWidget();
+        auto* root = new QVBoxLayout(page);
+        root->setContentsMargins(0, 4, 2, 16);
+        root->setSpacing(10);
+
+        ohos_status_row_ = new FinnSettingRow(
+            QStringLiteral("OpenHarmony 6.1 LTS Runtime (API 23 · finn-ohos)"),
+            QStringLiteral("Checking..."),
+            QStringLiteral("smartphone"), nullptr, page);
+        root->addWidget(ohos_status_row_);
+
+        auto* actions = new QWidget(page);
+        auto* act_lay = new QHBoxLayout(actions);
+        act_lay->setContentsMargins(0, 0, 0, 0);
+        act_lay->setSpacing(6);
+
+        ohos_install_btn_ = new FinnButton(
+            QStringLiteral("Install .hap / .app"), FinnButton::Variant::Primary,
+            QStringLiteral("download"), actions);
+        ohos_install_btn_->setFixedHeight(28);
+        connect(ohos_install_btn_, &QAbstractButton::clicked, this, [this]() {
+            const QString file = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select OpenHarmony Package (.hap / .hsp / .app)"),
+                QDir::homePath(),
+                QStringLiteral("OpenHarmony Packages (*.hap *.hsp *.app);;All Files (*)"));
+            if (!file.isEmpty()) installOhosTarget(file);
+        });
+
+        ohos_url_btn_ = new FinnButton(
+            QStringLiteral("Install URL"), FinnButton::Variant::Secondary,
+            QStringLiteral("globe"), actions);
+        ohos_url_btn_->setFixedHeight(28);
+        ohos_url_btn_->setToolTip(
+            QStringLiteral("Download and install an OpenHarmony 6.1 LTS .hap, .hsp, or .app from URL"));
+        connect(ohos_url_btn_, &QAbstractButton::clicked, this, [this]() {
+            const QString url = FinnDialog::prompt(
+                this, QStringLiteral("Install OpenHarmony Package from URL"),
+                QStringLiteral("Enter HTTP/HTTPS URL (.hap, .hsp, or .app):"),
+                QStringLiteral("https://"));
+            if (!url.trimmed().isEmpty()) installOhosTarget(url.trimmed());
+        });
+
+        act_lay->addWidget(ohos_install_btn_);
+        act_lay->addWidget(ohos_url_btn_);
+        ohos_status_row_->setTrailingWidget(actions);
+
+        auto* note = new FinnLabel(
+            QStringLiteral("OpenHarmony 6.1 LTS (API 23) support via finn-ohos: native ZIP .hap/.hsp/.app "
+                           "installation, Panda modules.abc ArkTS bytecode VM, UIAbility lifecycle with "
+                           "API 23 startup metrics & allowSelfRedirect, ArkUI-on-Qt6 widgets, and NAPI .so "
+                           "loading. Unimplemented system kits are reported clearly via Diagnose."),
+            FinnLabel::Role::Caption, FinnLabel::Tone::Dim, page);
+        note->setWordWrap(true);
+        root->addWidget(note);
+
+        ohos_list_layout_ = new QVBoxLayout();
+        ohos_list_layout_->setSpacing(8);
+        root->addLayout(ohos_list_layout_);
+
+        ohos_log_ = new QPlainTextEdit(page);
+        ohos_log_->setReadOnly(true);
+        ohos_log_->setMinimumHeight(140);
+        root->addWidget(ohos_log_);
+        root->addStretch(1);
+        return page;
+    }
+
+    void refreshOhosPage() {
+        if (!ohos_status_row_) return;
+        const auto st = finn::compat::probe_ohos_runtime();
+        ohos_status_row_->setSubtitle(QString::fromStdString(st.summary));
+        if (ohos_install_btn_) {
+            ohos_install_btn_->setEnabled(st.ready);
+            ohos_install_btn_->setToolTip(QString::fromStdString(st.summary));
+        }
+        if (ohos_url_btn_) {
+            ohos_url_btn_->setEnabled(st.ready);
+            ohos_url_btn_->setToolTip(QString::fromStdString(st.summary));
+        }
+        if (!ohos_list_layout_) return;
+        clear_layout(ohos_list_layout_);
+        const auto apps = finn::compat::discover_ohos_apps();
+        if (apps.empty()) {
+            ohos_list_layout_->addWidget(new FinnEmptyState(
+                QStringLiteral("smartphone"),
+                QStringLiteral("No OpenHarmony 6.1 LTS apps installed"),
+                QStringLiteral("Use 'Install .hap / .app' or 'Install URL' above to install OpenHarmony apps."),
+                {}, ohos_list_layout_->parentWidget()));
+            return;
+        }
+        for (const auto& a : apps) {
+            auto* row_actions = new QWidget(ohos_list_layout_->parentWidget());
+            auto* rl = new QHBoxLayout(row_actions);
+            rl->setContentsMargins(0, 0, 0, 0);
+            rl->setSpacing(6);
+
+            const QString app_name = QString::fromStdString(a.name);
+            const std::string bundle = a.bundle_name;
+            const std::string pkg_path = a.package_path;
+            const std::string app_id = a.id;
+
+            auto* diag_btn = new FinnButton(
+                QStringLiteral("Diagnose"), FinnButton::Variant::Ghost, {}, row_actions);
+            diag_btn->setFixedHeight(26);
+            diag_btn->setEnabled(st.ready && !pkg_path.empty());
+            connect(diag_btn, &QAbstractButton::clicked, this, [this, pkg_path]() {
+                const auto dp = finn::compat::build_ohos_diagnose_plan(pkg_path);
+                if (!dp.ok || dp.argv.empty()) {
+                    showToast(QString::fromStdString(dp.error), FinnToast::Severity::Warning);
+                    return;
+                }
+                if (ohos_log_) ohos_log_->clear();
+                QStringList args;
+                for (size_t i = 1; i < dp.argv.size(); ++i) {
+                    args << QString::fromStdString(dp.argv[i]);
+                }
+                runCommandIntoLog(QString::fromStdString(dp.argv[0]), args, ohos_log_);
+            });
+
+            auto* open_btn = new FinnButton(
+                QStringLiteral("Open"), FinnButton::Variant::Secondary, {}, row_actions);
+            open_btn->setFixedHeight(26);
+            open_btn->setEnabled(st.ready);
+            connect(open_btn, &QAbstractButton::clicked, this, [this, app_id, bundle]() {
+                finn::SessionClient client;
+                std::string err;
+                if (client.connect(&err) && client.launch(app_id, &err)) {
+                    showToast(QStringLiteral("Launching via finn-ohos..."));
+                    return;
+                }
+                const auto lp = finn::compat::build_ohos_launch_plan(bundle);
+                if (!lp.ok || lp.argv.empty()) {
+                    showToast(QString::fromStdString(lp.error), FinnToast::Severity::Warning, 4500);
+                    return;
+                }
+                QStringList args;
+                for (size_t i = 1; i < lp.argv.size(); ++i) {
+                    args << QString::fromStdString(lp.argv[i]);
+                }
+                runCommandIntoLog(QString::fromStdString(lp.argv[0]), args, ohos_log_);
+            });
+
+            auto* rm_btn = new FinnButton(
+                QString(), FinnButton::Variant::Ghost, QStringLiteral("trash"), row_actions);
+            rm_btn->setFixedSize(26, 26);
+            rm_btn->setToolTip(QStringLiteral("Uninstall OpenHarmony App"));
+            connect(rm_btn, &QAbstractButton::clicked, this, [this, app_name, bundle, st]() {
+                if (!FinnDialog::confirm(
+                        this, QStringLiteral("Uninstall %1?").arg(app_name),
+                        QStringLiteral("Remove OpenHarmony app %1 (%2)?")
+                            .arg(app_name, QString::fromStdString(bundle)),
+                        QStringLiteral("Uninstall"), true)) {
+                    return;
+                }
+                if (!st.finn_ohos_installed) return;
+                if (ohos_log_) ohos_log_->clear();
+                runCommandIntoLog(QString::fromStdString(st.finn_ohos_bin),
+                                  {QStringLiteral("uninstall"), QString::fromStdString(bundle)},
+                                  ohos_log_);
+            });
+
+            rl->addWidget(diag_btn);
+            rl->addWidget(open_btn);
+            rl->addWidget(rm_btn);
+            const QString sub = QStringLiteral("%1 · v%2 · API %3")
+                                    .arg(QString::fromStdString(a.bundle_name),
+                                         QString::fromStdString(a.version_name))
+                                    .arg(a.target_api_version);
+            ohos_list_layout_->addWidget(new FinnSettingRow(
+                app_name, sub, QStringLiteral("smartphone"), row_actions,
+                ohos_list_layout_->parentWidget()));
+        }
+    }
+
+    void installOhosTarget(const QString& target) {
+        refreshOhosPage();
+        if (ohos_log_) ohos_log_->clear();
+        const auto plan = finn::compat::build_ohos_install_plan(target.toStdString());
+        if (!plan.ok || plan.argv.empty()) {
+            if (ohos_log_) {
+                ohos_log_->appendPlainText(QString::fromStdString(plan.error));
+            }
+            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Warning, 4500);
+            return;
+        }
+        QStringList args;
+        for (size_t i = 1; i < plan.argv.size(); ++i) {
+            args << QString::fromStdString(plan.argv[i]);
+        }
+        showToast(QStringLiteral("Installing OpenHarmony package..."));
+        runCommandIntoLog(QString::fromStdString(plan.argv[0]), args, ohos_log_);
     }
 
     QWidget* buildAndroidPage() {
@@ -1989,6 +2226,11 @@ private:
     FinnButton* macos_run_btn_ = nullptr;
     QVBoxLayout* macos_list_layout_ = nullptr;
     QPlainTextEdit* macos_log_ = nullptr;
+    FinnSettingRow* ohos_status_row_ = nullptr;
+    FinnButton* ohos_install_btn_ = nullptr;
+    FinnButton* ohos_url_btn_ = nullptr;
+    QVBoxLayout* ohos_list_layout_ = nullptr;
+    QPlainTextEdit* ohos_log_ = nullptr;
     QPlainTextEdit* updates_log_ = nullptr;
     FinnButton* updates_check_btn_ = nullptr;
     QPointer<QProcess> updates_pac_proc_;
@@ -2019,7 +2261,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (std::strcmp(argv[i], "--help") == 0) {
-            std::puts("Usage: finn-store [--page discover|all|flathub|windows|macos|updates|sdk] [--install <file>]");
+            std::puts("Usage: finn-store [--page discover|all|flathub|windows|macos|ohos|updates|sdk] [--install <file|url>]");
             return 0;
         }
         if (std::strcmp(argv[i], "--page") == 0 && i + 1 < argc) {

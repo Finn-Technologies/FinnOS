@@ -1,5 +1,5 @@
-// Clean-room macOS .dmg (UDIF), .pkg (XAR + gzip/cpio), and .app bundle
-// installer and discovery engine for FinnOS.
+// Clean-room macOS .dmg (UDIF), .pkg (XAR + gzip/cpio), .zip, HTTP/HTTPS URL,
+// and .app bundle installer and discovery engine for FinnOS.
 
 #ifndef FINN_DARWIN_INSTALLER_HPP
 #define FINN_DARWIN_INSTALLER_HPP
@@ -18,6 +18,8 @@ struct InstalledMacosApp {
     std::string bundle_path;
     std::string executable_path;
     std::string icon_path;     // Extracted PNG path or empty
+    bool runnable = false;
+    std::string diagnosis_summary;
 };
 
 struct DmgPartitionSummary {
@@ -84,14 +86,32 @@ InstallResult install_dmg_package(const std::string& dmg_path,
                                   const std::string& apps_dir = {},
                                   const std::string& icons_dir = {});
 
+// Natively extracts a .zip archive containing macOS .app bundles (zlib + unzip/ditto/7z fallback).
+InstallResult install_zip_package(const std::string& zip_path,
+                                  const std::string& apps_dir = {},
+                                  const std::string& icons_dir = {});
+
+// Unified installer supporting http(s):// direct package downloads as well as local
+// .dmg, .pkg, .zip, and .app targets. Verifies package magic and diagnoses Mach-O compatibility.
+InstallResult install_from_url_or_path(const std::string& url_or_path,
+                                       const std::string& apps_dir = {},
+                                       const std::string& icons_dir = {});
+
 // Scans installed macOS .app directories cleanly.
 std::vector<InstalledMacosApp> discover_installed_macos_apps(
     const std::string& apps_dir = {},
     const std::string& icons_dir = {});
 
-// Removes an installed .app bundle cleanly.
+// Removes an installed .app bundle cleanly by direct path.
 bool remove_installed_macos_app(const std::string& bundle_path,
                                 std::string* error = nullptr);
+
+// Finds and removes an installed macOS app by id ("macos:..."), bundle id, name, or .app path.
+bool uninstall_macos_app(const std::string& query,
+                         std::string* removed_desc_out = nullptr,
+                         std::string* error = nullptr,
+                         const std::string& apps_dir = {},
+                         const std::string& icons_dir = {});
 
 }  // namespace finn::darwin
 

@@ -15,6 +15,7 @@ add_executable(finn-store
     ../../src/compat/desktop_entry.cpp
     ../../src/compat/flatpak_installer.cpp
     ../../src/compat/macos_runner.cpp
+    ../../src/compat/ohos_runner.cpp
     ../../src/compat/wine_runner.cpp
     ../../src/compat/android_runner.cpp
     ../../src/system/sys_files.cpp

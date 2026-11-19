@@ -46,7 +46,8 @@
 | `finn-installer` | Bare-Metal GUI Installer (disk partitioning, bootloader, base system deployment) |
 | `finn-oobe` | First-Time Setup (`hi`, `How do we talk?`, Wi-Fi, account, appearance, and 6-ring ribbon completion) |
 | `finn-open` | Unified CLI target/file/URL opener (`finn-session` client) |
-| `finn-darwin` | Clean-room macOS compatibility runtime (`Mach-O`, `libSystem`, `libobjc`, `Foundation`, basic `AppKit-on-Qt6`, `.pkg`/`.dmg`/`.app` installer) |
+| `finn-darwin` | Clean-room macOS compatibility runtime (`Mach-O`, `libSystem`, `libobjc`, `Foundation`, `CoreGraphics`/`QuartzCore`, core `Swift` ABI, `AppKit-on-Qt6`, `.dmg`/`.pkg`/`.zip`/`.app` installer) |
+| `finn-ohos` | Clean-room OpenHarmony 6.1 LTS (API Level 23) runtime & installer (`.hap`/`.hsp`/`.app` ZIP + HTTP install, Panda `modules.abc` VM, `UIAbility`, `ArkUI-on-Qt6`, NAPI host bridge) |
 | `finn-sdk` | Developer CLI: scaffolding, manifest validation, signed `.finnapp` packaging, simulator, build, run, register, check |
 | `finn-update` | OTA A/B update CLI (`status`, `check`, `download`, `apply`, `commit`, `rollback`, `health-check`, `config`) |
 | `libfinnui` | The Qt6 app runtime shared library |
@@ -58,8 +59,9 @@
 | `src/ui` | `libfinnui` and public `<FinnSDK/*>` headers: tokens, theme, spring physics (`spring.hpp`), custom CSD window (`FinnFormFactor`), widgets, LayerShell wrapper |
 | `src/qtplugin` | Custom Qt6 platform theme & widget style plugins (`QT_QPA_PLATFORMTHEME=finn`, `QT_STYLE_OVERRIDE=finn`) |
 | `src/session` | `finn-session`, `SessionClient`, and unified `AppRegistry` |
-| `src/compat` | Linux `.desktop` / Flatpak parser & installer, Windows PE / Wine runner, macOS probe (`macos_runner`), and Waydroid Android probe (`android_runner`) |
-| `src/darwin` | `finn-darwin`: clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0 runtime + `objc_msgSend` asm, Foundation, AppKit-on-Qt6 bridge, native `.pkg`/`.dmg`/`.icns` installer |
+| `src/compat` | Linux `.desktop` / Flatpak parser & installer, Windows PE / Wine runner, macOS (`macos_runner`), OpenHarmony 6.1 LTS (`ohos_runner`), and Waydroid Android (`android_runner`) probes |
+| `src/darwin` | `finn-darwin`: clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0 + `objc_msgSend` asm, Foundation, CoreGraphics/QuartzCore, core Swift ABI, AppKit-on-Qt6 bridge, HTTP + `.dmg`/`.pkg`/`.zip`/`.icns` installer |
+| `src/ohos` | `finn-ohos`: clean-room OpenHarmony 6.1 LTS (API 23) native ZIP `.hap`/`.hsp`/`.app` + HTTP installer, Panda `modules.abc` VM, `UIAbility` lifecycle, ArkUI-on-Qt6 bridge, and NAPI host bridge |
 | `src/system` | Honest `/proc`, `/sys`, settings readers & async D-Bus/NetworkManager/BlueZ/PipeWire/logind controllers |
 | `src/shell` | `finn-shell` responsive desktop/tablet/phone overlay (`dock`, `popovers`, `notifications`, `LockScreenWindow`) |
 | `src/ota` | `finn-update` and `finn_ota`: Ed25519 manifest verification, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot switching |

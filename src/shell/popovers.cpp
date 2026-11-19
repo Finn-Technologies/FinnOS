@@ -172,6 +172,8 @@ QString source_label(finn::AppSource src) {
             return QStringLiteral("Windows");
         case finn::AppSource::kMacos:
             return QStringLiteral("macOS");
+        case finn::AppSource::kOhos:
+            return QStringLiteral("OpenHarmony");
         case finn::AppSource::kUnknown:
             return QStringLiteral("App");
     }

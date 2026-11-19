@@ -7,6 +7,7 @@
 
 #include "compat/flatpak_installer.hpp"
 #include "compat/macos_runner.hpp"
+#include "compat/ohos_runner.hpp"
 
 #include <QDateTime>
 #include <QDir>
@@ -751,6 +752,16 @@ private:
                 } else if (ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
                     d.kind = QStringLiteral("macOS Installer");
                     d.icon_name = QStringLiteral("laptop");
+                } else if (ext == QStringLiteral("hap")) {
+                    d.kind = QStringLiteral("OpenHarmony App");
+                    d.icon_name = QStringLiteral("package");
+                } else if (ext == QStringLiteral("hsp")) {
+                    d.kind = QStringLiteral("OpenHarmony Shared");
+                    d.icon_name = QStringLiteral("package");
+                } else if (ext == QStringLiteral("app") &&
+                           finn::compat::is_ohos_package_path(fi.absoluteFilePath().toStdString())) {
+                    d.kind = QStringLiteral("OpenHarmony Pack");
+                    d.icon_name = QStringLiteral("package");
                 } else if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg") ||
                            ext == QStringLiteral("jpeg") || ext == QStringLiteral("webp") ||
                            ext == QStringLiteral("svg")) {
@@ -939,7 +950,10 @@ private:
         }
         if (ext == QStringLiteral("flatpakref") || ext == QStringLiteral("flatpak") ||
             ext == QStringLiteral("flatpakrepo") || ext == QStringLiteral("dmg") ||
-            ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
+            ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg") ||
+            ext == QStringLiteral("hap") || ext == QStringLiteral("hsp") ||
+            (ext == QStringLiteral("app") &&
+             finn::compat::is_ohos_package_path(fi.absoluteFilePath().toStdString()))) {
             if (QProcess::startDetached(QStringLiteral("finn-store"),
                                         {QStringLiteral("--install"), fi.absoluteFilePath()})) {
                 return;

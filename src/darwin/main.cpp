@@ -1,6 +1,7 @@
 // finn-darwin: FinnOS clean-room macOS compatibility runtime & installer CLI.
 // Loads unmodified 64-bit Mach-O executables and .app bundles, translates
-// libSystem/libobjc/Foundation/AppKit onto FinnOS, and installs .dmg/.pkg/.app.
+// libSystem/libobjc/Foundation/CoreGraphics/QuartzCore/Swift core/AppKit onto
+// FinnOS, and installs from HTTP(S) URLs, .dmg, .pkg, .zip, or .app bundles.
 
 #include "darwin/appkit_bridge.hpp"
 #include "darwin/installer.hpp"
@@ -9,56 +10,62 @@
 #include <sys/utsname.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
 
-namespace fs = std::filesystem;
-
 namespace {
-
-bool ends_with_ci(std::string_view s, std::string_view suffix) {
-    if (s.size() < suffix.size()) return false;
-    const std::size_t off = s.size() - suffix.size();
-    for (std::size_t i = 0; i < suffix.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(s[off + i])) !=
-            std::tolower(static_cast<unsigned char>(suffix[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
 
 void print_usage() {
     std::cout
         << "finn-darwin — FinnOS clean-room macOS compatibility runtime\n"
         << "Usage:\n"
         << "  finn-darwin status\n"
+        << "  finn-darwin list\n"
         << "  finn-darwin diagnose <binary | App.app>\n"
-        << "  finn-darwin install <App.app | Installer.pkg | Disk.dmg>\n"
+        << "  finn-darwin install <http(s)://... | .dmg | .pkg | .zip | .app>\n"
+        << "  finn-darwin uninstall <id | bundle-id | name | App.app>\n"
         << "  finn-darwin run [--allow-missing] <binary | App.app> [args...]\n";
 }
 
 int cmd_status() {
     struct utsname u{};
-    const std::string arch = (::uname(&u) == 0) ? u.machine : "unknown";
+    const std::string machine = (::uname(&u) == 0) ? u.machine : "unknown";
     const auto apps = finn::darwin::discover_installed_macos_apps();
-    std::cout << "finn-darwin (" << arch << ")\n"
+    std::cout << "finn-darwin (" << machine << ")\n"
               << "  loader:     64-bit Mach-O / Universal (LC_DYLD_CHAINED_FIXUPS + LC_DYLD_INFO)\n"
-              << "  runtimes:   libSystem.B, libobjc.A (ABI v2 + msgSend asm), CoreFoundation, Foundation\n"
+              << "  runtimes:   libSystem.B, libobjc.A (ABI v2 + msgSend asm), CoreFoundation,\n"
+              << "              Foundation (JSON/UserDefaults/FileManager), CoreGraphics (RGBA8),\n"
+              << "              QuartzCore (CALayer), Swift core ABI (HeapObject/ARC/once)\n"
               << "  appkit:     "
               << (finn::darwin::appkit_qt_backend_available()
-                      ? "Qt6/Wayland bridge active (basic NSWindow/NSView/NSButton/NSTextField/NSAlert)\n"
+                      ? "Qt6/Wayland bridge active (NSWindow/NSMenu/NSButton/NSTextView/NSScrollView/NSSlider/NSOpenPanel/NSTimer)\n"
                       : "headless CLI build (AppKit Qt6 bridge compiles on Linux target)\n")
-              << "  limits:     SwiftUI, Metal, WebKit, CoreData, App Store/iCloud not implemented\n"
+              << "  installer:  HTTP(S) direct download, .dmg (UDIF), .pkg (XAR+cpio), .zip (zlib), .app\n"
+              << "  limits:     SwiftUI, full Swift stdlib, Metal, WebKit, CoreData, App Store/iCloud not implemented\n"
               << "  apps_dir:   " << finn::darwin::default_macos_apps_dir() << "\n"
               << "  installed:  " << apps.size() << " .app bundle(s)\n";
     for (const auto& a : apps) {
         std::cout << "    - " << a.name << " (" << a.bundle_id << ") -> " << a.bundle_path << "\n";
+    }
+    return 0;
+}
+
+int cmd_list() {
+    const auto apps = finn::darwin::discover_installed_macos_apps();
+    if (apps.empty()) {
+        std::cout << "No macOS .app bundles installed in "
+                  << finn::darwin::default_macos_apps_dir() << "\n";
+        return 0;
+    }
+    for (const auto& a : apps) {
+        std::cout << a.id << "\t" << a.name;
+        if (!a.version.empty()) std::cout << " " << a.version;
+        if (!a.bundle_id.empty()) std::cout << " (" << a.bundle_id << ")";
+        std::cout << "\n  bundle: " << a.bundle_path << "\n";
+        if (!a.icon_path.empty()) std::cout << "  icon:   " << a.icon_path << "\n";
     }
     return 0;
 }
@@ -93,18 +100,7 @@ int cmd_diagnose(const std::string& target) {
 }
 
 int cmd_install(const std::string& target) {
-    finn::darwin::InstallResult res;
-    std::error_code ec;
-    if (fs::is_directory(target, ec) && ends_with_ci(target, ".app")) {
-        res = finn::darwin::install_app_bundle(target);
-    } else if (ends_with_ci(target, ".pkg") || ends_with_ci(target, ".mpkg")) {
-        res = finn::darwin::install_pkg_native(target);
-    } else if (ends_with_ci(target, ".dmg")) {
-        res = finn::darwin::install_dmg_package(target);
-    } else {
-        std::cerr << "finn-darwin: unsupported macOS package format: " << target << "\n";
-        return 1;
-    }
+    const finn::darwin::InstallResult res = finn::darwin::install_from_url_or_path(target);
     for (const auto& line : res.log) std::cout << line << "\n";
     if (!res.ok) {
         std::cerr << "finn-darwin: install failed: " << res.error << "\n";
@@ -116,6 +112,17 @@ int cmd_install(const std::string& target) {
     return 0;
 }
 
+int cmd_uninstall(const std::string& query) {
+    std::string removed;
+    std::string err;
+    if (!finn::darwin::uninstall_macos_app(query, &removed, &err)) {
+        std::cerr << "finn-darwin: uninstall failed: " << err << "\n";
+        return 1;
+    }
+    std::cout << "Removed: " << removed << "\n";
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -124,14 +131,16 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (std::strcmp(argv[1], "--version") == 0) {
-        std::puts("finn-darwin 0.1.0");
+        std::puts("finn-darwin 0.2.0");
         return 0;
     }
 
     const std::string cmd = argv[1];
     if (cmd == "status") return cmd_status();
+    if (cmd == "list") return cmd_list();
     if (cmd == "diagnose" && argc >= 3) return cmd_diagnose(argv[2]);
     if (cmd == "install" && argc >= 3) return cmd_install(argv[2]);
+    if (cmd == "uninstall" && argc >= 3) return cmd_uninstall(argv[2]);
 
     if (cmd == "run" && argc >= 3) {
         bool allow_missing = false;

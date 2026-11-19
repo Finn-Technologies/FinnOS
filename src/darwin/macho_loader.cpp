@@ -1,11 +1,13 @@
 #include "darwin/macho_loader.hpp"
 
 #include "darwin/appkit_bridge.hpp"
+#include "darwin/coregraphics.hpp"
 #include "darwin/foundation.hpp"
 #include "darwin/libsystem.hpp"
 #include "darwin/macho_format.hpp"
 #include "darwin/objc_runtime.hpp"
 #include "darwin/plist.hpp"
+#include "darwin/swift_runtime.hpp"
 
 #include <sys/mman.h>
 #include <sys/utsname.h>
@@ -239,6 +241,9 @@ bool is_builtin_darwin_library(std::string_view dylib) {
         "Foundation",
         "AppKit",
         "CoreGraphics",
+        "QuartzCore",
+        "CoreText",
+        "libswiftCore",
         "libdispatch",
         "libsystem_",
     };
@@ -576,15 +581,21 @@ void MachoLoader::initialize_runtime(int argc, char** argv, const std::string& t
     if (resolved.empty()) resolved = target_path;
 
     set_darwin_process_args(argc, argv, resolved);
+    set_foundation_process_args(argc, argv);
     if (!runtime_initialized_) {
         init_objc_runtime();
         init_foundation(bundle_root);
+        init_coregraphics();
         init_appkit(argc, argv);
         register_libsystem_symbols(&symbols_);
         register_objc_symbols(&symbols_);
         register_foundation_symbols(&symbols_);
+        register_coregraphics_symbols(&symbols_);
         register_appkit_symbols(&symbols_);
+        register_swift_runtime_symbols(&symbols_);
         runtime_initialized_ = true;
+    } else {
+        init_foundation(bundle_root);
     }
 }
 
