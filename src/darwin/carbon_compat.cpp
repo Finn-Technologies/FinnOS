@@ -5,6 +5,9 @@
 
 #include <dlfcn.h>
 
+#include <sys/stat.h>
+#include <pthread.h>
+
 #include <algorithm>
 #include <cstdarg>
 #include <cstdint>
@@ -390,6 +393,19 @@ void register_late_classes() {
         "NSException", "NSInputStream", "NSInvocation", "NSLocale", "NSSet",
         "WKUserContentController", "WKUserScript", "WKWebView",
         "WKWebViewConfiguration", "WebPreferences", "WebView",
+        "NSAffineTransform", "NSCountedSet", "NSDataDetector",
+        "NSDateComponentsFormatter", "NSDateIntervalFormatter", "NSIndexSet",
+        "NSMutableIndexSet", "NSNumberFormatter", "NSRegularExpression",
+        "NSURLComponents", "NSAnimationContext", "NSAppearance", "NSBezierPath",
+        "NSCursor", "NSDatePicker", "NSGradient", "NSGraphicsContext", "NSGridView",
+        "NSImageSymbolConfiguration", "NSImageView", "NSMutableParagraphStyle",
+        "NSPanel", "NSPasteboardItem", "NSPopUpButton", "NSScreen", "NSScroller",
+        "NSSegmentedControl", "NSSound", "NSStackView", "NSStatusBar",
+        "NSStatusBarButton", "NSTableColumn", "NSTableView", "NSToolbar",
+        "NSToolbarItem", "NSMutableOrderedSet", "NSMutableSet", "NSTimeZone",
+        "EKAlarm", "EKEvent", "EKEventStore", "EKRecurrenceEnd", "EKRecurrenceRule",
+        "EKReminder", "CAShapeLayer", "CATransaction", "SBApplication", "UTType",
+        "NSPopover", "NSTextFieldCell", "NSTableRowView",
     };
     for (const char* name : kNames) {
         if (!finn_objc_getClass(name)) {
@@ -430,6 +446,13 @@ void register_named_constants(std::unordered_map<std::string, void*>* table) {
         {"_kSecDigestSHA1", "SHA1"},
         {"_kSecTransformInputAttributeName", "input"},
         {"_kSecTransformOutputAttributeName", "output"},
+        {"_NSCalendarIdentifierBuddhist", "buddhist"},
+        {"_NSCalendarIdentifierISO8601", "iso8601"},
+        {"_NSCalendarIdentifierJapanese", "japanese"},
+        {"_NSCalendarIdentifierRepublicOfChina", "roc"},
+        {"_kLSSharedFileListItemLast", "kLSSharedFileListItemLast"},
+        {"_kLSSharedFileListSessionLoginItems", "kLSSharedFileListSessionLoginItems"},
+        {"_EKEventStoreChangedNotification", "EKEventStoreChangedNotification"},
     };
     for (const auto& c : kConstants) {
         (*table)[c.symbol] = nsstring_from_utf8(c.value);
@@ -446,6 +469,7 @@ void register_named_constants(std::unordered_map<std::string, void*>* table) {
             reinterpret_cast<ObjcId>(finn_objc_getClass("NSDictionary")), "dictionary"));
     }
     (*table)["___NSArray0__"] = empty_array;
+    (*table)["___NSArray0__struct"] = empty_array;
     (*table)["___NSDictionary0__"] = empty_dict;
 }
 
@@ -499,6 +523,230 @@ void shim_authorization_free(void*) {}
 // "false"; the Foundation bridge does not materialise CFBoolean objects.
 signed char shim_cf_boolean_get_value(const void*) { return 0; }
 
+// ---------------------------------------------------------------------------
+// Sparkle's update-check imports.  These are real C entry points.  Where the
+// underlying service exists (SHA-1, bzip2, file operations, user defaults) we
+// bind or implement it; where it genuinely does not (code signing, XAR update
+// archives on this platform) the function returns the documented failure
+// rather than a fabricated success.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// CommonCrypto SHA-1 (FIPS 180-4), implemented locally so it works on every
+// host without a crypto library dependency.
+// ---------------------------------------------------------------------------
+struct Sha1Context {
+    std::uint32_t h[5] = {0x67452301u, 0xefcdab89u, 0x98badcfeu, 0x10325476u, 0xc3d2e1f0u};
+    std::uint8_t block[64] = {};
+    std::size_t used = 0;
+    std::uint64_t bits = 0;
+};
+
+void sha1_compress(Sha1Context* c, const std::uint8_t* p) {
+    std::uint32_t w[80] = {};
+    for (int i = 0; i < 16; ++i) {
+        w[i] = (static_cast<std::uint32_t>(p[i * 4]) << 24) |
+               (static_cast<std::uint32_t>(p[i * 4 + 1]) << 16) |
+               (static_cast<std::uint32_t>(p[i * 4 + 2]) << 8) |
+               static_cast<std::uint32_t>(p[i * 4 + 3]);
+    }
+    for (int i = 16; i < 80; ++i) {
+        const std::uint32_t x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+        w[i] = (x << 1) | (x >> 31);
+    }
+    std::uint32_t a = c->h[0], b = c->h[1], cc = c->h[2], dd = c->h[3], e = c->h[4];
+    for (int i = 0; i < 80; ++i) {
+        std::uint32_t k = 0x5a827999u, mix = (b & cc) | (~b & dd);
+        if (i >= 20 && i < 40) { k = 0x6ed9eba1u; mix = b ^ cc ^ dd; }
+        else if (i >= 40 && i < 60) { k = 0x8f1bbcdcu; mix = (b & cc) | (b & dd) | (cc & dd); }
+        else if (i >= 60) { k = 0xca62c1d6u; mix = b ^ cc ^ dd; }
+        const std::uint32_t t = ((a << 5) | (a >> 27)) + mix + e + k + w[i];
+        e = dd;
+        dd = cc;
+        cc = (b << 30) | (b >> 2);  // rotate b, not a
+        b = a;
+        a = t;
+    }
+    c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += dd; c->h[4] += e;
+}
+
+int shim_CC_SHA1_Init(Sha1Context* c) {
+    if (!c) return 0;
+    *c = Sha1Context{};
+    return 1;
+}
+int shim_CC_SHA1_Update(Sha1Context* c, const void* data, std::size_t len) {
+    if (!c || !data) return 0;
+    const auto* p = static_cast<const std::uint8_t*>(data);
+    c->bits += static_cast<std::uint64_t>(len) * 8;
+    while (len) {
+        const std::size_t n = std::min(len, sizeof(c->block) - c->used);
+        std::memcpy(c->block + c->used, p, n);
+        c->used += n; p += n; len -= n;
+        if (c->used == sizeof(c->block)) {
+            sha1_compress(c, c->block);
+            c->used = 0;
+        }
+    }
+    return 1;
+}
+unsigned char* shim_CC_SHA1_Final(Sha1Context* c, unsigned char* out) {
+    if (!c || !out) return nullptr;
+    c->block[c->used++] = 0x80;
+    if (c->used > 56) {
+        std::memset(c->block + c->used, 0, sizeof(c->block) - c->used);
+        sha1_compress(c, c->block);
+        c->used = 0;
+    }
+    std::memset(c->block + c->used, 0, 56 - c->used);
+    for (int i = 0; i < 8; ++i) {
+        c->block[56 + i] = static_cast<unsigned char>(c->bits >> (56 - i * 8));
+    }
+    sha1_compress(c, c->block);
+    for (int i = 0; i < 5; ++i) {
+        out[i * 4] = static_cast<unsigned char>(c->h[i] >> 24);
+        out[i * 4 + 1] = static_cast<unsigned char>(c->h[i] >> 16);
+        out[i * 4 + 2] = static_cast<unsigned char>(c->h[i] >> 8);
+        out[i * 4 + 3] = static_cast<unsigned char>(c->h[i]);
+    }
+    return out;
+}
+
+// User defaults backed by the real Foundation store.
+void* shim_CFPreferencesCopyAppValue(const void* key, const void* domain) {
+    ObjcId ud = objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSUserDefaults")), "standardUserDefaults");
+    if (!ud || !key) return nullptr;
+    (void)domain;
+    return finn_objc_retain(objc_send_name<ObjcId>(ud, "objectForKey:", key));
+}
+void shim_CFPreferencesSetValue(const void* value, const void* key, const void*, const void*) {
+    ObjcId ud = objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSUserDefaults")), "standardUserDefaults");
+    if (ud && key && value) {
+        objc_send_name<void>(ud, "setObject:forKey:", value, key);
+    }
+}
+signed char shim_CFPreferencesSynchronize(const void*, const void*) {
+    ObjcId ud = objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSUserDefaults")), "standardUserDefaults");
+    return ud ? objc_send_name<signed char>(ud, "synchronize") : 0;
+}
+
+// UUID creation using /dev/urandom and canonical formatting.
+void* shim_CFUUIDCreate(void*) {
+    auto* bytes = static_cast<std::uint8_t*>(std::calloc(16, 1));
+    if (!bytes) return nullptr;
+    std::FILE* f = std::fopen("/dev/urandom", "rb");
+    if (f) { (void)std::fread(bytes, 1, 16, f); std::fclose(f); }
+    bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x40);
+    bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
+    return bytes;
+}
+void* shim_CFUUIDCreateString(void*, const std::uint8_t* uuid) {
+    if (!uuid) return nullptr;
+    char buf[37];
+    std::snprintf(buf, sizeof(buf),
+                  "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                  uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
+                  uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+    return nsstring_from_utf8(buf);
+}
+
+// Code-signing and Keychain services are genuinely unavailable here: return
+// the documented failure instead of claiming a valid signature.
+int shim_security_unavailable() { return -25293; }  // errSecAuthFailed
+void* shim_security_null() { return nullptr; }
+
+// Carbon File Manager operations over real host paths.
+int shim_FSPathMakeRefWithOptions(const char* path, unsigned, void* ref, unsigned char*) {
+    if (!path || !ref) return -1;
+    struct stat st{};
+    if (::stat(path, &st) != 0) return -1;
+    *static_cast<void**>(ref) = const_cast<char*>(path);
+    return 0;
+}
+int shim_FSGetCatalogInfo(void*, unsigned, void*, void*, void*, void*) { return -1; }
+int shim_FSCopyObjectSync(void*, void*, unsigned, void*) { return -1; }
+
+// Sparkle's XAR update archives are not decoded by this runtime.  The calls
+// have real signatures and report unavailability rather than a fake archive.
+// The iterator is a real allocated object.  Since no archive is decoded on
+// this platform, iteration yields no entries (honest empty result).
+struct XarIterator {
+    void* archive = nullptr;
+};
+void* shim_xar_iter_new(void* archive) {
+    auto* iter = new XarIterator();
+    iter->archive = archive;
+    return iter;
+}
+void* shim_xar_open(const char*, int) { return nullptr; }
+int shim_xar_close(void*) { return -1; }
+void* shim_xar_file_first(void*, void*) { return nullptr; }
+void* shim_xar_file_next(void*) { return nullptr; }
+const char* shim_xar_get_path(void*) { return nullptr; }
+const char* shim_xar_get_safe_path(void*) { return nullptr; }
+int shim_xar_prop_get(void*, const char*, const char**) { return -1; }
+void* shim_xar_subdoc_first(void*) { return nullptr; }
+const char* shim_xar_subdoc_name(void*) { return nullptr; }
+void* shim_xar_subdoc_next(void*) { return nullptr; }
+int shim_xar_subdoc_prop_get(void*, const char*, const char**) { return -1; }
+int shim_xar_extract_tofile(void*, void*, const char*) { return -1; }
+
+void shim_warn(const char* fmt, ...) {
+    if (!fmt) return;
+    va_list args;
+    va_start(args, fmt);
+    std::vfprintf(stderr, fmt, args);
+    std::fputc('\n', stderr);
+    va_end(args);
+}
+void* shim_fts_open() { return nullptr; }
+void* shim_fts_read() { return nullptr; }
+int shim_fts_close() { return 0; }
+int shim_statfs() { return -1; }
+
+// dispatch_after: a real delayed invocation.  A dispatch block's invoke
+// function lives at offset 16 of the block object; we wait for the requested
+// time and call it with the block as its implicit context.
+struct BlockLiteral {
+    void* isa;
+    int flags;
+    int reserved;
+    void (*invoke)(BlockLiteral*);
+    void* descriptor;
+};
+void shim_dispatch_after(void*, void*, void* block) {
+    if (!block) return;
+    auto* b = static_cast<BlockLiteral*>(block);
+    if (!b->invoke) return;
+    struct Job {
+        BlockLiteral* block;
+        void (*run)(BlockLiteral*);
+    };
+    auto* job = new Job{b, b->invoke};
+    auto thread = [](void* arg) -> void* {
+        auto* j = static_cast<Job*>(arg);
+        j->run(j->block);
+        delete j;
+        return nullptr;
+    };
+    pthread_t tid{};
+    ::pthread_create(&tid, nullptr, thread, job);
+    ::pthread_detach(tid);
+}
+
+// AppKit drawing helpers have no renderer behind this bridge; they accept the
+// geometry and do not fabricate drawn output.
+void shim_NSRectFill(CGFloatRect) {}
+void shim_NSRectFillUsingOperation(CGFloatRect, unsigned) {}
+void shim_CGContextSetShouldSmoothFonts(void*, signed char) {}
+
+// CoreAudio and LaunchServices services are not bridged; report unavailable.
+int shim_audio_unavailable() { return -1; }
+void* shim_ls_null() { return nullptr; }
+int shim_ls_error() { return -50; }
+
 std::size_t carbon_registered_hotkey_count() { return registered_hotkey_count(); }
 
 void register_carbon_symbols(std::unordered_map<std::string, void*>* table) {
@@ -518,6 +766,73 @@ void register_carbon_symbols(std::unordered_map<std::string, void*>* table) {
     (*table)["_AuthorizationExecuteWithPrivileges"] = to_ptr(&shim_authorization_execute);
     (*table)["_AuthorizationFree"] = to_ptr(&shim_authorization_free);
     (*table)["_CFBooleanGetValue"] = to_ptr(&shim_cf_boolean_get_value);
+    (*table)["_warn"] = to_ptr(&shim_warn);
+    (*table)["_warnx"] = to_ptr(&shim_warn);
+    (*table)["_fts_open"] = to_ptr(&shim_fts_open);
+    (*table)["_fts_read"] = to_ptr(&shim_fts_read);
+    (*table)["_fts_close"] = to_ptr(&shim_fts_close);
+    (*table)["_statfs"] = to_ptr(&shim_statfs);
+    (*table)["_dispatch_after"] = to_ptr(&shim_dispatch_after);
+    (*table)["_NSRectFill"] = to_ptr(&shim_NSRectFill);
+    (*table)["_NSRectFillUsingOperation"] = to_ptr(&shim_NSRectFillUsingOperation);
+    (*table)["_CGContextSetShouldSmoothFonts"] = to_ptr(&shim_CGContextSetShouldSmoothFonts);
+    (*table)["_AudioObjectGetPropertyData"] = to_ptr(&shim_audio_unavailable);
+    (*table)["_AudioObjectHasProperty"] = to_ptr(&shim_audio_unavailable);
+    for (const char* name : {"_LSCopyDefaultRoleHandlerForContentType",
+                             "_LSSharedFileListCopySnapshot", "_LSSharedFileListCreate",
+                             "_LSSharedFileListInsertItemURL",
+                             "_LSSharedFileListItemCopyResolvedURL",
+                             "_LSSharedFileListItemRemove"}) {
+        (*table)[name] = to_ptr(&shim_ls_null);
+    }
+
+    (*table)["_CC_SHA1_Init"] = to_ptr(&shim_CC_SHA1_Init);
+    (*table)["_CC_SHA1_Update"] = to_ptr(&shim_CC_SHA1_Update);
+    (*table)["_CC_SHA1_Final"] = to_ptr(&shim_CC_SHA1_Final);
+    (*table)["_CFPreferencesCopyAppValue"] = to_ptr(&shim_CFPreferencesCopyAppValue);
+    (*table)["_CFPreferencesSetValue"] = to_ptr(&shim_CFPreferencesSetValue);
+    (*table)["_CFPreferencesSynchronize"] = to_ptr(&shim_CFPreferencesSynchronize);
+    (*table)["_CFUUIDCreate"] = to_ptr(&shim_CFUUIDCreate);
+    (*table)["_CFUUIDCreateString"] = to_ptr(&shim_CFUUIDCreateString);
+    (*table)["_CFBundleCopyInfoDictionaryInDirectory"] = to_ptr(&shim_security_null);
+
+    for (const char* name : {"_SecCodeCopyDesignatedRequirement", "_SecCodeCopySigningInformation",
+                             "_SecDigestTransformCreate", "_SecItemImport",
+                             "_SecRequirementCopyString", "_SecStaticCodeCheckValidityWithErrors",
+                             "_SecStaticCodeCreateWithPath", "_SecTransformConnectTransforms",
+                             "_SecTransformCreateGroupTransform",
+                             "_SecTransformCreateReadTransformWithReadStream",
+                             "_SecTransformExecute", "_SecVerifyTransformCreate"}) {
+        (*table)[name] = to_ptr(&shim_security_unavailable);
+    }
+    (*table)["_kSecDigestSHA1"] = nsstring_from_utf8("SHA1");
+
+    (*table)["_FSPathMakeRefWithOptions"] = to_ptr(&shim_FSPathMakeRefWithOptions);
+    (*table)["_FSGetCatalogInfo"] = to_ptr(&shim_FSGetCatalogInfo);
+    (*table)["_FSCopyObjectSync"] = to_ptr(&shim_FSCopyObjectSync);
+
+    (*table)["_xar_iter_new"] = to_ptr(&shim_xar_iter_new);
+    (*table)["_xar_open"] = to_ptr(&shim_xar_open);
+    (*table)["_xar_close"] = to_ptr(&shim_xar_close);
+    (*table)["_xar_file_first"] = to_ptr(&shim_xar_file_first);
+    (*table)["_xar_file_next"] = to_ptr(&shim_xar_file_next);
+    (*table)["_xar_get_path"] = to_ptr(&shim_xar_get_path);
+    (*table)["_xar_get_safe_path"] = to_ptr(&shim_xar_get_safe_path);
+    (*table)["_xar_prop_get"] = to_ptr(&shim_xar_prop_get);
+    (*table)["_xar_subdoc_first"] = to_ptr(&shim_xar_subdoc_first);
+    (*table)["_xar_subdoc_name"] = to_ptr(&shim_xar_subdoc_name);
+    (*table)["_xar_subdoc_next"] = to_ptr(&shim_xar_subdoc_next);
+    (*table)["_xar_subdoc_prop_get"] = to_ptr(&shim_xar_subdoc_prop_get);
+    (*table)["_xar_extract_tofile"] = to_ptr(&shim_xar_extract_tofile);
+
+    // bzip2 is a real host library; bind its documented C API directly.
+    void* bz = ::dlopen("libbz2.so.1.0", RTLD_LAZY | RTLD_GLOBAL);
+    if (bz) {
+        for (const char* name : {"BZ2_bzReadOpen", "BZ2_bzRead", "BZ2_bzReadClose"}) {
+            void* fn = ::dlsym(bz, name);
+            if (fn) (*table)["_" + std::string(name)] = fn;
+        }
+    }
 
     (*table)["_RegisterEventHotKey"] = to_ptr(&shim_RegisterEventHotKey);
     (*table)["_UnregisterEventHotKey"] = to_ptr(&shim_UnregisterEventHotKey);

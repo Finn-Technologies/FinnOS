@@ -914,6 +914,34 @@ ObjcId nsarray_objectAtIndex(ObjcId self, ObjcSel, std::size_t idx) {
     return (*a->items)[idx];
 }
 
+// NSFastEnumerationState as defined by NSEnumerator.h (64-bit ABI).
+struct NSFastEnumerationState {
+    unsigned long state;
+    ObjcId* itemsPtr;
+    unsigned long* mutationsPtr;
+    unsigned long extra[5];
+};
+
+std::size_t nsarray_fastEnumerate(ObjcId self, ObjcSel, NSFastEnumerationState* fast_state,
+                                  ObjcId* buffer, std::size_t limit) {
+    const std::size_t total = nsarray_count(self, nullptr);
+    const std::size_t index = fast_state ? static_cast<std::size_t>(fast_state->state) : 0;
+    if (index >= total || !buffer) {
+        if (fast_state) fast_state->itemsPtr = buffer;
+        return 0;
+    }
+    const std::size_t n = std::min(limit, total - index);
+    for (std::size_t i = 0; i < n; ++i) {
+        buffer[i] = nsarray_objectAtIndex(self, nullptr, index + i);
+    }
+    if (fast_state) {
+        fast_state->state = index + n;
+        fast_state->itemsPtr = buffer;
+        fast_state->mutationsPtr = &fast_state->extra[4];
+    }
+    return n;
+}
+
 ObjcId nsarray_firstObject(ObjcId self, ObjcSel) {
     return nsarray_count(self, nullptr) > 0 ? nsarray_objectAtIndex(self, nullptr, 0) : nullptr;
 }
@@ -3576,6 +3604,7 @@ void init_foundation(const std::string& bundle_path) {
     finn_class_addClassMethod(g_cls_nsarray, finn_sel_registerName("arrayWithObjects:count:"), to_imp(&nsarray_arrayWithObjectsCount));
     finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("init"), to_imp(&nsarray_init));
     finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("count"), to_imp(&nsarray_count));
+    finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("countByEnumeratingWithState:objects:count:"), to_imp(&nsarray_fastEnumerate));
     finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("objectAtIndex:"), to_imp(&nsarray_objectAtIndex));
     finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("objectAtIndexedSubscript:"), to_imp(&nsarray_objectAtIndex));
     finn_class_addMethod(g_cls_nsarray, finn_sel_registerName("firstObject"), to_imp(&nsarray_firstObject));

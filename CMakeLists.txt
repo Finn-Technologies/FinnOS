@@ -10,6 +10,7 @@ option(FINN_BUILD_SHELL "Build finn-shell LayerShell desktop" ON)
 option(FINN_BUILD_APPS "Build native FinnOS Qt6 applications" ON)
 option(FINN_BUILD_QT_PLUGIN "Build FinnOS Qt6 platform theme & style plugins" ON)
 option(FINN_BUILD_TOOLS "Build finn-open CLI and SDK helpers" ON)
+option(FINN_BUILD_BENCHMARKS "Build host-only performance microbenchmarks" OFF)
 option(FINN_STRICT_WARNINGS "Treat C++ compiler warnings as errors during build" ON)
 
 if(FINN_STRICT_WARNINGS)
@@ -40,6 +41,10 @@ if(FINN_BUILD_TOOLS)
     add_subdirectory(src/darwin)
     add_subdirectory(src/ohos)
     add_subdirectory(src/android)
+endif()
+
+if(FINN_BUILD_BENCHMARKS)
+    add_subdirectory(bench)
 endif()
 
 install(FILES assets/apps.registry

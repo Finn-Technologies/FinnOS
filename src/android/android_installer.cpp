@@ -487,6 +487,43 @@ AndroidRunReport run_android_package(const std::string& package_or_apk,
 
     AndroidUiEngine ui;
     ui.set_title(apk_display_name(apk));
+
+    // Inflate a real layout from the APK when one is present. A descriptor for
+    // FinnOS-side apps is preferred; otherwise the first binary AXML layout
+    // that parses is used. Resource references that cannot be resolved stay
+    // empty and are reported instead of being replaced with guessed text.
+    std::vector<std::string> layouts;
+    std::string json_layout;
+    for (const auto& e : zip.entries()) {
+        if (e.is_directory) continue;
+        if (e.name == "res/raw/finn_layout.json") json_layout = e.name;
+        if (starts_with(e.name, "res/layout/") && ends_with_ci(e.name, ".xml")) {
+            layouts.push_back(e.name);
+        }
+    }
+    std::sort(layouts.begin(), layouts.end());
+    std::vector<std::string> layout_warnings;
+    bool inflated = false;
+    if (!json_layout.empty()) {
+        std::vector<std::uint8_t> bytes;
+        std::string jerr;
+        if (zip.read_entry(json_layout, &bytes, &jerr)) {
+            const std::string json(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            inflated = ui.inflate_json(json, &jerr);
+            if (!inflated) layout_warnings.push_back(json_layout + ": " + jerr);
+        }
+    }
+    for (const auto& entry : layouts) {
+        if (inflated) break;
+        std::vector<std::uint8_t> bytes;
+        if (!zip.read_entry(entry, &bytes, nullptr)) continue;
+        inflated = ui.inflate_binary_layout(bytes, apk.arsc, &layout_warnings, nullptr);
+    }
+    for (const auto& warning : layout_warnings) {
+        rep.lifecycle_log.push_back("layout: " + warning);
+    }
+    if (!inflated) rep.lifecycle_log.push_back("layout: no inflatable view tree found in APK");
+
     ui.set_lifecycle_handler([&](const std::string& phase) {
         const auto it = std::find_if(plan.methods.begin(), plan.methods.end(),
                                      [&](const LifecycleMethodInfo& m) {

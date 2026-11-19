@@ -1,11 +1,12 @@
 BUILD_DIR ?= build
+CXX       ?= c++
 PREFIX    ?= /usr/local
 DESTDIR   ?=
 VM        ?= finn@10.211.55.6
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 
 .PHONY: all configure ui qtplugin compositor session darwin ohos android shell apps tools \
-        test test-unit check lint install clean deploy help
+        test test-unit bench check lint install clean deploy help
 
 all: compositor session configure
 	cmake --build $(BUILD_DIR)
@@ -56,6 +57,13 @@ test:
 test-unit:
 	$(MAKE) -C tests/unit run
 
+# Host-only microbenchmark of the shell shadow blur. It needs no Qt, so it can
+# run where the compositor/UI cannot be built. See docs/performance.md.
+bench:
+	mkdir -p $(BUILD_DIR)
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -Isrc -o $(BUILD_DIR)/blur_bench bench/blur_bench.cpp
+	$(BUILD_DIR)/blur_bench
+
 check: test test-unit
 
 lint:
@@ -89,6 +97,7 @@ install: all
 	install -m755 tools/finn-display $(DESTDIR)$(PREFIX)/bin/finn-display
 	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
 	install -m755 tools/finn-win $(DESTDIR)$(PREFIX)/bin/finn-win
+	install -m755 tools/finn-emulator $(DESTDIR)$(PREFIX)/bin/finn-emulator
 	install -d $(DESTDIR)$(PREFIX)/share/applications
 	install -m644 assets/finn-win.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-win.desktop
 	install -m644 assets/finn-flatpak.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-flatpak.desktop
@@ -113,6 +122,7 @@ install: all
 	ln -sf $(PREFIX)/bin/finn-open $(DESTDIR)/usr/bin/finn-open
 	ln -sf $(PREFIX)/bin/finn-cursors $(DESTDIR)/usr/bin/finn-cursors
 	ln -sf $(PREFIX)/bin/finn-win $(DESTDIR)/usr/bin/finn-win
+	ln -sf $(PREFIX)/bin/finn-emulator $(DESTDIR)/usr/bin/finn-emulator
 	ln -sf $(PREFIX)/bin/finn-darwin $(DESTDIR)/usr/bin/finn-darwin
 	ln -sf $(PREFIX)/bin/finn-ohos $(DESTDIR)/usr/bin/finn-ohos
 	ln -sf $(PREFIX)/bin/finn-android $(DESTDIR)/usr/bin/finn-android

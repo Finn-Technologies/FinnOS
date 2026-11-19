@@ -161,6 +161,9 @@ protected:
         QPainterPath clip;
         clip.addRoundedRect(r, finn::ui::radii::r_md, finn::ui::radii::r_md);
         p.setClipPath(clip);
+        // Figma 2:345: a 32x32 solid tile at glass_tile density behind the
+        // icon. The backdrop blur remains the compositor's real 35 px pass.
+        p.fillRect(r, with_alpha(t.mute, kGlassTileAlpha));
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
         QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
@@ -812,7 +815,11 @@ DockWindow::DockWindow(const std::vector<finn::App>* apps,
     setAccessibleName(QStringLiteral("Dock"));
 
     root_layout_ = new QHBoxLayout(this);
-    root_layout_->setContentsMargins(16, kPopoverShadowPad, 16,
+    // Figma 4:58: the pill group is 713 px (254+130+130+154+3x15). Any side
+    // inset made the rendered group 745 px; sp_0 keeps the Figma spacing and
+    // the two stretches still centre it on the output.
+    root_layout_->setContentsMargins(finn::ui::spacing::sp_0, kPopoverShadowPad,
+                                     finn::ui::spacing::sp_0,
                                      kPopoverShadowPad);
     root_layout_->setSpacing(15);
     root_layout_->addStretch(1);

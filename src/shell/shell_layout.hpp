@@ -4,9 +4,7 @@
 #ifndef FINN_SHELL_LAYOUT_HPP
 #define FINN_SHELL_LAYOUT_HPP
 
-#include <QByteArray>
 #include <QColor>
-#include <QDataStream>
 #include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QHash>
@@ -21,9 +19,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <utility>
+#include <vector>
 
+#include "shell/blur_kernel.hpp"
+#include "shell/mobile_shell_layout.hpp"
 #include "ui/finn/spring.hpp"
 #include "ui/finn/tokens.hpp"
 #include "ui/generated_tokens.hpp"
@@ -41,11 +43,12 @@ inline FormFactor resolve_form_factor(int width_dp) {
     if (env == "phone") return FormFactor::Phone;
     if (env == "tablet") return FormFactor::Tablet;
     if (env == "desktop") return FormFactor::Desktop;
-    if (width_dp > 0 && width_dp <= finn::ui::breakpoints::bp_phone_max) {
-        return FormFactor::Phone;
-    }
-    if (width_dp > 0 && width_dp <= finn::ui::breakpoints::bp_tablet_max) {
-        return FormFactor::Tablet;
+    // The pure, token-backed model is the single breakpoint authority; this
+    // Qt enum is only its shell-side spelling.
+    switch (mobile::resolve_layout_class(width_dp)) {
+        case mobile::LayoutClass::Phone: return FormFactor::Phone;
+        case mobile::LayoutClass::Tablet: return FormFactor::Tablet;
+        case mobile::LayoutClass::Desktop: return FormFactor::Desktop;
     }
     return FormFactor::Desktop;
 }
@@ -64,6 +67,14 @@ inline FormFactor current_form_factor() {
     return resolve_form_factor(primary_screen_size().width());
 }
 
+// Token-derived phone/tablet geometry (page margins, touch rows, gesture pill,
+// sheet radius) for the current primary screen. Exposed so shell widgets and
+// the host-side verification can read the same numbers the model asserts.
+inline mobile::LayoutMetrics current_layout_metrics() {
+    const QSize s = primary_screen_size();
+    return mobile::compute_layout(s.width(), s.height());
+}
+
 inline QColor token_color(std::uint32_t rgba) {
     return QColor::fromRgba(rgba);
 }
@@ -73,23 +84,28 @@ inline QColor with_alpha(QColor color, int alpha) {
     return color;
 }
 
+// Material weights from ui/_tokens.fui:102. They are not emitted into
+// generated_tokens.hpp, so the shell transcribes the names and values here
+// rather than inventing new per-widget alphas. The compositor's real
+// backdrop blur and the elevation shadows are unchanged by this choice.
+inline constexpr int kGlassPanelAlpha = static_cast<int>(255 * 0.65 + 0.5);
+inline constexpr int kGlassTileAlpha = static_cast<int>(255 * 0.85 + 0.5);
+inline constexpr int kGlassWellAlpha = static_cast<int>(255 * 0.53 + 0.5);
+
 inline QColor shell_glass_fill(const finn::ui::FinnTokens& t) {
-    return with_alpha(t.glass, t.dark ? 228 : 220);
+    return with_alpha(t.glass, kGlassPanelAlpha);
 }
 
 inline QColor shell_dock_fill(const finn::ui::FinnTokens& t) {
-    return with_alpha(t.glass, t.dark ? 210 : 196);
+    return with_alpha(t.glass, kGlassPanelAlpha);
 }
 
 inline QColor shell_subcard_fill(const finn::ui::FinnTokens& t) {
-    return with_alpha(t.tile, t.dark ? 220 : 204);
+    return with_alpha(t.glass, kGlassPanelAlpha);
 }
 
 inline QColor shell_footer_fill(const finn::ui::FinnTokens& t) {
-    return with_alpha(
-        token_color(t.dark ? finn::ui::colors::surface_canvas_dark
-                           : finn::ui::colors::surface_canvas_light),
-        t.dark ? 236 : 242);
+    return with_alpha(t.glass, kGlassWellAlpha);
 }
 
 inline QColor shell_input_fill(const finn::ui::FinnTokens& t) {
@@ -159,59 +175,62 @@ inline constexpr int kNotificationShadowPad =
 // Separable box blur, three passes: a standard real-time approximation of a
 // Gaussian. Operates on the ARGB image in place, so it is a genuine blur of
 // the shadow mask rather than a drawn gradient.
+//
+// The kernel is O(w * h) per pass with sliding-window sums. The previous
+// version scanned up to 2r+1 neighbours per pixel and used QImage::pixel() in
+// the vertical pass, which made a first-time popover shadow (472x328 px at
+// blur 35, radius 11) cost ~21M neighbour reads. See docs/performance.md.
 inline void box_blur_argb(QImage& img, int radius) {
-    if (radius <= 0) return;
+    if (radius <= 0 || img.format() != QImage::Format_ARGB32) return;
     const int w = img.width();
     const int h = img.height();
-    QImage tmp(w, h, QImage::Format_ARGB32);
-    tmp.fill(Qt::transparent);
+    const std::size_t pixels = static_cast<std::size_t>(w) * h;
+    std::vector<QRgb> buf(pixels);
+    std::vector<QRgb> tmp(pixels);
+    // QImage rows may be padded; copy through contiguous buffers so the
+    // strided vertical pass is well-defined for any bytesPerLine.
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(buf.data() + static_cast<std::size_t>(y) * w,
+                    img.constScanLine(y), static_cast<std::size_t>(w) * sizeof(QRgb));
+    }
+    blur_kernel::box_blur_argb_u32(
+        reinterpret_cast<std::uint32_t*>(buf.data()),
+        reinterpret_cast<std::uint32_t*>(tmp.data()), w, h, radius);
+    for (int y = 0; y < h; ++y) {
+        std::memcpy(img.scanLine(y), buf.data() + static_cast<std::size_t>(y) * w,
+                    static_cast<std::size_t>(w) * sizeof(QRgb));
+    }
+}
 
-    auto blur_h = [&](const QImage& src, QImage& dst) {
-        for (int y = 0; y < h; ++y) {
-            const QRgb* row = reinterpret_cast<const QRgb*>(src.constScanLine(y));
-            QRgb* out = reinterpret_cast<QRgb*>(dst.scanLine(y));
-            for (int x = 0; x < w; ++x) {
-                int a = 0, r = 0, g = 0, b = 0, n = 0;
-                for (int k = std::max(0, x - radius);
-                     k <= std::min(w - 1, x + radius); ++k) {
-                    const QRgb px = row[k];
-                    a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
-                    ++n;
-                }
-                out[x] = qRgba(r / n, g / n, b / n, a / n);
-            }
-        }
+struct ShadowCacheKey {
+    int w = 0;
+    int h = 0;
+    qreal corner = 0;
+    int blur = 0;
+    bool operator==(const ShadowCacheKey& o) const {
+        return w == o.w && h == o.h && blur == o.blur &&
+               qFuzzyCompare(corner + 1.0, o.corner + 1.0);
+    }
+};
+
+inline uint qHash(const ShadowCacheKey& key, uint seed = 0) {
+    const auto mix = [seed](uint h, int v) {
+        return h ^ static_cast<uint>(std::hash<int>{}(v) + 0x9e3779b9u +
+                                     (h << 6) + (h >> 2));
     };
-    auto blur_v = [&](const QImage& src, QImage& dst) {
-        for (int x = 0; x < w; ++x) {
-            for (int y = 0; y < h; ++y) {
-                int a = 0, r = 0, g = 0, b = 0, n = 0;
-                for (int k = std::max(0, y - radius);
-                     k <= std::min(h - 1, y + radius); ++k) {
-                    const QRgb px = src.pixel(x, k);
-                    a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
-                    ++n;
-                }
-                dst.setPixel(x, y, qRgba(r / n, g / n, b / n, a / n));
-            }
-        }
-    };
-    blur_h(img, tmp);
-    blur_v(tmp, img);
-    blur_h(img, tmp);
-    blur_v(tmp, img);
-    blur_h(img, tmp);
-    blur_v(tmp, img);
+    uint h = mix(seed, key.w);
+    h = mix(h, key.h);
+    h = mix(h, key.blur);
+    h = mix(h, qRound(key.corner * 100.0));
+    return h;
 }
 
 inline QPixmap layer_shadow_pixmap(int w, int h, qreal corner, int blur) {
-    static QHash<QByteArray, QPixmap> cache;
+    static QHash<ShadowCacheKey, QPixmap> cache;
     const int pad = layer_shadow_pad(blur);
     const int iw = w + 2 * pad;
     const int ih = h + 2 * pad;
-    QByteArray key;
-    QDataStream stream(&key, QIODevice::WriteOnly);
-    stream << w << h << corner << blur;
+    const ShadowCacheKey key{w, h, corner, blur};
     if (cache.contains(key)) return cache.value(key);
 
     QImage mask(iw, ih, QImage::Format_ARGB32);

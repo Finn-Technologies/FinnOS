@@ -573,8 +573,8 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
     const QColor ink = t.ink;
     const QColor placeholder = shell_hover_fill(t);
 
-    // Top-left: Your favorite apps
-    p.setFont(popoverFont(14));
+    // Top-left: Your favorite apps — Figma 4:109 is 16 px Regular.
+    p.setFont(popoverFont(16));
     p.setPen(dim);
     p.drawText(QRectF(15.0, 14.0, compact ? 155.0 : 260.0, 24.0),
                Qt::AlignVCenter | Qt::AlignLeft,
@@ -582,7 +582,9 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
                        : QStringLiteral("Your favorite apps"));
 
     const auto favs = favoriteApps();
-    const QFontMetricsF fm13_list(popoverFont(13));
+    // Figma 4:98 / 4:132 row labels are 16 px; the metrics must match the
+    // painted font or elision is measured against the wrong glyph widths.
+    const QFontMetricsF fm13_list(popoverFont(16));
     const std::size_t max_favs = compact ? 5 : 10;
     for (std::size_t i = 0; i < favs.size() && i < max_favs; ++i) {
         const int col = compact ? 0 : static_cast<int>(i / 5);
@@ -598,12 +600,12 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
         paintAppIconTile(p, QRectF(item_r.x(), item_r.y(), 32.0, 32.0),
                          finn::ui::radii::r_md,
                          QString::fromStdString(favs[i]->icon), dpr);
-        p.setFont(popoverFont(13));
+        p.setFont(popoverFont(16));  // Figma 4:98
         p.setPen(ink);
         const qreal label_w = item_r.width() - 36.0;
         const QString name = fm13_list.elidedText(
             QString::fromStdString(favs[i]->name), Qt::ElideRight, label_w);
-        p.drawText(QRectF(item_r.x() + 40.0, item_r.y(), label_w, 32.0),
+        p.drawText(QRectF(item_r.x() + 42.0, item_r.y(), label_w, 32.0),
                    Qt::AlignVCenter | Qt::AlignLeft, name);
     }
 
@@ -613,7 +615,7 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
     // Top-right: All Apps or expanded Category
     const qreal right_x = compact ? 182.0 : 310.0;
     if (active_category_.isEmpty()) {
-        p.setFont(popoverFont(14));
+        p.setFont(popoverFont(16));  // Figma 4:69
         p.setPen(dim);
         p.drawText(QRectF(right_x, 14.0, w - right_x - 12.0, 24.0),
                    Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("All Apps"));
@@ -636,8 +638,9 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
             p.setPen(Qt::NoPen);
             p.setBrush(is_hovered ? shell_pressed_fill(t)
                                   : shell_subcard_fill(t));
-            p.drawRoundedRect(QRectF(fx, fy, tile_sz, tile_sz),
-                              finn::ui::radii::r_lg, finn::ui::radii::r_lg);
+            // Figma 4:132 category folder: 80x80, radius 14. There is no
+            // 14 dp radius token; this literal is node-scoped on purpose.
+            p.drawRoundedRect(QRectF(fx, fy, tile_sz, tile_sz), 14.0, 14.0);
 
             const auto cat_apps = categoryApps(cats[idx]);
             const qreal big_sz = compact ? 25.0 : 32.0;
@@ -725,7 +728,7 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
                 paintAppIconTile(p, QRectF(item_r.x(), item_r.y(), 32.0, 32.0),
                                  finn::ui::radii::r_md,
                                  QString::fromStdString(cat_apps[i]->icon), dpr);
-                p.setFont(popoverFont(13));
+                p.setFont(popoverFont(16));  // Figma 4:98 inside 4:132
                 p.setPen(ink);
                 const qreal label_w = item_r.width() - 38.0;
                 const QString name = fm13_list.elidedText(
@@ -741,7 +744,7 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
     if (footer_y >= 340) {
         const qreal rec_hdr_y = compact ? 274.0 : 267.0;
         const qreal rec_y0 = compact ? 302.0 : 297.0;
-        p.setFont(popoverFont(14));
+        p.setFont(popoverFont(16));  // Figma 4:369
         p.setPen(dim);
         p.drawText(QRectF(15.0, rec_hdr_y, w - 30.0, 22.0),
                    Qt::AlignVCenter | Qt::AlignLeft,
@@ -949,9 +952,10 @@ void SpotlightPopover::applyResponsiveLayout() {
         setLayerMargins(QMargins(
             0, 0, 0, std::max(0, bottom_margin - kPopoverShadowPad)));
     }
+    // Figma 5:16 (300x44 pill) + 16 px gap + 5:2 (350x228 card) = 288.
     setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
-                         287 + 2 * kPopoverShadowPad));
-    setFixedSize(w + 2 * kPopoverShadowPad, 287 + 2 * kPopoverShadowPad);
+                         288 + 2 * kPopoverShadowPad));
+    setFixedSize(w + 2 * kPopoverShadowPad, 288 + 2 * kPopoverShadowPad);
     if (query_edit_) {
         const int pill_w = std::min(300, w - 24);
         const int pill_x = (w - pill_w) / 2;
@@ -975,7 +979,7 @@ void SpotlightPopover::updatePopoverInputRegions() {
         QRect(pill_x, 0, pill_w, 44)
             .adjusted(-kPopoverShadowPad, -kPopoverShadowPad,
                       kPopoverShadowPad, kPopoverShadowPad),
-        QRect(0, 59, w, 228)
+        QRect(0, 60, w, 228)
             .adjusted(-kPopoverShadowPad, -kPopoverShadowPad,
                       kPopoverShadowPad, kPopoverShadowPad),
     });
@@ -1297,11 +1301,11 @@ void SpotlightPopover::paintEvent(QPaintEvent*) {
     p.translate(0.0, (1.0 - open_progress_) * 10.0);
     paintLayerShadow(
         p,
-        QRectF(pill_x + kPopoverShadowPad, kPopoverShadowPad, pill_w, 43.0),
-        21.5, finn::ui::blur::blur_glass,
+        QRectF(pill_x + kPopoverShadowPad, kPopoverShadowPad, pill_w, 44.0),
+        finn::ui::radii::r_pill, finn::ui::blur::blur_glass,
         finn::ui::elevation::elev_popover);
     paintLayerShadow(
-        p, QRectF(kPopoverShadowPad, 59.0 + kPopoverShadowPad, w, 227.0),
+        p, QRectF(kPopoverShadowPad, 60.0 + kPopoverShadowPad, w, 228.0),
         finn::ui::radii::r_lg, finn::ui::blur::blur_glass,
         finn::ui::elevation::elev_popover);
     p.translate(kPopoverShadowPad, kPopoverShadowPad);
@@ -1313,15 +1317,15 @@ void SpotlightPopover::paintEvent(QPaintEvent*) {
     // Top search pill
     p.setPen(QPen(t.hair, 1.0));
     p.setBrush(glass);
-    p.drawRoundedRect(QRectF(pill_x + 0.5, 0.5, pill_w - 1.0, 43.0), 21.5,
-                      21.5);
+    p.drawRoundedRect(QRectF(pill_x + 0.5, 0.5, pill_w - 1.0, 44.0),
+                      finn::ui::radii::r_pill, finn::ui::radii::r_pill);
     paintMonochromeIcon(p, QRectF(pill_x + 8.0, 8.0, 28.0, 28.0),
                         QStringLiteral("search-01"), ink, dpr);
 
     // Bottom recommendations / results card
     p.setPen(QPen(t.hair, 1.0));
     p.setBrush(glass);
-    p.drawRoundedRect(QRectF(0.5, 59.5, w - 1.0, 227.0), finn::ui::radii::r_lg,
+    p.drawRoundedRect(QRectF(0.5, 60.0, w - 1.0, 228.0), finn::ui::radii::r_lg,
                       finn::ui::radii::r_lg);
 
     if (query_edit_->text().trimmed().isEmpty()) {
@@ -1571,9 +1575,11 @@ void ControlCenterPopover::applyResponsiveLayout() {
         setLayerMargins(QMargins(
             0, 0, std::max(0, right_margin - kPopoverShadowPad),
             std::max(0, 74 - kPopoverShadowPad)));
+        // Figma 11:216 is 444x300. The old 254 px surface clipped the lower
+        // 46 px of the designed card (including the 17:42 footer).
         setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
-                             254 + 2 * kPopoverShadowPad));
-        setFixedSize(w + 2 * kPopoverShadowPad, 254 + 2 * kPopoverShadowPad);
+                             300 + 2 * kPopoverShadowPad));
+        setFixedSize(w + 2 * kPopoverShadowPad, 300 + 2 * kPopoverShadowPad);
         if (brightness_slider_)
             brightness_slider_->setGeometry(6 + kPopoverShadowPad,
                                             110 + kPopoverShadowPad, w - 12, 36);
@@ -1593,8 +1599,8 @@ void ControlCenterPopover::applyResponsiveLayout() {
                                  std::max(0, 62 - kPopoverShadowPad)));
     }
     setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
-                         254 + 2 * kPopoverShadowPad));
-    setFixedSize(w + 2 * kPopoverShadowPad, 254 + 2 * kPopoverShadowPad);
+                         300 + 2 * kPopoverShadowPad));
+    setFixedSize(w + 2 * kPopoverShadowPad, 300 + 2 * kPopoverShadowPad);
     if (brightness_slider_)
         brightness_slider_->setGeometry(6 + kPopoverShadowPad,
                                         110 + kPopoverShadowPad, w - 12, 36);
@@ -1977,20 +1983,21 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
                         QStringLiteral("forward"), media_tint, dpr);
 
     // Bottom bar
-    paintGlassFooter(p, w, 204.0, 50.0, finn::ui::radii::r_lg, t);
+    // Figma 17:42: the footer sits at y=250 inside the 300 px panel.
+    paintGlassFooter(p, w, 250.0, 50.0, finn::ui::radii::r_lg, t);
 
     if (hovered_ == ControlTarget::ThemeToggle) {
-        paintHoverFill(p, QRectF(w - 80.0, 212.0, 34.0, 34.0),
+        paintHoverFill(p, QRectF(w - 80.0, 258.0, 34.0, 34.0),
                        finn::ui::radii::r_md, t);
     }
-    paintMonochromeIcon(p, QRectF(w - 74.0, 218.0, 22.0, 22.0),
+    paintMonochromeIcon(p, QRectF(w - 74.0, 264.0, 22.0, 22.0),
                         QStringLiteral("edit-01"), ink, dpr);
 
     if (hovered_ == ControlTarget::OpenSettings) {
-        paintHoverFill(p, QRectF(w - 43.0, 212.0, 34.0, 34.0),
+        paintHoverFill(p, QRectF(w - 43.0, 258.0, 34.0, 34.0),
                        finn::ui::radii::r_md, t);
     }
-    paintMonochromeIcon(p, QRectF(w - 37.0, 218.0, 22.0, 22.0),
+    paintMonochromeIcon(p, QRectF(w - 37.0, 264.0, 22.0, 22.0),
                         QStringLiteral("settings-02"), ink, dpr);
 
     const QRectF focus_rects[7] = {
@@ -1999,8 +2006,8 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
         QRectF(media_btn_x, 70.0, 26.0, 26.0),
         QRectF(media_btn_x + 33.0, 70.0, 26.0, 26.0),
         QRectF(media_btn_x + 66.0, 70.0, 26.0, 26.0),
-        QRectF(w - 80.0, 212.0, 34.0, 34.0),
-        QRectF(w - 43.0, 212.0, 34.0, 34.0),
+        QRectF(w - 80.0, 258.0, 34.0, 34.0),
+        QRectF(w - 43.0, 258.0, 34.0, 34.0),
     };
     if (focused_target_idx_ >= 0 && focused_target_idx_ < 7) {
         draw_focus_ring(p, focus_rects[focused_target_idx_],

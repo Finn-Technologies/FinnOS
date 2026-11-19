@@ -6,8 +6,11 @@
 
 #include "lamp_widget.hpp"
 #include "common/paths.hpp"
+#include "shell/full_oobe_flow.hpp"
+#include "shell/oobe_capability_probe.hpp"
 #include "system/desktop_services.hpp"
 
+#include <QCheckBox>
 #include <QDir>
 #include <QDialog>
 #include <QElapsedTimer>
@@ -15,6 +18,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFontMetricsF>
+#include <QGuiApplication>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QImage>
@@ -28,10 +32,13 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QStackedWidget>
+#include <QTextStream>
+#include <QTimeZone>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -46,6 +53,86 @@ using namespace finn::ui;
 
 QFont oobe_font(int pixel_size, QFont::Weight weight = QFont::Normal) {
     return finn_font_px(pixel_size, weight);
+}
+
+// Form factors share the shell's breakpoints and override variable so a
+// phone/tablet capture is reproducible on the desktop (docs/design-language.md
+// §1, src/shell/shell_layout.hpp). The Figma OOBE frames are 1280x832 desktop;
+// phone and tablet are derived layouts, not a scaled desktop frame.
+enum class OobeForm { Phone, Tablet, Desktop };
+
+// `finn-sdk simulate --headless` exports FINN_SIM_WIDTH/HEIGHT and
+// FINN_FORM_FACTOR. Prefer them over the physical screen so a simulated phone
+// gets the phone layout even when captured from a desktop monitor.
+int oobe_screen_width() {
+    bool ok = false;
+    const int simulated = qgetenv("FINN_SIM_WIDTH").toInt(&ok);
+    if (ok && simulated > 0) return simulated;
+    if (QScreen* screen = QGuiApplication::primaryScreen()) {
+        const int w = screen->availableGeometry().width();
+        if (w > 0) return w;
+    }
+    return 1280;  // the Figma OOBE frame width, and an explicit fallback
+}
+
+OobeForm oobe_form() {
+    const QByteArray override = qgetenv("FINN_FORM_FACTOR").trimmed().toLower();
+    if (override == "phone") return OobeForm::Phone;
+    if (override == "tablet") return OobeForm::Tablet;
+    if (override == "desktop") return OobeForm::Desktop;
+    const int width = oobe_screen_width();
+    if (width <= finn::ui::breakpoints::bp_phone_max) return OobeForm::Phone;
+    if (width <= finn::ui::breakpoints::bp_tablet_max) return OobeForm::Tablet;
+    return OobeForm::Desktop;
+}
+
+int oobe_gutter() {
+    switch (oobe_form()) {
+        case OobeForm::Phone: return 16;   // 16 dp page margin, 44 dp touch rows
+        case OobeForm::Tablet: return 24;
+        case OobeForm::Desktop: return 80; // Figma 36:53 page inset
+    }
+    return 80;
+}
+
+// Figma's content column is 350 px. On a narrow screen it must fit between
+// the form-factor gutters; on desktop it stays exactly 350 px.
+int oobe_content_width() {
+    return qMax(240, qMin(350, oobe_screen_width() - 2 * oobe_gutter()));
+}
+
+// The flow model's step order is the product contract (connectivity and
+// account before personalisation). The painted page order keeps the Figma
+// "hi." -> language continuity, so these two tables are the only place the
+// mapping is allowed to live.
+using OobeStep = finn::shell::oobe::Step;
+
+int ui_index_for_step(OobeStep step) {
+    switch (step) {
+        case OobeStep::Welcome: return 0;
+        case OobeStep::Connectivity: return 2;
+        case OobeStep::Account: return 3;
+        case OobeStep::Privacy: return 6;
+        case OobeStep::RegionLocale: return 1;
+        case OobeStep::Accessibility: return 5;
+        case OobeStep::Theme: return 4;
+        case OobeStep::Finish: return 7;
+    }
+    return 0;
+}
+
+OobeStep step_for_ui_index(int index) {
+    switch (index) {
+        case 0: return OobeStep::Welcome;
+        case 1: return OobeStep::RegionLocale;
+        case 2: return OobeStep::Connectivity;
+        case 3: return OobeStep::Account;
+        case 5: return OobeStep::Accessibility;
+        case 6: return OobeStep::Privacy;
+        case 7: return OobeStep::Finish;
+        case 4:
+        default: return OobeStep::Theme;
+    }
 }
 
 QString oobe_tr(const QString& key, const QString& locale) {
@@ -356,7 +443,7 @@ public:
           label_(label),
           detail_(detail),
           selected_(selected) {
-        setFixedSize(350, 37);
+        setFixedSize(oobe_content_width(), 37);
         setFocusPolicy(Qt::TabFocus);
         setAccessibleName(detail.isEmpty() ? label : QStringLiteral("%1, %2").arg(label, detail));
         setCursor(Qt::PointingHandCursor);
@@ -484,7 +571,7 @@ class OobeAppearancePreview final : public QWidget {
 
 public:
     explicit OobeAppearancePreview(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedSize(350, 200);
+        setFixedSize(oobe_content_width(), 200);
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 this, qOverload<>(&QWidget::update));
     }
@@ -658,7 +745,7 @@ public:
     OobeInputField(const QString& placeholder, bool password = false,
                    QWidget* parent = nullptr)
         : QWidget(parent) {
-        setFixedSize(350, 42);
+        setFixedSize(oobe_content_width(), 42);
         auto* lay = new QHBoxLayout(this);
         lay->setContentsMargins(12, 4, 12, 4);
         lay->setSpacing(8);
@@ -713,7 +800,7 @@ public:
     OobeToggleRow(const QString& label, bool initial_checked,
                   QWidget* parent = nullptr)
         : QWidget(parent) {
-        setFixedSize(350, 39);
+        setFixedSize(oobe_content_width(), 39);
         auto* lay = new QHBoxLayout(this);
         lay->setContentsMargins(8, 2, 8, 2);
         lay->setSpacing(10);
@@ -876,7 +963,7 @@ class OobeProgressiveList final : public QWidget {
 
 public:
     explicit OobeProgressiveList(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedWidth(356);
+        setFixedWidth(oobe_content_width() + 6);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         setAttribute(Qt::WA_TranslucentBackground, true);
         setAttribute(Qt::WA_NoSystemBackground, true);
@@ -1540,8 +1627,10 @@ class OobeWindow final : public FinnLayerWindow {
     Q_OBJECT
 
 public:
-    explicit OobeWindow(bool update_mode = false, double fixed_phase = -1.0)
+    explicit OobeWindow(bool update_mode = false, double fixed_phase = -1.0,
+                        finn::shell::oobe::CapabilitySnapshot caps = {})
         : FinnLayerWindow(Layer::Overlay, QStringLiteral("finn-oobe")),
+          flow_(std::move(caps)),
           update_mode_(update_mode),
           fixed_phase_(fixed_phase) {
         setAnchors(AnchorTop | AnchorBottom | AnchorLeft | AnchorRight);
@@ -1560,8 +1649,10 @@ public:
         stack_->addWidget(buildAccountPage());
         stack_->addWidget(buildAppearancePage());
         stack_->addWidget(buildAccessibilityPage());
-        stack_->addWidget(buildCompletePage());
+        stack_->addWidget(buildPrivacyPage());   // UI 6 -> model Step::Privacy
+        stack_->addWidget(buildCompletePage());  // UI 7 -> model Step::Finish
         root->addWidget(stack_, 1);
+
 
         // Shared Back/Next circular navigation bar pinned across steps 1..5 so
         // arrows stay completely stationary during page slide transitions.
@@ -1571,13 +1662,20 @@ public:
         nav_row->setContentsMargins(0, 0, 0, 0);
         nav_row->setSpacing(20);
         auto* back_btn = new OobeCircleNavButton(true, false, shared_nav_box_);
-        auto* next_btn = new OobeCircleNavButton(false, false, shared_nav_box_);
+        shared_next_btn_ = new OobeCircleNavButton(false, false, shared_nav_box_);
         connect(back_btn, &QAbstractButton::clicked, this, &OobeWindow::previousStep);
-        connect(next_btn, &QAbstractButton::clicked, this, &OobeWindow::advanceStep);
+        connect(shared_next_btn_, &QAbstractButton::clicked, this, &OobeWindow::advanceStep);
         nav_row->addWidget(back_btn);
-        nav_row->addWidget(next_btn);
+        nav_row->addWidget(shared_next_btn_);
         shared_nav_box_->setVisible(false);
         shared_nav_box_->raise();
+
+        gate_hint_lbl_ = new QLabel(this);
+        gate_hint_lbl_->setAlignment(Qt::AlignCenter);
+        gate_hint_lbl_->setFont(oobe_font(12, QFont::Normal));
+        gate_hint_lbl_->setWordWrap(true);
+        gate_hint_lbl_->setFixedWidth(460);
+        gate_hint_lbl_->setVisible(false);
 
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 this, qOverload<>(&QWidget::update));
@@ -1586,7 +1684,7 @@ public:
                 this, &OobeWindow::syncNetwork);
         finn::sys::FinnDesktopServices::instance().refreshAll();
 
-        setStep(update_mode_ ? 6 : 0);
+        setStep(update_mode_ ? 7 : 0);
         positionSharedNav();
     }
 
@@ -1640,32 +1738,46 @@ private:
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
 
+        const OobeForm form = oobe_form();
+        const int gutter = oobe_gutter();
         auto* main_col = new QVBoxLayout(page);
-        main_col->setContentsMargins(80, 0, 80, 0);
+        // The shared Back/Next bar floats 145 px above the bottom on desktop;
+        // on phone it sits in a reserved 132 dp strip so it never covers the
+        // last list row.
+        main_col->setContentsMargins(gutter, form == OobeForm::Phone ? gutter : 0,
+                                     gutter, form == OobeForm::Phone ? 132 : 0);
         main_col->setSpacing(0);
 
-        auto* content_row = new QHBoxLayout();
+        QBoxLayout* content_row = form == OobeForm::Phone
+            ? static_cast<QBoxLayout*>(new QVBoxLayout())
+            : static_cast<QBoxLayout*>(new QHBoxLayout());
         content_row->setContentsMargins(0, 0, 0, 0);
-        content_row->setSpacing(32);
+        content_row->setSpacing(form == OobeForm::Phone ? 12
+                                : form == OobeForm::Tablet ? 16 : 32);
 
-        // Left column: 46x46 icon + 40px gap + conversational question centered vertically (Figma 36:53)
+        // Left column: 46x46 icon + 40px gap + conversational question centered
+        // vertically (Figma 36:53). On phone it is a stacked header instead of a
+        // side column; on tablet it keeps the split but drops the desktop inset.
         auto* left_host = new QWidget(page);
         auto* left_col = new QVBoxLayout(left_host);
-        left_col->setContentsMargins(80, 0, 20, 0);
+        left_col->setContentsMargins(form == OobeForm::Desktop ? 80 : 0, 0,
+                                     form == OobeForm::Desktop ? 20 : 0, 0);
         left_col->setSpacing(0);
-        left_col->addStretch(49);
+        if (form != OobeForm::Phone) left_col->addStretch(49);
 
         auto* icon_lbl = new QLabel(left_host);
         icon_lbl->setFixedSize(46, 46);
         icon_lbl->setAlignment(Qt::AlignCenter);
         left_col->addWidget(icon_lbl, 0, Qt::AlignHCenter);
-        left_col->addSpacing(40);
+        left_col->addSpacing(form == OobeForm::Phone ? 12
+                             : form == OobeForm::Tablet ? 24 : 40);
 
         auto* prompt_lbl = new QLabel(prompt_text, left_host);
-        prompt_lbl->setFont(oobe_font(24, QFont::Normal));
+        prompt_lbl->setFont(oobe_font(form == OobeForm::Phone ? 20 : 24,
+                                      QFont::Normal));
         prompt_lbl->setAlignment(Qt::AlignCenter);
         prompt_lbl->setWordWrap(true);
-        prompt_lbl->setFixedWidth(300);
+        prompt_lbl->setFixedWidth(qMin(300, oobe_content_width()));
         prompt_lbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
         if (out_prompt_label) *out_prompt_label = prompt_lbl;
         left_col->addWidget(prompt_lbl, 0, Qt::AlignHCenter);
@@ -1677,12 +1789,12 @@ private:
             sub_lbl->setFont(oobe_font(14, QFont::Normal));
             sub_lbl->setAlignment(Qt::AlignCenter);
             sub_lbl->setWordWrap(true);
-            sub_lbl->setFixedWidth(280);
+            sub_lbl->setFixedWidth(qMin(280, oobe_content_width()));
             sub_lbl->setVisible(!sub_caption.isEmpty());
             left_col->addWidget(sub_lbl, 0, Qt::AlignHCenter);
             if (out_sub_label) *out_sub_label = sub_lbl;
         }
-        left_col->addStretch(51);
+        if (form != OobeForm::Phone) left_col->addStretch(51);
 
         auto sync_left_colors = [icon_lbl, icon_name, prompt_lbl, sub_lbl]() {
             const auto& t = FinnThemeManager::instance().tokens();
@@ -1704,16 +1816,26 @@ private:
                 page, sync_left_colors);
         sync_left_colors();
 
-        // Right column positioned at Figma's x=805, y=195 (or y=0 for ceiling lamp)
+        // Right column: Figma's x=805, y=195 on desktop; a centered card on
+        // tablet and a full-width stacked list on phone.
         auto* right_host = new QWidget(page);
         auto* right_col = new QVBoxLayout(right_host);
-        right_col->setContentsMargins(0, flush_right_top ? 0 : 195, 45, 0);
+        const int right_top = form == OobeForm::Desktop && !flush_right_top ? 195 : 0;
+        right_col->setContentsMargins(0, right_top,
+                                      form == OobeForm::Desktop ? 45 : 0, 0);
         right_col->setSpacing(0);
-        right_col->addWidget(right_column, 1);
+        right_col->addWidget(right_column, 1,
+                             form == OobeForm::Desktop ? Qt::AlignRight
+                                                       : Qt::AlignHCenter);
 
-        content_row->addWidget(left_host, 1);
-        content_row->addSpacing(132);
-        content_row->addWidget(right_host, 1, Qt::AlignRight);
+        if (form == OobeForm::Phone) {
+            content_row->addWidget(left_host, 0, Qt::AlignHCenter);
+            content_row->addWidget(right_host, 1);
+        } else {
+            content_row->addWidget(left_host, 1);
+            content_row->addSpacing(form == OobeForm::Tablet ? 16 : 132);
+            content_row->addWidget(right_host, 1, Qt::AlignRight);
+        }
 
         main_col->addLayout(content_row, 1);
         return page;
@@ -1774,7 +1896,7 @@ private:
     // Step 1: Figma 36:53 ("How do we talk?") with world languages + progressive blur
     QWidget* buildLanguagePage() {
         auto* list_wrap = new QWidget();
-        list_wrap->setFixedWidth(356);
+        list_wrap->setFixedWidth(oobe_content_width() + 6);
         list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
 
@@ -1869,6 +1991,25 @@ private:
 
         int initial_idx = 0;
         constexpr int kLangCount = static_cast<int>(sizeof(kLanguages) / sizeof(kLanguages[0]));
+
+        // The flow model validates locale/region against a real catalogue.
+        // These are exactly the languages this page can select and the
+        // host's real timezones, so no invented value can pass the gate.
+        {
+            finn::shell::oobe::LocaleCatalog catalog;
+            for (int i = 0; i < kLangCount; ++i) {
+                const QString loc = QString::fromLatin1(kLanguages[i].locale);
+                catalog.locales.push_back(loc.toStdString());
+                // Must match syncFlowFromUi(): "en_GB.UTF-8" -> "GB".
+                catalog.regions.push_back(
+                    loc.section(QLatin1Char('_'), -1)
+                       .section(QLatin1Char('.'), 0, 0).toStdString());
+            }
+            for (const QString z : QTimeZone::availableTimeZoneIds()) {
+                catalog.timezones.push_back(z.toStdString());
+            }
+            flow_.setCatalog(std::move(catalog));
+        }
         for (int i = 0; i < kLangCount; ++i) {
             if (QString::fromLatin1(kLanguages[i].locale) == initial_locale) {
                 initial_idx = i;
@@ -1909,7 +2050,7 @@ private:
     // Step 2: Wi-Fi / Network in the same Figma 36:53 split layout
     QWidget* buildWifiPage() {
         auto* list_wrap = new QWidget();
-        list_wrap->setFixedWidth(356);
+        list_wrap->setFixedWidth(oobe_content_width() + 6);
         list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
 
         wifi_prog_list_ = new OobeProgressiveList(list_wrap);
@@ -1920,16 +2061,29 @@ private:
         stack_lay->addWidget(wifi_prog_list_, 0, 0);
         stack_lay->addWidget(wifi_blur_ov_, 0, 0);
 
+        // Offline is an explicit, named choice. The model refuses to record
+        // "connected" without a measured connector and a named network.
+        auto* host = new QWidget();
+        auto* col = new QVBoxLayout(host);
+        col->setContentsMargins(0, 0, 0, 0);
+        col->setSpacing(12);
+        col->addWidget(list_wrap, 1);
+        continue_offline_cb_ = new QCheckBox(
+            QStringLiteral("Continue without connecting to a network"), host);
+        connect(continue_offline_cb_, &QCheckBox::toggled, this,
+                [this]() { refreshFlowGate(); });
+        col->addWidget(continue_offline_cb_, 0, Qt::AlignHCenter);
+
         return createSplitStepPage(QStringLiteral("wifi-02"),
                                    oobe_tr(QStringLiteral("wifi_prompt"), selected_locale_),
                                    {},
-                                   list_wrap, nullptr, false, &wifi_prompt_lbl_);
+                                   host, nullptr, false, &wifi_prompt_lbl_);
     }
 
     // Step 3: Account setup with Figma PFP color picker + account fields
     QWidget* buildAccountPage() {
         auto* col_host = new QWidget();
-        col_host->setFixedWidth(356);
+        col_host->setFixedWidth(oobe_content_width() + 6);
         auto* col = new QVBoxLayout(col_host);
         col->setContentsMargins(0, 0, 6, 0);
         col->setSpacing(0);
@@ -2050,7 +2204,7 @@ private:
         appearance_prompt_lbl_->setFont(oobe_font(24, QFont::Normal));
         appearance_prompt_lbl_->setAlignment(Qt::AlignCenter);
         appearance_prompt_lbl_->setWordWrap(true);
-        appearance_prompt_lbl_->setFixedWidth(300);
+        appearance_prompt_lbl_->setFixedWidth(qMin(300, oobe_content_width()));
         left_col->addWidget(appearance_prompt_lbl_, 0, Qt::AlignHCenter);
         left_col->addStretch(51);
 
@@ -2076,13 +2230,44 @@ private:
         halves->addStretch(1);
         stack_grid->addWidget(base_layer, 0, 0);
         stack_grid->addWidget(lamp, 0, 0);
+
+        // A real Light/Dark choice. The cards were already part of the
+        // FinnUI vocabulary but were not wired to the appearance step; the
+        // flow model requires an explicit choice before finishing.
+        auto* chooser = new QWidget(page);
+        auto* chooser_row = new QHBoxLayout(chooser);
+        chooser_row->setContentsMargins(0, 0, 0, 24);
+        chooser_row->setSpacing(12);
+        auto* light_card = new OobeAppearanceCard(false, QStringLiteral("Light"),
+                                                  !FinnThemeManager::instance().isDark(),
+                                                  chooser);
+        auto* dark_card = new OobeAppearanceCard(true, QStringLiteral("Dark"),
+                                                 FinnThemeManager::instance().isDark(),
+                                                 chooser);
+        connect(light_card, &OobeAppearanceCard::clicked, this, [this, light_card, dark_card]() {
+            FinnThemeManager::instance().setDark(false);
+            light_card->setSelected(true);
+            dark_card->setSelected(false);
+            selected_theme_ = finn::shell::oobe::ThemeChoice::Light;
+            refreshFlowGate();
+        });
+        connect(dark_card, &OobeAppearanceCard::clicked, this, [this, light_card, dark_card]() {
+            FinnThemeManager::instance().setDark(true);
+            light_card->setSelected(false);
+            dark_card->setSelected(true);
+            selected_theme_ = finn::shell::oobe::ThemeChoice::Dark;
+            refreshFlowGate();
+        });
+        chooser_row->addWidget(light_card, 0, Qt::AlignHCenter);
+        chooser_row->addWidget(dark_card, 0, Qt::AlignHCenter);
+        stack_grid->addWidget(chooser, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
         return page;
     }
 
     // Step 5: Accessibility toggles in the same Figma 36:53 split layout
     QWidget* buildAccessibilityPage() {
         auto* col_host = new QWidget();
-        col_host->setFixedWidth(356);
+        col_host->setFixedWidth(oobe_content_width() + 6);
         auto* col = new QVBoxLayout(col_host);
         col->setContentsMargins(0, 0, 6, 0);
         col->setSpacing(10);
@@ -2090,22 +2275,22 @@ private:
         auto& tm = FinnThemeManager::instance();
         const auto s = finn::sys::load_merged_settings();
 
-        auto* sr = new OobeToggleRow(QStringLiteral("Screen Reader"),
-                                     s.screen_reader, col_host);
+        auto* sr = a11y_sr_ = new OobeToggleRow(QStringLiteral("Screen Reader"),
+                                                s.screen_reader, col_host);
         connect(sr, &OobeToggleRow::toggled, this, [](bool on) {
             FinnThemeManager::instance().setScreenReader(on);
         });
         col->addWidget(sr);
 
-        auto* hc = new OobeToggleRow(QStringLiteral("High Contrast"),
-                                     tm.tokens().high_contrast, col_host);
+        auto* hc = a11y_hc_ = new OobeToggleRow(QStringLiteral("High Contrast"),
+                                                tm.tokens().high_contrast, col_host);
         connect(hc, &OobeToggleRow::toggled, this, [](bool on) {
             FinnThemeManager::instance().setHighContrast(on);
         });
         col->addWidget(hc);
 
-        auto* rm = new OobeToggleRow(QStringLiteral("Reduce Motion"),
-                                     tm.tokens().reduced_motion, col_host);
+        auto* rm = a11y_rm_ = new OobeToggleRow(QStringLiteral("Reduce Motion"),
+                                                tm.tokens().reduced_motion, col_host);
         connect(rm, &OobeToggleRow::toggled, this, [](bool on) {
             FinnThemeManager::instance().setReducedMotion(on);
         });
@@ -2135,6 +2320,44 @@ private:
         return createSplitStepPage(QStringLiteral("accessibility"),
                                    oobe_tr(QStringLiteral("a11y_prompt"), selected_locale_), {},
                                    col_host, nullptr, false, &a11y_prompt_lbl_);
+    }
+
+    // Model step 3: an explicit privacy acknowledgement. FinnOS has no
+    // telemetry, location or crash-upload service, so those rows are shown
+    // disabled and named as absent rather than offered as working switches.
+    QWidget* buildPrivacyPage() {
+        auto* host = new QWidget();
+        host->setFixedWidth(oobe_content_width() + 6);
+        auto* col = new QVBoxLayout(host);
+        col->setContentsMargins(0, 0, 6, 0);
+        col->setSpacing(12);
+
+        auto* info = new QLabel(
+            QStringLiteral("FinnOS does not collect diagnostics, location or crash reports. "
+                           "No telemetry service is present on this installation."), host);
+        info->setWordWrap(true);
+        info->setFont(oobe_font(14, QFont::Normal));
+        col->addWidget(info);
+
+        auto* loc = new OobeToggleRow(QStringLiteral("Location"), false, host);
+        auto* diag = new OobeToggleRow(QStringLiteral("Diagnostics"), false, host);
+        auto* crash = new OobeToggleRow(QStringLiteral("Crash reports"), false, host);
+        for (auto* row : {loc, diag, crash}) {
+            row->setEnabled(false);
+            row->setToolTip(QStringLiteral("Service absent — not available in this release"));
+            col->addWidget(row);
+        }
+
+        privacy_ack_ = new QCheckBox(
+            QStringLiteral("I understand — continue with everything off"), host);
+        connect(privacy_ack_, &QCheckBox::toggled, this,
+                [this]() { refreshFlowGate(); });
+        col->addWidget(privacy_ack_, 0, Qt::AlignHCenter);
+        col->addStretch(1);
+
+        return createSplitStepPage(QStringLiteral("cog"),
+                                   QStringLiteral("How much should we remember?"), {},
+                                   host);
     }
 
     // Step 5: Video-matched Completion / Update Successful Screen with 6-Ring Slinky
@@ -2308,18 +2531,113 @@ private:
         }
     }
 
+    // Feed the model only from measurements or explicit user actions. A
+    // setter that refuses inconsistent state leaves the model untouched, so
+    // a stale "connected"/"created" can never survive a changed capability.
+    void syncFlowFromUi() {
+        using namespace finn::shell::oobe;
+        const OobeStep step = step_for_ui_index(stack_->currentIndex());
+        switch (step) {
+            case OobeStep::Connectivity: {
+                ConnectivityState st;
+                const auto caps = flow_.capabilities();
+                const auto& net = finn::sys::FinnDesktopServices::instance().network();
+                if (caps.network_manager.state == Availability::Available &&
+                    !net.active_wifi_ssid.isEmpty()) {
+                    st.attempt = NetworkAttempt::Connected;
+                    st.ssid = net.active_wifi_ssid.toStdString();
+                    st.detail = "Wi-Fi link reported by the network service";
+                } else if (caps.network_manager.state == Availability::Available &&
+                           net.wired_connected) {
+                    st.attempt = NetworkAttempt::Connected;
+                    st.ssid = "Wired network";
+                    st.detail = "Ethernet link reported by the network service";
+                } else if (continue_offline_cb_ && continue_offline_cb_->isChecked()) {
+                    st.attempt = caps.network_manager.state == Availability::Unavailable
+                        ? NetworkAttempt::Unavailable : NetworkAttempt::Failed;
+                    st.continue_offline = true;
+                    st.detail = caps.network_manager.state == Availability::Unavailable
+                        ? caps.network_manager.detail
+                        : "No active network was reported by the network service";
+                } else {
+                    st.attempt = NetworkAttempt::NotAttempted;
+                    st.detail = "no connection has been reported";
+                }
+                flow_.setConnectivity(std::move(st));
+                break;
+            }
+            case OobeStep::Account: {
+                AccountState st;
+                const QString name = fullname_edit_ ? fullname_edit_->text().trimmed()
+                                                    : QString();
+                st.display_name = name.toStdString();
+                if (!name.isEmpty()) {
+                    // The local account is created by finishSetup() through
+                    // pkexec; until then no remote account is claimed.
+                    st.outcome = AccountOutcome::LocalOnly;
+                    st.detail = "local profile; account is created at Finish";
+                }
+                flow_.setAccount(std::move(st));
+                break;
+            }
+            case OobeStep::Privacy:
+                flow_.setPrivacy(PrivacyState{false, false, false,
+                                              privacy_ack_ && privacy_ack_->isChecked()});
+                break;
+            case OobeStep::RegionLocale: {
+                RegionState st;
+                st.locale = selected_locale_.toStdString();
+                st.region = selected_locale_.section(QLatin1Char('_'), -1)
+                                         .section(QLatin1Char('.'), 0, 0).toStdString();
+                st.timezone = QTimeZone::systemTimeZoneId().toStdString();
+                flow_.setRegion(std::move(st));
+                break;
+            }
+            case OobeStep::Accessibility: {
+                AccessibilityState st;
+                const auto tri = [](OobeToggleRow* row) {
+                    return !row ? TriState::Unset
+                                : (row->toggle()->isChecked() ? TriState::On
+                                                              : TriState::Off);
+                };
+                st.reduced_motion = tri(a11y_rm_);
+                st.high_contrast = tri(a11y_hc_);
+                st.screen_reader = tri(a11y_sr_);
+                if (st.screen_reader == TriState::On &&
+                    flow_.capabilities().accessibility_bus.state != Availability::Available) {
+                    st.screen_reader = TriState::Unset;  // cannot claim it
+                }
+                flow_.setAccessibility(st);
+                break;
+            }
+            case OobeStep::Theme:
+                flow_.setTheme(ThemeState{selected_theme_});
+                break;
+            default:
+                break;
+        }
+    }
+
+    void refreshFlowGate() {
+        syncFlowFromUi();
+        const auto v = flow_.validate(step_for_ui_index(stack_->currentIndex()));
+        if (shared_next_btn_) shared_next_btn_->setEnabled(v.can_advance);
+        if (gate_hint_lbl_) {
+            gate_hint_lbl_->setText(v.can_advance ? QString()
+                                                   : QString::fromStdString(v.reason));
+            gate_hint_lbl_->setVisible(!v.can_advance);
+        }
+    }
+
     void previousStep() {
-        const int cur = stack_->currentIndex();
-        if (cur > 0) setStep(cur - 1);
+        if (flow_.back()) {
+            setStep(ui_index_for_step(flow_.current()));
+            refreshFlowGate();
+        }
     }
 
     void advanceStep() {
         const int cur = stack_->currentIndex();
-        if (cur == 0 && fixed_phase_ < 0.0) {
-            setStep(1, false);
-            hi_lang_overlay_ = new OobeHiToLangOverlay(this, lang_prompt_lbl_);
-            return;
-        }
         if (cur == 3 && pw_edit_ && pw_verify_edit_) {
             const QString p1 = pw_edit_->text();
             const QString p2 = pw_verify_edit_->text();
@@ -2329,18 +2647,28 @@ private:
                 return;
             }
         }
-        if (cur + 1 < stack_->count()) {
-            setStep(cur + 1);
-        } else {
-            finishSetup();
+        syncFlowFromUi();
+        if (!flow_.advance()) {
+            refreshFlowGate();
+            return;
         }
+        if (gate_hint_lbl_) gate_hint_lbl_->setVisible(false);
+        setStep(ui_index_for_step(flow_.current()));
+        refreshFlowGate();
     }
 
     void positionSharedNav() {
         if (!shared_nav_box_) return;
         const int x = (width() - shared_nav_box_->width()) / 2;
-        const int y = height() - 145 - shared_nav_box_->height();
+        // Desktop keeps Figma's y=631 on an 832 px frame (145 px from the
+        // bottom). Phone moves the pair into the bottom safe-area strip.
+        const int bottom = oobe_form() == OobeForm::Phone ? 24 : 145;
+        const int y = height() - bottom - shared_nav_box_->height();
         shared_nav_box_->move(x, y);
+        if (gate_hint_lbl_) {
+            gate_hint_lbl_->move((width() - gate_hint_lbl_->width()) / 2, y - 34);
+            gate_hint_lbl_->raise();
+        }
     }
 
     QPixmap grabTransparentStack() const {
@@ -2358,7 +2686,7 @@ private:
 
     void setStep(int idx, bool animate_slide = true) {
         if (shared_nav_box_) {
-            shared_nav_box_->setVisible(idx >= 1 && idx <= 5);
+            shared_nav_box_->setVisible(idx >= 1 && idx <= 6);
             shared_nav_box_->raise();
         }
         if (hi_lang_overlay_ && idx != 1) {
@@ -2390,7 +2718,7 @@ private:
 
         stack_->setCurrentIndex(idx);
         if (shared_nav_box_) {
-            shared_nav_box_->setVisible(idx >= 1 && idx <= 5);
+            shared_nav_box_->setVisible(idx >= 1 && idx <= 6);
             shared_nav_box_->raise();
         }
         if (idx == 0 && hi_ribbon_) {
@@ -2400,7 +2728,7 @@ private:
             if (hi_next_btn_) hi_next_btn_->setRevealOpacity(rev);
             return;
         }
-        if (idx == 6 && complete_ribbon_ && fixed_phase_ < 0.0) {
+        if (idx == 7 && complete_ribbon_ && fixed_phase_ < 0.0) {
             complete_ribbon_->restart();
         }
         if (do_slide && !old_snap.isNull()) {
@@ -2413,6 +2741,8 @@ private:
                 this, stack_, std::move(old_snap), new_snap, idx > prev);
             if (shared_nav_box_) shared_nav_box_->raise();
         }
+        if (idx >= 1 && idx <= 6) refreshFlowGate();
+        else if (gate_hint_lbl_) gate_hint_lbl_->setVisible(false);
     }
 
     void applyLanguageSelection(const QString& lang_name, const QString& locale_code) {
@@ -2460,6 +2790,20 @@ private:
         QFile f(marker);
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             f.write("done\n");
+        }
+        // The headless flow's audit is written as-is. It lists the real
+        // capability outcomes and never promotes Unknown/Unavailable to
+        // success. The completion marker above is the only boot-visible fact.
+        const QString audit_path = QDir::homePath() +
+            QStringLiteral("/.local/state/finn/oobe-audit");
+        QDir().mkpath(QFileInfo(audit_path).absolutePath());
+        QFile af(audit_path);
+        if (af.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QTextStream out(&af);
+            for (const std::string& entry : flow_.audit()) {
+                out << QString::fromStdString(entry) << '\n';
+            }
+            out << "summary|" << QString::fromStdString(flow_.report().summary) << '\n';
         }
         close();
     }
@@ -2616,6 +2960,19 @@ private:
         (*run_next)(0);
     }
 
+    // The headless, honest step machine. It owns no UI and claims no success;
+    // every state below is fed from a real probe or a real user action.
+    finn::shell::oobe::FullOobeFlow flow_;
+    OobeCircleNavButton* shared_next_btn_ = nullptr;
+    QLabel* gate_hint_lbl_ = nullptr;
+    QCheckBox* continue_offline_cb_ = nullptr;
+    QCheckBox* privacy_ack_ = nullptr;
+    OobeToggleRow* a11y_sr_ = nullptr;
+    OobeToggleRow* a11y_hc_ = nullptr;
+    OobeToggleRow* a11y_rm_ = nullptr;
+    finn::shell::oobe::ThemeChoice selected_theme_ =
+        finn::shell::oobe::ThemeChoice::Unset;
+
     bool update_mode_ = false;
     double fixed_phase_ = -1.0;
     QString selected_language_ = QStringLiteral("English (UK)");
@@ -2659,10 +3016,13 @@ int main(int argc, char** argv) {
     int initial_step = -1;
     bool update_mode = false;
     double fixed_phase = -1.0;
+    QString capabilities_path;
 
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
-        if (arg == QLatin1String("--step") && i + 1 < argc) {
+        if (arg == QLatin1String("--capabilities") && i + 1 < argc) {
+            capabilities_path = QString::fromUtf8(argv[++i]);
+        } else if (arg == QLatin1String("--step") && i + 1 < argc) {
             bool ok = false;
             const int parsed = QString::fromUtf8(argv[++i]).toInt(&ok);
             if (ok) initial_step = parsed;
@@ -2678,7 +3038,17 @@ int main(int argc, char** argv) {
     }
 
     finn::ui::FinnApplication app(argc, argv, QStringLiteral("oobe"));
-    OobeWindow w(update_mode, fixed_phase);
+    // Prefer the shell's measured preflight. If OOBE was started directly,
+    // probe here instead — a missing file is never treated as success.
+    bool preflight_ok = false;
+    if (capabilities_path.isEmpty()) {
+        capabilities_path = QDir::homePath() + QLatin1Char('/') +
+            QString::fromLatin1(finn::shell::oobe::probe::kOobeCapabilitiesRel);
+    }
+    auto measured_caps = finn::shell::oobe::probe::read_preflight(
+        capabilities_path, &preflight_ok);
+    if (!preflight_ok) measured_caps = finn::shell::oobe::probe::capabilities();
+    OobeWindow w(update_mode, fixed_phase, measured_caps);
     if (initial_step >= 0) w.openStep(initial_step);
     w.show();
     return app.exec();

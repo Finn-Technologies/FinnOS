@@ -61,6 +61,18 @@ these framework surfaces are real:
 - **Core Swift ABI**: `HeapObject` allocation, ARC retain/release (including
   `_n`, unknown-object and bridged forms), exclusivity markers, `swift_once`,
   slow allocation and ObjC class interop.
+- **Carbon/HIToolbox and late AppKit slice** (`src/darwin/carbon_compat.cpp`):
+  real global-hotkey registration and dispatch, `UCKeyTranslate` with a US
+  QWERTY keycode table, `TIS` layout queries, `CGRectDivide`, a real SHA-1
+  implementation, CommonCrypto-style SHA-1, Foundation-backed `CFPreferences`,
+  UUID creation, late AppKit/EventKit/WebKit class registration, named Cocoa
+  constants, host libc bindings, and honest failure returns for the code-signing,
+  LaunchServices, CoreAudio and XAR-update services that genuinely do not exist
+  on this platform. This slice closes the static-link gaps of real menu-bar apps
+  such as Itsycal. `NSArray` now implements real `NSFastEnumeration`
+  (`countByEnumeratingWithState:objects:count:`) with a unit test; its
+  `NSBundle localizedStringForKey:value:table:` and several `NSAlert` setters
+  remain unbridged and are reported on stderr rather than silently ignored.
 - **SwiftUI slice** (`src/darwin/swiftui/`): a minimal compiled SwiftUI app now
   runs. Real ABI-shaped nominal/protocol/conformance descriptors (`Mn`, `Mp`,
   `Mc`) and witness tables back the compiler-emitted metadata symbols; a
@@ -188,10 +200,10 @@ bundled dylibs (Sparkle, MASShortcut) that the loader really maps; the smaller
 
 | App | Install | Diagnose (baseline) | Load-time refusal (baseline) | Current |
 |---|---|---|---|---|
-| Itsycal 0.29.0 | succeeds (real `.zip`) | 224 | 26 | Carbon/HIToolbox hotkeys + late AppKit classes implemented in `carbon_compat.cpp` |
-| Hidden Bar 1.13.2 | succeeds (real `.zip`) | 569 | 119 | not yet addressed |
-| Nightfall 3.1.0 | succeeds (real `.dmg`) | 641 | — | not yet addressed; 513 SwiftUI/Combine gaps |
-| Rectangle 2.0.4 | succeeds (real `.dmg`) | 1101 | — | not yet addressed; links SwiftUI/Combine/WebKit/Security |
+| Itsycal 0.29.0 | succeeds (real `.zip`) | 224 → **0** | 26 → **0** | launches and stays alive; its compiled binary and bundled dylibs bind cleanly. Rendering is only partial: the live window is an empty `NSAlert` because `NSBundle localizedStringForKey:value:table:` and several `NSAlert` setters are not bridged; these are named on stderr, not faked. |
+| Hidden Bar 1.13.2 | succeeds (real `.zip`) | 569 | 119 | precise wall: the Swift *Foundation overlay* ABI — `URL`, `Data`, `Date`, `UUID`, `Locale`, `CharacterSet`, `JSONDecoder`/`Encoder`, KVO, `Hasher.combine`, weak-reference and enum-tag runtime entry points — plus `SMAppService` (ServiceManagement). None is registered, so `diagnose` names every one. |
+| Nightfall 3.1.0 | succeeds (real `.dmg`) | 641 | — | precise wall: 513 SwiftUI/Combine mangled metadata and dispatch thunks beyond the minimal slice; the full render graph is not implemented. |
+| Rectangle 2.0.4 | succeeds (real `.dmg`) | 1101 | — | precise wall: SwiftUI/Combine metadata, WebKit (`WKWebView`, `WKContentRuleListStore`), Security/CodeSigning, ServiceManagement, IOKit power assertions and 40+ late AppKit classes. |
 | AquaSKK 4.7.3 | succeeds (real `.pkg`) | 80 | — | not yet addressed; libc++ string/locale/exception typeinfo |
 | Figma Agent | succeeds (real `.dmg`) | 190 | — | **architecture mismatch**: x86_64-only binary on an aarch64 host; no amount of symbol coverage can run it here, and this runtime does not claim to emulate x86_64 |
 

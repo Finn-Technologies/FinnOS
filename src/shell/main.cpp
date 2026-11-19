@@ -6,6 +6,7 @@
 
 #include <QDBusConnection>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
@@ -30,6 +31,7 @@
 #include "shell/dock.hpp"
 #include "shell/foreign_windows.hpp"
 #include "shell/notifications.hpp"
+#include "shell/oobe_capability_probe.hpp"
 #include "shell/popovers.hpp"
 #include "system/sys_files.hpp"
 
@@ -135,12 +137,55 @@ int main(int argc, char** argv) {
                                   QStringLiteral("Finn Shell"));
     app.setQuitOnLastWindowClosed(false);
 
+    // Opt-in startup instrumentation. The host cannot run the Qt/Wayland
+    // shell, so these marks are for the VM (`FINN_SHELL_TIMINGS=1`). They log
+    // elapsed wall time only; no number is reported unless it was measured.
+    QElapsedTimer boot_clock;
+    boot_clock.start();
+    const char* timing_env = std::getenv("FINN_SHELL_TIMINGS");
+    const bool timings = timing_env && *timing_env == '1';
+    auto mark = [&](const char* label) {
+        if (timings) {
+            std::fprintf(stderr, "finn-shell startup: %-24s %6lld ms\n", label,
+                         static_cast<long long>(boot_clock.elapsed()));
+        }
+    };
+    mark("qt application ready");
+
+    // One form-factor decision for the whole session. An explicit
+    // FINN_FORM_FACTOR (used by captures and finn-sdk simulate) always wins;
+    // otherwise the token-backed model resolves it from the primary screen.
+    finn::shell::mobile::LayoutMetrics layout =
+        finn::shell::current_layout_metrics();
+    bool sim_ok = false;
+    const int sim_w = QByteArray(qgetenv("FINN_SIM_WIDTH")).toInt(&sim_ok);
+    if (sim_ok && sim_w > 0) {
+        bool h_ok = false;
+        const int sim_h = QByteArray(qgetenv("FINN_SIM_HEIGHT")).toInt(&h_ok);
+        layout = finn::shell::mobile::compute_layout(
+            sim_w, h_ok && sim_h > 0 ? sim_h : layout.height_dp);
+    }
+    if (qgetenv("FINN_FORM_FACTOR").isEmpty()) {
+        qputenv("FINN_FORM_FACTOR", layout.layout == finn::shell::mobile::LayoutClass::Phone
+                                        ? "phone"
+                                        : layout.layout == finn::shell::mobile::LayoutClass::Tablet
+                                            ? "tablet" : "desktop");
+    }
+    if (timings) {
+        std::fprintf(stderr, "finn-shell layout: %s %dx%d dp (margin %d, row %d, pill %dx%d)\n",
+                     finn::shell::mobile::layout_name(layout.layout),
+                     layout.width_dp, layout.height_dp, layout.page_margin,
+                     layout.row_height, layout.gesture_pill_width,
+                     layout.gesture_pill_height);
+    }
+
     finn::AppRegistry registry =
         finn::AppRegistry::load_all(finn::kCataloguePath, finn::kInstalledPath);
     auto reload_apps = [&registry]() {
         registry =
             finn::AppRegistry::load_all(finn::kCataloguePath, finn::kInstalledPath);
     };
+    mark("app registry loaded");
 
     auto* notifications = new finn::shell::NotificationServer(&app);
     if (!notifications->startDBusService()) {
@@ -232,6 +277,7 @@ int main(int argc, char** argv) {
 
     auto* dock = new finn::shell::DockWindow(
         &registry.apps(), foreign_windows, launch_app);
+    mark("shell surfaces constructed");
 
     auto sync_dock_indicators = [&]() {
         dock->setActivePopovers(home_popover->isVisible(),
@@ -305,11 +351,19 @@ int main(int argc, char** argv) {
         const QString qdir = QString::fromStdString(dir.first);
         if (QFileInfo::exists(qdir)) app_watcher->addPath(qdir);
     }
+    // Installing one app writes several files in a row; without a debounce
+    // each write rebuilt the whole registry, the Home grid and the dock.
+    auto* registry_reload_timer = new QTimer(&app);
+    registry_reload_timer->setSingleShot(true);
+    registry_reload_timer->setInterval(200);
+    QObject::connect(registry_reload_timer, &QTimer::timeout, &app, [&]() {
+        reload_apps();
+        home_popover->refreshApps();
+        dock->rebuildAppsPill();
+    });
     QObject::connect(app_watcher, &QFileSystemWatcher::directoryChanged, &app,
-                     [&]() {
-                         reload_apps();
-                         home_popover->refreshApps();
-                         dock->rebuildAppsPill();
+                     [registry_reload_timer]() {
+                         registry_reload_timer->start();
                      });
 
     const char* open_env = std::getenv("FINN_SHELL_OPEN");
@@ -325,6 +379,23 @@ int main(int argc, char** argv) {
         (!open_env || *open_env == '\0') && QFileInfo::exists(oobe_bin);
 
     if (oobe_pending) {
+        // Preflight uses the same measured probe the OOBE flow uses. Every
+        // capability is logged with its real state; nothing is assumed ready
+        // because a package is listed. Unknown means "not probed".
+        const auto caps = finn::shell::oobe::probe::capabilities();
+        const QString preflight_path = QDir::homePath() + QLatin1Char('/') +
+            QString::fromLatin1(finn::shell::oobe::probe::kOobeCapabilitiesRel);
+        if (QDir().mkpath(QFileInfo(preflight_path).absolutePath())) {
+            if (!finn::shell::oobe::probe::write_preflight(preflight_path, caps)) {
+                std::fprintf(stderr, "finn-shell: OOBE capability preflight not writable: %s\n",
+                             qPrintable(preflight_path));
+            }
+        }
+        for (const QString& line : finn::shell::oobe::probe::serialize(caps).split('\n')) {
+            if (!line.isEmpty()) std::fprintf(stderr, "finn-shell oobe capability: %s\n",
+                                               qPrintable(line));
+        }
+
         auto* oobe_proc = new QProcess(&app);
         QObject::connect(
             oobe_proc,
@@ -339,7 +410,7 @@ int main(int argc, char** argv) {
                 if (!dock->isVisible()) dock->show();
                 oobe_proc->deleteLater();
             });
-        oobe_proc->start(oobe_bin, {});
+        oobe_proc->start(oobe_bin, {QStringLiteral("--capabilities"), preflight_path});
     } else {
         // A normal boot is the Plymouth splash: the Finn mark on a progress
         // bar, drawn from inside the initramfs. The ribbon "hi." animation
@@ -386,5 +457,6 @@ int main(int argc, char** argv) {
                      });
     ota_poll_timer->start();
 
+    mark("entering event loop");
     return app.exec();
 }

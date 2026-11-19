@@ -51,3 +51,28 @@ A change is done when:
 - host tests (`make test`, `make test-unit`, `make lint`, `base/mkfinniso --check`) pass;
 - the VM build installs cleanly and `vm/shot.sh` screenshots are visually verified;
 - docs accurately state both implemented features and remaining gaps.
+
+## Shipped in the full-OS-completion integration pass
+
+- **First-class OOBE across form factors**: `apps/oobe/main.cpp` now derives
+  `Phone`/`Tablet`/`Desktop` from the same breakpoints and `FINN_FORM_FACTOR`
+  override as `finn-shell`. Desktop keeps the Figma `36:53` split exactly;
+  tablet uses a narrow split with a 24 dp gutter; phone stacks the prompt over
+  a full-width 44 dp-touch-target list and moves Back/Next into a bottom
+  safe-area strip. Content columns no longer assume a 1280×832 screen.
+- **Reference research**: [`docs/reference-designs.md`](reference-designs.md)
+  records sourced, specific findings from macOS Setup Assistant, Windows 11
+  OOBE/Mica, HarmonyOS 2 atomic services, iOS 16 Lock Screen, ColorOS 14 and
+  iOS 17 motion, each with what FinnOS adopts, adapts or declines. The four
+  Figma OOBE frames were read with `get_design_context`; they carry no Figma
+  Motion, so no animation is attributed to them.
+- **The headless OOBE flow drives the real app**: `finn-shell` writes a line-oriented capability preflight (`src/shell/oobe_capability_probe.hpp`) from real probes — `nmcli` device list, `pkexec`/`useradd`, an actual config write, `org.a11y.Bus` — and `finn-oobe` uses `FullOobeFlow` gates for all eight steps. Offline/local-only/private-by-default are named explicit states; nothing is marked connected or created on an unmeasured capability. A phone capture caught and fixed a region-catalogue mismatch that had wrongly disabled Next.
+- **Figma drift fixes verified on the VM**: glass weights, dock group width, Control Center height/footer, Home/notification type and tile geometry now follow `docs/figma-live-drift.md`; real captures were read for dock, Home, Control Center, notifications and OOBE at 500/800 dp.
+- **Measured redraw fix**: the layer-shadow blur is now a sliding-window O(w·h)
+  kernel (`src/shell/blur_kernel.hpp`) instead of an O(w·h·r) neighbour scan.
+  `make bench` runs the shipping kernel against the old algorithm on the host:
+  **2.5–3.6× faster, bit-for-bit identical**. See
+  [`docs/performance.md`](performance.md). Shell app-list changes are debounced
+  (200 ms) so one install no longer rebuilds the registry/dock several times.
+  `FINN_SHELL_TIMINGS=1` prints VM startup checkpoints; no unmeasured numbers
+  are published.

@@ -26,6 +26,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1712,6 +1713,39 @@ static bool test_compat_symbols() {
     return true;
 }
 
+bool test_nsarray_fast_enumeration() {
+    using namespace finn::darwin;
+    init_foundation();
+    void* pool = finn_objc_autoreleasePoolPush();
+    ObjcId arr = objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSArray")), "arrayWithObjects:count:",
+        std::array<ObjcId, 3>{nsstring_from_utf8("a"), nsstring_from_utf8("b"),
+                              nsstring_from_utf8("c")}.data(),
+        std::size_t{3});
+    CHECK(arr != nullptr);
+    struct FastState {
+        unsigned long state;
+        ObjcId* items;
+        unsigned long* mutations;
+        unsigned long extra[5];
+    };
+    FastState state{};
+    ObjcId buffer[2] = {};
+    const std::size_t first = objc_send_name<std::size_t>(
+        arr, "countByEnumeratingWithState:objects:count:", &state, buffer, std::size_t{2});
+    CHECK(first == 2);
+    CHECK(state.items == buffer && state.state == 2 && state.mutations == &state.extra[4]);
+    CHECK(nsstring_to_utf8(buffer[0]) == "a" && nsstring_to_utf8(buffer[1]) == "b");
+    const std::size_t second = objc_send_name<std::size_t>(
+        arr, "countByEnumeratingWithState:objects:count:", &state, buffer, std::size_t{2});
+    CHECK(second == 1 && nsstring_to_utf8(buffer[0]) == "c");
+    const std::size_t done = objc_send_name<std::size_t>(
+        arr, "countByEnumeratingWithState:objects:count:", &state, buffer, std::size_t{2});
+    CHECK(done == 0);
+    finn_objc_autoreleasePoolPop(pool);
+    return true;
+}
+
 bool test_carbon_compat() {
     using namespace finn::darwin;
     std::unordered_map<std::string, void*> syms;
@@ -1722,8 +1756,11 @@ bool test_carbon_compat() {
         "_InstallEventHandler", "_RemoveEventHandler", "_CopySymbolicHotKeys",
         "_LMGetKbdType", "_TISCopyCurrentASCIICapableKeyboardLayoutInputSource",
         "_TISGetInputSourceProperty", "_UCKeyTranslate",
-        "___availability_version_check",
-        "_NSAccessibilityPostNotificationWithUserInfo",
+        "___availability_version_check", "__availability_version_check",
+        "_NSAccessibilityPostNotificationWithUserInfo", "_CGRectDivide",
+        "_CC_SHA1_Init", "_CC_SHA1_Update", "_CC_SHA1_Final",
+        "_CFPreferencesCopyAppValue", "_CFUUIDCreate", "_xar_open",
+        "_SecCodeCopySigningInformation",
     };
     for (const char* n : kNames) {
         CHECK(syms.count(n) == 1 && syms[n] != nullptr);
@@ -1755,6 +1792,23 @@ bool test_carbon_compat() {
 
     auto keyboard_type = from_void_ptr<std::uint32_t (*)()>(syms["_LMGetKbdType"]);
     CHECK(keyboard_type() == 44);
+
+    // SHA-1 must match the NIST FIPS 180-4 vector for "abc".
+    struct Sha1Ctx { std::uint32_t h[5]; std::uint8_t block[64]; std::size_t used; std::uint64_t bits; };
+    auto sha1_init = from_void_ptr<int (*)(Sha1Ctx*)>(syms["_CC_SHA1_Init"]);
+    auto sha1_update = from_void_ptr<int (*)(Sha1Ctx*, const void*, std::size_t)>(
+        syms["_CC_SHA1_Update"]);
+    auto sha1_final = from_void_ptr<unsigned char* (*)(Sha1Ctx*, unsigned char*)>(
+        syms["_CC_SHA1_Final"]);
+    Sha1Ctx ctx{};
+    unsigned char digest[20] = {};
+    CHECK(sha1_init(&ctx) == 1);
+    CHECK(sha1_update(&ctx, "abc", 3) == 1);
+    CHECK(sha1_final(&ctx, digest) == digest);
+    static constexpr unsigned char kAbcSha1[20] = {
+        0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e,
+        0x25, 0x71, 0x78, 0x50, 0xc2, 0x6c, 0x9c, 0xd0, 0xd8, 0x9d};
+    CHECK(std::memcmp(digest, kAbcSha1, 20) == 0);
     return true;
 }
 
@@ -1857,6 +1911,7 @@ int main() {
     ok &= test_ns_search_paths_and_notifications();
     ok &= test_installer_symlink_and_apple_toc_regressions();
     ok &= test_framework_coverage_honesty();
+    ok &= test_nsarray_fast_enumeration();
     ok &= test_carbon_compat();
     ok &= test_swiftui_symbols();
     ok &= test_compat_symbols();

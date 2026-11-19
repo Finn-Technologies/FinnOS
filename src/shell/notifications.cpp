@@ -73,7 +73,9 @@ protected:
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
         if (isColoredAppIcon(icon_name_)) {
             QPainterPath clip;
-            clip.addRoundedRect(QRectF(0.0, 0.0, 40.0, 40.0), 10.0, 10.0);
+            clip.addRoundedRect(QRectF(0.0, 0.0, 40.0, 40.0),
+                                finn::ui::radii::r_bubble,
+                                finn::ui::radii::r_bubble);
             p.setClipPath(clip);
             const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
                 icon_name_, QSize(40, 40), QColor(), dpr);
@@ -85,7 +87,9 @@ protected:
 
         p.setPen(Qt::NoPen);
         p.setBrush(shell_hover_fill(t));
-        p.drawRoundedRect(QRectF(0.0, 0.0, 40.0, 40.0), 10.0, 10.0);
+        p.drawRoundedRect(QRectF(0.0, 0.0, 40.0, 40.0),
+                          finn::ui::radii::r_bubble,
+                          finn::ui::radii::r_bubble);
 
         const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
             icon_name_, QSize(22, 22), t.ink, dpr);
@@ -101,7 +105,7 @@ private:
 class NotificationDismissButton final : public QAbstractButton {
 public:
     explicit NotificationDismissButton(QWidget* parent) : QAbstractButton(parent) {
-        setFixedSize(28, 28);
+        setFixedSize(32, 32);  // Figma 2:181 dismiss target
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::TabFocus);
         setAccessibleName(QStringLiteral("Dismiss notification"));
@@ -145,10 +149,10 @@ protected:
         }
         p.setPen(Qt::NoPen);
         p.setBrush(fill);
-        p.drawRoundedRect(QRectF(0.0, 0.0, 28.0, 28.0), finn::ui::radii::r_md,
+        p.drawRoundedRect(QRectF(0.0, 0.0, 32.0, 32.0), finn::ui::radii::r_md,
                           finn::ui::radii::r_md);
         if (hasFocus()) {
-            draw_focus_ring(p, QRectF(0.0, 0.0, 28.0, 28.0),
+            draw_focus_ring(p, QRectF(0.0, 0.0, 32.0, 32.0),
                             finn::ui::radii::r_md, t);
         }
 
@@ -156,7 +160,7 @@ protected:
         const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
             QStringLiteral("x"), QSize(12, 12), t.ink, dpr);
         if (!pm.isNull()) {
-            p.drawPixmap(QPointF(8.0, 8.0), pm);
+            p.drawPixmap(QPointF(10.0, 10.0), pm);
         }
     }
 
@@ -172,7 +176,7 @@ public:
         setAttribute(Qt::WA_TranslucentBackground);
         // Transparent rim around the glass card for its elevation shadow.
         setFixedWidth(card_width + 2 * kNotificationShadowPad);
-        setMinimumHeight(76 + 2 * kNotificationShadowPad);
+        setMinimumHeight(80 + 2 * kNotificationShadowPad);  // Figma 2:226
         setAccessibleName(n.app_name.isEmpty()
                               ? n.summary
                               : QStringLiteral("%1: %2").arg(n.app_name, n.summary));
@@ -247,9 +251,11 @@ public:
 
     void applyTheme() {
         const auto& t = finn::ui::FinnThemeManager::instance().tokens();
-        setLabelStyle(title_lbl_, 15, t.ink);
-        setLabelStyle(body_lbl_, 13, t.dim);
-        setLabelStyle(time_lbl_, 12, t.dim);
+        // Figma 2:183 / 2:184 / 2:180: 16 / 14 / 14 px. No exact type tokens
+        // exist for these sizes, so the values stay node-commented literals.
+        setLabelStyle(title_lbl_, 16, t.ink);
+        setLabelStyle(body_lbl_, 14, t.dim);
+        setLabelStyle(time_lbl_, 14, t.mute);
         if (icon_tile_) icon_tile_->update();
         if (close_btn_) close_btn_->update();
         update();
@@ -334,12 +340,12 @@ public:
             cards_.push_back(card);
             layout_->addWidget(card);
             const int card_h = std::max(
-                76, card->sizeHint().height() - 2 * kNotificationShadowPad);
+                80, card->sizeHint().height() - 2 * kNotificationShadowPad);
             total_h += card_h;
             if (i + 1 < popups.size()) total_h += 8;
         }
 
-        const int target_h = std::max(76, total_h);
+        const int target_h = std::max(80, total_h);
         applyResponsiveGeometry(target_h);
         show();
         layout_->activate();
