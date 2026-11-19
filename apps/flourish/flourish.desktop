@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Flourish
+GenericName=Web Browser
+Comment=Arc-inspired Chromium browser built with FinnSDK
+Exec=finn-flourish %u
+Icon=browser
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+X-Finn-Id=flourish

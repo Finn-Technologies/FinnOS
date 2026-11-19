@@ -136,22 +136,69 @@ check_tree() {
     # the autologin can start the installer. Every menu turns that off.
     grep -q 'systemd.firstboot=off' "$menu" ||
       problem "$(basename "$menu") does not turn the first-boot wizard off"
+    # The boot chain is a Finn mark, not a text console. All three parts have
+    # to be on every menu: quiet hides kernel text, splash starts Plymouth in
+    # the initramfs, and the last one removes the blinking underscore itself.
+    for flag in quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles; do
+      grep -qF -- "$flag" "$menu" ||
+        problem "$(basename "$menu") does not set $flag"
+    done
   done
 
   # The disc installs FinnOS. It is built from another distribution's
-  # archiso, and that name must not survive into what a person reads at the
-  # console. The documentation is a different thing: base/README.md says
-  # what the base is, because a reader deserves to know.
-  say "checking that the console does not name another distribution"
+  # archiso, and that name must not survive into anything a person reads at
+  # boot: the menus, the console, the splash theme or the identity files.
+  # The documentation is a different thing: base/README.md and docs/ say
+  # what the engineering base is, because a reader deserves to know.
+  say "checking that the boot chain does not name another distribution"
   local f arch_names
   arch_names="$(mktemp "${TMPDIR:-/tmp}/mkfinniso-arch.XXXXXX")"
-  grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" "$HERE/airootfs/etc/issue" \
-       "$HERE/airootfs/etc/motd" "$HERE/installed/etc/issue" \
-       "$HERE/installed/etc/motd" >"$arch_names" 2>/dev/null || true
+  grep -rlE 'Arch Linux|ArchLinux' "$HERE/boot" \
+       "$HERE/airootfs/etc/issue" "$HERE/airootfs/etc/motd" \
+       "$HERE/airootfs/etc/os-release" \
+       "$HERE/airootfs/etc/plymouth" \
+       "$HERE/airootfs/usr/share/plymouth" \
+       "$HERE/installed/etc" >"$arch_names" 2>/dev/null || true
   while IFS= read -r f; do
     problem "$f names Arch"
   done <"$arch_names"
   rm -f "$arch_names"
+
+  say "checking the Finn boot splash"
+  local theme="$HERE/airootfs/usr/share/plymouth/themes/finnos"
+  for f in finnos.plymouth finnos.script mark.png bar-track.png bar-fill.png bar-cap-l.png bar-cap-r.png; do
+    [ -f "$theme/$f" ] || problem "missing boot-splash theme file: $f"
+  done
+  [ -f "$HERE/airootfs/etc/plymouth/plymouthd.conf" ] ||
+    problem "missing Plymouth config for the live medium"
+  grep -q '^Theme=finnos' "$HERE/airootfs/etc/plymouth/plymouthd.conf" 2>/dev/null ||
+    problem "Plymouth does not select the FinnOS theme"
+  grep -q '^ShowDelay=0' "$HERE/airootfs/etc/plymouth/plymouthd.conf" 2>/dev/null ||
+    problem "the splash has a show delay; a text cursor would show first"
+  # Plymouth starts before the real root is mounted, so its theme and config
+  # must be inside the initramfs, and the hook must start plymouthd. The same
+  # has to be true of an installed machine after setup.sh / the installer.
+  local live_initrd="$HERE/airootfs/etc/mkinitcpio.conf"
+  local installed_initrd="$HERE/installed/etc/mkinitcpio.conf"
+  for f in "$live_initrd" "$installed_initrd"; do
+    [ -f "$f" ] || { problem "missing initramfs config: $f"; continue; }
+    grep -qE '^HOOKS=\(.*(^|[[:space:]])plymouth([[:space:]]|\))' "$f" ||
+      problem "$(basename "$(dirname "$f")")/mkinitcpio.conf has no plymouth hook"
+    grep -qF '/etc/plymouth/plymouthd.conf' "$f" ||
+      problem "$(basename "$(dirname "$f")")/mkinitcpio.conf does not carry the splash config"
+    grep -qF '/usr/share/plymouth/themes/finnos/mark.png' "$f" ||
+      problem "$(basename "$(dirname "$f")")/mkinitcpio.conf does not carry the Finn mark"
+    grep -qF 'bar-track.png' "$f" ||
+      problem "$(basename "$(dirname "$f")")/mkinitcpio.conf does not carry the boot progress bar"
+  done
+  grep -q 'airootfs/etc/plymouth/plymouthd.conf' "$HERE/setup.sh" ||
+    problem "base/setup.sh does not install the splash config"
+  grep -q 'airootfs/usr/share/plymouth/themes/finnos' "$HERE/setup.sh" ||
+    problem "base/setup.sh does not install the splash theme"
+  grep -q 'airootfs/etc/plymouth/plymouthd.conf' "$HERE/../vm/finn-chroot.sh" ||
+    problem "vm/finn-chroot.sh does not install the splash config"
+  grep -q 'splash vt.global_cursor_default=0' "$HERE/../vm/finn-chroot.sh" ||
+    problem "the installed machine's bootloader is not a silent Finn boot"
 
   say "checking the package list"
   if [ "$ARCH" = 'x86_64' ]; then
@@ -189,7 +236,7 @@ EOF
   say "checking the hardware packages"
   pkg_has() { grep -qE "^[[:space:]]*$1([[:space:]]|$)" "$PKGS"; }
   for want in linux-firmware mesa libglvnd pipewire pipewire-pulse \
-              wireplumber bluez bluez-utils jq zstd; do
+              wireplumber bluez bluez-utils jq zstd plymouth; do
     pkg_has "$want" || problem "$PKGS does not carry $want"
   done
   if [ "$ARCH" = 'x86_64' ]; then
@@ -227,6 +274,27 @@ EOF
       problem "vm/finn-chroot.sh does not apply pacman.multilib.conf"
     if grep -qE '^\[multilib\]' "$HERE/pacman.conf"; then
       problem "base/pacman.conf carries [multilib]; setup.sh appends it and there must be one copy"
+    fi
+  fi
+
+  say "checking the FinnOS repository configuration"
+  [ -f "$ROOT/repo/finnos-mirrorlist" ] ||
+    problem "missing repo/finnos-mirrorlist template"
+  if ! grep -qE '^\[finnos\][[:space:]]*$' "$HERE/pacman.conf"; then
+    problem "base/pacman.conf does not define [finnos]"
+  else
+    local finnos_line core_line extra_line
+    finnos_line="$(grep -nE '^\[finnos\][[:space:]]*$' "$HERE/pacman.conf" | head -n1 | cut -d: -f1)"
+    core_line="$(grep -nE '^\[core\][[:space:]]*$' "$HERE/pacman.conf" | head -n1 | cut -d: -f1)"
+    extra_line="$(grep -nE '^\[extra\][[:space:]]*$' "$HERE/pacman.conf" | head -n1 | cut -d: -f1)"
+    if [ -n "$core_line" ] && [ "$finnos_line" -ge "$core_line" ]; then
+      problem "base/pacman.conf must list [finnos] before [core]"
+    fi
+    if [ -n "$extra_line" ] && [ "$finnos_line" -ge "$extra_line" ]; then
+      problem "base/pacman.conf must list [finnos] before [extra]"
+    fi
+    if ! sed -n "${finnos_line},$((${core_line:-9999}))p" "$HERE/pacman.conf" | grep -qE '^SigLevel[[:space:]]*=.*Required'; then
+      problem "[finnos] in base/pacman.conf must require signatures (SigLevel = Required)"
     fi
   fi
 
@@ -270,6 +338,9 @@ EOF
               "finn-shell.service:etc/systemd/system/finn-shell.service" \
               "finn-wallpaper.service:etc/systemd/system/finn-wallpaper.service" \
               "finn-failure.service:etc/systemd/system/finn-failure.service" \
+              "finn-update-check.service:etc/systemd/system/finn-update-check.service" \
+              "finn-update-check.timer:etc/systemd/system/finn-update-check.timer" \
+              "finn-boot-health.service:etc/systemd/system/finn-boot-health.service" \
               "finn-tmpfiles.conf:usr/lib/tmpfiles.d/finn.conf"; do
     local src="$HERE/${pair%%:*}" dst="$HERE/airootfs/${pair##*:}"
     [ -f "$src" ] || { problem "missing $src"; continue; }
@@ -317,6 +388,9 @@ EOF
   say "checking the held-out files"
   [ -x "$HERE/../vm/finn-install.sh" ] || problem "vm/finn-install.sh is not executable"
   [ -f "$HERE/../vm/finn-chroot.sh" ] || problem "vm/finn-chroot.sh is missing"
+  [ -x "$ROOT/src/ota/finn-update" ] || problem "src/ota/finn-update is missing or not executable"
+  [ -f "$ROOT/src/ota/finn_ota/__init__.py" ] || problem "src/ota/finn_ota/__init__.py is missing"
+  [ -f "$ROOT/ota/grub-ab.cfg" ] || problem "ota/grub-ab.cfg is missing"
   grep -q '^ID=finnos$' "$HERE/airootfs/etc/os-release" || problem "os-release is not ID=finnos"
   grep -q '^PRETTY_NAME="FinnOS"$' "$HERE/airootfs/etc/os-release" || problem "os-release is not PRETTY_NAME=FinnOS"
   [ "$(cat "$HERE/airootfs/etc/hostname")" = 'finnos' ] || problem "the live hostname is not finnos"
@@ -400,6 +474,25 @@ build_native() {
   mkdir -p "$profile"
   cp "$HERE/profiledef.sh" "$PKGS" "$profile/"
   cp "$HERE/pacman.conf" "$profile/pacman.conf"
+  if [ -n "${FINN_REPO_URL:-}" ]; then
+    awk -v url="$FINN_REPO_URL" '
+      /^\[finnos\]/ { in_finnos=1 }
+      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+      in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+      { print }
+    ' "$profile/pacman.conf" > "$profile/pacman.conf.tmp" &&
+      mv "$profile/pacman.conf.tmp" "$profile/pacman.conf"
+  elif ! command -v curl >/dev/null 2>&1 ||
+       ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$ARCH/finnos.db" >/dev/null 2>&1; then
+    warn "[finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in staged ISO pacman.conf so upstream fallback succeeds"
+    awk '
+      /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+      in_finnos && /^\[/ { in_finnos=0 }
+      in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+      { print }
+    ' "$profile/pacman.conf" > "$profile/pacman.conf.tmp" &&
+      mv "$profile/pacman.conf.tmp" "$profile/pacman.conf"
+  fi
   local profile_packages="$profile/$(basename "$PKGS")"
   # The live initramfs uses hooks from mkinitcpio-archiso; archiso supplies
   # the profile tooling, and BIOS-mode x86 media also needs syslinux. These

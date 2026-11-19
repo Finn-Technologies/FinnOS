@@ -16,4 +16,5 @@
 | [hardware.md](hardware.md) | the reference machine and its limits |
 | [troubleshooting.md](troubleshooting.md) | when the session does not come up |
 | [roadmap.md](roadmap.md) | what is next, and what "done" means |
+| [rebrand-checklist.md](rebrand-checklist.md) | upstream base hooks, branding checks, and license status |
 | [design/](design/) | the architecture contract, milestones and C++ guide |

@@ -1,15 +1,16 @@
 # FinnSDK
 
-**FinnSDK** is the official C++20 + Qt6 application SDK for FinnOS. Rather than
-shipping unmodified default Qt styling, FinnOS customizes Qt at three levels so
-first-party and third-party native apps share the exact palette, typography,
+**FinnSDK** is the official C++20 + Qt6 application SDK for FinnOS (`0.2.0`). Rather
+than shipping unmodified default Qt styling, FinnOS customizes Qt at three levels
+so first-party and third-party native apps share the exact palette, typography,
 motion, and Wayland CSD chrome designed for FinnOS:
 
 1. **`FinnSDK::FinnUI` (`libfinnui.so`)** — `FinnApplication`, `FinnWindow`,
-   `FinnLayerWindow`, `FinnThemeManager`, `FinnTokens`, and custom widgets
-   (`FinnCard`, `FinnButton`, `FinnToggle`, `FinnSlider`, `FinnSearchField`,
-   `FinnSidebar`, `FinnSettingRow`, `FinnProgressBar`, `FinnToast`,
-   `FinnDialog`, `FinnEmptyState`, `FinnSeparator`, `FinnLabel`).
+   `FinnLayerWindow`, `FinnThemeManager`, `FinnTokens`, spring/easing motion
+   primitives, `SessionClient`, and custom widgets (`FinnCard`, `FinnButton`,
+   `FinnToggle`, `FinnSlider`, `FinnSearchField`, `FinnSidebar`,
+   `FinnSettingRow`, `FinnProgressBar`, `FinnToast`, `FinnDialog`,
+   `FinnEmptyState`, `FinnDivider`, `FinnLabel`).
 2. **`finnplatformtheme` (`libfinnplatformtheme.so`)** — Qt6 platform theme
    plugin (`QT_QPA_PLATFORMTHEME=finn`) supplying Fixel Display fonts, light/dark
    palettes from `ui/_tokens.fui`, and `FinnThemeManager`-backed hints.
@@ -17,13 +18,27 @@ motion, and Wayland CSD chrome designed for FinnOS:
    (`QT_STYLE_OVERRIDE=finn`) rounding sliders, inputs, menus, scrollbars, and
    focus rings for standard Qt widgets too.
 
+## Documentation
+
+- [Getting Started](sdk/getting-started.md) — toolchain check, project scaffolding, build, run, and registration
+- [API Overview](sdk/api-overview.md) — C++20/Qt6 headers, classes, signals, tokens, springs, and `SessionClient`
+- [Packaging & Publishing](sdk/publishing.md) — `finn-app.json` schema, `.finnapp` deterministic archives, Ed25519 signing, and v1 permission model (declared-not-enforced)
+- [Form-Factor Simulator](sdk/simulator.md) — `finn-sdk simulate` (`phone`, `tablet`, `desktop`) and `libfinnui` responsive proposal
+- [ABI & Versioning Policy](sdk/abi-versioning.md) — `0.2.0` / `SOVERSION 0` compatibility and current limits
+- [SDK Completeness Audit](sdk/audit.md) — baseline inventory, filled tooling, and honest list of what is still missing
+
 ## CLI workflow (`finn-sdk`)
 
 ```sh
-finn-sdk check                              # verify toolchain, Qt6 plugins, CMake config
-finn-sdk new myapp --name "My Finn App"     # scaffold CMakeLists.txt, Makefile, main.cpp, .desktop
+finn-sdk check                              # verify toolchain, Qt6 plugins, CMake config, signing tools
+finn-sdk new myapp --name "My Finn App"     # scaffold CMakeLists.txt, Makefile, main.cpp, .desktop, finn-app.json, CI
+finn-sdk validate myapp                     # validate finn-app.json against sdk/schema/finn-app.schema.json
 finn-sdk build myapp                        # cmake -G Ninja build
 finn-sdk run myapp                          # run against /run/finn/wayland-0 with Finn theme
+finn-sdk simulate --form-factor tablet myapp # simulate tablet viewport (use --headless with finn-comp)
+finn-sdk keygen ~/.config/finn-dev/pub      # generate Ed25519 keypair outside the repo
+finn-sdk package myapp --key ~/.config/finn-dev/pub.key.pem  # build deterministic signed .finnapp
+finn-sdk verify myapp/dist/myapp-0.1.0-x86_64.finnapp --pubkey ~/.config/finn-dev/pub.pub.pem
 finn-sdk register myapp "My Finn App" "$PWD/myapp/build/finn-myapp"
 ```
 

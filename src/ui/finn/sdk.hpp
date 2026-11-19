@@ -6,6 +6,7 @@
 #include "ui/finn/animation.hpp"
 #include "ui/finn/application.hpp"
 #include "ui/finn/components.hpp"
+#include "ui/finn/spring.hpp"
 #include "ui/finn/theme.hpp"
 #include "ui/finn/tokens.hpp"
 #include "ui/finn/window.hpp"

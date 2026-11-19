@@ -21,12 +21,18 @@ make lint
 - `make lint` checks trailing whitespace, generated token sync
   (`tokens.py --check`), and confirms zero app ids appear inside `src/comp`.
 - `base/mkfinniso --check` verifies parity between `base/` and `base/airootfs/`
-  for all systemd units and tmpfiles configs.
+  for all systemd units and tmpfiles configs, that every boot menu is a
+  silent Finn boot (`quiet splash`, no blinking cursor), that the Plymouth
+  theme and its config are inside both initramfs images, and that no other
+  distribution's name appears in a visible boot or identity surface.
+- `tests/test_base.py::BootChainTest` checks the same contract from Python:
+  short bootloader waits, the Finn theme files, the silent kernel parameters
+  on all four menus, and the absence of distribution branding in the app copy.
 
 ## The VM
 
 Display, Qt6 plugin, wlroots compositor, and shell integration checks require
-Arch + Qt6 + seatd/headless Wayland in the dev VM:
+a pacman-based Linux host + Qt6 + seatd/headless Wayland in the dev VM:
 
 1. Full `make` + `make install` compiles `finn-comp`, `finn-session`,
    `libfinnui`, `finnplatformtheme`, `finnstyle`, `finn-shell`, `finn-open`,
@@ -49,9 +55,15 @@ Arch + Qt6 + seatd/headless Wayland in the dev VM:
   Qt widget drag-and-drop and IME input-method protocols remain untested.
 - **Physical x86_64 bare-metal hardware & native Wine execution**: the ARM64 dev
   VM verifies `finn::inspect_pe` and clean missing-runtime handling (`Wine` is
-  not available natively on Arch Linux ARM64 without x86 emulation).
+  not available natively on `aarch64` without x86 emulation).
 - **Multi-monitor and mixed per-output HiDPI**: v1 targets single-output
   workspaces cleanly.
+- **The boot splash on real hardware**: the theme's files, the initramfs
+  contents and the kernel parameters are checked on the host, and the QEMU
+  boot test proves the chain reaches the installer. Whether the mark is
+  centred and flicker-free on a given GPU and firmware still needs a display
+  and a person looking at it (`vm/shot.sh` captures after the compositor
+  starts, not during Plymouth).
 - **True compositor-wide multi-window backdrop blur**: glass surfaces blur/tint
   cohesively via tokens and translucency; scene-graph Gaussian blur of arbitrary
   windows behind another window is not implemented in `finn-comp`.

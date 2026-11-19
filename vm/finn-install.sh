@@ -29,6 +29,9 @@ LOG=/tmp/finn-install.log
 SRC=""
 DISK=""
 DISK_ARG=""
+HOSTNAME_ARG=""
+TIMEZONE_ARG=""
+AB_SLOTS=0
 ASSUME_YES=0
 
 # A machine with no screen - a CI runner, a server, an install driven over a
@@ -130,11 +133,14 @@ step() {
 
 usage() {
     cat <<EOF
-usage: finn-install --disk <device> [--yes]
+usage: finn-install --disk <device> [options]
 
-  --disk <device>  the disk to erase and install onto, e.g. /dev/nvme0n1
-  --yes            unattended: do not ask for the device path again
-  -h, --help       this
+  --disk <device>      the disk to erase and install onto, e.g. /dev/nvme0n1
+  --hostname <name>    target hostname (default: finnos)
+  --timezone <tz>      IANA timezone under /usr/share/zoneinfo (default: UTC)
+  --ab-slots           partition for OTA A/B root slots (FINNOS_A, FINNOS_B, FINNOS_DATA)
+  --yes                unattended: do not ask for the device path again
+  -h, --help           this
 
 There is no default disk, and finn-install never picks one.
 EOF
@@ -149,6 +155,28 @@ while [ $# -gt 0 ]; do
             ;;
         --disk=*)
             DISK_ARG="${1#*=}"
+            shift
+            ;;
+        --hostname)
+            [ $# -ge 2 ] || die "--hostname needs a value"
+            HOSTNAME_ARG="$2"
+            shift 2
+            ;;
+        --hostname=*)
+            HOSTNAME_ARG="${1#*=}"
+            shift
+            ;;
+        --timezone)
+            [ $# -ge 2 ] || die "--timezone needs a zone, e.g. UTC"
+            TIMEZONE_ARG="$2"
+            shift 2
+            ;;
+        --timezone=*)
+            TIMEZONE_ARG="${1#*=}"
+            shift
+            ;;
+        --ab-slots)
+            AB_SLOTS=1
             shift
             ;;
         --yes|-y)
@@ -173,10 +201,23 @@ done
 # leaves the install interactive.
 for word in $(cat /proc/cmdline 2>/dev/null || true); do
     case "$word" in
-        finn.disk=*) [ -n "$DISK_ARG" ] || DISK_ARG="${word#finn.disk=}" ;;
-        finn.yes)    ASSUME_YES=1 ;;
+        finn.disk=*)     [ -n "$DISK_ARG" ] || DISK_ARG="${word#finn.disk=}" ;;
+        finn.hostname=*) [ -n "$HOSTNAME_ARG" ] || HOSTNAME_ARG="${word#finn.hostname=}" ;;
+        finn.timezone=*) [ -n "$TIMEZONE_ARG" ] || TIMEZONE_ARG="${word#finn.timezone=}" ;;
+        finn.ab)         AB_SLOTS=1 ;;
+        finn.yes)        ASSUME_YES=1 ;;
     esac
 done
+
+if [ -n "$HOSTNAME_ARG" ]; then
+    printf '%s' "$HOSTNAME_ARG" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$' ||
+        die "invalid --hostname: $HOSTNAME_ARG"
+fi
+if [ -n "$TIMEZONE_ARG" ]; then
+    case "$TIMEZONE_ARG" in
+        /*|*..*|*[[:space:]]*) die "invalid --timezone: $TIMEZONE_ARG" ;;
+    esac
+fi
 
 if [ -z "$DISK_ARG" ]; then
     # The default boot entry has no disk to name, so the installer asks for
@@ -232,16 +273,59 @@ post
 
 # 1. the tools.
 step "[1/8] PREREQS"
-# The live environment ships a list of mirrors and the first one is not
-# always the quickest for the machine that is installing; the geo mirror
-# is anycast and picks one near the caller. The rest stay in the list for
-# the machine that is installed.
-if [ -f /etc/pacman.d/mirrorlist ]; then
+# Install the FinnOS repository mirrorlist (/etc/pacman.d/finnos-mirrorlist)
+# from the tree (or fallback template when fetched over HTTP). Optional
+# FINN_REPO_URL prepends a local/staging mirror for [finnos].
+mkdir -p /etc/pacman.d
+if [ -n "$SRC" ] && [ -f "$SRC/repo/finnos-mirrorlist" ]; then
+    install -m 644 "$SRC/repo/finnos-mirrorlist" /etc/pacman.d/finnos-mirrorlist
+else
+    cat > /etc/pacman.d/finnos-mirrorlist <<'EOF'
+# FinnOS pacman repository mirrorlist (/etc/pacman.d/finnos-mirrorlist)
+# Placeholder URL until live repository hosting is provisioned (see docs/repo.md).
+Server = https://repo.finnos.org/$repo/os/$arch
+EOF
+fi
+if [ -n "${FINN_REPO_URL:-}" ]; then
     {
-        echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch'
-        grep -v '^Server = https://geo.mirror.pkgbuild.com' /etc/pacman.d/mirrorlist
-    } > /etc/pacman.d/mirrorlist.new
-    mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+        printf '# Operator override via FINN_REPO_URL\nServer = %s\n' "$FINN_REPO_URL"
+        cat /etc/pacman.d/finnos-mirrorlist
+    } > /etc/pacman.d/finnos-mirrorlist.new
+    mv /etc/pacman.d/finnos-mirrorlist.new /etc/pacman.d/finnos-mirrorlist
+fi
+
+# Upstream Arch mirrors in /etc/pacman.d/mirrorlist remain ONLY as an explicit
+# fallback for [core], [extra], and (x86_64) [multilib] packages that FinnOS
+# does not yet rebuild (kernel, systemd, glibc, mesa, Qt6, Wine; see
+# docs/repo.md). Do not hard-code a single upstream geo mirror here: keep the
+# live medium's mirrorlist, or prepend FINN_ARCH_FALLBACK_MIRROR if supplied.
+if [ -f /etc/pacman.d/mirrorlist ]; then
+    if ! grep -q '^# FinnOS upstream fallback mirrorlist' /etc/pacman.d/mirrorlist; then
+        {
+            echo '# FinnOS upstream fallback mirrorlist (for [core]/[extra]/[multilib] only)'
+            echo '# Kept only for packages FinnOS does not yet rebuild; see docs/repo.md.'
+            if [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+                printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+            fi
+            cat /etc/pacman.d/mirrorlist
+        } > /etc/pacman.d/mirrorlist.new
+        mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+    elif [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+        {
+            printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+            cat /etc/pacman.d/mirrorlist
+        } > /etc/pacman.d/mirrorlist.new
+        mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist
+    fi
+elif [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
+    {
+        echo '# FinnOS upstream fallback mirrorlist (for [core]/[extra]/[multilib] only)'
+        echo '# Kept only for packages FinnOS does not yet rebuild; see docs/repo.md.'
+        printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
+    } > /etc/pacman.d/mirrorlist
+fi
+if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/mirrorlist 2>/dev/null; then
+    die "no fallback mirror configured in /etc/pacman.d/mirrorlist (set FINN_ARCH_FALLBACK_MIRROR or populate /etc/pacman.d/mirrorlist)"
 fi
 # Wine's 32-bit GL and Vulkan stack lives in [multilib]. The live root is
 # Arch's, and its pacman.conf may have the section or not; the disc carries
@@ -283,6 +367,29 @@ if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
 fi
 [ -s /etc/pacman.d/gnupg/pubring.gpg ] ||
     die "the live keyring is not initialized; refusing to install without signature checking"
+# If the live medium's /etc/pacman.conf enables [finnos] against an offline
+# repo.finnos.org placeholder (and no FINN_REPO_URL override is set), disable
+# [finnos] in the live pacman.conf so pacman -Sy / pacstrap can fall back to
+# upstream [core]/[extra] without hard-failing.
+if grep -qE '^\[finnos\][[:space:]]*$' /etc/pacman.conf 2>/dev/null; then
+    LIVE_ARCH="$(uname -m)"
+    if [ -n "${FINN_REPO_URL:-}" ]; then
+        awk -v url="$FINN_REPO_URL" '
+          /^\[finnos\]/ { in_finnos=1 }
+          in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+          in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+          { print }
+        ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+    elif ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/${LIVE_ARCH}/finnos.db" >/dev/null 2>&1; then
+        echo "note: [finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in live pacman.conf"
+        awk '
+          /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+          in_finnos && /^\[/ { in_finnos=0 }
+          in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+          { print }
+        ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+    fi
+fi
 if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
     die "the installer's own tools did not install; the live keyring or a mirror is broken"
 fi
@@ -309,6 +416,12 @@ esac
 ESP="${PART}1"
 BIOSBOOT="${PART}2"
 ROOT="${PART}3"
+SLOT_B=""
+DATA_PART=""
+if [ "$AB_SLOTS" = 1 ]; then
+    SLOT_B="${PART}4"
+    DATA_PART="${PART}5"
+fi
 
 # The whole disk a device belongs to: a partition answers with its parent, a
 # mapper device with the disk underneath it, a whole-disk filesystem with
@@ -359,9 +472,24 @@ done <<< "$(lsblk -lno NAME,TYPE "$DISK" | tail -n +2)"
 echo
 echo "This will erase every partition on $DISK and install FinnOS:"
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" || true
-echo "  ${ESP}  512M  EFI system partition, mounted at /boot"
-echo "  ${BIOSBOOT}  1M  BIOS boot (GRUB on a GPT disk)"
-echo "  ${ROOT}  the rest, ext4, label finnos"
+if [ "$AB_SLOTS" = 1 ]; then
+    DISK_BYTES="$(lsblk -bno SIZE -d "$DISK" | head -n1 || true)"
+    [ -n "$DISK_BYTES" ] || DISK_BYTES="$(blockdev --getsize64 "$DISK" 2>/dev/null || echo 0)"
+    DISK_MIB=$((DISK_BYTES / 1024 / 1024))
+    # Reserve 1024 MiB ESP + 1 MiB BIOS boot + 16 MiB alignment slack.
+    AVAIL_MIB=$((DISK_MIB - 1041))
+    SLOT_MIB=$((AVAIL_MIB * 35 / 100))
+    [ "$SLOT_MIB" -ge 4096 ] || die "$DISK is too small for A/B OTA slots (need >= 14 GiB, got ${DISK_MIB} MiB)"
+    echo "  ${ESP}  1024M  EFI system partition, mounted at /boot"
+    echo "  ${BIOSBOOT}  1M     BIOS boot (GRUB on a GPT disk)"
+    echo "  ${ROOT}  ${SLOT_MIB}M  Root Slot A, ext4, label FINNOS_A"
+    echo "  ${SLOT_B}  ${SLOT_MIB}M  Root Slot B, ext4, label FINNOS_B"
+    echo "  ${DATA_PART}  rest   Persistent data, ext4, label FINNOS_DATA (/data)"
+else
+    echo "  ${ESP}  512M  EFI system partition, mounted at /boot"
+    echo "  ${BIOSBOOT}  1M  BIOS boot (GRUB on a GPT disk)"
+    echo "  ${ROOT}  the rest, ext4, label finnos"
+fi
 echo
 if [ "$ASSUME_YES" = 1 ]; then
     echo "unattended install (--yes): writing to $DISK"
@@ -383,33 +511,57 @@ while read -r name; do
 done <<< "$(lsblk -lno NAME "$DISK" | tail -n +2)"
 wipefs -a "$DISK" || die "wipefs failed on $DISK"
 
-# Three partitions: an EFI system partition for /boot, a one-megabyte BIOS
-# boot partition, and the root. The BIOS boot partition is where GRUB puts
-# its boot code on a GPT disk; without it a machine that starts with a BIOS
-# has an install it cannot reach, and the firmware is not always willing
-# to boot an EFI disk on its own. Its type is named by GUID: the short "B"
-# alias is a DOS type, and sfdisk refuses to add a GPT partition with it.
-printf 'label: gpt\n,512M,U\n,+1M,21686148-6449-6E6F-744E-656564454649\n,,L\n' |
-    sfdisk --wipe=always "$DISK" ||
-    die "sfdisk did not write a partition table on $DISK"
+if [ "$AB_SLOTS" = 1 ]; then
+    printf 'label: gpt\nsize=1024M, type=U, name="FINNOS_EFI"\nsize=1M, type=21686148-6449-6E6F-744E-656564454649, name="BIOS_BOOT"\nsize=%sM, type=L, name="FINNOS_A"\nsize=%sM, type=L, name="FINNOS_B"\ntype=L, name="FINNOS_DATA"\n' \
+        "$SLOT_MIB" "$SLOT_MIB" |
+        sfdisk --wipe=always "$DISK" ||
+        die "sfdisk did not write A/B partition table on $DISK"
+else
+    # Three partitions: an EFI system partition for /boot, a one-megabyte BIOS
+    # boot partition, and the root. The BIOS boot partition is where GRUB puts
+    # its boot code on a GPT disk; without it a machine that starts with a BIOS
+    # has an install it cannot reach, and the firmware is not always willing
+    # to boot an EFI disk on its own. Its type is named by GUID: the short "B"
+    # alias is a DOS type, and sfdisk refuses to add a GPT partition with it.
+    printf 'label: gpt\n,512M,U\n,+1M,21686148-6449-6E6F-744E-656564454649\n,,L\n' |
+        sfdisk --wipe=always "$DISK" ||
+        die "sfdisk did not write a partition table on $DISK"
+fi
 sfdisk -d "$DISK" >/dev/null || die "no partition table on $DISK"
 
 sync
 partprobe "$DISK" 2>/dev/null || true
 udevadm settle --timeout=30 2>/dev/null || true
 for _ in $(seq 1 30); do
-    [ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] && break
+    if [ "$AB_SLOTS" = 1 ]; then
+        [ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] && [ -b "$SLOT_B" ] && [ -b "$DATA_PART" ] && break
+    else
+        [ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] && break
+    fi
     sleep 1
 done
-[ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] ||
-    die "the partition nodes did not appear on $DISK after partitioning"
+if [ "$AB_SLOTS" = 1 ]; then
+    [ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] && [ -b "$SLOT_B" ] && [ -b "$DATA_PART" ] ||
+        die "the A/B partition nodes did not appear on $DISK after partitioning"
+else
+    [ -b "$ESP" ] && [ -b "$BIOSBOOT" ] && [ -b "$ROOT" ] ||
+        die "the partition nodes did not appear on $DISK after partitioning"
+fi
 lsblk "$DISK"
 post
 
 # 3. the filesystems.
 step "[3/8] FORMAT"
 mkfs.vfat -F32 -n FINNOS_EFI "$ESP" || die "mkfs.vfat failed on $ESP"
-mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
+if [ "$AB_SLOTS" = 1 ]; then
+    mkfs.ext4 -F -L FINNOS_A "$ROOT" || die "mkfs.ext4 failed on $ROOT"
+    mkfs.ext4 -F -L FINNOS_B "$SLOT_B" || die "mkfs.ext4 failed on $SLOT_B"
+    mkfs.ext4 -F -L FINNOS_DATA "$DATA_PART" || die "mkfs.ext4 failed on $DATA_PART"
+    [ "$(blkid -s TYPE -o value "$SLOT_B")" = "ext4" ] || die "$SLOT_B is not ext4"
+    [ "$(blkid -s TYPE -o value "$DATA_PART")" = "ext4" ] || die "$DATA_PART is not ext4"
+else
+    mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
+fi
 [ "$(blkid -s TYPE -o value "$ESP")"  = "vfat" ] || die "$ESP is not vfat"
 [ "$(blkid -s TYPE -o value "$ROOT")" = "ext4" ] || die "$ROOT is not ext4"
 post
@@ -424,6 +576,12 @@ mkdir -p /mnt/boot
 mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
 [ "$(findmnt -no SOURCE -T /mnt)" = "$ROOT" ] || die "$ROOT is not what is mounted at /mnt"
 [ "$(findmnt -no SOURCE -T /mnt/boot)" = "$ESP" ] || die "$ESP is not what is mounted at /mnt/boot"
+if [ "$AB_SLOTS" = 1 ]; then
+    mkdir -p /mnt/data
+    mount "$DATA_PART" /mnt/data || die "could not mount $DATA_PART at /mnt/data"
+    [ "$(findmnt -no SOURCE -T /mnt/data)" = "$DATA_PART" ] || die "$DATA_PART is not what is mounted at /mnt/data"
+    findmnt -o TARGET,SOURCE,FSTYPE /mnt/data
+fi
 # findmnt takes one target. Asking for both at once is a usage error that
 # returns 1 without a message, and set -e would stop the install here.
 findmnt -o TARGET,SOURCE,FSTYPE /mnt
@@ -520,6 +678,7 @@ post
 
 # 7. the chroot: the machine is configured there, and it builds the shell.
 step "[7/8] CHROOT"
+install -Dm644 /etc/pacman.d/finnos-mirrorlist /mnt/etc/pacman.d/finnos-mirrorlist
 mkdir -p /mnt/root
 if [ -n "$SRC" ]; then
     # The disc carries the whole tree: the chroot script, the assets and the
@@ -544,6 +703,9 @@ chmod +x /mnt/root/finn-chroot.sh
 export ROOTUUID
 export FINN_DISK="$DISK"
 export FINN_PASSWORD="${FINN_PASSWORD:-}"
+export FINN_HOSTNAME="${HOSTNAME_ARG:-${FINN_HOSTNAME:-finnos}}"
+export FINN_TIMEZONE="${TIMEZONE_ARG:-${FINN_TIMEZONE:-UTC}}"
+export FINN_AB_SLOTS="$AB_SLOTS"
 # A machine installed over a serial console keeps that console. The live
 # medium knows because it was told; the chroot has no kernel command line
 # to read, so the answer is handed to it.
@@ -600,13 +762,14 @@ echo "HARDWARE=$HARDWARE"
 post_line "HARDWARE=$HARDWARE"
 
 bootentry=""
-if [ -f /mnt/boot/grub/grub.cfg ] && grep -q "root=UUID=$ROOTUUID" /mnt/boot/grub/grub.cfg; then
+if [ -f /mnt/boot/grub/grub.cfg ] &&
+   { grep -q "root=UUID=$ROOTUUID" /mnt/boot/grub/grub.cfg || grep -q "root=PARTLABEL=FINNOS_A" /mnt/boot/grub/grub.cfg; }; then
     bootentry=grub
 elif compgen -G '/mnt/boot/loader/entries/*.conf' >/dev/null &&
-     grep -q "root=UUID=$ROOTUUID" /mnt/boot/loader/entries/*.conf; then
+     { grep -q "root=UUID=$ROOTUUID" /mnt/boot/loader/entries/*.conf || grep -q "root=PARTLABEL=FINNOS_A" /mnt/boot/loader/entries/*.conf; }; then
     bootentry=systemd-boot
 fi
-[ -n "$bootentry" ] || die "no boot entry on $DISK names root=UUID=$ROOTUUID"
+[ -n "$bootentry" ] || die "no boot entry on $DISK names root=UUID=$ROOTUUID or root=PARTLABEL=FINNOS_A"
 
 # An ESP with no loader on it is a machine the firmware cannot start, even
 # with a correct grub.cfg on the root filesystem.

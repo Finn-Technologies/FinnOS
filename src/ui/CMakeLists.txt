@@ -25,6 +25,7 @@ add_library(finnui SHARED
     finn/window.hpp
     finn/tokens.hpp
     finn/animation.hpp
+    finn/spring.hpp
     finn/sdk.hpp
     generated_tokens.hpp
     ../system/sys_files.cpp
@@ -66,6 +67,7 @@ install(FILES
     finn/application.hpp
     finn/components.hpp
     finn/sdk.hpp
+    finn/spring.hpp
     finn/theme.hpp
     finn/tokens.hpp
     finn/window.hpp

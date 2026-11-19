@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""Server-side OTA release publisher: compress, delta-diff, build manifest, sign, and lay out."""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+_SRC_OTA = os.path.join(_ROOT, "src", "ota")
+if _SRC_OTA not in sys.path:
+    sys.path.insert(0, _SRC_OTA)
+
+from finn_ota import ed25519  # noqa: E402
+from finn_ota.config import github_releases_base_url, is_github_releases_url  # noqa: E402
+from finn_ota.download import sha256_file  # noqa: E402
+from finn_ota.manifest import sign_manifest, verify_manifest  # noqa: E402
+from finn_ota.rollout import validate_channel  # noqa: E402
+from finn_ota.version import SemVer  # noqa: E402
+
+
+def _zstd_bin() -> str:
+    z = shutil.which("zstd")
+    if not z:
+        raise RuntimeError("zstd is required to publish OTA artifacts")
+    return z
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def publish_release(
+    *,
+    version: str,
+    channel: str,
+    arch: str,
+    image_path: str,
+    private_key_path: str,
+    base_url: str,
+    out_dir: str,
+    min_version: str = "0.1.0",
+    rollout: int = 100,
+    release_notes: str = "",
+    prev_image_path: str | None = None,
+    prev_version: str | None = None,
+    update_latest: bool = True,
+    release_tag: str | None = None,
+) -> dict:
+    SemVer.parse(version)
+    SemVer.parse(min_version)
+    validate_channel(channel)
+    if arch not in ("x86_64", "aarch64"):
+        raise ValueError(f"unsupported arch: {arch!r}")
+    if not (0 <= rollout <= 100):
+        raise ValueError("rollout must be 0..100")
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError(f"image not found: {image_path}")
+    if (prev_image_path is None) != (prev_version is None):
+        raise ValueError("--prev-image and --prev-version must be provided together")
+
+    with open(private_key_path, "r", encoding="utf-8") as f:
+        priv_pem = f.read()
+    seed = ed25519.decode_private_pem(priv_pem)
+    pub = ed25519.public_key_from_seed(seed)
+
+    zstd = _zstd_bin()
+    channel_dir = os.path.join(os.path.abspath(out_dir), channel, arch)
+    rel_dir = os.path.join(channel_dir, version)
+    os.makedirs(rel_dir, exist_ok=True)
+
+    # Decompress if caller passed an already-compressed .zst so we always know raw SHA-256/size
+    raw_tmp = None
+    try:
+        if image_path.endswith(".zst"):
+            raw_tmp = os.path.join(rel_dir, f".raw-{version}.img")
+            subprocess.run([zstd, "-d", "-f", image_path, "-o", raw_tmp], check=True)
+            raw_img = raw_tmp
+        else:
+            raw_img = image_path
+
+        uncompressed_size = os.path.getsize(raw_img)
+        uncompressed_sha = sha256_file(raw_img)
+
+        full_name = f"finnos-{version}-{arch}.img.zst"
+        full_dest = os.path.join(rel_dir, full_name)
+        if image_path.endswith(".zst"):
+            shutil.copyfile(image_path, full_dest)
+        else:
+            subprocess.run([zstd, "-19", "-f", raw_img, "-o", full_dest, "-q"], check=True)
+
+        base = base_url.rstrip("/")
+        gh_mode = is_github_releases_url(base)
+        tag = release_tag or f"v{version}"
+
+        def _artifact_url(filename: str) -> str:
+            if gh_mode:
+                return f"{base}/{tag}/{filename}"
+            return f"{base}/{channel}/{arch}/{version}/{filename}"
+
+        artifacts = [
+            {
+                "kind": "full",
+                "compression": "zstd",
+                "url": _artifact_url(full_name),
+                "sha256": sha256_file(full_dest),
+                "size": os.path.getsize(full_dest),
+                "uncompressed_sha256": uncompressed_sha,
+                "uncompressed_size": uncompressed_size,
+                "delta_from": None,
+            }
+        ]
+
+        if prev_image_path and prev_version:
+            SemVer.parse(prev_version)
+            prev_raw_tmp = None
+            try:
+                if prev_image_path.endswith(".zst"):
+                    prev_raw_tmp = os.path.join(rel_dir, f".raw-{prev_version}.img")
+                    subprocess.run([zstd, "-d", "-f", prev_image_path, "-o", prev_raw_tmp], check=True)
+                    prev_raw = prev_raw_tmp
+                else:
+                    prev_raw = prev_image_path
+
+                delta_name = f"finnos-{prev_version}-to-{version}-{arch}.zstd-delta"
+                delta_dest = os.path.join(rel_dir, delta_name)
+                subprocess.run(
+                    [zstd, "-19", "-f", f"--patch-from={prev_raw}", raw_img, "-o", delta_dest, "-q"],
+                    check=True,
+                )
+                artifacts.append(
+                    {
+                        "kind": "delta",
+                        "compression": "zstd",
+                        "url": _artifact_url(delta_name),
+                        "sha256": sha256_file(delta_dest),
+                        "size": os.path.getsize(delta_dest),
+                        "uncompressed_sha256": uncompressed_sha,
+                        "uncompressed_size": uncompressed_size,
+                        "delta_from": prev_version,
+                    }
+                )
+            finally:
+                if prev_raw_tmp and os.path.exists(prev_raw_tmp):
+                    os.remove(prev_raw_tmp)
+
+        published_at = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        manifest = {
+            "schema_version": 1,
+            "version": version,
+            "channel": channel,
+            "arch": arch,
+            "published_at": published_at,
+            "min_version": min_version,
+            "rollout": rollout,
+            "release_notes": release_notes,
+            "artifacts": artifacts,
+        }
+        signed = sign_manifest(manifest, priv_pem)
+        verify_manifest(signed, [pub])
+
+        manifest_path = os.path.join(rel_dir, "manifest.json")
+        _atomic_write_json(manifest_path, signed)
+        if gh_mode:
+            _atomic_write_json(os.path.join(rel_dir, f"manifest-{arch}.json"), signed)
+        if update_latest:
+            _atomic_write_json(os.path.join(channel_dir, "latest.json"), signed)
+            if gh_mode:
+                gh_chan_dir = os.path.join(os.path.abspath(out_dir), f"ota-{channel}")
+                _atomic_write_json(os.path.join(gh_chan_dir, f"latest-{arch}.json"), signed)
+        return signed
+    finally:
+        if raw_tmp and os.path.exists(raw_tmp):
+            os.remove(raw_tmp)
+
+
+def _upload_to_github(
+    *,
+    repo: str,
+    version: str,
+    channel: str,
+    arch: str,
+    release_tag: str,
+    out_dir: str,
+    notes: str,
+    update_latest: bool,
+) -> None:
+    gh = shutil.which("gh")
+    if not gh:
+        raise RuntimeError("gh CLI is required for --upload-github")
+    rel_dir = os.path.join(os.path.abspath(out_dir), channel, arch, version)
+    assets = [
+        os.path.join(rel_dir, f"finnos-{version}-{arch}.img.zst"),
+        os.path.join(rel_dir, f"manifest-{arch}.json"),
+    ]
+    for entry in sorted(os.listdir(rel_dir)):
+        if entry.endswith(".zstd-delta"):
+            assets.append(os.path.join(rel_dir, entry))
+
+    view = subprocess.run(
+        [gh, "release", "view", release_tag, "--repo", repo],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if view.returncode == 0:
+        subprocess.run(
+            [gh, "release", "upload", release_tag, "--repo", repo, "--clobber", *assets],
+            check=True,
+        )
+    else:
+        cmd = [
+            gh, "release", "create", release_tag,
+            "--repo", repo,
+            "--title", f"FinnOS {version}",
+            "--notes", notes or f"FinnOS {version} ({channel} / {arch})",
+        ]
+        if channel != "stable":
+            cmd.append("--prerelease")
+        cmd.extend(assets)
+        subprocess.run(cmd, check=True)
+
+    if update_latest:
+        chan_tag = f"ota-{channel}"
+        latest_path = os.path.join(os.path.abspath(out_dir), chan_tag, f"latest-{arch}.json")
+        view_ch = subprocess.run(
+            [gh, "release", "view", chan_tag, "--repo", repo],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if view_ch.returncode == 0:
+            subprocess.run(
+                [gh, "release", "upload", chan_tag, "--repo", repo, "--clobber", latest_path],
+                check=True,
+            )
+        else:
+            cmd = [
+                gh, "release", "create", chan_tag,
+                "--repo", repo,
+                "--title", f"FinnOS OTA Channel ({channel})",
+                "--notes", f"Rolling signed OTA manifest pointer for the {channel} channel.",
+            ]
+            if channel != "stable":
+                cmd.append("--prerelease")
+            cmd.append(latest_path)
+            subprocess.run(cmd, check=True)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Build and sign a FinnOS OTA release")
+    p.add_argument("--version", required=True)
+    p.add_argument("--channel", required=True, choices=("stable", "beta", "dev"))
+    p.add_argument("--arch", required=True, choices=("x86_64", "aarch64"))
+    p.add_argument("--image", required=True, help="path to root slot image (.img or .img.zst)")
+    p.add_argument("--key", required=True, help="path to Ed25519 PKCS#8 private key PEM")
+    p.add_argument(
+        "--base-url",
+        default=None,
+        help="public base URL (default: GitHub Releases for --github-repo)",
+    )
+    p.add_argument(
+        "--github-repo",
+        default=None,
+        help="GitHub OWNER/REPO (e.g. Finn-Technologies/FinnOS) for GitHub Releases OTA",
+    )
+    p.add_argument(
+        "--release-tag",
+        default=None,
+        help="GitHub Release tag for artifact assets (default: v<version>)",
+    )
+    p.add_argument(
+        "--upload-github",
+        action="store_true",
+        help="upload signed assets and channel manifest to GitHub Releases via gh CLI",
+    )
+    p.add_argument("--out-dir", required=True, help="output repository root directory")
+    p.add_argument("--min-version", default="0.1.0")
+    p.add_argument("--rollout", type=int, default=100)
+    p.add_argument("--notes", default="")
+    p.add_argument("--notes-file", default=None)
+    p.add_argument("--prev-image", default=None)
+    p.add_argument("--prev-version", default=None)
+    p.add_argument("--no-latest", action="store_true", help="do not overwrite channel latest manifest")
+    args = p.parse_args()
+
+    base_url = args.base_url
+    if args.github_repo:
+        base_url = github_releases_base_url(args.github_repo)
+    if not base_url:
+        p.error("either --base-url or --github-repo is required")
+
+    notes = args.notes
+    if args.notes_file:
+        with open(args.notes_file, "r", encoding="utf-8") as f:
+            notes = f.read().strip()
+
+    tag = args.release_tag or f"v{args.version}"
+    signed = publish_release(
+        version=args.version,
+        channel=args.channel,
+        arch=args.arch,
+        image_path=args.image,
+        private_key_path=args.key,
+        base_url=base_url,
+        out_dir=args.out_dir,
+        min_version=args.min_version,
+        rollout=args.rollout,
+        release_notes=notes,
+        prev_image_path=args.prev_image,
+        prev_version=args.prev_version,
+        update_latest=not args.no_latest,
+        release_tag=tag,
+    )
+    if args.upload_github:
+        if not args.github_repo:
+            p.error("--upload-github requires --github-repo OWNER/REPO")
+        _upload_to_github(
+            repo=args.github_repo,
+            version=args.version,
+            channel=args.channel,
+            arch=args.arch,
+            release_tag=tag,
+            out_dir=args.out_dir,
+            notes=notes,
+            update_latest=not args.no_latest,
+        )
+    print(
+        f"published FinnOS {signed['version']} ({signed['channel']}/{signed['arch']}) "
+        f"key_id={signed['signature']['key_id']} artifacts={len(signed['artifacts'])}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

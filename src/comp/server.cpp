@@ -45,6 +45,15 @@ void write_xdisplay_file(const char* disp) {
     }
 }
 
+// finn-shell watches /run/finn/state for this file. The compositor does not
+// know what a lock screen is; it only asks the shell to show one.
+void request_lock() {
+    std::error_code ec;
+    fs::create_directories(fs::path(kLockRequestPath).parent_path(), ec);
+    std::ofstream out(kLockRequestPath, std::ios::trunc);
+    if (out) out << "lock\n";
+}
+
 const char* cursor_for_edges(uint32_t edges) {
     if (edges == (WLR_EDGE_TOP | WLR_EDGE_LEFT) ||
         edges == (WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT)) {
@@ -82,44 +91,53 @@ wlr_output* Server::primary_output() const {
     return outputs_.empty() ? nullptr : outputs_.front()->output;
 }
 
-bool Server::read_dark_setting() {
-    const std::string home_settings = "/home/finn/.config/finn/settings";
-    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+std::vector<std::string> Server::settings_paths() {
+    std::vector<std::string> paths;
+    const char* override_path = std::getenv("FINN_SETTINGS_PATH");
+    const char* home = std::getenv("HOME");
+    if ((override_path && *override_path) ||
+        (home && *home && std::strcmp(home, "/root") != 0)) {
+        paths.push_back(user_settings_path());
+    } else {
+        // finn-comp runs as root (HOME=/root); read the desktop user's settings.
+        paths.push_back(std::string("/home/finn/") + kUserSettingsRel);
+    }
+    paths.emplace_back(kSettingsPath);
+    return paths;
+}
+
+std::optional<std::string> Server::read_setting_value(std::string_view key) {
+    const std::string prefix = std::string(key) + "=";
+    for (const std::string& path : settings_paths()) {
         std::ifstream in(path);
         if (!in) continue;
         std::string line;
-        bool saw_dark = false;
-        bool dark = false;
+        std::optional<std::string> found;
         while (std::getline(in, line)) {
             line = trim(line);
-            if (line.rfind("dark=", 0) == 0) {
-                dark = parse_bool_str(trim(line.substr(5)));
-                saw_dark = true;
+            if (line.rfind(prefix, 0) == 0) {
+                found = trim(line.substr(prefix.size()));
             }
         }
-        if (saw_dark) return dark;
+        if (found.has_value()) return found;
     }
-    return false;
+    return std::nullopt;
+}
+
+bool Server::read_dark_setting() {
+    const auto val = read_setting_value("dark");
+    return val.has_value() && parse_bool_str(*val);
 }
 
 bool Server::read_reduced_motion_setting() {
-    const std::string home_settings = "/home/finn/.config/finn/settings";
-    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
-        std::ifstream in(path);
-        if (!in) continue;
-        std::string line;
-        bool saw_rm = false;
-        bool rm = false;
-        while (std::getline(in, line)) {
-            line = trim(line);
-            if (line.rfind("reduced_motion=", 0) == 0) {
-                rm = parse_bool_str(trim(line.substr(15)));
-                saw_rm = true;
-            }
-        }
-        if (saw_rm) return rm;
-    }
-    return false;
+    const auto val = read_setting_value("reduced_motion");
+    return val.has_value() && parse_bool_str(*val);
+}
+
+int Server::read_auto_lock_minutes() {
+    const auto val = read_setting_value("auto_lock_minutes");
+    if (!val.has_value()) return 0;  // 0 means auto-lock is off; never invent a timeout.
+    return std::clamp(std::atoi(val->c_str()), 0, 120);
 }
 
 Server::OutputConfig Server::read_output_config() {
@@ -135,8 +153,7 @@ Server::OutputConfig Server::read_output_config() {
         cfg.scale = std::strtof(s, nullptr);
     }
 
-    const std::string home_settings = "/home/finn/.config/finn/settings";
-    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
+    for (const std::string& path : settings_paths()) {
         std::ifstream in(path);
         if (!in) continue;
         std::string line;
@@ -219,22 +236,46 @@ void Server::sync_all_ssd_themes() {
     }
 }
 
-static int read_cursor_size_setting() {
-    const std::string home_settings = "/home/finn/.config/finn/settings";
-    for (const char* path : {home_settings.c_str(), kSettingsPath}) {
-        std::ifstream in(path);
-        if (!in) continue;
-        std::string line;
-        while (std::getline(in, line)) {
-            line = trim(line);
-            if (line.rfind("cursor_size=", 0) == 0) {
-                const int sz = std::atoi(line.c_str() + 12);
-                if (sz >= 16 && sz <= 96) return sz;
-            }
-        }
-        return 24;
+int Server::read_cursor_size_setting() {
+    const auto val = read_setting_value("cursor_size");
+    if (val.has_value()) {
+        const int sz = std::atoi(val->c_str());
+        if (sz >= 16 && sz <= 96) return sz;
     }
     return 24;
+}
+
+std::string Server::read_kb_layout_setting() {
+    if (const char* env_layout = std::getenv("XKB_DEFAULT_LAYOUT");
+        env_layout && *env_layout) {
+        return env_layout;
+    }
+    const auto val = read_setting_value("kb_layout");
+    return val.value_or("");
+}
+
+void Server::apply_keyboard_layout(wlr_keyboard* kb, const std::string& layout) const {
+    if (!kb) return;
+    xkb_context* ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!ctx) return;
+    const auto variant = read_setting_value("kb_variant");
+    const auto options = read_setting_value("kb_options");
+    xkb_rule_names rules{};
+    if (!layout.empty()) rules.layout = layout.c_str();
+    if (variant.has_value() && !variant->empty()) rules.variant = variant->c_str();
+    if (options.has_value() && !options->empty()) rules.options = options->c_str();
+
+    xkb_keymap* map = xkb_keymap_new_from_names(
+        ctx, (!layout.empty() || rules.variant || rules.options) ? &rules : nullptr,
+        XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!map) {
+        map = xkb_keymap_new_from_names(ctx, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    }
+    if (map) {
+        wlr_keyboard_set_keymap(kb, map);
+        xkb_keymap_unref(map);
+    }
+    xkb_context_unref(ctx);
 }
 
 void Server::reload_cursor_theme() {
@@ -272,6 +313,13 @@ void Server::update_display_settings() {
         cursor_size_ = new_cursor;
         reload_cursor_theme();
     }
+    const std::string new_layout = read_kb_layout_setting();
+    if (new_layout != active_kb_layout_) {
+        active_kb_layout_ = new_layout;
+        for (auto& kd : keyboards_) {
+            apply_keyboard_layout(kd->keyboard, active_kb_layout_);
+        }
+    }
     const OutputConfig cfg = read_output_config();
     for (auto& o : outputs_) {
         int cur_w = 0, cur_h = 0;
@@ -287,9 +335,60 @@ void Server::update_display_settings() {
             update_background();
         }
     }
+    if (session_locked_) {
+        update_lock_backdrop();
+    }
+}
+
+bool Server::is_input_locked() const {
+    if (session_locked_) return true;
+    for (const auto& layer : layers_) {
+        if (!layer->mapped || !layer->layer_surface) continue;
+        if (layer->current_layer == ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY &&
+            layer->layer_surface->current.keyboard_interactive ==
+                ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void Server::focus_lock_surface(wlr_surface* surface) {
+    if (!surface || !seat_) return;
+    wlr_keyboard* kb = wlr_seat_get_keyboard(seat_);
+    if (kb) {
+        wlr_seat_keyboard_notify_enter(seat_, surface, kb->keycodes, kb->num_keycodes,
+                                       &kb->modifiers);
+    } else {
+        wlr_seat_keyboard_notify_enter(seat_, surface, nullptr, 0, nullptr);
+    }
+}
+
+void Server::update_lock_backdrop() {
+    if (!lock_tree_) return;
+    if (!session_locked_) {
+        if (lock_bg_rect_) {
+            wlr_scene_node_destroy(&lock_bg_rect_->node);
+            lock_bg_rect_ = nullptr;
+        }
+        return;
+    }
+    int w = 1440, h = 900;
+    if (wlr_output* out = primary_output()) {
+        wlr_output_effective_resolution(out, &w, &h);
+    }
+    if (!lock_bg_rect_) {
+        const float col[4] = {0.043f, 0.055f, 0.078f, 1.0f};
+        lock_bg_rect_ = wlr_scene_rect_create(lock_tree_, std::max(1, w), std::max(1, h), col);
+        wlr_scene_node_lower_to_bottom(&lock_bg_rect_->node);
+    } else {
+        wlr_scene_rect_set_size(lock_bg_rect_, std::max(1, w), std::max(1, h));
+    }
 }
 
 void Server::focus_window(ManagedWindow* win) {
+    if (session_locked_) return;
+    if (win && is_input_locked()) return;
     if (win && (!win->mapped || win->minimized)) return;
 
     if (focused_window_ && focused_window_ != win) {
@@ -452,24 +551,68 @@ void Server::update_cursor_shape_or_edge(double lx, double ly) {
     }
 }
 
+wlr_surface* Server::surface_at(double lx, double ly, double* sx, double* sy,
+                                bool* in_top_or_overlay_layer,
+                                bool* in_lock_layer) const {
+    if (in_top_or_overlay_layer) *in_top_or_overlay_layer = false;
+    if (in_lock_layer) *in_lock_layer = false;
+    if (!scene_) return nullptr;
+
+    double local_sx = 0.0, local_sy = 0.0;
+    wlr_scene_node* node =
+        wlr_scene_node_at(&scene_->tree.node, lx, ly, &local_sx, &local_sy);
+    if (!node) return nullptr;
+
+    bool hit_lock = false;
+    bool hit_top_overlay = false;
+    for (wlr_scene_tree* t = node->parent; t != nullptr; t = t->node.parent) {
+        if (t == lock_tree_) {
+            hit_lock = true;
+            hit_top_overlay = true;
+            break;
+        }
+        if (t == layer_trees_[2] || t == layer_trees_[3]) {
+            hit_top_overlay = true;
+            break;
+        }
+    }
+
+    if (session_locked_ && !hit_lock) {
+        return nullptr;
+    }
+
+    wlr_surface* surface = nullptr;
+    if (node->type == WLR_SCENE_NODE_BUFFER) {
+        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
+        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
+        if (scene_surf) surface = scene_surf->surface;
+    }
+    if (sx) *sx = local_sx;
+    if (sy) *sy = local_sy;
+    if (in_top_or_overlay_layer) *in_top_or_overlay_layer = hit_top_overlay;
+    if (in_lock_layer) *in_lock_layer = hit_lock;
+    return surface;
+}
+
 void Server::process_cursor_motion(uint32_t time_msec) {
     if (!scene_ || !cursor_ || !seat_) return;
+    last_activity_msec_ = monotonic_msec();
     if (idle_notifier_) wlr_idle_notifier_v1_notify_activity(idle_notifier_, seat_);
 
     if (cursor_mode_ != CursorMode::kPassthrough &&
-        seat_->pointer_state.button_count == 0) {
+        (seat_->pointer_state.button_count == 0 || session_locked_)) {
         cursor_mode_ = CursorMode::kPassthrough;
         grabbed_window_ = nullptr;
         active_cursor_name_ = "left_ptr";
         wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "left_ptr");
     }
 
-    if (cursor_mode_ == CursorMode::kMove && grabbed_window_) {
+    if (!session_locked_ && cursor_mode_ == CursorMode::kMove && grabbed_window_) {
         grabbed_window_->set_position(static_cast<int>(cursor_->x - grab_x_),
                                       static_cast<int>(cursor_->y - grab_y_));
         return;
     }
-    if (cursor_mode_ == CursorMode::kResize && grabbed_window_) {
+    if (!session_locked_ && cursor_mode_ == CursorMode::kResize && grabbed_window_) {
         const int dx = static_cast<int>(cursor_->x - grab_x_);
         const int dy = static_cast<int>(cursor_->y - grab_y_);
         int nx = grab_geobox_.x;
@@ -495,14 +638,7 @@ void Server::process_cursor_motion(uint32_t time_msec) {
     }
 
     double sx = 0, sy = 0;
-    wlr_scene_node* node = wlr_scene_node_at(&scene_->tree.node, cursor_->x, cursor_->y,
-                                             &sx, &sy);
-    wlr_surface* surface = nullptr;
-    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
-        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
-        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
-        if (scene_surf) surface = scene_surf->surface;
-    }
+    wlr_surface* surface = surface_at(cursor_->x, cursor_->y, &sx, &sy, nullptr, nullptr);
 
     if (surface) {
         wlr_seat_pointer_notify_enter(seat_, surface, sx, sy);
@@ -510,7 +646,9 @@ void Server::process_cursor_motion(uint32_t time_msec) {
     } else {
         wlr_seat_pointer_clear_focus(seat_);
     }
-    update_cursor_shape_or_edge(cursor_->x, cursor_->y);
+    if (!session_locked_) {
+        update_cursor_shape_or_edge(cursor_->x, cursor_->y);
+    }
 }
 
 void Server::on_new_output(wl_listener* listener, void* data) {
@@ -574,11 +712,8 @@ void Server::on_new_input(wl_listener* listener, void* data) {
 
     if (device->type == WLR_INPUT_DEVICE_KEYBOARD) {
         wlr_keyboard* kb = wlr_keyboard_from_input_device(device);
-        xkb_context* ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-        xkb_keymap* map = xkb_keymap_new_from_names(ctx, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
-        wlr_keyboard_set_keymap(kb, map);
-        xkb_keymap_unref(map);
-        xkb_context_unref(ctx);
+        server->active_kb_layout_ = read_kb_layout_setting();
+        server->apply_keyboard_layout(kb, server->active_kb_layout_);
         wlr_keyboard_set_repeat_info(kb, 28, 350);
 
         auto kdev = std::make_unique<KeyboardDevice>();
@@ -602,6 +737,7 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                             const auto* ev = static_cast<const wlr_keyboard_key_event*>(edata);
                             Server* s = k->server;
                             wlr_idle_notifier_v1_notify_activity(s->idle_notifier_, s->seat_);
+                            s->last_activity_msec_ = monotonic_msec();
 
                             const uint32_t mods = wlr_keyboard_get_modifiers(k->keyboard);
                             const xkb_keycode_t keycode = ev->keycode + 8;
@@ -609,6 +745,7 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                             const int nsyms = xkb_state_key_get_syms(
                                 k->keyboard->xkb_state, keycode, &syms);
 
+                            const bool input_locked = s->is_input_locked();
                             bool handled = false;
                             if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
                                 for (int i = 0; i < nsyms; ++i) {
@@ -625,6 +762,9 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                                         handled = true;
                                         break;
                                     }
+                                    if (input_locked) {
+                                        continue;
+                                    }
                                     if ((mods & WLR_MODIFIER_ALT) && sym == XKB_KEY_Tab) {
                                         s->cycle_focus(!(mods & WLR_MODIFIER_SHIFT));
                                         handled = true;
@@ -638,6 +778,11 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                                     if (mods & WLR_MODIFIER_LOGO) {
                                         if (sym == XKB_KEY_q || sym == XKB_KEY_Q) {
                                             if (s->focused_window_) s->focused_window_->close();
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_l || sym == XKB_KEY_L) {
+                                            request_lock();
                                             handled = true;
                                             break;
                                         }
@@ -709,10 +854,39 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                             s->pointers_.remove_if(
                                 [p](const auto& x) { return x.get() == p; });
                         });
+    } else if (device->type == WLR_INPUT_DEVICE_TOUCH) {
+        wlr_cursor_attach_input_device(server->cursor_, device);
+        auto tdev = std::make_unique<TouchDevice>();
+        auto* td = tdev.get();
+        td->server = server;
+        td->touch = wlr_touch_from_input_device(device);
+        server->touches_.push_back(std::move(tdev));
+        attach_listener(device->events.destroy, td->destroy_l,
+                        [](wl_listener* l, void*) {
+                            TouchDevice* t = wl_container_of(l, t, destroy_l);
+                            Server* s = t->server;
+                            s->touches_.remove_if(
+                                [t](const auto& x) { return x.get() == t; });
+                        });
+    } else if (device->type == WLR_INPUT_DEVICE_TABLET) {
+        wlr_cursor_attach_input_device(server->cursor_, device);
+        auto tabdev = std::make_unique<TabletDevice>();
+        auto* td = tabdev.get();
+        td->server = server;
+        td->tablet = wlr_tablet_from_input_device(device);
+        server->tablets_.push_back(std::move(tabdev));
+        attach_listener(device->events.destroy, td->destroy_l,
+                        [](wl_listener* l, void*) {
+                            TabletDevice* t = wl_container_of(l, t, destroy_l);
+                            Server* s = t->server;
+                            s->tablets_.remove_if(
+                                [t](const auto& x) { return x.get() == t; });
+                        });
     }
 
     uint32_t caps = WL_SEAT_CAPABILITY_POINTER;
     if (!server->keyboards_.empty()) caps |= WL_SEAT_CAPABILITY_KEYBOARD;
+    if (!server->touches_.empty()) caps |= WL_SEAT_CAPABILITY_TOUCH;
     wlr_seat_set_capabilities(server->seat_, caps);
 }
 
@@ -824,7 +998,7 @@ void Server::on_new_xdg_toplevel(wl_listener* listener, void* data) {
     attach_listener(xdg_toplevel->events.request_fullscreen, w->req_fullscreen_l,
                     [](wl_listener* l, void*) {
                         ManagedWindow* w = wl_container_of(l, w, req_fullscreen_l);
-                        w->set_maximized(w->xdg_toplevel->requested.fullscreen);
+                        w->set_fullscreen(w->xdg_toplevel->requested.fullscreen);
                     });
 
     attach_listener(xdg_toplevel->events.set_title, w->set_title_l,
@@ -894,7 +1068,11 @@ void Server::on_xwayland_new_surface(wl_listener* listener, void* data) {
                             s->cursor_mode_ = CursorMode::kPassthrough;
                         }
                         if (s->focused_window_ == w) s->focused_window_ = nullptr;
-                        if (w->scene_tree) wlr_scene_node_destroy(&w->scene_tree->node);
+                        if (w->scene_tree) {
+                            wlr_scene_node_destroy(&w->scene_tree->node);
+                            w->scene_tree = nullptr;
+                            w->surface_tree = nullptr;
+                        }
                         s->windows_.remove_if(
                             [w](const auto& p) { return p.get() == w; });
                         if (!s->focused_window_) s->focus_top_window();
@@ -939,6 +1117,7 @@ void Server::on_request_set_primary_selection(wl_listener* listener, void* data)
 
 void Server::on_request_activate(wl_listener* listener, void* data) {
     Server* server = wl_container_of(listener, server, request_activate_);
+    if (server->is_input_locked()) return;
     const auto* ev =
         static_cast<const wlr_xdg_activation_v1_request_activate_event*>(data);
     if (!ev->surface) return;
@@ -965,105 +1144,90 @@ void Server::on_cursor_motion_absolute(wl_listener* listener, void* data) {
     server->process_cursor_motion(ev->time_msec);
 }
 
-void Server::on_cursor_button(wl_listener* listener, void* data) {
-    Server* server = wl_container_of(listener, server, cursor_button_);
-    const auto* ev = static_cast<const wlr_pointer_button_event*>(data);
-    if (server->idle_notifier_) {
-        wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
+void Server::handle_pointer_button(uint32_t time_msec, uint32_t button,
+                                   wl_pointer_button_state state) {
+    if (!scene_ || !cursor_ || !seat_) return;
+    last_activity_msec_ = monotonic_msec();
+    if (idle_notifier_) {
+        wlr_idle_notifier_v1_notify_activity(idle_notifier_, seat_);
     }
 
-    if (ev->state == WL_POINTER_BUTTON_STATE_RELEASED) {
-        if (server->cursor_mode_ != CursorMode::kPassthrough) {
-            server->cursor_mode_ = CursorMode::kPassthrough;
-            server->grabbed_window_ = nullptr;
-            server->active_cursor_name_ = "left_ptr";
-            wlr_cursor_set_xcursor(server->cursor_, server->xcursor_mgr_, "left_ptr");
-            server->process_cursor_motion(ev->time_msec);
+    if (state == WL_POINTER_BUTTON_STATE_RELEASED) {
+        if (cursor_mode_ != CursorMode::kPassthrough) {
+            cursor_mode_ = CursorMode::kPassthrough;
+            grabbed_window_ = nullptr;
+            active_cursor_name_ = "left_ptr";
+            wlr_cursor_set_xcursor(cursor_, xcursor_mgr_, "left_ptr");
+            process_cursor_motion(time_msec);
             return;
         }
-        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
         return;
     }
 
-    // 1. Hit-test the scene graph at the cursor position first so Top/Overlay
-    // layer surfaces (dock, popovers, lock screen) take priority over windows below.
     double sx = 0, sy = 0;
-    wlr_scene_node* node = wlr_scene_node_at(
-        &server->scene_->tree.node, server->cursor_->x, server->cursor_->y, &sx, &sy);
-    wlr_surface* hit_surface = nullptr;
-    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
-        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
-        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
-        if (scene_surf) hit_surface = scene_surf->surface;
-    }
-
     bool hit_top_or_overlay_layer = false;
-    for (wlr_scene_tree* t = node ? node->parent : nullptr; t != nullptr;
-         t = t->node.parent) {
-        if (t == server->layer_trees_[2] || t == server->layer_trees_[3] ||
-            t == server->lock_tree_) {
-            hit_top_or_overlay_layer = true;
-            break;
+    bool hit_lock_layer = false;
+    wlr_surface* hit_surface = surface_at(cursor_->x, cursor_->y, &sx, &sy,
+                                          &hit_top_or_overlay_layer, &hit_lock_layer);
+
+    if (session_locked_) {
+        if (hit_lock_layer && hit_surface) {
+            wlr_seat_pointer_notify_enter(seat_, hit_surface, sx, sy);
+            wlr_seat_pointer_notify_motion(seat_, time_msec, sx, sy);
+            wlr_surface* root_surf = wlr_surface_get_root_surface(hit_surface);
+            focus_lock_surface(root_surf ? root_surf : hit_surface);
+            wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
         }
+        return;
     }
 
     if (hit_top_or_overlay_layer) {
         if (hit_surface) {
-            wlr_seat_pointer_notify_enter(server->seat_, hit_surface, sx, sy);
-            wlr_seat_pointer_notify_motion(server->seat_, ev->time_msec, sx, sy);
+            wlr_seat_pointer_notify_enter(seat_, hit_surface, sx, sy);
+            wlr_seat_pointer_notify_motion(seat_, time_msec, sx, sy);
             wlr_surface* root_surf = wlr_surface_get_root_surface(hit_surface);
             if (wlr_layer_surface_v1* lsurf =
                     root_surf ? wlr_layer_surface_v1_try_from_wlr_surface(root_surf)
                               : nullptr) {
                 if (lsurf->current.keyboard_interactive !=
                     ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
-                    wlr_keyboard* kb = wlr_seat_get_keyboard(server->seat_);
-                    if (kb) {
-                        wlr_seat_keyboard_notify_enter(server->seat_, lsurf->surface,
-                                                       kb->keycodes, kb->num_keycodes,
-                                                       &kb->modifiers);
-                    } else {
-                        wlr_seat_keyboard_notify_enter(server->seat_, lsurf->surface,
-                                                       nullptr, 0, nullptr);
-                    }
+                    focus_lock_surface(lsurf->surface);
                 }
             }
         }
-        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+        wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
         return;
     }
 
-    // 2. Check SSD chrome buttons, borders, or Alt+drag on ManagedWindows
-    wlr_keyboard* kb = wlr_seat_get_keyboard(server->seat_);
+    wlr_keyboard* kb = wlr_seat_get_keyboard(seat_);
     const uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
     bool hit_any_window = false;
 
-    for (auto& w : server->windows_) {
+    for (auto& w : windows_) {
         if (!w->mapped || w->minimized) continue;
         uint32_t edges = 0;
-        const auto hz = w->hit_test(server->cursor_->x, server->cursor_->y, &edges);
+        const auto hz = w->hit_test(cursor_->x, cursor_->y, &edges);
         if (hz == ManagedWindow::HitZone::kNone) continue;
 
         hit_any_window = true;
-        server->focus_window(w.get());
+        focus_window(w.get());
 
-        // Forward button press into seat first if client-decorated so pointer_state.button_count
-        // is non-zero if the client requests an interactive move/resize on this press.
         if (hz == ManagedWindow::HitZone::kClient) {
             break;
         }
 
-        if ((mods & WLR_MODIFIER_ALT) && ev->button == BTN_LEFT) {
-            wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
-            server->begin_move(w.get());
+        if ((mods & WLR_MODIFIER_ALT) && button == BTN_LEFT) {
+            wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+            begin_move(w.get());
             return;
         }
-        if ((mods & WLR_MODIFIER_ALT) && ev->button == BTN_RIGHT) {
-            wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
-            server->begin_resize(w.get(), WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
+        if ((mods & WLR_MODIFIER_ALT) && button == BTN_RIGHT) {
+            wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+            begin_resize(w.get(), WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
             return;
         }
-        if (ev->button == BTN_LEFT) {
+        if (button == BTN_LEFT) {
             if (hz == ManagedWindow::HitZone::kBtnClose) {
                 w->close();
                 return;
@@ -1077,78 +1241,76 @@ void Server::on_cursor_button(wl_listener* listener, void* data) {
                 return;
             }
             if (hz == ManagedWindow::HitZone::kMoveBar) {
-                wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button,
-                                               ev->state);
-                server->begin_move(w.get());
+                wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+                begin_move(w.get());
                 return;
             }
             if (hz == ManagedWindow::HitZone::kResize) {
-                wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button,
-                                               ev->state);
-                server->begin_resize(w.get(), edges);
+                wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+                begin_resize(w.get(), edges);
                 return;
             }
         }
         break;
     }
 
-    // 3. Also check if scene node belongs to a ManagedWindow (e.g. client-side subtrees/popups)
-    if (!hit_any_window && node && node->type == WLR_SCENE_NODE_BUFFER) {
-        wlr_scene_node* cur = node;
-        while (cur && !cur->data) cur = cur->parent ? &cur->parent->node : nullptr;
-        if (cur && cur->data) {
-            auto* candidate = static_cast<ManagedWindow*>(cur->data);
-            for (auto& w : server->windows_) {
-                if (w.get() == candidate) {
-                    hit_any_window = true;
-                    server->focus_window(candidate);
-                    break;
+    if (!hit_any_window) {
+        wlr_scene_node* node = wlr_scene_node_at(
+            &scene_->tree.node, cursor_->x, cursor_->y, &sx, &sy);
+        if (node && node->type == WLR_SCENE_NODE_BUFFER) {
+            wlr_scene_node* cur = node;
+            while (cur && !cur->data) cur = cur->parent ? &cur->parent->node : nullptr;
+            if (cur && cur->data) {
+                auto* candidate = static_cast<ManagedWindow*>(cur->data);
+                for (auto& w : windows_) {
+                    if (w.get() == candidate) {
+                        hit_any_window = true;
+                        focus_window(candidate);
+                        break;
+                    }
                 }
             }
         }
     }
 
-    // Clicking the desktop background clears keyboard focus (closing any open OnDemand/Exclusive popover).
     if (!hit_any_window) {
-        server->focus_window(nullptr);
+        focus_window(nullptr);
     }
 
-    // Re-query the scene node at cursor after focus/raise and ensure pointer enter + motion
-    // are delivered BEFORE button press so the very first click always lands without moving first.
-    node = wlr_scene_node_at(
-        &server->scene_->tree.node, server->cursor_->x, server->cursor_->y, &sx, &sy);
-    hit_surface = nullptr;
-    if (node && node->type == WLR_SCENE_NODE_BUFFER) {
-        wlr_scene_buffer* scene_buf = wlr_scene_buffer_from_node(node);
-        wlr_scene_surface* scene_surf = wlr_scene_surface_try_from_buffer(scene_buf);
-        if (scene_surf) hit_surface = scene_surf->surface;
-    }
+    hit_surface = surface_at(cursor_->x, cursor_->y, &sx, &sy, nullptr, nullptr);
     if (hit_surface) {
-        wlr_seat_pointer_notify_enter(server->seat_, hit_surface, sx, sy);
-        wlr_seat_pointer_notify_motion(server->seat_, ev->time_msec, sx, sy);
+        wlr_seat_pointer_notify_enter(seat_, hit_surface, sx, sy);
+        wlr_seat_pointer_notify_motion(seat_, time_msec, sx, sy);
     } else {
-        wlr_seat_pointer_clear_focus(server->seat_);
+        wlr_seat_pointer_clear_focus(seat_);
     }
 
-    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && ev->button == BTN_LEFT &&
-        server->focused_window_) {
-        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
-        server->begin_move(server->focused_window_);
+    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && button == BTN_LEFT &&
+        focused_window_) {
+        wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+        begin_move(focused_window_);
         return;
     }
-    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && ev->button == BTN_RIGHT &&
-        server->focused_window_) {
-        wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
-        server->begin_resize(server->focused_window_, WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
+    if (hit_any_window && (mods & WLR_MODIFIER_ALT) && button == BTN_RIGHT &&
+        focused_window_) {
+        wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+        begin_resize(focused_window_, WLR_EDGE_BOTTOM | WLR_EDGE_RIGHT);
         return;
     }
 
-    wlr_seat_pointer_notify_button(server->seat_, ev->time_msec, ev->button, ev->state);
+    wlr_seat_pointer_notify_button(seat_, time_msec, button, state);
+}
+
+void Server::on_cursor_button(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_button_);
+    const auto* ev = static_cast<const wlr_pointer_button_event*>(data);
+    server->handle_pointer_button(ev->time_msec, ev->button, ev->state);
 }
 
 void Server::on_cursor_axis(wl_listener* listener, void* data) {
     Server* server = wl_container_of(listener, server, cursor_axis_);
     const auto* ev = static_cast<const wlr_pointer_axis_event*>(data);
+    server->last_activity_msec_ = monotonic_msec();
     wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
     wlr_seat_pointer_notify_axis(server->seat_, ev->time_msec, ev->orientation,
                                  ev->delta, ev->delta_discrete, ev->source,
@@ -1158,6 +1320,327 @@ void Server::on_cursor_axis(wl_listener* listener, void* data) {
 void Server::on_cursor_frame(wl_listener* listener, void*) {
     Server* server = wl_container_of(listener, server, cursor_frame_);
     wlr_seat_pointer_notify_frame(server->seat_);
+}
+
+void Server::on_cursor_touch_down(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_touch_down_);
+    const auto* ev = static_cast<const wlr_touch_down_event*>(data);
+    if (!server->cursor_ || !server->seat_) return;
+
+    server->last_activity_msec_ = monotonic_msec();
+    if (server->idle_notifier_) {
+        wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
+    }
+
+    double lx = 0.0, ly = 0.0;
+    wlr_cursor_absolute_to_layout_coords(server->cursor_, &ev->touch->base,
+                                         ev->x, ev->y, &lx, &ly);
+
+    double sx = 0.0, sy = 0.0;
+    bool hit_top_overlay = false;
+    bool hit_lock = false;
+    wlr_surface* hit_surface = server->surface_at(
+        lx, ly, &sx, &sy, &hit_top_overlay, &hit_lock);
+
+    if (!server->session_locked_ && !hit_top_overlay) {
+        for (auto& w : server->windows_) {
+            if (!w->mapped || w->minimized) continue;
+            if (w->hit_test(lx, ly) != ManagedWindow::HitZone::kNone) {
+                server->focus_window(w.get());
+                hit_surface = server->surface_at(
+                    lx, ly, &sx, &sy, &hit_top_overlay, &hit_lock);
+                break;
+            }
+        }
+    } else if (hit_top_overlay && hit_surface) {
+        wlr_surface* root_surf = wlr_surface_get_root_surface(hit_surface);
+        if (server->session_locked_ && hit_lock) {
+            server->focus_lock_surface(root_surf ? root_surf : hit_surface);
+        } else if (wlr_layer_surface_v1* lsurf =
+                       root_surf ? wlr_layer_surface_v1_try_from_wlr_surface(root_surf)
+                                 : nullptr) {
+            if (lsurf->current.keyboard_interactive !=
+                ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+                server->focus_lock_surface(lsurf->surface);
+            }
+        }
+    }
+
+    int out_w = 1440, out_h = 900;
+    if (wlr_output* out = server->primary_output()) {
+        wlr_output_effective_resolution(out, &out_w, &out_h);
+    }
+    constexpr double kEdgeMargin = 24.0;
+    const bool near_edge =
+        (ly >= out_h - kEdgeMargin || lx <= kEdgeMargin || lx >= out_w - kEdgeMargin);
+
+    ActiveTouchPoint pt;
+    pt.touch_id = ev->touch_id;
+    pt.start_lx = lx;
+    pt.start_ly = ly;
+    pt.cur_lx = lx;
+    pt.cur_ly = ly;
+    pt.edge_candidate =
+        (ev->touch_id == 0 && !server->is_input_locked() && !hit_top_overlay && near_edge);
+
+    if (hit_surface) {
+        wlr_seat_touch_notify_down(server->seat_, hit_surface, ev->time_msec,
+                                   ev->touch_id, sx, sy);
+        pt.surf_origin_lx = lx - sx;
+        pt.surf_origin_ly = ly - sy;
+        pt.has_surface = true;
+    }
+
+    server->active_touches_.erase(
+        std::remove_if(server->active_touches_.begin(), server->active_touches_.end(),
+                       [&](const ActiveTouchPoint& p) { return p.touch_id == ev->touch_id; }),
+        server->active_touches_.end());
+    server->active_touches_.push_back(pt);
+}
+
+void Server::on_cursor_touch_motion(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_touch_motion_);
+    const auto* ev = static_cast<const wlr_touch_motion_event*>(data);
+    if (!server->cursor_ || !server->seat_) return;
+
+    server->last_activity_msec_ = monotonic_msec();
+    if (server->idle_notifier_) {
+        wlr_idle_notifier_v1_notify_activity(server->idle_notifier_, server->seat_);
+    }
+
+    double lx = 0.0, ly = 0.0;
+    wlr_cursor_absolute_to_layout_coords(server->cursor_, &ev->touch->base,
+                                         ev->x, ev->y, &lx, &ly);
+
+    ActiveTouchPoint* active = nullptr;
+    for (auto& pt : server->active_touches_) {
+        if (pt.touch_id == ev->touch_id) {
+            active = &pt;
+            break;
+        }
+    }
+    if (!active) return;
+
+    active->cur_lx = lx;
+    active->cur_ly = ly;
+
+    if (active->edge_candidate && !active->gesture_triggered && !server->is_input_locked()) {
+        int out_w = 1440, out_h = 900;
+        if (wlr_output* out = server->primary_output()) {
+            wlr_output_effective_resolution(out, &out_w, &out_h);
+        }
+        const double dx = lx - active->start_lx;
+        const double dy = ly - active->start_ly;
+        constexpr double kEdgeMargin = 24.0;
+        enum class EdgeAction { kNone, kToggleDesktop, kCycleNext, kCyclePrev };
+        EdgeAction action = EdgeAction::kNone;
+
+        if (active->start_ly >= out_h - kEdgeMargin && dy <= -56.0) {
+            action = EdgeAction::kToggleDesktop;
+        } else if (active->start_lx <= kEdgeMargin && dx >= 64.0) {
+            action = EdgeAction::kCycleNext;
+        } else if (active->start_lx >= out_w - kEdgeMargin && dx <= -64.0) {
+            action = EdgeAction::kCyclePrev;
+        }
+
+        if (action != EdgeAction::kNone) {
+            active->gesture_triggered = true;
+            if (wlr_touch_point* wpt = wlr_seat_touch_get_point(server->seat_, ev->touch_id);
+                wpt && wpt->client) {
+                wlr_seat_touch_notify_cancel(server->seat_, wpt->client);
+            }
+            if (action == EdgeAction::kToggleDesktop) server->minimize_all_toggle();
+            else server->cycle_focus(action == EdgeAction::kCycleNext);
+            return;
+        }
+    }
+
+    if (!active->gesture_triggered && active->has_surface &&
+        wlr_seat_touch_get_point(server->seat_, ev->touch_id)) {
+        wlr_seat_touch_notify_motion(server->seat_, ev->time_msec, ev->touch_id,
+                                     lx - active->surf_origin_lx,
+                                     ly - active->surf_origin_ly);
+    }
+}
+
+void Server::on_cursor_touch_up(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_touch_up_);
+    const auto* ev = static_cast<const wlr_touch_up_event*>(data);
+    if (!server->seat_) return;
+
+    server->active_touches_.erase(
+        std::remove_if(server->active_touches_.begin(), server->active_touches_.end(),
+                       [&](const ActiveTouchPoint& p) { return p.touch_id == ev->touch_id; }),
+        server->active_touches_.end());
+
+    if (wlr_seat_touch_get_point(server->seat_, ev->touch_id)) {
+        wlr_seat_touch_notify_up(server->seat_, ev->time_msec, ev->touch_id);
+    }
+}
+
+void Server::on_cursor_touch_frame(wl_listener* listener, void*) {
+    Server* server = wl_container_of(listener, server, cursor_touch_frame_);
+    if (server->seat_) wlr_seat_touch_notify_frame(server->seat_);
+}
+
+void Server::on_cursor_touch_cancel(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_touch_cancel_);
+    const auto* ev = static_cast<const wlr_touch_cancel_event*>(data);
+    if (!server->seat_) return;
+
+    server->active_touches_.erase(
+        std::remove_if(server->active_touches_.begin(), server->active_touches_.end(),
+                       [&](const ActiveTouchPoint& p) { return p.touch_id == ev->touch_id; }),
+        server->active_touches_.end());
+
+    if (wlr_touch_point* pt = wlr_seat_touch_get_point(server->seat_, ev->touch_id);
+        pt && pt->client) {
+        wlr_seat_touch_notify_cancel(server->seat_, pt->client);
+    }
+}
+
+void Server::on_cursor_tablet_proximity(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_tablet_proximity_);
+    const auto* ev = static_cast<const wlr_tablet_tool_proximity_event*>(data);
+    if (!server->cursor_) return;
+    if (ev->state == WLR_TABLET_TOOL_PROXIMITY_IN) {
+        wlr_cursor_warp_absolute(server->cursor_, &ev->tablet->base, ev->x, ev->y);
+        server->process_cursor_motion(ev->time_msec);
+    }
+}
+
+void Server::on_cursor_tablet_axis(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_tablet_axis_);
+    const auto* ev = static_cast<const wlr_tablet_tool_axis_event*>(data);
+    if (!server->cursor_) return;
+    if ((ev->updated_axes & WLR_TABLET_TOOL_AXIS_X) ||
+        (ev->updated_axes & WLR_TABLET_TOOL_AXIS_Y)) {
+        wlr_cursor_warp_absolute(server->cursor_, &ev->tablet->base, ev->x, ev->y);
+        server->process_cursor_motion(ev->time_msec);
+    }
+}
+
+void Server::on_cursor_tablet_tip(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_tablet_tip_);
+    const auto* ev = static_cast<const wlr_tablet_tool_tip_event*>(data);
+    if (!server->cursor_) return;
+    wlr_cursor_warp_absolute(server->cursor_, &ev->tablet->base, ev->x, ev->y);
+    server->process_cursor_motion(ev->time_msec);
+    const auto state = (ev->state == WLR_TABLET_TOOL_TIP_DOWN)
+                           ? WL_POINTER_BUTTON_STATE_PRESSED
+                           : WL_POINTER_BUTTON_STATE_RELEASED;
+    server->handle_pointer_button(ev->time_msec, BTN_LEFT, state);
+}
+
+void Server::on_cursor_tablet_button(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, cursor_tablet_button_);
+    const auto* ev = static_cast<const wlr_tablet_tool_button_event*>(data);
+    const auto state = (ev->state == WLR_BUTTON_PRESSED)
+                           ? WL_POINTER_BUTTON_STATE_PRESSED
+                           : WL_POINTER_BUTTON_STATE_RELEASED;
+    const uint32_t btn = (ev->button == BTN_STYLUS) ? BTN_RIGHT : ev->button;
+    server->handle_pointer_button(ev->time_msec, btn, state);
+}
+
+void Server::on_new_session_lock(wl_listener* listener, void* data) {
+    Server* server = wl_container_of(listener, server, new_session_lock_);
+    auto* lock = static_cast<wlr_session_lock_v1*>(data);
+
+    if (server->active_lock_ || server->session_locked_) {
+        wlr_session_lock_v1_destroy(lock);
+        return;
+    }
+
+    server->active_lock_ = lock;
+    server->session_locked_ = true;
+    server->cursor_mode_ = CursorMode::kPassthrough;
+    server->grabbed_window_ = nullptr;
+    if (server->seat_) {
+        wlr_seat_pointer_clear_focus(server->seat_);
+        wlr_seat_keyboard_clear_focus(server->seat_);
+    }
+    server->update_lock_backdrop();
+
+    attach_listener(
+        lock->events.new_surface, server->active_lock_new_surface_,
+        [](wl_listener* l, void* sdata) {
+            Server* s = wl_container_of(l, s, active_lock_new_surface_);
+            auto* lsurf = static_cast<wlr_session_lock_surface_v1*>(sdata);
+            auto node = std::make_unique<LockSurface>();
+            LockSurface* ls = node.get();
+            ls->server = s;
+            ls->lock_surface = lsurf;
+            ls->scene_tree =
+                wlr_scene_subsurface_tree_create(s->lock_tree_, lsurf->surface);
+            s->lock_surfaces_.push_back(std::move(node));
+
+            int out_w = 1440, out_h = 900;
+            wlr_output* target = lsurf->output ? lsurf->output : s->primary_output();
+            if (target) wlr_output_effective_resolution(target, &out_w, &out_h);
+            wlr_session_lock_surface_v1_configure(
+                lsurf, static_cast<uint32_t>(std::max(1, out_w)),
+                static_cast<uint32_t>(std::max(1, out_h)));
+
+            attach_listener(
+                lsurf->surface->events.map, ls->map_l,
+                [](wl_listener* ml, void*) {
+                    LockSurface* item = wl_container_of(ml, item, map_l);
+                    item->server->focus_lock_surface(item->lock_surface->surface);
+                });
+
+            attach_listener(
+                lsurf->events.destroy, ls->destroy_l,
+                [](wl_listener* dl, void*) {
+                    LockSurface* item = wl_container_of(dl, item, destroy_l);
+                    Server* srv = item->server;
+                    if (item->scene_tree) {
+                        wlr_scene_node_destroy(&item->scene_tree->node);
+                        item->scene_tree = nullptr;
+                    }
+                    srv->lock_surfaces_.remove_if(
+                        [item](const auto& p) { return p.get() == item; });
+                    if (srv->session_locked_) {
+                        if (!srv->lock_surfaces_.empty()) {
+                            srv->focus_lock_surface(
+                                srv->lock_surfaces_.front()->lock_surface->surface);
+                        } else if (srv->seat_) {
+                            wlr_seat_keyboard_clear_focus(srv->seat_);
+                        }
+                    }
+                });
+        });
+
+    attach_listener(
+        lock->events.unlock, server->active_lock_unlock_,
+        [](wl_listener* l, void*) {
+            Server* s = wl_container_of(l, s, active_lock_unlock_);
+            s->session_locked_ = false;
+            remove_listener(s->active_lock_new_surface_);
+            remove_listener(s->active_lock_unlock_);
+            remove_listener(s->active_lock_destroy_);
+            s->active_lock_ = nullptr;
+            for (auto& ls : s->lock_surfaces_) {
+                if (ls->scene_tree) {
+                    wlr_scene_node_destroy(&ls->scene_tree->node);
+                    ls->scene_tree = nullptr;
+                }
+            }
+            s->lock_surfaces_.clear();
+            s->update_lock_backdrop();
+            s->focus_top_window();
+        });
+
+    attach_listener(
+        lock->events.destroy, server->active_lock_destroy_,
+        [](wl_listener* l, void*) {
+            Server* s = wl_container_of(l, s, active_lock_destroy_);
+            remove_listener(s->active_lock_new_surface_);
+            remove_listener(s->active_lock_unlock_);
+            remove_listener(s->active_lock_destroy_);
+            s->active_lock_ = nullptr;
+        });
+
+    wlr_session_lock_v1_send_locked(lock);
 }
 
 void Server::on_output_mgr_apply(wl_listener* listener, void* data) {
@@ -1244,13 +1727,15 @@ int Server::run() {
     scene_ = wlr_scene_create();
     scene_layout_ = wlr_scene_attach_output_layout(scene_, output_layout_);
 
-    // Exact stacking invariant: Background rect -> layer 0 -> layer 1 -> toplevels -> layer 2 -> layer 3 -> lock
+    // Exact stacking invariant:
+    // Background rect -> layer 0 -> layer 1 -> toplevels -> layer 2 (top) -> fullscreen -> layer 3 (overlay) -> lock
     const float bg_init[4] = {0.918f, 0.925f, 0.941f, 1.0f};
     background_rect_ = wlr_scene_rect_create(&scene_->tree, 1440, 900, bg_init);
     layer_trees_[0] = wlr_scene_tree_create(&scene_->tree);
     layer_trees_[1] = wlr_scene_tree_create(&scene_->tree);
     toplevel_tree_ = wlr_scene_tree_create(&scene_->tree);
     layer_trees_[2] = wlr_scene_tree_create(&scene_->tree);
+    fullscreen_tree_ = wlr_scene_tree_create(&scene_->tree);
     layer_trees_[3] = wlr_scene_tree_create(&scene_->tree);
     lock_tree_ = wlr_scene_tree_create(&scene_->tree);
 
@@ -1278,6 +1763,8 @@ int Server::run() {
     idle_notifier_ = wlr_idle_notifier_v1_create(display_);
     idle_inhibit_mgr_ = wlr_idle_inhibit_v1_create(display_);
     session_lock_mgr_ = wlr_session_lock_manager_v1_create(display_);
+    attach_listener(session_lock_mgr_->events.new_lock, new_session_lock_,
+                    on_new_session_lock);
 
     cursor_ = wlr_cursor_create();
     wlr_cursor_attach_output_layout(cursor_, output_layout_);
@@ -1303,6 +1790,21 @@ int Server::run() {
     attach_listener(cursor_->events.button, cursor_button_, on_cursor_button);
     attach_listener(cursor_->events.axis, cursor_axis_, on_cursor_axis);
     attach_listener(cursor_->events.frame, cursor_frame_, on_cursor_frame);
+    attach_listener(cursor_->events.touch_down, cursor_touch_down_, on_cursor_touch_down);
+    attach_listener(cursor_->events.touch_up, cursor_touch_up_, on_cursor_touch_up);
+    attach_listener(cursor_->events.touch_motion, cursor_touch_motion_,
+                    on_cursor_touch_motion);
+    attach_listener(cursor_->events.touch_frame, cursor_touch_frame_, on_cursor_touch_frame);
+    attach_listener(cursor_->events.touch_cancel, cursor_touch_cancel_,
+                    on_cursor_touch_cancel);
+    attach_listener(cursor_->events.tablet_tool_axis, cursor_tablet_axis_,
+                    on_cursor_tablet_axis);
+    attach_listener(cursor_->events.tablet_tool_proximity, cursor_tablet_proximity_,
+                    on_cursor_tablet_proximity);
+    attach_listener(cursor_->events.tablet_tool_tip, cursor_tablet_tip_,
+                    on_cursor_tablet_tip);
+    attach_listener(cursor_->events.tablet_tool_button, cursor_tablet_button_,
+                    on_cursor_tablet_button);
 
     const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
     if (!runtime_dir || !*runtime_dir) {
@@ -1357,6 +1859,18 @@ int Server::run() {
         [](void* data) -> int {
             auto* s = static_cast<Server*>(data);
             s->update_display_settings();
+            // Auto-lock uses the same timer. The compositor only asks; the
+            // shell decides whether to show its password-verified overlay.
+            const int minutes = Server::read_auto_lock_minutes();
+            const uint64_t now = monotonic_msec();
+            if (minutes > 0 && s->last_activity_msec_ != 0 &&
+                now - s->last_activity_msec_ >=
+                    static_cast<uint64_t>(minutes) * 60000ULL) {
+                request_lock();
+                // Back off a full interval so a shell that cannot lock is not
+                // asked every second; real input resets this in the handlers.
+                s->last_activity_msec_ = now;
+            }
             wl_event_source_timer_update(s->theme_timer_, 1000);
             return 0;
         },
@@ -1364,7 +1878,7 @@ int Server::run() {
     wl_event_source_timer_update(theme_timer_, 1000);
 
     sd_notify(0, "READY=1");
-    (void)monotonic_msec();
+    last_activity_msec_ = monotonic_msec();
     wlr_log(WLR_INFO, "finn-comp: running on %s", sock_full.c_str());
     wl_display_run(display_);
     return 0;
@@ -1393,10 +1907,13 @@ void Server::shutdown() {
     wl_display_destroy_clients(display_);
     popups_.clear();
     layers_.clear();
+    lock_surfaces_.clear();
     windows_.clear();
     outputs_.clear();
     keyboards_.clear();
     pointers_.clear();
+    touches_.clear();
+    tablets_.clear();
 
     remove_listener(new_output_);
     remove_listener(new_input_);
@@ -1414,6 +1931,19 @@ void Server::shutdown() {
     remove_listener(cursor_button_);
     remove_listener(cursor_axis_);
     remove_listener(cursor_frame_);
+    remove_listener(cursor_touch_down_);
+    remove_listener(cursor_touch_up_);
+    remove_listener(cursor_touch_motion_);
+    remove_listener(cursor_touch_frame_);
+    remove_listener(cursor_touch_cancel_);
+    remove_listener(cursor_tablet_axis_);
+    remove_listener(cursor_tablet_proximity_);
+    remove_listener(cursor_tablet_tip_);
+    remove_listener(cursor_tablet_button_);
+    remove_listener(new_session_lock_);
+    remove_listener(active_lock_new_surface_);
+    remove_listener(active_lock_unlock_);
+    remove_listener(active_lock_destroy_);
     remove_listener(output_mgr_apply_);
     remove_listener(output_mgr_test_);
 

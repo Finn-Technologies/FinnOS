@@ -22,7 +22,8 @@ vm/lima-setup.sh          # create the VM, upgrade it, deploy, start the session
 ```
 
 `vm/lima-setup.sh` creates a Lima instance called `finnos` from
-`vm/lima.yaml` (Arch Linux ARM under QEMU, with a window), brings the 2022
+`vm/lima.yaml` (an upstream `aarch64` cloud image under QEMU, with a window —
+dev-only bootstrap tooling, not shipped in the FinnOS image), brings the 2022
 cloud image up to date, and runs `vm/deploy.sh` against it. The desktop
 appears in the QEMU window. Running it again only redeploys.
 
@@ -37,7 +38,7 @@ vm/shot.sh out.png
 
 What is different about this VM, and why:
 
-- QEMU, not Apple's Virtualization.framework: the Arch Linux ARM cloud image
+- QEMU, not Apple's Virtualization.framework: the upstream ARM64 cloud image
   stops within a second of starting under `vz`.
 - `/boot` is 200 MB, so the kernel's device trees and `Image.gz` are not
   extracted (`NoExtract` in `/etc/pacman.conf`); QEMU supplies its own tree.

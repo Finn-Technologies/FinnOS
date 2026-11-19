@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""FinnOS A/B OTA updater CLI."""
+
+import os
+import sys
+
+# Allow execution directly from the source tree or when installed alongside finn_ota.
+_HERE = os.path.dirname(os.path.realpath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from finn_ota.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())

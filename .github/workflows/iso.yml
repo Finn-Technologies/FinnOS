@@ -25,11 +25,14 @@ jobs:
       - name: the shell scripts parse
         run: |
           bash -n base/mkfinniso base/setup.sh \
-            vm/finn-install.sh vm/finn-chroot.sh
+            vm/finn-install.sh vm/finn-chroot.sh \
+            repo/gen-signing-key.sh repo/publish.sh
           test -x base/mkfinniso
           test -x base/setup.sh
           test -x vm/finn-install.sh
           test -x vm/finn-chroot.sh
+          test -x repo/gen-signing-key.sh
+          test -x repo/publish.sh
       - name: the tree checks out
         # The profile, the boot menus against the profile's label and
         # layout, the package lists, the pacman guard rail, the two copies
@@ -50,7 +53,7 @@ jobs:
         # not in scripts/lint.sh's default paths yet.
         run: |
           scripts/lint.sh base
-          ! grep -rIn 'Arch Linux' base/boot base/airootfs/etc/issue base/airootfs/etc/motd
+          bash tools/check-branding.sh
       - name: the boot and package tests
         # The QEMU cases skip themselves without FINNOS_ISO; the profile
         # tests run here with a fake mkarchiso, and the real build below
@@ -164,6 +167,12 @@ jobs:
             exit 1
           fi
           for f in etc/issue etc/motd etc/hostname \
+                   etc/plymouth/plymouthd.conf \
+                   usr/share/plymouth/themes/finnos/finnos.plymouth \
+                   usr/share/plymouth/themes/finnos/finnos.script \
+                   usr/share/plymouth/themes/finnos/mark.png \
+                   usr/share/plymouth/themes/finnos/bar-track.png \
+                   usr/share/plymouth/themes/finnos/bar-fill.png \
                    etc/systemd/system/finn-comp.service \
                    etc/systemd/system/finn-session.service \
                    etc/systemd/system/finn-shell.service \
@@ -178,6 +187,11 @@ jobs:
             fi
           done
           test "$(cat /tmp/live/etc/hostname)" = finnos
+          # archiso owns the bytes of mkinitcpio.conf, so check the one thing
+          # that matters rather than comparing it byte for byte: the splash
+          # hook and the theme are in the image the disc will actually boot.
+          grep -q 'plymouth' /tmp/live/etc/mkinitcpio.conf
+          grep -q 'themes/finnos/mark.png' /tmp/live/etc/mkinitcpio.conf
       - name: the menus say FinnOS
         run: |
           xorriso -osirrox on -indev finnos.iso \
@@ -187,6 +201,10 @@ jobs:
           grep -E 'MENU LABEL Install FinnOS' /tmp/syslinux/syslinux.cfg
           grep -E 'MENU LABEL FinnOS live shell' /tmp/syslinux/syslinux.cfg
           ! grep -rE 'Arch Linux' /tmp/syslinux/*.cfg
+          # The boot is a Finn mark, not a text console: quiet, splash and no
+          # blinking underscore on every entry.
+          test "$(grep -c 'quiet splash vt.global_cursor_default=0' /tmp/syslinux/syslinux.cfg)" -eq 2
+          grep -q 'TIMEOUT 30' /tmp/syslinux/syslinux.cfg
           xorriso -osirrox on -indev finnos.iso \
             -extract /loader/entries /tmp/entries
           cat /tmp/entries/01-finnos-install.conf
@@ -194,6 +212,12 @@ jobs:
           grep -E 'finn\.install' /tmp/entries/01-finnos-install.conf
           grep -E 'title +FinnOS live shell' /tmp/entries/02-finnos-live.conf
           ! grep -rE 'Arch Linux' /tmp/entries
+          for entry in /tmp/entries/*.conf; do
+            grep -q 'quiet splash vt.global_cursor_default=0' "$entry" || exit 1
+          done
+          xorriso -osirrox on -indev finnos.iso \
+            -extract /loader/loader.conf /tmp/loader.conf
+          grep -q '^timeout 3$' /tmp/loader.conf
       - name: the UEFI menu inside the EFI partition says FinnOS
         # systemd-boot reads /loader from the FAT image in the appended
         # partition, not from the ISO9660 /loader checked above. This is the

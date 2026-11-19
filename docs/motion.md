@@ -16,12 +16,17 @@ Entrances use `ease_out_cubic`: most of the movement happens early and the
 last pixels settle. Popovers add a small `ease_out_back` overshoot so the
 menu and control center land instead of stopping dead. Grids use
 `stagger(progress, index, count)`: same final layout, items arrive 60 ms
-apart. State changes use `approach`, an interruptible
-exponential that reverses from wherever it is, so a pointer crossing a
-button twice does not jump.
+apart. State changes use `approach` or the analytic spring solver in
+[`src/ui/finn/spring.hpp`](../src/ui/finn/spring.hpp), which carries velocity
+across mid-flight retargeting so reversals never jump.
 
-`FINN_REDUCED_MOTION=1` makes every animation instant. The preference is read
-once per process; it is a preference, not a per-frame switch.
+`reduced_motion` (toggled in Settings → Accessibility, stored in
+`/var/lib/finn/settings` and `~/.config/finn/settings`, or overridden via
+`FINN_REDUCED_MOTION=1`) disables spring bounce and replaces animations with
+instant state changes or opacity crossfades (`<= 100 ms`). See
+[`docs/motion-spec.md`](motion-spec.md) for the full Phase 3 specification
+(spring presets, cubic-bezier tokens, per-surface table, 60/120 fps budgets, and
+integration points).
 
 ## What moves
 
@@ -36,7 +41,8 @@ once per process; it is a preference, not a per-frame switch.
 | app menu | slides up 10 px over 220 ms with a 60 ms per-item stagger; closes in 140 ms |
 | control center | slides up 12 px over 220 ms; Wi-Fi, Bluetooth, brightness, volume and media stay disabled indicators (no finnd in v1) |
 | app window | enters by sliding up 14 px over 220 ms; focus is immediate |
-| boot splash & OOBE (`FinnRibbonAnimation`) | On boot and OOBE step 0 (`Mode::HiIntro`), 6 horizontal curved arcs tilt into a 3D stacked cylinder (0–0.40 s), orbit continuously as 6 eccentric torus circles with a rotating coral/amber/violet/blue gradient (0.40–1.35 s), coil into a handwriting nib that traces the cursive `"hi."` mark stroke-by-stroke (1.35–2.38 s), and only afterward reveal the top `FinnOS` branding and bottom circular `Next` button (`2.38–2.86 s`); on OOBE completion (`Mode::SlinkyWave`), the 6 rings unfurl into a 6-loop horizontal prolate epitrochoid slinky wave with a left-to-right gradient pulse; respects `FINN_REDUCED_MOTION=1` |
+| normal boot splash (`finnos` Plymouth theme) | The Finn mark appears from inside the initramfs with a macOS-style bar: a short highlight sweeps the track until a real boot-progress report arrives, then the fill advances only on those reports. No timed percentage, no ribbon. |
+| first-time setup / OOBE (`FinnRibbonAnimation`) | On OOBE step 0 only, never on a normal boot (`Mode::HiIntro`), 6 horizontal curved arcs tilt into a 3D stacked cylinder (0–0.40 s), orbit continuously as 6 eccentric torus circles with a rotating coral/amber/violet/blue gradient (0.40–1.35 s), coil into a handwriting nib that traces the cursive `"hi."` mark stroke-by-stroke (1.35–2.38 s), and only afterward reveal the top `FinnOS` branding and bottom circular `Next` button (`2.38–2.86 s`); on OOBE completion (`Mode::SlinkyWave`), the 6 rings unfurl into a 6-loop horizontal prolate epitrochoid slinky wave with a left-to-right gradient pulse; respects `FINN_REDUCED_MOTION=1` |
 | theme | the compositor re-reads the setting once a second; apps every few frames |
 
 ## What does not move
@@ -50,7 +56,13 @@ once per process; it is a preference, not a per-frame switch.
 ## Where it lives
 
 - [`src/ui/finn/animation.hpp`](../src/ui/finn/animation.hpp) — the tokens,
-  the curves and `Animation`.
+  cubic-bezier curves, reduced-motion settings reader, and `Animation`.
+- [`src/ui/finn/spring.hpp`](../src/ui/finn/spring.hpp) — analytic spring
+  solver, presets (`kSnappy`, `kSmooth`, `kBouncy`, `kGentle`, `kOverscroll`),
+  `SpringAnimator`, `rubber_band`, `PressFeedback`, `GestureProgressTracker`,
+  and `FrameTimeRecorder`.
+- [`docs/motion-spec.md`](motion-spec.md) — full Phase 3 motion specification,
+  per-surface rules, frame-time budget, and shell/compositor integration points.
 - [`src/ui/canvas.cpp`](../src/ui/canvas.cpp) — widget state transitions and
   `Canvas::animating()`, which asks the app for the next frame.
 - [`src/shell/main.cpp`](../src/shell/main.cpp) — dock and menu timelines.

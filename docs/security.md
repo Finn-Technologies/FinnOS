@@ -34,7 +34,7 @@ An app runs as `finn`:
   units or seccomp namespaces yet.
 - **No `finnd` root authority yet.** Privileged machine controls (poweroff,
   sysfs brightness) are not elevated behind a separate audited socket.
-- **No package signatures / A/B slots.** System package updates rely on Arch's
+- **No package signatures / A/B slots.** System package updates rely on upstream
   pacman signing and repositories rather than A/B image slots.
 - **Compositor runs as root.** Dropping root from `finn-comp` waits on moving
   device/power hooks into `finnd` + `seatd`.

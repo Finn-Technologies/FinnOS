@@ -14,7 +14,10 @@
 #include <QPalette>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 
@@ -92,11 +95,11 @@ inline FinnTokens tokens_from_settings(const finn::sys::SettingsData& s) {
     if (s.dark) {
         t.bone = QColor::fromRgba(colors::bone_dark);
         t.tile = QColor::fromRgba(colors::tile_dark);
-        t.surface_canvas = QColor(0x00, 0x00, 0x00);
+        t.surface_canvas = QColor::fromRgba(colors::surface_canvas_dark);
         t.surface_elevated = QColor::fromRgba(colors::tile_dark);
-        t.surface_input = QColor(0x18, 0x1A, 0x20);
-        t.surface_hover = QColor(255, 255, 255, 20);
-        t.surface_pressed = QColor(255, 255, 255, 34);
+        t.surface_input = QColor::fromRgba(colors::surface_input_dark);
+        t.surface_hover = QColor::fromRgba(colors::surface_hover_dark);
+        t.surface_pressed = QColor::fromRgba(colors::surface_pressed_dark);
         t.tile_on = QColor::fromRgba(colors::tile_on_dark);
         t.nav_sel = QColor::fromRgba(colors::nav_sel_dark);
         t.hero_tint = QColor::fromRgba(colors::hero_tint_dark);
@@ -114,18 +117,18 @@ inline FinnTokens tokens_from_settings(const finn::sys::SettingsData& s) {
         t.glass = g;
         t.dock_pill = QColor(g.red(), g.green(), g.blue(), s.high_contrast ? 255 : 228);
 
-        t.danger = QColor(0xF8, 0x71, 0x71);
-        t.danger_hover = QColor(0xFF, 0x02, 0x02);
-        t.success = QColor(0x22, 0xC5, 0x5E);
-        t.warning = QColor(0xF5, 0x9E, 0x0B);
+        t.danger = QColor::fromRgba(colors::danger_dark);
+        t.danger_hover = QColor::fromRgba(colors::danger_hover_dark);
+        t.success = QColor::fromRgba(colors::success_dark);
+        t.warning = QColor::fromRgba(colors::warning_dark);
     } else {
         t.bone = QColor::fromRgba(colors::bone_light);
         t.tile = QColor::fromRgba(colors::tile_light);
-        t.surface_canvas = QColor(0xF5, 0xF6, 0xF8);
+        t.surface_canvas = QColor::fromRgba(colors::surface_canvas_light);
         t.surface_elevated = QColor::fromRgba(colors::tile_light);
-        t.surface_input = QColor(0xF8, 0xFA, 0xFC);
-        t.surface_hover = QColor(0, 0, 0, 14);
-        t.surface_pressed = QColor(0, 0, 0, 24);
+        t.surface_input = QColor::fromRgba(colors::surface_input_light);
+        t.surface_hover = QColor::fromRgba(colors::surface_hover_light);
+        t.surface_pressed = QColor::fromRgba(colors::surface_pressed_light);
         t.tile_on = QColor::fromRgba(colors::tile_on_light);
         t.nav_sel = QColor::fromRgba(colors::nav_sel_light);
         t.hero_tint = QColor::fromRgba(colors::hero_tint_light);
@@ -143,10 +146,10 @@ inline FinnTokens tokens_from_settings(const finn::sys::SettingsData& s) {
         t.glass = g;
         t.dock_pill = QColor(g.red(), g.green(), g.blue(), s.high_contrast ? 255 : 179);
 
-        t.danger = QColor(0xEF, 0x44, 0x44);
-        t.danger_hover = QColor(0xFF, 0x02, 0x02);
-        t.success = QColor(0x16, 0xA3, 0x4A);
-        t.warning = QColor(0xD9, 0x77, 0x06);
+        t.danger = QColor::fromRgba(colors::danger_light);
+        t.danger_hover = QColor::fromRgba(colors::danger_hover_light);
+        t.success = QColor::fromRgba(colors::success_light);
+        t.warning = QColor::fromRgba(colors::warning_light);
     }
 
     if (s.high_contrast) {
@@ -254,12 +257,86 @@ inline QString primary_font_family() {
     return resolved_family;
 }
 
+inline std::atomic<double>& cached_text_scale_storage() {
+    static std::atomic<double> scale{[]() {
+        const double s = finn::sys::load_merged_settings().text_scale;
+        return (s >= 0.75 && s <= 2.5) ? s : 1.0;
+    }()};
+    return scale;
+}
+
+inline double active_text_scale() {
+    return cached_text_scale_storage().load(std::memory_order_relaxed);
+}
+
+inline void set_active_text_scale(double s) {
+    const double clamped = (s >= 0.75 && s <= 2.5) ? s : 1.0;
+    cached_text_scale_storage().store(clamped, std::memory_order_relaxed);
+}
+
 inline QFont finn_font(double point_size = 10.5, QFont::Weight weight = QFont::Normal) {
     QFont f(primary_font_family());
-    f.setPointSizeF(point_size);
+    f.setPointSizeF(std::max(6.0, point_size * active_text_scale()));
     f.setWeight(weight);
     f.setHintingPreference(QFont::PreferNoHinting);
     return f;
+}
+
+// Figma measures type in pixels. Use this where a value is a design-pixel
+// size so it does not drift with the platform's point-to-pixel ratio.
+inline QFont finn_font_px(int pixel_size, QFont::Weight weight = QFont::Normal) {
+    QFont f(primary_font_family());
+    f.setPixelSize(std::max(8, qRound(static_cast<double>(pixel_size) * active_text_scale())));
+    f.setWeight(weight);
+    f.setHintingPreference(QFont::PreferNoHinting);
+    return f;
+}
+
+struct AccentPreset {
+    QString name;
+    QColor color;
+};
+
+inline QVector<AccentPreset> accent_presets() {
+    return {
+        {QStringLiteral("Blue"), QColor::fromRgba(colors::accent_light)},
+        {QStringLiteral("Violet"), QColor(0x7C, 0x3A, 0xED)},
+        {QStringLiteral("Emerald"), QColor::fromRgba(colors::success_light)},
+        {QStringLiteral("Amber"), QColor::fromRgba(colors::warning_light)},
+        {QStringLiteral("Crimson"), QColor::fromRgba(colors::danger_light)},
+    };
+}
+
+// One accent for navigation, one neutral for everything else. Colour in the
+// sidebars is status, never a category: a folder does not get its own hue.
+// The light/dark pair is passed to FinnSidebar::addItem so it follows the live
+// theme without a restart.
+inline QColor nav_accent_light() { return QColor::fromRgba(colors::on_light); }
+inline QColor nav_accent_dark() { return QColor::fromRgba(colors::on_dark); }
+inline QColor nav_neutral_light() { return QColor::fromRgba(colors::mute_light); }
+inline QColor nav_neutral_dark() { return QColor::fromRgba(colors::mute_dark); }
+
+// The scrollbar is chrome, not content: one hairline thumb from the ink token.
+// Apps used to keep a private copy of this string; one copy lives here.
+inline QString scrollbar_qss(const FinnTokens& t) {
+    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
+    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
+    const auto rgba = [](const QColor& c) {
+        return QStringLiteral("rgba(%1, %2, %3, %4)")
+            .arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha());
+    };
+    return QStringLiteral(
+               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
+               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
+               "QScrollBar::handle:vertical:hover { background: %2; }"
+               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }"
+               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
+               "QScrollBar::handle:horizontal:hover { background: %2; }"
+               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
+               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
+        .arg(rgba(thumb), rgba(hover));
 }
 
 inline QFont finn_mono_font(double point_size = 10.0, QFont::Weight weight = QFont::Normal) {
@@ -272,7 +349,7 @@ inline QFont finn_mono_font(double point_size = 10.0, QFont::Weight weight = QFo
     }
     f.setStyleHint(QFont::Monospace);
     f.setFixedPitch(true);
-    f.setPointSizeF(point_size);
+    f.setPointSizeF(std::max(6.0, point_size * active_text_scale()));
     f.setWeight(weight);
     return f;
 }

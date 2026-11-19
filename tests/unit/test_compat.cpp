@@ -47,12 +47,15 @@ private:
 };
 
 std::string build_fake_pe(std::uint16_t machine, std::uint16_t magic,
-                          std::uint16_t subsystem, bool dotnet) {
-    std::string buf(512, '\0');
+                          std::uint16_t subsystem, bool dotnet,
+                          std::uint32_t pe_off = 0x80) {
+    std::string buf(std::max<std::size_t>(512, pe_off + 300), '\0');
     buf[0] = 'M';
     buf[1] = 'Z';
-    const std::uint32_t pe_off = 0x80;
     buf[60] = static_cast<char>(pe_off & 0xff);
+    buf[61] = static_cast<char>((pe_off >> 8) & 0xff);
+    buf[62] = static_cast<char>((pe_off >> 16) & 0xff);
+    buf[63] = static_cast<char>((pe_off >> 24) & 0xff);
     buf[pe_off + 0] = 'P';
     buf[pe_off + 1] = 'E';
     buf[pe_off + 2] = '\0';
@@ -137,6 +140,19 @@ bool test_pe_inspection_and_bounds() {
     CHECK(x86_dotnet.arch == finn::compat::PeArch::X86);
     CHECK(x86_dotnet.is_console);
     CHECK(x86_dotnet.is_dotnet);
+
+    // PE header beyond 4096 bytes must still parse via inspect_pe_file (m10).
+    const TempDir dir;
+    const std::string large_pe_path = dir.path("large_stub.exe");
+    {
+        const std::string bytes = build_fake_pe(0x8664, 0x020b, 2, false, 0x2000);
+        std::ofstream out(large_pe_path, std::ios::binary);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    const auto large_pe = finn::compat::inspect_pe_file(large_pe_path);
+    CHECK(large_pe.valid);
+    CHECK(large_pe.arch == finn::compat::PeArch::X86_64);
+    CHECK(large_pe.is_gui);
     return true;
 }
 

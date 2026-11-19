@@ -5,6 +5,7 @@
 
 #include <FinnSDK/FinnSDK.hpp>
 
+#include <QByteArrayView>
 #include <QClipboard>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -16,6 +17,8 @@
 #include <QScrollBar>
 #include <QSocketNotifier>
 #include <QStackedWidget>
+#include <QStringDecoder>
+#include <QStringList>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -97,6 +100,7 @@ public:
                             QWidget* parent = nullptr)
         : QWidget(parent), start_cwd_(start_cwd), exec_cmd_(exec_cmd) {
         setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(QStringLiteral("Terminal emulator"));
         setAttribute(Qt::WA_InputMethodEnabled, true);
         updateMetrics();
         resetScreen(80, 24);
@@ -603,8 +607,8 @@ private:
     }
 
     void feedBytes(const char* data, size_t len) {
-        const QString decoded = QString::fromUtf8(
-            QByteArray(data, static_cast<int>(len)));
+        const QString decoded = utf8_decoder_.decode(
+            QByteArrayView(data, static_cast<qsizetype>(len)));
         for (QChar qc : decoded) {
             const ushort uc = qc.unicode();
             if (state_ == State::Esc) {
@@ -697,6 +701,7 @@ private:
     std::vector<std::vector<Cell>> scrollback_;
 
     State state_ = State::Normal;
+    QStringDecoder utf8_decoder_{QStringDecoder::Utf8};
     QByteArray csi_buf_;
     QByteArray osc_buf_;
 };
@@ -737,7 +742,8 @@ private:
         side_root->addWidget(hdr_lbl);
 
         sidebar_search_ = new FinnSearchField(
-            QStringLiteral("Search sessions & commands"), sidebar_);
+            QStringLiteral("Search sessions"), sidebar_);
+        sidebar_search_->setAccessibleName(QStringLiteral("Search terminal sessions"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
         connect(sidebar_search_, &FinnSearchField::textChanged,
@@ -745,8 +751,10 @@ private:
         side_root->addWidget(sidebar_search_);
 
         auto* new_session_item = new FinnNavItem(
-            QStringLiteral("terminal"), QStringLiteral("+ New Session"), sidebar_);
-        new_session_item->setBadgeColor(QColor(0x00, 0x7B, 0xFF));
+            QStringLiteral("terminal"), QStringLiteral("New Session"), sidebar_);
+        new_session_item->setAccessibleName(QStringLiteral("New Terminal Session"));
+        new_session_item->setBadgeColor(finn::ui::nav_accent_light(),
+                                        finn::ui::nav_accent_dark());
         connect(new_session_item, &QAbstractButton::clicked, this, [this]() {
             createSession(initial_cwd_, {});
         });
@@ -785,6 +793,7 @@ private:
         auto* toggle_side_btn = new FinnIconButton(
             QStringLiteral("sidebar-toggle"), 28, 16, content);
         toggle_side_btn->setToolTip(QStringLiteral("Toggle Sidebar"));
+        toggle_side_btn->setAccessibleName(QStringLiteral("Toggle Sidebar"));
         connect(toggle_side_btn, &QAbstractButton::clicked, this, [this]() {
             setSidebarCollapsed(!isSidebarCollapsed());
         });
@@ -798,26 +807,32 @@ private:
             QStringLiteral("+"), FinnButton::Variant::Secondary, {}, content);
         new_tab_btn->setFixedSize(32, 28);
         new_tab_btn->setToolTip(QStringLiteral("New Terminal Session"));
+        new_tab_btn->setAccessibleName(QStringLiteral("New Terminal Session"));
 
         auto* zoom_out = new FinnButton(
             QStringLiteral("A-"), FinnButton::Variant::Ghost, {}, content);
         zoom_out->setFixedSize(36, 28);
+        zoom_out->setAccessibleName(QStringLiteral("Decrease font size"));
 
         auto* zoom_in = new FinnButton(
             QStringLiteral("A+"), FinnButton::Variant::Ghost, {}, content);
         zoom_in->setFixedSize(36, 28);
+        zoom_in->setAccessibleName(QStringLiteral("Increase font size"));
 
         auto* copy_btn = new FinnButton(
             QStringLiteral("Copy"), FinnButton::Variant::Secondary, {}, content);
         copy_btn->setFixedHeight(28);
+        copy_btn->setAccessibleName(QStringLiteral("Copy selection or screen"));
 
         auto* paste_btn = new FinnButton(
             QStringLiteral("Paste"), FinnButton::Variant::Secondary, {}, content);
         paste_btn->setFixedHeight(28);
+        paste_btn->setAccessibleName(QStringLiteral("Paste from clipboard"));
 
         auto* clear_btn = new FinnButton(
             QStringLiteral("Clear"), FinnButton::Variant::Secondary, {}, content);
         clear_btn->setFixedHeight(28);
+        clear_btn->setAccessibleName(QStringLiteral("Clear scrollback"));
 
         header_row->addWidget(toggle_side_btn);
         header_row->addSpacing(2);
@@ -879,7 +894,10 @@ private:
                                                      ? QStringLiteral("Session %1").arg(i + 1)
                                                      : osc_title.trimmed();
                             if (static_cast<int>(i) == current_idx_) {
-                                shell_title_->setText(sessions_[i].title);
+                                const QString elided = shell_title_->fontMetrics().elidedText(
+                                    sessions_[i].title, Qt::ElideMiddle, 220);
+                                shell_title_->setText(elided);
+                                shell_title_->setToolTip(sessions_[i].title);
                                 setWindowTitleText(sessions_[i].title);
                             }
                             rebuildSidebarList();
@@ -900,7 +918,10 @@ private:
         current_idx_ = idx;
         const auto& s = sessions_[static_cast<std::size_t>(idx)];
         stack_->setCurrentWidget(s.widget);
-        shell_title_->setText(s.title);
+        const QString elided = shell_title_->fontMetrics().elidedText(
+            s.title, Qt::ElideMiddle, 220);
+        shell_title_->setText(elided);
+        shell_title_->setToolTip(s.title);
         setWindowTitleText(s.title);
         rebuildSidebarList();
         s.widget->setFocus();
@@ -940,8 +961,10 @@ private:
             }
             const bool active = (static_cast<int>(i) == current_idx_);
             auto* item = new FinnNavItem(QStringLiteral("terminal"), s.title, sidebar_);
-            item->setBadgeColor(active ? QColor(0x22, 0xC5, 0x5E)
-                                       : QColor(0x64, 0x74, 0x8B));
+            item->setBadgeColor(active ? finn::ui::nav_accent_light()
+                                       : finn::ui::nav_neutral_light(),
+                                active ? finn::ui::nav_accent_dark()
+                                       : finn::ui::nav_neutral_dark());
             item->setSelected(active);
             const int target_idx = static_cast<int>(i);
             connect(item, &QAbstractButton::clicked, this,
@@ -949,9 +972,9 @@ private:
             side_list_layout_->addWidget(item);
         }
 
-        // Quick command snippets with 26x26 circular colored badges
+        // Quick commands share the neutral nav badge; the glyph names the tool.
         auto* hdr = new FinnLabel(
-            QStringLiteral("QUICK COMMANDS"),
+            QStringLiteral("Quick commands"),
             FinnLabel::Role::Caption, FinnLabel::Tone::Mute, sidebar_);
         hdr->setContentsMargins(6, 10, 6, 2);
         side_list_layout_->addWidget(hdr);
@@ -960,17 +983,16 @@ private:
             QString label;
             QString cmd;
             QString icon;
-            QColor badge;
         };
         const QVector<QuickCmd> cmds = {
             {QStringLiteral("System Kernel"), QStringLiteral("uname -a"),
-             QStringLiteral("info"), QColor(0x00, 0x7B, 0xFF)},
+             QStringLiteral("info")},
             {QStringLiteral("Disk Usage"), QStringLiteral("df -h"),
-             QStringLiteral("folder"), QColor(0x58, 0x56, 0xD6)},
+             QStringLiteral("folder")},
             {QStringLiteral("Network Addresses"), QStringLiteral("ip -br addr"),
-             QStringLiteral("internet"), QColor(0x0E, 0xA5, 0xE9)},
+             QStringLiteral("internet")},
             {QStringLiteral("Systemd Units"), QStringLiteral("systemctl list-units --type=service --state=running"),
-             QStringLiteral("settings-02"), QColor(0xF5, 0x9E, 0x0B)},
+             QStringLiteral("settings-02")},
         };
         for (const auto& qc : cmds) {
             if (!q.isEmpty() &&
@@ -979,7 +1001,8 @@ private:
                 continue;
             }
             auto* item = new FinnNavItem(qc.icon, qc.label, sidebar_);
-            item->setBadgeColor(qc.badge);
+            item->setBadgeColor(finn::ui::nav_neutral_light(),
+                               finn::ui::nav_neutral_dark());
             item->setToolTip(qc.cmd);
             const QString cmd_str = qc.cmd;
             connect(item, &QAbstractButton::clicked, this, [this, cmd_str]() {
@@ -1023,7 +1046,19 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--cwd") == 0 && i + 1 < argc) {
             cwd = QString::fromLocal8Bit(argv[++i]);
         } else if (std::strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
-            exec_cmd = QString::fromLocal8Bit(argv[++i]);
+            if (i + 2 == argc) {
+                exec_cmd = QString::fromLocal8Bit(argv[i + 1]);
+            } else {
+                QStringList quoted;
+                quoted.reserve(argc - (i + 1));
+                for (int j = i + 1; j < argc; ++j) {
+                    QString part = QString::fromLocal8Bit(argv[j]);
+                    part.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+                    quoted.push_back(QLatin1Char('\'') + part + QLatin1Char('\''));
+                }
+                exec_cmd = quoted.join(QLatin1Char(' '));
+            }
+            break;
         }
     }
 

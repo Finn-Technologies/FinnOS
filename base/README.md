@@ -1,6 +1,6 @@
 # The base image
 
-`base/` is the Arch Linux base FinnOS installs onto: the packages, units and
+`base/` is the Linux system base FinnOS installs onto: the packages, units and
 installer that sit beneath the session.
 
 - `packages.*` — the package lists, one name per line.
@@ -8,12 +8,22 @@ installer that sit beneath the session.
 - `finn-comp.service`, `finn-session.service`, `finn-shell.service`,
   `finn-wallpaper.service`, `finn-failure.service` — the session units.
 - `finn-tmpfiles.conf` — `/run/finn`, the shared IPC directory.
-- `airootfs/` — the live installation medium's root.
-- `installed/` — the branding an installed machine gets.
-- `setup.sh` — turns an Arch installation into FinnOS.
+- `airootfs/` — the live installation medium's root, including the `finnos`
+  Plymouth theme that draws the boot mark from inside the initramfs.
+- `installed/` — the branding and initramfs config an installed machine gets.
+- `setup.sh` — configures a pacman-based rootfs for FinnOS.
 - `mkfinniso` — builds the ISO from this tree.
 - `pkgbuilds/` — the local package recipes (`finn-filesystem`,
   `finnos-compose`).
+
+## The boot
+
+Every boot entry passes `quiet splash vt.global_cursor_default=0`: Plymouth
+starts in the initramfs with the Finn mark on the `#0B0E14` field, and there is
+no text console or blinking cursor between the firmware logo and the splash.
+The live and installed initramfs configs carry the theme, so the mark survives
+a reboot of an installed machine. Menus wait three seconds. See
+`docs/architecture.md`, "The boot chain".
 
 ## The session
 

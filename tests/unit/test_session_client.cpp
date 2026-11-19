@@ -15,24 +15,40 @@
 
 namespace {
 
-void serve_two(const std::string& path, std::atomic<bool>* ready) {
+void serve_requests(const std::string& path, std::atomic<bool>* ready) {
     const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     assert(fd >= 0);
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, path.c_str(), path.size());
     assert(::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
-    assert(::listen(fd, 2) == 0);
+    assert(::listen(fd, 8) == 0);
     ready->store(true);
-    for (int i = 0; i < 2; ++i) {
+
+    const char* expected[] = {
+        "APP.LIST\n",
+        "APP.LIST\n",
+        "APP.LAUNCH files\t/tmp/dir\n",
+        "APP.OPEN https://finnos.org/docs\n",
+        "COMPAT.STATUS\n",
+        "POWER.ACTION bad\n",
+    };
+    const char* replies[] = {
+        "OK count=1\nfiles|1|Finn Files|files.svg\n",
+        "OK count=1\nfiles|1|Finn Files|files.svg\n",
+        "OK launched\n",
+        "OK opened\n",
+        "OK arch=aarch64|wayland=/run/finn/wayland-0|display=|xwayland=0|wine=0|flatpak=1|wine_summary=unavailable\n",
+        "ERR unsupported power action: bad\n",
+    };
+    for (int i = 0; i < 6; ++i) {
         const int client = ::accept(fd, nullptr, nullptr);
         assert(client >= 0);
-        char request[64] = {};
+        char request[128] = {};
         assert(::read(client, request, sizeof request - 1) > 0);
-        assert(std::strcmp(request, "APP.LIST\n") == 0);
-        const char reply[] = "OK count=1\nfiles|1|Finn Files|files.svg\n";
-        assert(::write(client, reply, sizeof reply - 1) ==
-               static_cast<ssize_t>(sizeof reply - 1));
+        assert(std::strcmp(request, expected[i]) == 0);
+        const std::size_t len = std::strlen(replies[i]);
+        assert(::write(client, replies[i], len) == static_cast<ssize_t>(len));
         ::close(client);
     }
     ::close(fd);
@@ -49,7 +65,7 @@ int main() {
     setenv("FINN_SESSION_SOCK", path.c_str(), 1);
 
     std::atomic<bool> ready{false};
-    std::thread server(serve_two, path, &ready);
+    std::thread server(serve_requests, path, &ready);
     while (!ready.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -65,6 +81,15 @@ int main() {
         assert(apps[0].id == "files");
         assert(apps[0].installed);
     }
+    assert(client.launch_with_arg("files", "/tmp/dir", &error));
+    assert(client.open_target("https://finnos.org/docs", &error));
+    finn::CompatStatus st;
+    assert(client.compat_status(&st, &error));
+    assert(st.arch == "aarch64");
+    assert(st.flatpak_ready);
+    assert(!st.wine_ready);
+    assert(!client.power_action("bad", &error));
+    assert(error == "unsupported power action: bad");
     server.join();
     std::puts("test_session_client: ok");
     return 0;

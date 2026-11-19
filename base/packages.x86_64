@@ -4,12 +4,11 @@
 # a comment only at the start of a line. base/setup.sh reads the same file,
 # so what the disc carries and what a machine installs cannot drift.
 #
-# The machine this profile is built and checked against is a Dell OptiPlex
-# 3020: an i3-4130 (Haswell), Intel HD Graphics 4400, 4 GB of RAM and a
-# 1080p panel. It is a general Arch x86_64 profile, not a model-specific
-# one: what is below is what Arch's own hardware support expects on an
-# Intel or AMD machine, and a package that only made sense on that one
-# desktop would not belong here.
+# The x86_64 reference target is an i3-4130 (Haswell), Intel HD Graphics 4400,
+# 4 GB of RAM, and a 1080p panel. This is a general x86_64 profile, not a
+# model-specific one: what is below is standard hardware support for an Intel
+# or AMD desktop, and a package that only made sense on one machine would not
+# belong here.
 #
 # What is deliberately absent is as much of the list as what is present:
 # no X server, no Wayland compositor, no GTK, no Qt, no desktop environment.
@@ -23,12 +22,18 @@ sudo
 util-linux
 kbd
 
+# Plymouth draws the Finn boot mark from inside the initramfs. With quiet and
+# splash on the kernel command line it replaces the text console entirely, so
+# the boot shows the mark instead of a blinking underscore. Its mkinitcpio
+# hook is what gets plymouthd into the image; the theme is carried there too.
+plymouth
+
 # The kernel, its firmware and the DRM/KMS stack the compositor drives.
 # linux-firmware is the GPU firmware for Intel, AMD and NVIDIA parts, the
 # Wi-Fi and Bluetooth firmware, and the firmware the i915 driver loads on
 # newer Intel chips. Both microcode packages are here because the profile
 # is a general one and the bootloader loads whichever the CPU needs; on the
-# OptiPlex that is intel-ucode. A machine without linux-firmware has no
+# Intel reference target that is intel-ucode. A machine without linux-firmware has no
 # Wi-Fi and no Bluetooth, which is the failure this list exists to avoid.
 linux
 linux-firmware
@@ -41,7 +46,7 @@ seatd
 # Mesa provides the GBM and EGL the accelerated path uses; libglvnd is the
 # EGL/GLES dispatch, which is what pkg-config's egl and glesv2 look for.
 # vulkan-intel is ANV, the Vulkan driver for Intel GPUs from Haswell on,
-# which is the OptiPlex's HD 4400 and every Intel desktop since. Mesa's own
+# which covers HD 4400 and every Intel desktop since. Mesa's own
 # dependencies name `wayland`, the client library; it is not what
 # pacman.conf refuses (that is the compositors), and this is why.
 mesa
@@ -68,6 +73,7 @@ qt6-svg
 qt6-imageformats
 qt6-tools
 qt6-declarative
+qt6-webengine
 layer-shell-qt
 xorg-xwayland
 xdg-desktop-portal
@@ -93,7 +99,7 @@ pipewire-pulse
 wireplumber
 
 # Bluetooth. bluez is the daemon and bluez-utils is bluetoothctl. The
-# OptiPlex has no radio of its own; a USB dongle is what makes these do
+# reference desktop has no radio of its own; a USB dongle is what makes these do
 # anything, and the service's own condition keeps it from starting on a
 # machine with no controller.
 bluez

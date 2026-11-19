@@ -102,6 +102,7 @@ public slots:
 signals:
     void stateUpdated();
     void commandError(const QString& message);
+    void wifiConnectFinished(bool ok, const QString& ssid, const QString& message);
 
 private:
     void runProbe(const QString& tag, const QString& program,

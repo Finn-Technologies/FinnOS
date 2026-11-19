@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic FinnOS OTA Update Check
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=6h
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

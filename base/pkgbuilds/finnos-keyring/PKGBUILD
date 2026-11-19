@@ -1,0 +1,45 @@
+# finnos-keyring — FinnOS GPG keyring and [finnos] mirrorlist.
+#
+# Before building this package:
+#   1. Run `repo/gen-signing-key.sh` on a trusted machine outside the repo.
+#   2. Copy the exported public `finnos.gpg` and `finnos-trusted` here.
+#   3. Update `sha256sums` (`updpkgsums`).
+#
+# Never commit private keys to this directory or anywhere in the repository.
+
+pkgname=finnos-keyring
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='FinnOS GnuPG keyring and repository mirror configuration'
+arch=('any')
+url='https://finnos.org'
+license=('MIT')
+depends=('pacman')
+install=finnos-keyring.install
+backup=('etc/pacman.d/finnos-mirrorlist')
+source=('finnos.gpg' 'finnos-trusted' 'finnos-revoked')
+sha256sums=(
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    'fb13401882b55288e32406d99de59a969a0969e7417ff3f75e3d051cdc95b35e'
+    'a306543fba0ba7335e472dc5adce4a98318e6953bb405ac0b4a217bfc2c5415c'
+)
+
+_src="${FINNOS_SRC:-$(realpath "$startdir/../../..")}"
+
+build() {
+    if [ ! -s "$srcdir/finnos.gpg" ]; then
+        echo "error: finnos.gpg is empty; run repo/gen-signing-key.sh and export the public key first" >&2
+        return 1
+    fi
+}
+
+package() {
+    install -Dm644 "$srcdir/finnos.gpg" \
+        "$pkgdir/usr/share/pacman/keyrings/finnos.gpg"
+    install -Dm644 "$srcdir/finnos-trusted" \
+        "$pkgdir/usr/share/pacman/keyrings/finnos-trusted"
+    install -Dm644 "$srcdir/finnos-revoked" \
+        "$pkgdir/usr/share/pacman/keyrings/finnos-revoked"
+    install -Dm644 "$_src/repo/finnos-mirrorlist" \
+        "$pkgdir/etc/pacman.d/finnos-mirrorlist"
+}

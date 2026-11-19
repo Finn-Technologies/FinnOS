@@ -1,5 +1,6 @@
 // FinnOS Bare-Metal Recovery & GUI Installer (finn-installer).
-// Full-screen macOS Big Sur Recovery Mode-inspired experience built with FinnUI.
+// A full-screen FinnOS surface: OOBE's centred brand lockup and quiet space,
+// one hairline card, and no borrowed operating system's visual identity.
 
 #include <FinnSDK/FinnSDK.hpp>
 
@@ -8,6 +9,7 @@
 
 #include <QComboBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -18,11 +20,14 @@
 #include <QKeyEvent>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStackedWidget>
 #include <QSysInfo>
 #include <QThread>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <functional>
 
 namespace {
@@ -101,6 +106,65 @@ private:
     qreal radius_;
 };
 
+// OOBE's brand lockup: the four-diamond mark, the wordmark, and a quiet
+// suffix naming the context. Used in the top bar and in both main pages.
+QWidget* make_brand_lockup(const QString& suffix, QWidget* parent) {
+    auto* box = new QWidget(parent);
+    auto* row = new QHBoxLayout(box);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(8);
+    row->addWidget(new ThemeIcon(QStringLiteral("boot-mark"), 20, 20, box));
+    row->addWidget(new FinnLabel(QStringLiteral("FinnOS"),
+                                 FinnLabel::Role::Title,
+                                 FinnLabel::Tone::Ink, box));
+    if (!suffix.isEmpty()) {
+        auto* context = new FinnLabel(suffix, FinnLabel::Role::Caption,
+                                      FinnLabel::Tone::Mute, box);
+        context->setContentsMargins(2, 0, 0, 0);
+        row->addWidget(context);
+    }
+    return box;
+}
+
+// Four quiet segments, one in the accent: the wizard's place in the sequence,
+// borrowed from OOBE's fixed step navigation without the moving circles.
+class StepRail final : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit StepRail(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(160, 8);
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                this, qOverload<>(&QWidget::update));
+    }
+
+    void setStep(int step, int total) {
+        step_ = step;
+        total_ = std::max(1, total);
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        const auto& t = FinnThemeManager::instance().tokens();
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        constexpr int kSeg = 28;
+        constexpr int kGap = 8;
+        const int x0 = (width() - (total_ * kSeg + (total_ - 1) * kGap)) / 2;
+        for (int i = 0; i < total_; ++i) {
+            const QRectF seg(x0 + i * (kSeg + kGap), (height() - 3) / 2.0, kSeg, 3);
+            p.setBrush(i == step_ ? t.accent : t.track);
+            p.setPen(Qt::NoPen);
+            p.drawRoundedRect(seg, 1.5, 1.5);
+        }
+    }
+
+private:
+    int step_ = 0;
+    int total_ = 4;
+};
+
 QWidget* wrap_log_view(QPlainTextEdit* edit, QWidget* parent) {
     auto* box = new FinnSurface(FinnSurface::Role::Tile, kRadiusLg, true, parent);
     auto* lay = new QVBoxLayout(box);
@@ -172,6 +236,66 @@ QString read_cpu_summary() {
     return QSysInfo::currentCpuArchitecture();
 }
 
+QStringList available_timezones() {
+    QStringList zones;
+    const QString root = QStringLiteral("/usr/share/zoneinfo");
+    if (QFileInfo::exists(root)) {
+        QDirIterator it(root, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString full = it.next();
+            const QString rel = QDir(root).relativeFilePath(full);
+            if (rel.startsWith(QLatin1String("posix/")) ||
+                rel.startsWith(QLatin1String("right/")) ||
+                rel.startsWith(QLatin1String("Etc/")) ||
+                rel.startsWith(QLatin1String("SystemV/"))) {
+                continue;
+            }
+            if (rel.endsWith(QLatin1String(".tab")) ||
+                rel.endsWith(QLatin1String(".list")) ||
+                rel == QLatin1String("leapseconds") ||
+                rel == QLatin1String("tzdata.zi") ||
+                rel == QLatin1String("posixrules") ||
+                rel == QLatin1String("localtime") ||
+                rel == QLatin1String("SECURITY")) {
+                continue;
+            }
+            if (rel.contains(QLatin1Char('/')) || rel == QLatin1String("UTC")) {
+                zones.push_back(rel);
+            }
+        }
+    }
+    if (zones.isEmpty()) {
+        return {
+            QStringLiteral("UTC"),
+            QStringLiteral("America/New_York"),
+            QStringLiteral("America/Chicago"),
+            QStringLiteral("America/Los_Angeles"),
+            QStringLiteral("Europe/London"),
+            QStringLiteral("Europe/Berlin"),
+            QStringLiteral("Asia/Tokyo"),
+        };
+    }
+    zones.removeDuplicates();
+    zones.sort(Qt::CaseInsensitive);
+    zones.removeAll(QStringLiteral("UTC"));
+    zones.prepend(QStringLiteral("UTC"));
+    return zones;
+}
+
+QString current_timezone_or_utc() {
+    const QFileInfo lt(QStringLiteral("/etc/localtime"));
+    if (lt.isSymLink()) {
+        const QString target = lt.symLinkTarget();
+        const QString marker = QStringLiteral("/usr/share/zoneinfo/");
+        const int idx = target.indexOf(marker);
+        if (idx >= 0) {
+            const QString rel = target.mid(idx + marker.size());
+            if (!rel.isEmpty()) return rel;
+        }
+    }
+    return QStringLiteral("UTC");
+}
+
 struct DiskInfo {
     QString device;
     QString size;
@@ -217,44 +341,34 @@ public:
         root->setContentsMargins(0, 0, 0, 0);
         root->setSpacing(0);
 
-        // macOS Big Sur Recovery-style translucent top menu bar
-        auto* menu_bar = new FinnGlassPanel(0, this);
-        menu_bar->setFixedHeight(34);
+        // A quiet hairline bar: brand on the left, the two ways out on the
+        // right. No borrowed operating system's translucent menu bar.
+        auto* menu_bar = new QWidget(this);
+        menu_bar->setFixedHeight(44);
         auto* mb_lay = new QHBoxLayout(menu_bar);
-        mb_lay->setContentsMargins(16, 0, 16, 0);
+        mb_lay->setContentsMargins(24, 0, 24, 0);
         mb_lay->setSpacing(12);
-
-        auto* brand_ico = new ThemeIcon(QStringLiteral("installer"), 16, 16, menu_bar);
-        mb_lay->addWidget(brand_ico);
-
-        auto* title = new FinnLabel(QStringLiteral("FinnOS Recovery"),
-                                    FinnLabel::Role::Headline, FinnLabel::Tone::Ink, menu_bar);
-        mb_lay->addWidget(title);
-
-        auto* util_btn = new FinnButton(QStringLiteral("Utilities"),
-                                        FinnButton::Variant::Ghost, {}, menu_bar);
-        util_btn->setFixedHeight(26);
-        connect(util_btn, &QAbstractButton::clicked, this, [this]() {
-            stack_->setCurrentIndex(0);
-        });
-        mb_lay->addWidget(util_btn);
+        mb_lay->addWidget(make_brand_lockup(QStringLiteral("Recovery"), menu_bar));
         mb_lay->addStretch(1);
 
         auto* restart_btn = new FinnButton(QStringLiteral("Restart"),
                                            FinnButton::Variant::Ghost, {}, menu_bar);
-        restart_btn->setFixedHeight(26);
+        restart_btn->setAccessibleName(QStringLiteral("Restart"));
+        restart_btn->setFixedHeight(28);
         connect(restart_btn, &QAbstractButton::clicked, this, []() {
             QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("reboot")});
         });
 
-        auto* exit_btn = new FinnButton(QStringLiteral("Exit Recovery"),
+        auto* exit_btn = new FinnButton(QStringLiteral("Exit"),
                                         FinnButton::Variant::Ghost, {}, menu_bar);
-        exit_btn->setFixedHeight(26);
+        exit_btn->setAccessibleName(QStringLiteral("Exit"));
+        exit_btn->setFixedHeight(28);
         connect(exit_btn, &QAbstractButton::clicked, this, [this]() { close(); });
 
         mb_lay->addWidget(restart_btn);
         mb_lay->addWidget(exit_btn);
         root->addWidget(menu_bar);
+        root->addWidget(new FinnDivider(Qt::Horizontal, this));
 
         // Centered Recovery Content Stage
         auto* stage = new QWidget(this);
@@ -262,9 +376,9 @@ public:
         stage_lay->setAlignment(Qt::AlignCenter);
         stage_lay->setContentsMargins(32, 24, 32, 24);
 
-        card_ = new FinnGlassPanel(18, stage);
+        card_ = new FinnGlassPanel(20, stage);
         card_->setOpacityAlpha(242);
-        card_->setFixedSize(760, 520);
+        card_->setFixedSize(760, 600);
 
         auto* card_lay = new QVBoxLayout(card_);
         card_lay->setContentsMargins(36, 28, 36, 24);
@@ -272,8 +386,8 @@ public:
 
         stack_ = new QStackedWidget(card_);
         finn::ui::install_stack_animator(stack_);
-        stack_->addWidget(buildRecoveryHubPage());   // 0: macOS Big Sur Recovery Utilities
-        stack_->addWidget(buildInstallWizardPage()); // 1: Big Sur Install FinnOS Wizard
+        stack_->addWidget(buildRecoveryHubPage());   // 0: recovery utilities
+        stack_->addWidget(buildInstallWizardPage()); // 1: install wizard
         stack_->addWidget(buildDiskUtilityPage());   // 2: Disk Utility
         stack_->addWidget(buildSystemInfoPage());    // 3: Hardware & Logs
         card_lay->addWidget(stack_, 1);
@@ -304,23 +418,14 @@ protected:
     void paintEvent(QPaintEvent*) override {
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
-        QLinearGradient g(0, 0, 0, height());
-        if (t.dark) {
-            // Classic Big Sur Recovery deep charcoal-blue gradient backdrop
-            g.setColorAt(0.0, QColor(0x16, 0x19, 0x22));
-            g.setColorAt(0.55, QColor(0x1D, 0x22, 0x2E));
-            g.setColorAt(1.0, QColor(0x12, 0x15, 0x1D));
-        } else {
-            // Crisp Light Recovery mist gradient backdrop
-            g.setColorAt(0.0, QColor(0xEE, 0xF2, 0xF7));
-            g.setColorAt(0.55, QColor(0xE2, 0xE8, 0xF1));
-            g.setColorAt(1.0, QColor(0xD5, 0xDD, 0xE8));
-        }
-        p.fillRect(rect(), g);
+        // The same canvas OOBE uses: pure black in dark, warm bone in light.
+        // One neutral surface — no gradient, no borrowed dusk backdrop.
+        p.fillRect(rect(), t.surface_canvas);
     }
 
     void keyPressEvent(QKeyEvent* event) override {
         if (event->key() == Qt::Key_Escape) {
+            if (install_running_) return;
             if (stack_->currentIndex() != 0) {
                 stack_->setCurrentIndex(0);
             } else {
@@ -336,50 +441,57 @@ private:
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
         auto* col = new QVBoxLayout(page);
-        col->setContentsMargins(24, 10, 24, 10);
-        col->setSpacing(14);
+        col->setContentsMargins(24, 16, 24, 16);
+        col->setSpacing(12);
 
-        auto* hdr = new FinnLabel(QStringLiteral("FinnOS Recovery"),
-                                  FinnLabel::Role::Title, FinnLabel::Tone::Ink, page);
-        hdr->setFont(finn_font(22.0, QFont::DemiBold));
+        auto* lockup = make_brand_lockup(QString(), page);
+        col->addWidget(lockup, 0, Qt::AlignHCenter);
+
+        auto* hdr = new FinnLabel(QStringLiteral("Recover or install FinnOS"),
+                                  FinnLabel::Role::TitleLarge,
+                                  FinnLabel::Tone::Ink, page);
         hdr->setAlignment(Qt::AlignCenter);
         col->addWidget(hdr);
 
         auto* sub = new FinnLabel(
-            QStringLiteral("Select a recovery utility to install FinnOS, inspect disks, or open a terminal."),
+            QStringLiteral("Install FinnOS, inspect disks, or open a terminal."),
             FinnLabel::Role::Body, FinnLabel::Tone::Dim, page);
         sub->setAlignment(Qt::AlignCenter);
         col->addWidget(sub);
+        col->addSpacing(12);
 
+        // One chevron per row, not a repeated "Open" button: the whole row is
+        // the control, and the OOBE-style circle is its only affordance.
         auto make_util_row = [&](const QString& icon, const QString& title,
                                  const QString& desc, std::function<void()> on_click) {
             auto* c = new FinnCard(kRadiusLg, true, page);
-            c->setFixedHeight(78);
+            c->setFixedHeight(72);
             auto* rl = new QHBoxLayout(c);
             rl->setContentsMargins(16, 12, 16, 12);
-            rl->setSpacing(14);
+            rl->setSpacing(16);
 
-            rl->addWidget(new NeutralIconBadge(icon, 44, 24, 10.0, c));
+            rl->addWidget(new NeutralIconBadge(icon, 40, 22, 10.0, c));
 
             auto* tc = new QVBoxLayout();
             tc->setSpacing(2);
-            auto* t = new FinnLabel(title, FinnLabel::Role::Headline, FinnLabel::Tone::Ink, c);
-            auto* d = new FinnLabel(desc, FinnLabel::Role::Caption, FinnLabel::Tone::Dim, c);
-            tc->addWidget(t);
-            tc->addWidget(d);
+            tc->addWidget(new FinnLabel(title, FinnLabel::Role::Headline,
+                                        FinnLabel::Tone::Ink, c));
+            tc->addWidget(new FinnLabel(desc, FinnLabel::Role::Caption,
+                                        FinnLabel::Tone::Dim, c));
             rl->addLayout(tc, 1);
 
-            auto* open_btn = new FinnButton(QStringLiteral("Open"),
-                                            FinnButton::Variant::Secondary, {}, c);
-            connect(open_btn, &QAbstractButton::clicked, this, on_click);
-            rl->addWidget(open_btn);
+            auto* chevron = new FinnIconButton(QStringLiteral("chevron-right"), 32, 14, c);
+            chevron->setCornerRadius(16.0);
+            chevron->setEnabled(false);
+            rl->addWidget(chevron);
+
             connect(c, &FinnCard::clicked, this, on_click);
             return c;
         };
 
         col->addWidget(make_util_row(
             QStringLiteral("installer"), QStringLiteral("Install FinnOS"),
-            QStringLiteral("Install a fresh copy of FinnOS One Preview onto internal or external storage."),
+            QStringLiteral("Install FinnOS on internal or external storage"),
             [this]() {
                 setWizardStep(0);
                 stack_->setCurrentIndex(1);
@@ -387,7 +499,7 @@ private:
 
         col->addWidget(make_util_row(
             QStringLiteral("folder"), QStringLiteral("Disk Utility"),
-            QStringLiteral("Inspect block storage devices, partitions, and filesystems via lsblk."),
+            QStringLiteral("Inspect disks, partitions and filesystems"),
             [this]() {
                 refreshDiskUtility();
                 stack_->setCurrentIndex(2);
@@ -395,15 +507,15 @@ private:
 
         col->addWidget(make_util_row(
             QStringLiteral("terminal"), QStringLiteral("Terminal"),
-            QStringLiteral("Open Finn Terminal for partitioning, rescue, or manual Arch diagnostics."),
+            QStringLiteral("Partition, repair and inspect the system"),
             [this]() {
-                QProcess::startDetached(QStringLiteral("finn-terminal"), {});
+                QProcess::startDetached(QString::fromUtf8(finn::kFinnTerminalBin), {});
                 close();
             }));
 
         col->addWidget(make_util_row(
-            QStringLiteral("info"), QStringLiteral("System Information & Firmware"),
-            QStringLiteral("Verify UEFI/BIOS status, CPU architecture, and kernel logs."),
+            QStringLiteral("info"), QStringLiteral("System Information"),
+            QStringLiteral("Firmware, hardware and kernel logs"),
             [this]() { stack_->setCurrentIndex(3); }));
 
         col->addStretch(1);
@@ -417,14 +529,19 @@ private:
         col->setContentsMargins(0, 0, 0, 0);
         col->setSpacing(12);
 
-        // Centered neutral hero badge so the installer adapts cleanly to Light & Dark modes.
-        auto* hero_badge = new NeutralIconBadge(QStringLiteral("installer"), 52, 26, 26.0, page);
-        col->addWidget(hero_badge, 0, Qt::AlignHCenter);
+        // OOBE's brand lockup and a quiet step rail instead of a circular
+        // badge: the wizard reads as one journey, not four separate screens.
+        col->addWidget(make_brand_lockup(QStringLiteral("Install"), page),
+                       0, Qt::AlignHCenter);
 
-        wiz_title_ = new FinnLabel(QStringLiteral("Install FinnOS One Preview"),
-                                   FinnLabel::Role::TitleLarge, FinnLabel::Tone::Ink, page);
+        wiz_title_ = new FinnLabel(QStringLiteral("Install FinnOS"),
+                                   FinnLabel::Role::Title,
+                                   FinnLabel::Tone::Ink, page);
         wiz_title_->setAlignment(Qt::AlignCenter);
         col->addWidget(wiz_title_);
+
+        step_rail_ = new StepRail(page);
+        col->addWidget(step_rail_, 0, Qt::AlignHCenter);
 
         wiz_stack_ = new QStackedWidget(page);
         wiz_stack_->setAutoFillBackground(false);
@@ -443,7 +560,7 @@ private:
         g->addWidget(new FinnStatCard(QStringLiteral("Architecture"),
                                       QSysInfo::currentCpuArchitecture(), w0), 0, 1);
         g->addWidget(new FinnStatCard(QStringLiteral("Filesystem"),
-                                      QStringLiteral("btrfs + FAT32 ESP"), w0), 1, 0);
+                                      QStringLiteral("ext4 + FAT32 ESP"), w0), 1, 0);
         g->addWidget(new FinnStatCard(QStringLiteral("Bootloader"),
                                       is_efi ? QStringLiteral("GRUB EFI") : QStringLiteral("GRUB MBR"), w0), 1, 1);
         w0l->addLayout(g);
@@ -506,6 +623,7 @@ private:
         auto* w2l = new QVBoxLayout(w2);
         w2l->setSpacing(10);
         hostname_edit_ = new FinnTextField(QStringLiteral("finnos"), w2);
+        hostname_edit_->setAccessibleName(QStringLiteral("Computer Hostname"));
         hostname_edit_->setText(QStringLiteral("finnos"));
         hostname_edit_->setFixedWidth(220);
         w2l->addWidget(new FinnSettingRow(
@@ -513,13 +631,24 @@ private:
             QStringLiteral("internet"), hostname_edit_, w2));
 
         tz_combo_ = new QComboBox(w2);
-        tz_combo_->addItems({QStringLiteral("UTC"), QStringLiteral("America/New_York"),
-                             QStringLiteral("Europe/London"), QStringLiteral("Europe/Berlin")});
+        tz_combo_->setAccessibleName(QStringLiteral("Time Zone"));
+        tz_combo_->addItems(available_timezones());
+        const QString cur_tz = current_timezone_or_utc();
+        const int tz_idx = tz_combo_->findText(cur_tz);
+        if (tz_idx >= 0) tz_combo_->setCurrentIndex(tz_idx);
         w2l->addWidget(new FinnSettingRow(
             QStringLiteral("Time Zone"), QStringLiteral("System clock region"),
             QStringLiteral("info"), tz_combo_, w2));
 
+        ab_slots_toggle_ = new FinnToggle(true, w2);
+        ab_slots_toggle_->setAccessibleName(QStringLiteral("A/B OTA Root Partitions"));
+        w2l->addWidget(new FinnSettingRow(
+            QStringLiteral("A/B OTA Root Partitions"),
+            QStringLiteral("Dual FINNOS_A/FINNOS_B system slots with rollback (requires >= 14 GiB)"),
+            QStringLiteral("update"), ab_slots_toggle_, w2));
+
         erase_confirm_ = new FinnToggle(false, w2);
+        erase_confirm_->setAccessibleName(QStringLiteral("Confirm Erase Target Disk"));
         w2l->addWidget(new FinnSettingRow(
             QStringLiteral("Confirm Erase Target Disk"),
             QStringLiteral("Required before formatting and installing FinnOS"),
@@ -534,7 +663,7 @@ private:
         w3l->setSpacing(8);
         install_log_ = new QPlainTextEdit();
         install_log_->setReadOnly(true);
-        install_log_->setPlaceholderText(QStringLiteral("Installer output appears here..."));
+        install_log_->setPlaceholderText(QStringLiteral("Installer output"));
         w3l->addWidget(wrap_log_view(install_log_, w3), 1);
         wiz_stack_->addWidget(w3);
 
@@ -542,29 +671,42 @@ private:
         col->addWidget(new FinnDivider(Qt::Horizontal, page));
 
         auto* nav = new QHBoxLayout();
-        auto* hub_btn = new FinnButton(QStringLiteral("Utilities"),
-                                       FinnButton::Variant::Ghost, {}, page);
-        connect(hub_btn, &QAbstractButton::clicked, this, [this]() {
-            stack_->setCurrentIndex(0);
+        hub_btn_ = new FinnButton(QStringLiteral("Utilities"),
+                                  FinnButton::Variant::Ghost, {}, page);
+        hub_btn_->setAccessibleName(QStringLiteral("Utilities"));
+        connect(hub_btn_, &QAbstractButton::clicked, this, [this]() {
+            if (!install_running_) stack_->setCurrentIndex(0);
         });
         wiz_back_ = new FinnButton(QStringLiteral("Back"), FinnButton::Variant::Secondary,
                                    QStringLiteral("chevron-left"), page);
-        wiz_next_ = new FinnButton(QStringLiteral("Continue"), FinnButton::Variant::Primary,
-                                   {}, page);
-        connect(wiz_back_, &QAbstractButton::clicked, this, [this]() {
-            if (wiz_stack_->currentIndex() > 0) setWizardStep(wiz_stack_->currentIndex() - 1);
-        });
-        connect(wiz_next_, &QAbstractButton::clicked, this, [this]() {
+        wiz_back_->setAccessibleName(QStringLiteral("Back"));
+        auto advance = [this]() {
+            if (install_running_) return;
             const int cur = wiz_stack_->currentIndex();
             if (cur < 3) {
                 setWizardStep(cur + 1);
             } else {
                 startInstall();
             }
+        };
+        // OOBE's circular next control, with a quiet label so the installer
+        // stays explicit about what the arrow will do.
+        wiz_next_ = new FinnIconButton(QStringLiteral("chevron-right"), 48, 20, page);
+        wiz_next_->setAccessibleName(QStringLiteral("Continue or Install"));
+        wiz_next_->setCornerRadius(24.0);
+        connect(wiz_back_, &QAbstractButton::clicked, this, [this]() {
+            if (!install_running_ && wiz_stack_->currentIndex() > 0) {
+                setWizardStep(wiz_stack_->currentIndex() - 1);
+            }
         });
-        nav->addWidget(hub_btn);
+        connect(wiz_next_, &QAbstractButton::clicked, this, advance);
+        wiz_next_label_ = new FinnLabel(QStringLiteral("Continue"),
+                                        FinnLabel::Role::Caption,
+                                        FinnLabel::Tone::Dim, page);
+        nav->addWidget(hub_btn_);
         nav->addWidget(wiz_back_);
         nav->addStretch(1);
+        nav->addWidget(wiz_next_label_);
         nav->addWidget(wiz_next_);
         col->addLayout(nav);
         return page;
@@ -574,9 +716,17 @@ private:
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
         auto* col = new QVBoxLayout(page);
-        col->setSpacing(10);
-        col->addWidget(new FinnLabel(QStringLiteral("Disk Utility"),
-                                     FinnLabel::Role::Title, FinnLabel::Tone::Ink, page));
+        col->setSpacing(12);
+        col->addWidget(make_brand_lockup(QStringLiteral("Disks"), page),
+                       0, Qt::AlignHCenter);
+        auto* title = new FinnLabel(QStringLiteral("Disk Utility"),
+                                    FinnLabel::Role::Title,
+                                    FinnLabel::Tone::Ink, page);
+        title->setAlignment(Qt::AlignCenter);
+        col->addWidget(title);
+        col->addWidget(new FinnLabel(
+            QStringLiteral("Read-only view of the block devices on this machine"),
+            FinnLabel::Role::Body, FinnLabel::Tone::Dim, page), 0, Qt::AlignHCenter);
         disk_util_log_ = new QPlainTextEdit();
         disk_util_log_->setReadOnly(true);
         col->addWidget(wrap_log_view(disk_util_log_, page), 1);
@@ -613,9 +763,17 @@ private:
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
         auto* col = new QVBoxLayout(page);
-        col->setSpacing(10);
-        col->addWidget(new FinnLabel(QStringLiteral("System Information"),
-                                     FinnLabel::Role::Title, FinnLabel::Tone::Ink, page));
+        col->setSpacing(12);
+        col->addWidget(make_brand_lockup(QStringLiteral("System"), page),
+                       0, Qt::AlignHCenter);
+        auto* title = new FinnLabel(QStringLiteral("System Information"),
+                                    FinnLabel::Role::Title,
+                                    FinnLabel::Tone::Ink, page);
+        title->setAlignment(Qt::AlignCenter);
+        col->addWidget(title);
+        col->addWidget(new FinnLabel(
+            QStringLiteral("Firmware, hardware and kernel logs"),
+            FinnLabel::Role::Body, FinnLabel::Tone::Dim, page), 0, Qt::AlignHCenter);
         const auto mem = finn::sys::read_meminfo();
         const double ram_gb = mem.total_kib / (1024.0 * 1024.0);
         const int cores = qMax(1, QThread::idealThreadCount());
@@ -642,38 +800,118 @@ private:
         wiz_stack_->setCurrentIndex(idx);
         wiz_back_->setEnabled(idx > 0);
         static const char* kTitles[] = {
-            "Install FinnOS One Preview",
+            "Install FinnOS",
             "Select Target Disk",
             "Configure Installation",
             "Install FinnOS",
         };
         wiz_title_->setText(QString::fromUtf8(kTitles[idx]));
-        wiz_next_->setText(idx == 3 ? QStringLiteral("Install") : QStringLiteral("Continue"));
+        step_rail_->setStep(idx, 4);
+        const QString action = idx == 3 ? QStringLiteral("Install") : QStringLiteral("Continue");
+        wiz_next_label_->setText(action);
+        wiz_next_->setToolTip(action);
+    }
+
+    void setInstallRunning(bool running) {
+        install_running_ = running;
+        if (hub_btn_) hub_btn_->setEnabled(!running);
+        if (wiz_back_) wiz_back_->setEnabled(!running && wiz_stack_->currentIndex() > 0);
+        if (wiz_next_) wiz_next_->setEnabled(!running);
+        if (wiz_next_label_) {
+            const QString action = running
+                ? QStringLiteral("Installing...")
+                : (wiz_stack_->currentIndex() == 3 ? QStringLiteral("Install") : QStringLiteral("Continue"));
+            wiz_next_label_->setText(action);
+            if (wiz_next_) wiz_next_->setToolTip(action);
+        }
     }
 
     void startInstall() {
+        if (install_running_) return;
         if (selected_disk_.isEmpty() || !erase_confirm_->isChecked()) {
             install_log_->setPlainText(QStringLiteral(
-                "Please select a target disk and enable 'Confirm Erase Target Disk' in Step 3."));
+                "Select a target disk and enable Confirm Erase Target Disk in Configure Installation."));
             return;
         }
-        const QString installer = QStringLiteral("/usr/local/bin/finn-install");
+        QString hostname = hostname_edit_->text().trimmed();
+        if (hostname.isEmpty()) hostname = QStringLiteral("finnos");
+        static const QRegularExpression kHostnameRe(
+            QStringLiteral("^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"));
+        if (!kHostnameRe.match(hostname).hasMatch()) {
+            install_log_->setPlainText(QStringLiteral(
+                "Invalid hostname '%1'. Use 1-63 ASCII letters, digits, or hyphens.").arg(hostname));
+            return;
+        }
+        const QString tz = tz_combo_->currentText().trimmed().isEmpty()
+            ? QStringLiteral("UTC")
+            : tz_combo_->currentText().trimmed();
+        const QString installer = QString::fromUtf8(finn::kFinnInstallBin);
         if (!QFileInfo::exists(installer)) {
             install_log_->setPlainText(QStringLiteral(
-                "Install medium backend (/usr/local/bin/finn-install) is only active on the live ISO.\n"
-                "Verified target: %1 (host=%2, tz=%3)")
-                                           .arg(selected_disk_, hostname_edit_->text(), tz_combo_->currentText()));
+                "Install medium backend (%1) is only active on the live ISO.\n"
+                "Verified target: %2 (host=%3, tz=%4, ab_slots=%5)")
+                                           .arg(installer, selected_disk_, hostname, tz,
+                                                (ab_slots_toggle_ && ab_slots_toggle_->isChecked())
+                                                    ? QStringLiteral("yes")
+                                                    : QStringLiteral("no")));
             return;
         }
+
+        install_log_->clear();
+        QStringList args = {
+            installer,
+            QStringLiteral("--disk"),
+            selected_disk_,
+            QStringLiteral("--hostname"),
+            hostname,
+            QStringLiteral("--timezone"),
+            tz,
+        };
+        if (ab_slots_toggle_ && ab_slots_toggle_->isChecked()) {
+            args << QStringLiteral("--ab-slots");
+        }
+        args << QStringLiteral("--yes");
+
+        setInstallRunning(true);
+        install_log_->appendPlainText(QStringLiteral("Starting installer on %1...").arg(selected_disk_));
+
         auto* proc = new QProcess(this);
+        active_proc_ = proc;
         connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc]() {
-            install_log_->appendPlainText(QString::fromUtf8(proc->readAllStandardOutput()).trimmed());
+            const QString chunk = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+            if (!chunk.isEmpty()) install_log_->appendPlainText(chunk);
+        });
+        connect(proc, &QProcess::readyReadStandardError, this, [this, proc]() {
+            const QString chunk = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+            if (!chunk.isEmpty()) install_log_->appendPlainText(QStringLiteral("[stderr] ") + chunk);
+        });
+        connect(proc, &QProcess::errorOccurred, this, [this, proc](QProcess::ProcessError) {
+            install_log_->appendPlainText(
+                QStringLiteral("Failed to run installer: %1").arg(proc->errorString()));
+            setInstallRunning(false);
+            proc->deleteLater();
         });
         connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-                [proc](int, QProcess::ExitStatus) { proc->deleteLater(); });
-        proc->start(QStringLiteral("pkexec"),
-                    {installer, selected_disk_, hostname_edit_->text().trimmed(),
-                     tz_combo_->currentText()});
+                [this, proc](int exit_code, QProcess::ExitStatus exit_status) {
+                    const QString rem_out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                    if (!rem_out.isEmpty()) install_log_->appendPlainText(rem_out);
+                    const QString rem_err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    if (!rem_err.isEmpty()) install_log_->appendPlainText(QStringLiteral("[stderr] ") + rem_err);
+
+                    if (exit_status == QProcess::NormalExit && exit_code == 0) {
+                        install_log_->appendPlainText(
+                            QStringLiteral("\nInstallation completed successfully. You may restart into FinnOS."));
+                    } else if (exit_status == QProcess::CrashExit) {
+                        install_log_->appendPlainText(
+                            QStringLiteral("\nInstallation failed: installer process terminated abnormally."));
+                    } else {
+                        install_log_->appendPlainText(
+                            QStringLiteral("\nInstallation failed with exit code %1.").arg(exit_code));
+                    }
+                    setInstallRunning(false);
+                    proc->deleteLater();
+                });
+        proc->start(QStringLiteral("pkexec"), args);
     }
 
     FinnGlassPanel* card_ = nullptr;
@@ -681,15 +919,21 @@ private:
 
     FinnLabel* wiz_title_ = nullptr;
     QStackedWidget* wiz_stack_ = nullptr;
+    StepRail* step_rail_ = nullptr;
+    FinnButton* hub_btn_ = nullptr;
     FinnButton* wiz_back_ = nullptr;
-    FinnButton* wiz_next_ = nullptr;
+    FinnIconButton* wiz_next_ = nullptr;
+    FinnLabel* wiz_next_label_ = nullptr;
     QVector<FinnCard*> disk_cards_;
     QString selected_disk_;
     FinnTextField* hostname_edit_ = nullptr;
     QComboBox* tz_combo_ = nullptr;
+    FinnToggle* ab_slots_toggle_ = nullptr;
     FinnToggle* erase_confirm_ = nullptr;
     QPlainTextEdit* install_log_ = nullptr;
     QPlainTextEdit* disk_util_log_ = nullptr;
+    QPointer<QProcess> active_proc_;
+    bool install_running_ = false;
 };
 
 } // namespace

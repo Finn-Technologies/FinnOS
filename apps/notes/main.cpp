@@ -1,11 +1,13 @@
-// Finn Notes: native markdown & text editor redesigned to match Figma Settings (20:64) 1:1.
-// Uses ChromeMode::FigmaSplit, 250px translucent sidebar with 16px Regular header,
-// r=100 "Search notes" pill, + New Note row (#007BFF badge), and open/saved notes
-// as FinnNavItems with circular badges (#F59E0B active/modified, #5856D6 saved).
+// Finn Notes: native markdown & text editor matching Figma Settings (20:64).
+// Uses ChromeMode::FigmaSplit, a 250px sidebar with a 16px Regular header, a
+// "Search notes" pill, a + New Note row with the single blue accent, and note
+// rows in the same accent or neutral. A dirty note says "edited" in mono —
+// colour is never the only way to know a file has unsaved changes.
 
 #include <FinnSDK/FinnSDK.hpp>
 
 #include <QCloseEvent>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -43,21 +45,55 @@ QString rgba_css(const QColor& c) {
         .arg(c.alpha());
 }
 
-QString scrollbar_qss(const FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 1px; }"
-               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
-               "QScrollBar::handle:horizontal:hover { background: %2; }"
-               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
+enum class UnsavedChoice { Save, Discard, Cancel };
+
+UnsavedChoice ask_unsaved_choice(QWidget* parent, const QString& title,
+                                 const QString& message) {
+    QDialog dlg(parent);
+    dlg.setWindowTitle(title);
+    dlg.setModal(true);
+    dlg.setMinimumWidth(380);
+
+    auto* root = new QVBoxLayout(&dlg);
+    root->setContentsMargins(20, 18, 20, 18);
+    root->setSpacing(10);
+    root->addWidget(new FinnLabel(title, FinnLabel::Role::Headline,
+                                  FinnLabel::Tone::Ink, &dlg));
+    root->addWidget(new FinnLabel(message, FinnLabel::Role::Body,
+                                  FinnLabel::Tone::Dim, &dlg));
+
+    UnsavedChoice choice = UnsavedChoice::Cancel;
+    auto* row = new QHBoxLayout();
+    row->setSpacing(8);
+    row->addStretch(1);
+
+    auto* cancel_btn = new FinnButton(
+        QStringLiteral("Cancel"), FinnButton::Variant::Secondary, {}, &dlg);
+    cancel_btn->setAccessibleName(QStringLiteral("Cancel closing note"));
+    auto* discard_btn = new FinnButton(
+        QStringLiteral("Discard"), FinnButton::Variant::Danger, {}, &dlg);
+    discard_btn->setAccessibleName(QStringLiteral("Discard unsaved changes"));
+    auto* save_btn = new FinnButton(
+        QStringLiteral("Save Changes"), FinnButton::Variant::Primary, {}, &dlg);
+    save_btn->setAccessibleName(QStringLiteral("Save note changes"));
+
+    QObject::connect(cancel_btn, &QAbstractButton::clicked, &dlg, &QDialog::reject);
+    QObject::connect(discard_btn, &QAbstractButton::clicked, &dlg, [&]() {
+        choice = UnsavedChoice::Discard;
+        dlg.accept();
+    });
+    QObject::connect(save_btn, &QAbstractButton::clicked, &dlg, [&]() {
+        choice = UnsavedChoice::Save;
+        dlg.accept();
+    });
+
+    row->addWidget(cancel_btn);
+    row->addWidget(discard_btn);
+    row->addWidget(save_btn);
+    root->addLayout(row);
+    save_btn->setFocus();
+    dlg.exec();
+    return choice;
 }
 
 void apply_header_16px_regular(FinnLabel* lbl) {
@@ -140,12 +176,15 @@ protected:
         for (std::size_t i = 0; i < docs_.size(); ++i) {
             if (!docs_[i].dirty) continue;
             switchToTab(static_cast<int>(i));
-            const bool save_it = FinnDialog::confirm(
+            const UnsavedChoice choice = ask_unsaved_choice(
                 this,
                 QStringLiteral("Unsaved changes"),
-                QStringLiteral("Save changes to \"%1\" before closing?").arg(docs_[i].title),
-                QStringLiteral("Save Changes"));
-            if (save_it && !saveCurrent(false)) {
+                QStringLiteral("Save changes to \"%1\" before closing?").arg(docs_[i].title));
+            if (choice == UnsavedChoice::Cancel) {
+                e->ignore();
+                return;
+            }
+            if (choice == UnsavedChoice::Save && !saveCurrent(false)) {
                 e->ignore();
                 return;
             }
@@ -169,16 +208,19 @@ private:
         side_root->addWidget(hdr_lbl);
 
         sidebar_search_ = new FinnSearchField(QStringLiteral("Search notes"), sidebar_);
+        sidebar_search_->setAccessibleName(QStringLiteral("Search notes"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
         connect(sidebar_search_, &FinnSearchField::textChanged,
                 this, [this](const QString&) { rebuildSidebarList(); });
         side_root->addWidget(sidebar_search_);
 
-        // Sleek + New Note row with #007BFF circular badge (edit-01)
+        // The one accent in the sidebar: create a note.
         new_note_item_ = new FinnNavItem(
-            QStringLiteral("edit-01"), QStringLiteral("+ New Note"), sidebar_);
-        new_note_item_->setBadgeColor(QColor(0x00, 0x7B, 0xFF));
+            QStringLiteral("edit-01"), QStringLiteral("New Note"), sidebar_);
+        new_note_item_->setAccessibleName(QStringLiteral("New Note"));
+        new_note_item_->setBadgeColor(finn::ui::nav_accent_light(),
+                                      finn::ui::nav_accent_dark());
         connect(new_note_item_, &QAbstractButton::clicked, this, [this]() { newTab(); });
         side_root->addWidget(new_note_item_);
 
@@ -214,6 +256,7 @@ private:
         header_row->setSpacing(6);
 
         title_edit_ = new QLineEdit(content);
+        title_edit_->setAccessibleName(QStringLiteral("Note title"));
         title_edit_->setFrame(false);
         title_edit_->setPlaceholderText(QStringLiteral("Untitled note"));
         title_edit_->setMinimumWidth(140);
@@ -239,20 +282,24 @@ private:
 
         save_btn_ = new FinnButton(
             QStringLiteral("Save"), FinnButton::Variant::Primary, {}, content);
+        save_btn_->setAccessibleName(QStringLiteral("Save note"));
         save_btn_->setFixedHeight(28);
 
         auto* open_btn = new FinnButton(
             QStringLiteral("Open..."), FinnButton::Variant::Secondary, {}, content);
+        open_btn->setAccessibleName(QStringLiteral("Open note file"));
         open_btn->setFixedHeight(28);
 
         preview_btn_ = new FinnButton(
             QStringLiteral("Preview"), FinnButton::Variant::Secondary, {}, content);
+        preview_btn_->setAccessibleName(QStringLiteral("Toggle markdown preview"));
         preview_btn_->setCheckable(true);
         preview_btn_->setFixedHeight(28);
 
         find_btn_ = new FinnButton(
             QStringLiteral("Find"), FinnButton::Variant::Secondary,
             QStringLiteral("search-01"), content);
+        find_btn_->setAccessibleName(QStringLiteral("Find in note"));
         find_btn_->setCheckable(true);
         find_btn_->setFixedHeight(28);
 
@@ -271,21 +318,26 @@ private:
         auto* find_row = new QHBoxLayout(find_bar_);
         find_row->setContentsMargins(10, 6, 10, 6);
         find_row->setSpacing(6);
-        find_input_ = new FinnSearchField(QStringLiteral("Find in current note..."), find_bar_);
+        find_input_ = new FinnSearchField(QStringLiteral("Find in note"), find_bar_);
+        find_input_->setAccessibleName(QStringLiteral("Find in note query"));
         find_input_->setFixedHeight(28);
         find_input_->setPillMode(true);
         auto* prev_btn = new FinnButton(
             QStringLiteral("Prev"), FinnButton::Variant::Secondary, {}, find_bar_);
+        prev_btn->setAccessibleName(QStringLiteral("Previous match"));
         prev_btn->setFixedHeight(26);
         auto* next_btn = new FinnButton(
             QStringLiteral("Next"), FinnButton::Variant::Secondary, {}, find_bar_);
+        next_btn->setAccessibleName(QStringLiteral("Next match"));
         next_btn->setFixedHeight(26);
         auto* mono_btn = new FinnButton(
             QStringLiteral("Mono"), FinnButton::Variant::Ghost, {}, find_bar_);
+        mono_btn->setAccessibleName(QStringLiteral("Toggle monospace font"));
         mono_btn->setCheckable(true);
         mono_btn->setFixedHeight(26);
         auto* hide_find_btn = new FinnButton(
             QStringLiteral("Done"), FinnButton::Variant::Ghost, {}, find_bar_);
+        hide_find_btn->setAccessibleName(QStringLiteral("Close find bar"));
         hide_find_btn->setFixedHeight(26);
 
         find_row->addWidget(find_input_, 1);
@@ -303,11 +355,13 @@ private:
 
         editor_split_ = new QSplitter(Qt::Horizontal, editor_card_);
         editor_ = new QPlainTextEdit(editor_split_);
+        editor_->setAccessibleName(QStringLiteral("Note editor"));
         editor_->setFrameShape(QFrame::NoFrame);
         editor_->setTabStopDistance(28.0);
-        editor_->setPlaceholderText(QStringLiteral("Start writing in Markdown or plain text..."));
+        editor_->setPlaceholderText(QStringLiteral("Start writing"));
 
         preview_ = new QTextBrowser(editor_split_);
+        preview_->setAccessibleName(QStringLiteral("Markdown preview"));
         preview_->setFrameShape(QFrame::NoFrame);
         preview_->setOpenExternalLinks(true);
         preview_->hide();
@@ -388,7 +442,7 @@ private:
         preview_->setFont(finn_font(11.0, QFont::Normal));
 
         const QString sel_css = rgba_css(t.tile_on);
-        const QString sb_css = scrollbar_qss(t);
+        const QString sb_css = finn::ui::scrollbar_qss(t);
 
         editor_->setStyleSheet(
             QStringLiteral(
@@ -403,8 +457,8 @@ private:
                 "selection-color: %2; }%5")
                 .arg(t.surface_canvas.name(), t.ink.name(), rgba_css(t.hair), sel_css, sb_css));
 
-        const QString doc_dim = t.dark ? t.dim.name() : QStringLiteral("#666B75");
-        const QString doc_rule = t.dark ? QStringLiteral("#353B48") : QStringLiteral("#E5E7EB");
+        const QString doc_dim = t.dim.name();
+        const QString doc_rule = rgba_css(t.hair);
         preview_->document()->setDefaultStyleSheet(
             QStringLiteral(
                 "body { color: %1; }"
@@ -430,8 +484,10 @@ private:
 
         const QString query =
             sidebar_search_ ? sidebar_search_->text().trimmed() : QString();
-        const QColor amber_badge(0xF5, 0x9E, 0x0B);   // #F59E0B for active/modified
-        const QColor indigo_badge(0x58, 0x56, 0xD6);  // #5856D6 for saved markdown/text notes
+        const QColor accent_light = finn::ui::nav_accent_light();
+        const QColor accent_dark = finn::ui::nav_accent_dark();
+        const QColor neutral_light = finn::ui::nav_neutral_light();
+        const QColor neutral_dark = finn::ui::nav_neutral_dark();
 
         // 1. Open documents in memory
         QStringList open_paths;
@@ -445,9 +501,10 @@ private:
             }
             const bool is_active = (static_cast<int>(i) == current_idx_);
             auto* nav = new FinnNavItem(QStringLiteral("notes"), d.title, sidebar_);
-            nav->setBadgeColor((is_active || d.dirty) ? amber_badge : indigo_badge);
+            nav->setBadgeColor(is_active ? accent_light : neutral_light,
+                               is_active ? accent_dark : neutral_dark);
             if (d.dirty) {
-                nav->setBadgeText(QStringLiteral("•"));
+                nav->setBadgeText(QStringLiteral("edited"));
             }
             nav->setSelected(is_active);
             const int tab_idx = static_cast<int>(i);
@@ -470,7 +527,7 @@ private:
                 continue;
             }
             auto* nav = new FinnNavItem(QStringLiteral("notes"), fi.fileName(), sidebar_);
-            nav->setBadgeColor(indigo_badge);
+            nav->setBadgeColor(neutral_light, neutral_dark);
             nav->setToolTip(abs);
             connect(nav, &QAbstractButton::clicked, this,
                     [this, abs]() { openFile(abs); });
@@ -605,12 +662,12 @@ private:
         syncCurrentDocFromEditor();
         auto& doc = docs_[static_cast<std::size_t>(current_idx_)];
         if (doc.dirty) {
-            const bool save_it = FinnDialog::confirm(
+            const UnsavedChoice choice = ask_unsaved_choice(
                 this,
                 QStringLiteral("Unsaved note"),
-                QStringLiteral("Save \"%1\" before closing this note?").arg(doc.title),
-                QStringLiteral("Save"));
-            if (save_it && !saveCurrent(false)) return;
+                QStringLiteral("Save \"%1\" before closing this note?").arg(doc.title));
+            if (choice == UnsavedChoice::Cancel) return;
+            if (choice == UnsavedChoice::Save && !saveCurrent(false)) return;
         }
         docs_.erase(docs_.begin() + current_idx_);
         if (docs_.empty()) {

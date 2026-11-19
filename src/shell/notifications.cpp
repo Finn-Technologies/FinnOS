@@ -8,6 +8,7 @@
 #include <QEvent>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
@@ -18,7 +19,10 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <utility>
+
+#include "shell/shell_layout.hpp"
 
 namespace finn::shell {
 namespace {
@@ -80,7 +84,7 @@ protected:
         }
 
         p.setPen(Qt::NoPen);
-        p.setBrush(t.dark ? QColor(255, 255, 255, 36) : QColor(0, 0, 0, 22));
+        p.setBrush(shell_hover_fill(t));
         p.drawRoundedRect(QRectF(0.0, 0.0, 40.0, 40.0), 10.0, 10.0);
 
         const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
@@ -99,6 +103,8 @@ public:
     explicit NotificationDismissButton(QWidget* parent) : QAbstractButton(parent) {
         setFixedSize(28, 28);
         setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+        setAccessibleName(QStringLiteral("Dismiss notification"));
         setToolTip(QStringLiteral("Dismiss"));
     }
 
@@ -115,21 +121,36 @@ protected:
         QAbstractButton::leaveEvent(event);
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
+            event->key() == Qt::Key_Space) {
+            click();
+            event->accept();
+            return;
+        }
+        QAbstractButton::keyPressEvent(event);
+    }
+
     void paintEvent(QPaintEvent*) override {
         const auto& t = finn::ui::FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-        QColor fill = t.dark ? QColor(255, 255, 255, 34) : QColor(0, 0, 0, 20);
+        QColor fill = shell_hover_fill(t);
         if (isDown()) {
-            fill = t.dark ? QColor(255, 255, 255, 64) : QColor(0, 0, 0, 42);
+            fill = shell_pressed_fill(t);
         } else if (hovered_) {
-            fill = t.dark ? QColor(255, 255, 255, 48) : QColor(0, 0, 0, 32);
+            fill = with_alpha(t.ink, t.dark ? 48 : 32);
         }
         p.setPen(Qt::NoPen);
         p.setBrush(fill);
-        p.drawRoundedRect(QRectF(0.0, 0.0, 28.0, 28.0), 8.0, 8.0);
+        p.drawRoundedRect(QRectF(0.0, 0.0, 28.0, 28.0), finn::ui::radii::r_md,
+                          finn::ui::radii::r_md);
+        if (hasFocus()) {
+            draw_focus_ring(p, QRectF(0.0, 0.0, 28.0, 28.0),
+                            finn::ui::radii::r_md, t);
+        }
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
         const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
@@ -145,13 +166,22 @@ private:
 
 class NotificationCard final : public QWidget {
 public:
-    NotificationCard(const NotificationEntry& n,
-                     std::function<void()> on_dismiss,
-                     QWidget* parent)
+    NotificationCard(const NotificationEntry& n, int card_width,
+                     std::function<void()> on_dismiss, QWidget* parent)
         : QWidget(parent) {
         setAttribute(Qt::WA_TranslucentBackground);
-        setFixedWidth(340);
+        setFixedWidth(card_width);
         setMinimumHeight(76);
+        setAccessibleName(n.app_name.isEmpty()
+                              ? n.summary
+                              : QStringLiteral("%1: %2").arg(n.app_name, n.summary));
+        enter_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kSnappy,
+            finn::ui::reduced_motion() ? 1.0 : 0.0, [this](double v) {
+                enter_progress_ = std::clamp(v, 0.0, 1.0);
+                update();
+            });
+        enter_anim_->retarget(1.0);
 
         auto* row = new QHBoxLayout(this);
         row->setContentsMargins(12, 12, 12, 12);
@@ -199,14 +229,10 @@ public:
     }
 
     void applyTheme() {
-        const bool dark = finn::ui::FinnThemeManager::instance().isDark();
-        const QColor ink = dark ? QColor(255, 255, 255) : QColor(0, 0, 0);
-        const QColor dim =
-            dark ? QColor(255, 255, 255, 0xB2) : QColor(0, 0, 0, 0xB2);
-
-        setLabelStyle(title_lbl_, 15, ink);
-        setLabelStyle(body_lbl_, 13, dim);
-        setLabelStyle(time_lbl_, 12, dim);
+        const auto& t = finn::ui::FinnThemeManager::instance().tokens();
+        setLabelStyle(title_lbl_, 15, t.ink);
+        setLabelStyle(body_lbl_, 13, t.dim);
+        setLabelStyle(time_lbl_, 12, t.dim);
         if (icon_tile_) icon_tile_->update();
         if (close_btn_) close_btn_->update();
         update();
@@ -214,17 +240,16 @@ public:
 
 protected:
     void paintEvent(QPaintEvent*) override {
-        const bool dark = finn::ui::FinnThemeManager::instance().isDark();
+        const auto& t = finn::ui::FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+        p.setOpacity(enter_progress_);
+        p.translate(0.0, (1.0 - enter_progress_) * -8.0);
 
         const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        p.setBrush(dark ? QColor(0x28, 0x2C, 0x37, 0xD9)
-                        : QColor(255, 255, 255, 0xCC));
-        p.setPen(QPen(dark ? QColor(255, 255, 255, 28)
-                           : QColor(255, 255, 255, 96),
-                      1.0));
-        p.drawRoundedRect(r, 20.0, 20.0);
+        p.setBrush(shell_glass_fill(t));
+        p.setPen(QPen(t.hair, 1.0));
+        p.drawRoundedRect(r, finn::ui::radii::r_xl, finn::ui::radii::r_xl);
     }
 
 private:
@@ -233,6 +258,8 @@ private:
     QLabel* body_lbl_ = nullptr;
     QLabel* time_lbl_ = nullptr;
     NotificationDismissButton* close_btn_ = nullptr;
+    std::unique_ptr<ShellSpringDriver> enter_anim_;
+    double enter_progress_ = 1.0;
 };
 
 }  // namespace
@@ -242,11 +269,10 @@ public:
     explicit NotificationOverlay(NotificationServer* server)
         : FinnLayerWindow(Layer::Overlay, QStringLiteral("finn-notifications")),
           server_(server) {
-        setAnchors(AnchorTop | AnchorRight);
         setKeyboardMode(KeyboardMode::None);
         setExclusiveZone(-1);
-        setLayerMargins(QMargins(0, 14, 14, 0));
-        setDesiredSize(QSize(340, 10));
+        setAccessibleName(QStringLiteral("Notifications"));
+        applyResponsiveGeometry(10);
 
         layout_ = new QVBoxLayout(this);
         layout_->setContentsMargins(0, 0, 0, 0);
@@ -270,11 +296,13 @@ public:
             return;
         }
 
+        const int card_w = popupWidth();
         int total_h = 0;
         for (int i = 0; i < popups.size(); ++i) {
             const auto& n = popups[i];
             auto* card = new NotificationCard(
-                n, [this, id = n.id]() { server_->dismissPopup(id); }, this);
+                n, card_w, [this, id = n.id]() { server_->dismissPopup(id); },
+                this);
             cards_.push_back(card);
             layout_->addWidget(card);
             const int card_h = std::max(76, card->sizeHint().height());
@@ -283,11 +311,34 @@ public:
         }
 
         const int target_h = std::max(76, total_h);
-        setDesiredSize(QSize(340, target_h));
-        resize(340, target_h);
+        applyResponsiveGeometry(target_h);
         show();
         layout_->activate();
         QTimer::singleShot(0, this, &NotificationOverlay::updateInputMask);
+    }
+
+private:
+    int popupWidth() const {
+        const FormFactor ff = current_form_factor();
+        const int sw = primary_screen_size().width();
+        if (ff == FormFactor::Phone) {
+            return std::max(260, std::min(400, sw - 24));
+        }
+        return std::min(340, std::max(260, sw - 28));
+    }
+
+    void applyResponsiveGeometry(int target_h) {
+        const FormFactor ff = current_form_factor();
+        const int card_w = popupWidth();
+        if (ff == FormFactor::Phone) {
+            setAnchors(AnchorTop);
+            setLayerMargins(QMargins(12, 44, 12, 0));
+        } else {
+            setAnchors(AnchorTop | AnchorRight);
+            setLayerMargins(QMargins(0, 14, 14, 0));
+        }
+        setDesiredSize(QSize(card_w, target_h));
+        resize(card_w, target_h);
     }
 
 protected:
@@ -377,12 +428,30 @@ quint32 NotificationServer::pushNotification(const QString& app_name,
     overlay_->syncPopups(active_popups_);
     emit historyChanged();
 
-    QTimer::singleShot(entry.timeout_ms, this,
-                       [this, id]() { dismissPopup(id); });
+    cancelPopupTimer(id);
+    auto* timer = new QTimer(this);
+    timer->setSingleShot(true);
+    connect(timer, &QTimer::timeout, this, [this, id]() {
+        active_timers_.remove(id);
+        dismissPopup(id);
+    });
+    active_timers_.insert(id, timer);
+    timer->start(entry.timeout_ms);
     return id;
 }
 
+void NotificationServer::cancelPopupTimer(quint32 id) {
+    if (auto it = active_timers_.find(id); it != active_timers_.end()) {
+        if (QTimer* t = it.value()) {
+            t->stop();
+            t->deleteLater();
+        }
+        active_timers_.erase(it);
+    }
+}
+
 void NotificationServer::dismissPopup(quint32 id) {
+    cancelPopupTimer(id);
     const auto old_n = active_popups_.size();
     active_popups_.erase(
         std::remove_if(active_popups_.begin(), active_popups_.end(),
@@ -403,6 +472,13 @@ void NotificationServer::removeFromHistory(quint32 id) {
 }
 
 void NotificationServer::clearHistory() {
+    for (QTimer* t : active_timers_) {
+        if (t) {
+            t->stop();
+            t->deleteLater();
+        }
+    }
+    active_timers_.clear();
     active_popups_.clear();
     history_.clear();
     overlay_->syncPopups(active_popups_);

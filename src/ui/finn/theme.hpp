@@ -11,6 +11,7 @@
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 #include "ui/finn/tokens.hpp"
 
@@ -19,6 +20,13 @@ class QPainter;
 class QTimer;
 
 namespace finn::ui {
+
+struct AvatarPreset {
+    QString id;
+    QString name;
+    QColor top_color;
+    QColor bottom_color;
+};
 
 class FinnThemeManager final : public QObject {
     Q_OBJECT
@@ -32,8 +40,13 @@ public:
     bool isDark() const { return tokens_.dark; }
     bool reducedMotion() const { return tokens_.reduced_motion; }
     QString wallpaperPath() const { return QString::fromStdString(settings_.wallpaper); }
+    QString lockWallpaperPath() const { return QString::fromStdString(settings_.lock_wallpaper); }
+    QString avatarColor() const { return QString::fromStdString(settings_.avatar_color); }
+    static const QVector<AvatarPreset>& avatarPresets();
     QStringList dockPins() const;
 
+    QPixmap avatarPixmap(const QSize& logical_size, qreal dpr = 1.0,
+                         const QString& color_override = {}) const;
     QPixmap iconPixmap(const QString& name_or_path, const QSize& logical_size,
                        const QColor& tint = QColor(), qreal dpr = 1.0) const;
     QPixmap pointerPixmap(const QString& name, int size = 28, qreal dpr = 1.0) const;
@@ -54,7 +67,9 @@ public:
     bool setAutoLockMinutes(int minutes);
     bool setLockOnSleep(bool enabled);
     bool setAccent(const QString& hex_or_empty);
+    bool setAvatarColor(const QString& color_id);
     bool setWallpaper(const QString& path);
+    bool setLockWallpaper(const QString& path);
     bool setDockPins(const QStringList& pins);
     bool setScale(double scale);
     void reload();

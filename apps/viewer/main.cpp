@@ -5,6 +5,7 @@
 // adaptive checkerboard.
 
 #include <FinnSDK/FinnSDK.hpp>
+#include "common/paths.hpp"
 
 #include <QDir>
 #include <QFileDialog>
@@ -33,26 +34,6 @@
 namespace {
 
 using namespace finn::ui;
-
-QString rgba_css(const QColor& c) {
-    return QStringLiteral("rgba(%1, %2, %3, %4)")
-        .arg(c.red())
-        .arg(c.green())
-        .arg(c.blue())
-        .arg(c.alpha());
-}
-
-QString scrollbar_qss(const FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
-}
 
 void apply_header_16px_regular(FinnLabel* lbl) {
     if (!lbl) return;
@@ -227,12 +208,14 @@ protected:
                 // Adaptive checkerboard: for SVGs (which often use dark strokes) or
                 // transparent PNGs in Dark Mode, use a crisp contrasting two-tone grid
                 // so dark icons are 100% visible in Dark Mode.
+                const QColor light_c1 = QColor::fromRgba(colors::surface_canvas_light);
+                const QColor light_c2 = QColor::fromRgba(colors::tile_light);
                 const QColor c1 = svg_
-                                      ? (t.dark ? QColor(206, 212, 222) : QColor(235, 238, 244))
-                                      : (t.dark ? QColor(46, 52, 64) : QColor(235, 238, 244));
+                                      ? light_c1
+                                      : (t.dark ? t.surface_canvas : light_c1);
                 const QColor c2 = svg_
-                                      ? (t.dark ? QColor(226, 231, 239) : QColor(250, 251, 253))
-                                      : (t.dark ? QColor(62, 70, 86) : QColor(250, 251, 253));
+                                      ? light_c2
+                                      : (t.dark ? t.surface_input : light_c2);
                 const int x0 = static_cast<int>(pad_target.left());
                 const int y0 = static_cast<int>(pad_target.top());
                 for (int y = y0; y < static_cast<int>(pad_target.bottom()) + step; y += step) {
@@ -386,21 +369,27 @@ private:
         side_root->addWidget(hdr_lbl);
 
         sidebar_search_ = new FinnSearchField(QStringLiteral("Filter images"), sidebar_);
+        sidebar_search_->setAccessibleName(QStringLiteral("Filter images in folder"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
         connect(sidebar_search_, &FinnSearchField::textChanged,
                 this, [this](const QString&) { rebuildSidebarImages(); });
         side_root->addWidget(sidebar_search_);
 
-        // Quick preset items with 26x26 circular colored badges
+        // Presets use one accent for the current folder and one neutral for
+        // the rest; the icon glyph names the kind of image.
         auto* presets_col = new QVBoxLayout();
         presets_col->setContentsMargins(0, 0, 0, 2);
         presets_col->setSpacing(4);
 
         auto add_preset = [&](const QString& id, const QString& icon,
-                              const QString& label, const QColor& badge) {
+                              const QString& label, bool accent = false) {
             auto* item = new FinnNavItem(icon, label, sidebar_);
-            item->setBadgeColor(badge);
+            item->setAccessibleName(label);
+            item->setBadgeColor(accent ? finn::ui::nav_accent_light()
+                                       : finn::ui::nav_neutral_light(),
+                                accent ? finn::ui::nav_accent_dark()
+                                       : finn::ui::nav_neutral_dark());
             presets_col->addWidget(item);
             preset_items_.push_back({id, item});
             connect(item, &QAbstractButton::clicked, this, [this, id]() {
@@ -413,17 +402,17 @@ private:
         };
 
         add_preset(QStringLiteral("wallpapers"), QStringLiteral("display"),
-                   QStringLiteral("Wallpapers"), QColor(0x00, 0x7B, 0xFF));
+                   QStringLiteral("Wallpapers"), true);
         add_preset(QStringLiteral("icons"), QStringLiteral("paint-brush"),
-                   QStringLiteral("System Icons"), QColor(0x58, 0x56, 0xD6));
+                   QStringLiteral("System Icons"));
         add_preset(QStringLiteral("pointers"), QStringLiteral("cursor"),
-                   QStringLiteral("Pointers"), QColor(0x22, 0xC5, 0x5E));
+                   QStringLiteral("Pointers"));
         add_preset(QStringLiteral("open"), QStringLiteral("folder"),
-                   QStringLiteral("Open File..."), QColor(0xF5, 0x9E, 0x0B));
+                   QStringLiteral("Open File"));
         side_root->addLayout(presets_col);
 
         folder_caption_ = new FinnLabel(
-            QStringLiteral("IMAGES IN FOLDER"),
+            QStringLiteral("Images in folder"),
             FinnLabel::Role::Caption, FinnLabel::Tone::Mute, sidebar_);
         folder_caption_->setContentsMargins(6, 4, 6, 0);
         side_root->addWidget(folder_caption_);
@@ -448,7 +437,7 @@ private:
             const auto& t = FinnThemeManager::instance().tokens();
             side_scroll_->setStyleSheet(
                 QStringLiteral("QScrollArea { background: transparent; border: none; }%1")
-                    .arg(scrollbar_qss(t)));
+                    .arg(finn::ui::scrollbar_qss(t)));
         };
         sync_scroll_qss();
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
@@ -477,27 +466,33 @@ private:
 
         zoom_out_btn_ = new FinnButton(
             QStringLiteral("Zoom -"), FinnButton::Variant::Secondary, {}, content);
+        zoom_out_btn_->setAccessibleName(QStringLiteral("Zoom out"));
         zoom_out_btn_->setFixedHeight(28);
 
         actual_btn_ = new FinnButton(
             QStringLiteral("100%"), FinnButton::Variant::Secondary, {}, content);
+        actual_btn_->setAccessibleName(QStringLiteral("Actual size 100 percent"));
         actual_btn_->setFixedHeight(28);
 
         fit_btn_ = new FinnButton(
             QStringLiteral("Fit"), FinnButton::Variant::Secondary, {}, content);
+        fit_btn_->setAccessibleName(QStringLiteral("Fit image to window"));
         fit_btn_->setFixedHeight(28);
 
         zoom_in_btn_ = new FinnButton(
             QStringLiteral("Zoom +"), FinnButton::Variant::Secondary, {}, content);
+        zoom_in_btn_->setAccessibleName(QStringLiteral("Zoom in"));
         zoom_in_btn_->setFixedHeight(28);
 
         rotate_btn_ = new FinnButton(
             QStringLiteral("Rotate"), FinnButton::Variant::Secondary,
             QStringLiteral("refresh"), content);
+        rotate_btn_->setAccessibleName(QStringLiteral("Rotate 90 degrees"));
         rotate_btn_->setFixedHeight(28);
 
         checker_btn_ = new FinnButton(
             QStringLiteral("Grid"), FinnButton::Variant::Secondary, {}, content);
+        checker_btn_->setAccessibleName(QStringLiteral("Toggle transparency checkerboard"));
         checker_btn_->setCheckable(true);
         checker_btn_->setChecked(true);
         checker_btn_->setFixedHeight(28);
@@ -527,6 +522,7 @@ private:
         empty_lay->addStretch(1);
 
         canvas_ = new ImageCanvas(stack_);
+        canvas_->setAccessibleName(QStringLiteral("Image viewport"));
 
         stack_->addWidget(empty_card);
         stack_->addWidget(canvas_);
@@ -571,18 +567,18 @@ private:
         QString dir_path;
         if (preset_id == QLatin1String("wallpapers")) {
             dir_path = resolve_preset_dir({
-                QStringLiteral("/usr/share/finn/wallpaper"),
+                QString::fromLatin1(finn::kWallpaperDir),
                 QStringLiteral("assets/wallpaper"),
             });
         } else if (preset_id == QLatin1String("icons")) {
             dir_path = resolve_preset_dir({
-                QStringLiteral("/usr/share/finn/icons"),
+                QString::fromLatin1(finn::kIconDir),
                 QStringLiteral("assets/icons/apps"),
                 QStringLiteral("assets/icons/shell"),
             });
         } else if (preset_id == QLatin1String("pointers")) {
             dir_path = resolve_preset_dir({
-                QStringLiteral("/usr/share/finn/pointers"),
+                QString::fromLatin1(finn::kPointersDir),
                 QStringLiteral("assets/pointers"),
             });
         }
@@ -664,9 +660,6 @@ private:
         }
         const QString q =
             sidebar_search_ ? sidebar_search_->text().trimmed() : QString();
-        const QColor active_badge(0x00, 0x7B, 0xFF);
-        const QColor image_badge(0x0E, 0xA5, 0xE9);
-
         for (const QString& abs : siblings_) {
             const QFileInfo fi(abs);
             if (!q.isEmpty() && !fi.fileName().contains(q, Qt::CaseInsensitive)) {
@@ -678,7 +671,10 @@ private:
                                     ? QStringLiteral("paint-brush")
                                     : QStringLiteral("display");
             auto* item = new FinnNavItem(ico, fi.fileName(), sidebar_);
-            item->setBadgeColor(is_cur ? active_badge : image_badge);
+            item->setBadgeColor(is_cur ? finn::ui::nav_accent_light()
+                                       : finn::ui::nav_neutral_light(),
+                                is_cur ? finn::ui::nav_accent_dark()
+                                       : finn::ui::nav_neutral_dark());
             item->setSelected(is_cur);
             item->setToolTip(abs);
             connect(item, &QAbstractButton::clicked, this,

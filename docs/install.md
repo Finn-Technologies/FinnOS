@@ -1,12 +1,12 @@
 # Install
 
-Arch Linux provides the kernel, firmware, systemd, pacman, mesa, libdrm,
-libinput, Wayland, and Qt6. FinnOS builds the compositor, session, Qt6
+The base Linux system provides the kernel, firmware, systemd, pacman, mesa,
+libdrm, libinput, Wayland, and Qt6. FinnOS builds the compositor, session, Qt6
 platform integration, shell, SDK, and native applications on top.
 
 ## On a machine
 
-`base/setup.sh` configures an Arch Linux installation for FinnOS:
+`base/setup.sh` configures a pacman-based root filesystem for FinnOS:
 
 ```sh
 sudo base/setup.sh aarch64

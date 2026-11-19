@@ -1,0 +1,32 @@
+# Credits
+
+FinnOS is built by the FinnOS contributors ([LICENSE](LICENSE)) on top of open-source
+software, protocols, fonts, and icons. For full legal license texts and
+notices, see [NOTICE](NOTICE).
+
+## Typography & Icons
+- **Fixel Display** — MacPaw & AlfaBravo (`SIL Open Font License 1.1`)
+- **HugeIcons** — Hugeicons (`MIT`, source for `display.svg` and `moon.svg`)
+- **DejaVu** and **Google Noto** (`ttf-dejavu`, `noto-fonts`, `noto-fonts-cjk`, `noto-fonts-emoji`) — fallback and multi-script system fonts
+
+## Display, Compositor & UI Stack
+- **Wayland** & **wayland-protocols** — Freedesktop / Wayland project
+- **wlroots** — wlroots contributors (the compositor foundation for `finn-comp`)
+- **Qt 6** — The Qt Company and Qt contributors (`QtCore`, `QtGui`, `QtWidgets`, `QtSvg`, `QtDBus`, `QtNetwork`, `QtWebEngine`)
+- **LayerShellQt** — KDE contributors
+- **Mesa**, **libdrm**, **libinput**, **seatd**, **libxkbcommon**, **pixman**, **Xwayland**
+- **FreeType**, **Fontconfig**, **libwebp**
+
+## Base System, Kernel & Services
+- **Linux kernel** — Linus Torvalds and kernel contributors
+- **systemd** — systemd contributors
+- **Arch Linux** & **Arch Linux ARM** — base packages, `pacman`, `archiso`, and `arch-install-scripts`
+- **Plymouth** — boot splash infrastructure
+- **GRUB** & **Syslinux** — bootloaders
+- **PipeWire** & **WirePlumber** — audio stack
+- **NetworkManager**, **wpa_supplicant**, **BlueZ**, **UPower** — connectivity & hardware services
+- **Flatpak**, **xdg-desktop-portal**, **xdg-desktop-portal-wlr** — Linux app compatibility
+- **Wine**, **Winetricks**, **Wine Mono**, **Wine Gecko** — Windows app compatibility (`x86_64`)
+
+## Development & VM Tooling
+- **Lima** & **QEMU** — Apple Silicon `aarch64` development VM environment

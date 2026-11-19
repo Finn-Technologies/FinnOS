@@ -1,0 +1,2 @@
+# FinnOS revoked signing key fingerprints for `pacman-key --populate finnos`.
+# One 40-hex-char fingerprint per line.

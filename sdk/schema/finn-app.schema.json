@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://finnos.org/schemas/finn-app.v1.json",
+  "title": "FinnOS Application Manifest",
+  "description": "Manifest metadata for native FinnSDK applications packaged as .finnapp archives. Note: in FinnOS v1 there is no finnd or per-app OS sandbox; declared permissions are advisory metadata only and are not enforced at runtime.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "name",
+    "version",
+    "summary",
+    "executable"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Manifest schema version. Must be 1."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}(\\.[a-z][a-z0-9-]{0,63})*$",
+      "minLength": 2,
+      "maxLength": 128,
+      "description": "Lowercase hyphenated app id (e.g. 'counter' or 'com.example.counter'). Must match X-Finn-Id and FinnApplication app_id."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "Human-readable display name shown in Home Menu, Spotlight Search, and Finn Store."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+      "description": "Semantic Version (SemVer 2.0.0), e.g. '0.1.0' or '1.2.0-rc.1'."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "One-line summary shown in catalogues and app listings."
+    },
+    "executable": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^/\\0][^\\0]*$",
+      "description": "Relative path or binary name produced by the CMake build (e.g. 'finn-counter' or 'build/finn-counter'). Must not start with '/' or contain '..'."
+    },
+    "icon": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "default": "native-apps",
+      "description": "Built-in icon name (resolved under /usr/share/finn/icons) or relative path to an SVG/PNG asset inside the project."
+    },
+    "desktop_entry": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^/\\0][^\\0]*\\.desktop$",
+      "description": "Optional relative path to the Freedesktop .desktop file (e.g. 'finn-app.desktop')."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "System",
+        "Developer",
+        "Productivity",
+        "Media",
+        "Utility",
+        "Network",
+        "Graphics",
+        "Education",
+        "Games"
+      ],
+      "default": "Utility",
+      "description": "Primary launcher category."
+    },
+    "sdk_min_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "default": "0.2.0",
+      "description": "Minimum FinnSDK (libfinnui) version required by this application."
+    },
+    "arch": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "x86_64",
+          "aarch64"
+        ]
+      },
+      "default": [
+        "x86_64",
+        "aarch64"
+      ],
+      "description": "Supported CPU architectures."
+    },
+    "form_factors": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "desktop",
+          "tablet",
+          "phone"
+        ]
+      },
+      "default": [
+        "desktop"
+      ],
+      "description": "Target UI form factors tested by the developer. Note: phone/tablet shell & touch support are not yet implemented in FinnOS."
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "filesystem:home-read",
+          "filesystem:home-write",
+          "network:internet",
+          "session:launch",
+          "audio:playback",
+          "audio:record",
+          "bluetooth",
+          "notifications"
+        ]
+      },
+      "default": [],
+      "description": "Declared capability intents. IMPORTANT: In FinnOS v1, native apps run directly as user 'finn' without an OS sandbox or finnd; permissions are declared for documentation and future enforcement only."
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "SPDX license identifier or expression (e.g. 'MIT', 'Apache-2.0', 'GPL-3.0-or-later')."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "Publisher or maintainer name (and optional contact)."
+    },
+    "homepage": {
+      "type": "string",
+      "pattern": "^https?://[^\\s]+$",
+      "description": "Project or support URL."
+    },
+    "assets": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[^/\\0][^\\0]*$"
+      },
+      "default": [],
+      "description": "Optional list of additional relative asset paths to include in the .finnapp payload under share/finn/apps/<id>/."
+    },
+    "package": {
+      "type": "object",
+      "description": "Populated automatically by 'finn-sdk package' inside the packaged manifest.json.",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "arch",
+        "payload",
+        "payload_sha256",
+        "payload_size",
+        "signed",
+        "built_at_epoch"
+      ],
+      "properties": {
+        "format": {
+          "type": "string",
+          "const": "finnapp-v1"
+        },
+        "arch": {
+          "type": "string",
+          "enum": [
+            "x86_64",
+            "aarch64"
+          ]
+        },
+        "payload": {
+          "type": "string",
+          "const": "payload.tar.zst"
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "payload_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "signed": {
+          "type": "boolean"
+        },
+        "signature_alg": {
+          "type": "string",
+          "enum": [
+            "ed25519",
+            "none"
+          ]
+        },
+        "built_at_epoch": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

@@ -14,7 +14,7 @@ fits the shape of what is there; it does not need to be the largest change.
 
 ## Set up
 
-The build machine is Arch or the dev VM. The host can be the editor.
+The build machine is a pacman-based Linux host (such as the dev VM). The host can be the editor.
 
 ```sh
 sudo pacman -S base-devel pkgconf wlroots0.20 libsystemd wayland \

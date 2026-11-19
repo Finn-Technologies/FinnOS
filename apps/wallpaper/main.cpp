@@ -3,6 +3,7 @@
 // stealing pointer input and responds live to dark/light & wallpaper changes.
 
 #include <FinnSDK/FinnSDK.hpp>
+#include "common/paths.hpp"
 
 #include <QFileInfo>
 #include <QImage>
@@ -64,7 +65,9 @@ protected:
         }
         // Subtle dark-mode scrim preserves contrast behind light dock ink without dimming light mode.
         if (t.dark) {
-            p.fillRect(rect(), QColor(8, 12, 20, 70));
+            QColor scrim = t.bone;
+            scrim.setAlpha(70);
+            p.fillRect(rect(), scrim);
         }
     }
 
@@ -72,11 +75,12 @@ private:
     QString resolveWallpaperPath() const {
         const QString custom =
             finn::ui::FinnThemeManager::instance().wallpaperPath();
+        const QString wp_dir = QString::fromLatin1(finn::kWallpaperDir);
         const QStringList candidates = {
             custom,
-            QStringLiteral("/usr/share/finn/wallpaper/default.webp"),
+            wp_dir + QStringLiteral("/default.webp"),
             QStringLiteral("assets/wallpaper/default.webp"),
-            QStringLiteral("/usr/share/finn/wallpaper/Desktop.jpg"),
+            wp_dir + QStringLiteral("/Desktop.jpg"),
             QStringLiteral("assets/figma/wallpaper/Desktop.jpg"),
         };
         for (const QString& cand : candidates) {
@@ -146,22 +150,18 @@ private:
             update();
             return;
         }
-        // Clear the 1x1 input mask briefly so Qt's dirty-region tracking does
-        // not clip update()/repaint() to (0,0,1,1) when flushing the Wayland frame.
+        // Temporarily clear the 1x1 mask across synchronous repaint so Qt's
+        // dirty-region tracking flushes the full surface, then immediately
+        // restore the empty input region without leaving an unmasked window.
         clearMask();
-        update();
         repaint();
-        const int gen = ++mask_gen_;
-        QTimer::singleShot(50, this, [this, gen]() {
-            if (gen == mask_gen_) setInputRegions({});
-        });
+        setInputRegions({});
     }
 
     QString loaded_path_;
     QImage source_img_;
     QPixmap scaled_cache_;
     bool warned_ = false;
-    int mask_gen_ = 0;
 };
 
 }  // namespace

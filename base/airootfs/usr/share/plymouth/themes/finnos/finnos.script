@@ -1,0 +1,138 @@
+# The FinnOS boot splash, used on every NORMAL boot.
+#
+# Plymouth starts in the initramfs, before the real root is mounted. The mark
+# is therefore on the framebuffer before the text console can draw its
+# blinking underscore, and it stays until the compositor takes the display.
+# The ribbon "hi." animation is NOT here: that belongs to first-time setup
+# (finn-oobe), never to an ordinary boot.
+
+# Pure black field matching macOS boot, with pure white Finn mark and pill bar.
+Window.SetBackgroundTopColor(0.0, 0.0, 0.0);
+Window.SetBackgroundBottomColor(0.0, 0.0, 0.0);
+
+mark.source = Image("mark.png");
+mark.image = mark.source;
+mark.sprite = Sprite(mark.image);
+mark.sprite.SetZ(2);
+
+# 3-part pill fill (left cap, 1px stretchable middle, right cap) so both ends
+# remain true semicircles at every fill width.
+bar.track = Image("bar-track.png");
+bar.cap_l = Image("bar-cap-l.png");
+bar.cap_r = Image("bar-cap-r.png");
+bar.fill_mid_source = Image("bar-fill.png");
+
+bar.track_sprite = Sprite(bar.track);
+bar.track_sprite.SetZ(1);
+
+bar.cap_l_sprite = Sprite(bar.cap_l);
+bar.cap_l_sprite.SetZ(2);
+bar.cap_l_sprite.SetOpacity(0);
+
+bar.fill_mid_sprite = Sprite(bar.fill_mid_source);
+bar.fill_mid_sprite.SetZ(2);
+bar.fill_mid_sprite.SetOpacity(0);
+
+bar.cap_r_sprite = Sprite(bar.cap_r);
+bar.cap_r_sprite.SetZ(2);
+bar.cap_r_sprite.SetOpacity(0);
+
+global.real_progress = 0.0;
+global.has_progress = 0;
+global.frame = 0;
+global.last_w = -1;
+global.last_h = -1;
+global.bar_x = 0;
+global.bar_y = 0;
+global.last_mid_w = -1;
+
+fun layout() {
+    w = Window.GetWidth();
+    h = Window.GetHeight();
+    if (w == global.last_w && h == global.last_h) return;
+    global.last_w = w;
+    global.last_h = h;
+
+    # Use mark.source 1:1 (pre-rendered with Cairo/rsvg-convert) so Plymouth's
+    # software scaler never introduces jagged edges.
+    mark.image = mark.source;
+    mark_size = mark.image.GetWidth();
+    mark.sprite.SetImage(mark.image);
+
+    cx = w / 2;
+    cy = h / 2;
+    mark_x = cx - mark_size / 2;
+    mark_y = cy - mark_size / 2;
+
+    mark.sprite.SetX(mark_x);
+    mark.sprite.SetY(mark_y);
+
+    global.bar_x = cx - bar.track.GetWidth() / 2;
+    global.bar_y = Math.Int(h * 0.74);
+    bar.track_sprite.SetX(global.bar_x);
+    bar.track_sprite.SetY(global.bar_y);
+}
+
+fun draw_fill(x, width) {
+    if (width < 1) {
+        bar.cap_l_sprite.SetOpacity(0);
+        bar.fill_mid_sprite.SetOpacity(0);
+        bar.cap_r_sprite.SetOpacity(0);
+        return;
+    }
+
+    cap_w = bar.cap_l.GetWidth();
+    bar_h = bar.track.GetHeight();
+    if (width < cap_w * 2) width = cap_w * 2;
+    mid_w = width - cap_w * 2;
+
+    bar.cap_l_sprite.SetX(x);
+    bar.cap_l_sprite.SetY(global.bar_y);
+    bar.cap_l_sprite.SetOpacity(1);
+
+    bar.cap_r_sprite.SetX(x + width - cap_w);
+    bar.cap_r_sprite.SetY(global.bar_y);
+    bar.cap_r_sprite.SetOpacity(1);
+
+    if (mid_w > 0) {
+        if (mid_w != global.last_mid_w) {
+            bar.fill_mid_sprite.SetImage(bar.fill_mid_source.Scale(mid_w, bar_h));
+            global.last_mid_w = mid_w;
+        }
+        bar.fill_mid_sprite.SetX(x + cap_w);
+        bar.fill_mid_sprite.SetY(global.bar_y);
+        bar.fill_mid_sprite.SetOpacity(1);
+    } else {
+        bar.fill_mid_sprite.SetOpacity(0);
+    }
+}
+
+# Only real boot-progress reports move the bar. Never advance it on a timer:
+# a percentage nobody reported would be a fake number (design contract,
+# "Honesty").
+fun progress_callback(duration, progress) {
+    global.has_progress = 1;
+    if (progress > global.real_progress) global.real_progress = progress;
+    if (global.real_progress < 0.0) global.real_progress = 0.0;
+    if (global.real_progress > 1.0) global.real_progress = 1.0;
+    fill_w = Math.Int(bar.track.GetWidth() * global.real_progress);
+    draw_fill(global.bar_x, fill_w);
+}
+
+fun refresh_callback() {
+    global.frame++;
+    layout();
+    if (global.has_progress == 0) {
+        # No progress has been reported yet. A short, rounded pill sweeps the
+        # track smoothly to show boot is alive without claiming a percentage.
+        span = 44;
+        sweep = bar.track.GetWidth() - span;
+        t = (global.frame % 90) / 90.0;
+        eased = 0.5 - 0.5 * Math.Cos(t * 2.0 * Math.Pi);
+        draw_fill(global.bar_x + Math.Int(sweep * eased), span);
+    }
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);
+Plymouth.SetBootProgressFunction(progress_callback);
+layout();

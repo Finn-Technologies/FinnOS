@@ -1,4 +1,4 @@
-// Finn Store: native software hub for FinnOS Native, Linux (Arch/Flatpak/AppImage),
+// Finn Store: native software hub for FinnOS Native, Linux (pacman/Flatpak/AppImage),
 // Windows (Wine/Proton), and Android (Waydroid) applications.
 // Redesigned to match Figma Settings (20:64) 1:1 with ChromeMode::FigmaSplit,
 // 250px FinnSidebar with 26x26 circular colored icon badges, FinnHeroCard spotlight,
@@ -18,10 +18,14 @@
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QResizeEvent>
@@ -47,23 +51,6 @@ QString rgba_css(const QColor& c) {
         .arg(c.alpha());
 }
 
-QString scrollbar_qss(const FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }"
-               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
-               "QScrollBar::handle:horizontal:hover { background: %2; }"
-               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
-}
-
 void apply_header_16px_regular(FinnLabel* lbl) {
     if (!lbl) return;
     auto sync = [lbl]() {
@@ -86,7 +73,7 @@ void apply_log_edit_style(QPlainTextEdit* edit, const FinnTokens& t) {
                             "selection-background-color: %4; selection-color: %2; }%5")
                             .arg(t.tile.name(), t.ink.name(),
                                  rgba_css(t.hair), rgba_css(t.tile_on),
-                                 scrollbar_qss(t)));
+                                 finn::ui::scrollbar_qss(t)));
 }
 
 class StoreIconWidget final : public QWidget {
@@ -220,16 +207,6 @@ QString source_label(finn::AppSource src) {
     return QStringLiteral("App");
 }
 
-FinnBadge::Tone source_tone(finn::AppSource src) {
-    switch (src) {
-        case finn::AppSource::kNative:  return FinnBadge::Tone::Accent;
-        case finn::AppSource::kFlatpak: return FinnBadge::Tone::Success;
-        case finn::AppSource::kDesktop: return FinnBadge::Tone::Neutral;
-        case finn::AppSource::kWindows: return FinnBadge::Tone::Warning;
-        default:                        return FinnBadge::Tone::Neutral;
-    }
-}
-
 QString slugify(const QString& text) {
     QString out = text.toLower().trimmed();
     out.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
@@ -267,22 +244,23 @@ public:
                     });
         }
 
+        // The glyph says what the source is; colour is not a category here.
         sidebar_->addItem(QStringLiteral("discover"), QStringLiteral("boot-mark"),
-                          QStringLiteral("Discover"), QColor(0x00, 0x7B, 0xFF));
+                          QStringLiteral("Discover"), nav_accent_light(), nav_accent_dark());
         sidebar_->addItem(QStringLiteral("all"), QStringLiteral("store"),
-                          QStringLiteral("All Apps"), QColor(0x58, 0x56, 0xD6));
+                          QStringLiteral("All Apps"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
         sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("linux"),
-                          QStringLiteral("Linux & Flatpak"), QColor(0x22, 0xC5, 0x5E));
+                          QStringLiteral("Linux & Flatpak"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("view-open-windows"),
-                          QStringLiteral("Windows (Wine)"), QColor(0x0E, 0xA5, 0xE9));
+                          QStringLiteral("Windows (Wine)"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("android"), QStringLiteral("android"),
-                          QStringLiteral("Android"), QColor(0x10, 0xB9, 0x81));
+                          QStringLiteral("Android"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
-                          QStringLiteral("Installed & Updates"), QColor(0xF5, 0x9E, 0x0B));
+                          QStringLiteral("Installed & Updates"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal"),
-                          QStringLiteral("FinnSDK Studio"), QColor(0x64, 0x74, 0x8B));
+                          QStringLiteral("FinnSDK Studio"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
@@ -307,6 +285,7 @@ public:
             QStringLiteral("Refresh"), FinnButton::Variant::Secondary,
             QStringLiteral("refresh"), right_host_);
         refresh_btn->setFixedHeight(28);
+        refresh_btn->setAccessibleName(QStringLiteral("Refresh catalogue"));
         connect(refresh_btn, &QAbstractButton::clicked, this, [this]() {
             reloadCatalogue();
             showToast(QStringLiteral("Catalogue refreshed"));
@@ -350,6 +329,7 @@ private:
         apply_log_edit_style(linux_log_, t);
         apply_log_edit_style(android_log_, t);
         apply_log_edit_style(updates_log_, t);
+        apply_log_edit_style(finnapp_log_, t);
     }
 
     QWidget* wrapScroll(QWidget* inner) {
@@ -450,9 +430,17 @@ private:
         detail_icon_->setIconName(app.icon.empty()
                                       ? QStringLiteral("app-grid")
                                       : QString::fromStdString(app.icon));
-        detail_launch_btn_->setText(app.installed ? QStringLiteral("Open")
-                                                  : QStringLiteral("Install"));
-        detail_launch_btn_->setEnabled(app.installed);
+        if (app.installed) {
+            detail_launch_btn_->setText(QStringLiteral("Open"));
+        } else if (app.source == finn::AppSource::kFlatpak) {
+            detail_launch_btn_->setText(QStringLiteral("Install Flatpak"));
+        } else {
+            detail_launch_btn_->setText(QStringLiteral("Install Guide"));
+        }
+        detail_launch_btn_->setAccessibleName(
+            QStringLiteral("%1 %2").arg(detail_launch_btn_->text(),
+                                        QString::fromStdString(app.name)));
+        detail_launch_btn_->setEnabled(true);
         stack_->setCurrentIndex(7);
     }
 
@@ -556,7 +544,7 @@ private:
         auto* name = new ElidedFinnLabel(
             QString::fromStdString(app.name),
             FinnLabel::Role::Body, FinnLabel::Tone::Ink, card);
-        name->setFont(finn_font(10.5, QFont::Medium));
+        name->setFont(finn_font_px(13, QFont::Normal));
         auto* note = new ElidedFinnLabel(
             QString::fromStdString(app.note),
             FinnLabel::Role::Caption, FinnLabel::Tone::Dim, card);
@@ -566,9 +554,11 @@ private:
         auto* meta_row = new QHBoxLayout();
         meta_row->setContentsMargins(0, 0, 0, 0);
         meta_row->setSpacing(6);
-        auto* badge = new FinnBadge(source_label(app.source),
-                                    source_tone(app.source), card);
-        meta_row->addWidget(badge);
+        // Quiet mono source text, not a blue badge on every tile.
+        auto* source = new FinnLabel(source_label(app.source),
+                                     FinnLabel::Role::Mono,
+                                     FinnLabel::Tone::Mute, card);
+        meta_row->addWidget(source);
         meta_row->addStretch(1);
         col->addLayout(meta_row);
         lay->addLayout(col, 1);
@@ -580,6 +570,10 @@ private:
             {}, card);
         action_btn->setFixedHeight(26);
         action_btn->setMinimumWidth(56);
+        action_btn->setAccessibleName(
+            QStringLiteral("%1 %2").arg(action_btn->text(),
+                                        QString::fromStdString(app.name)));
+        card->setAccessibleName(QString::fromStdString(app.name));
         lay->addWidget(action_btn, 0, Qt::AlignVCenter);
 
         const finn::App copy = app;
@@ -675,14 +669,34 @@ private:
         auto* appimg_btn = new FinnButton(
             QStringLiteral("Run AppImage"), FinnButton::Variant::Secondary,
             QStringLiteral("folder"), page);
+        appimg_btn->setAccessibleName(QStringLiteral("Run AppImage"));
+        install_btn->setAccessibleName(QStringLiteral("Install Flatpak"));
+        flatpak_input_->setAccessibleName(QStringLiteral("Flatpak App ID"));
         connect(appimg_btn, &QAbstractButton::clicked, this, [this]() {
             const QString path = QFileDialog::getOpenFileName(
                 this, QStringLiteral("Select AppImage"), QDir::homePath(),
                 QStringLiteral("AppImage (*.AppImage *.appimage);;All Files (*)"));
             if (path.isEmpty()) return;
-            QFile::setPermissions(path, QFile::permissions(path) | QFile::ExeUser);
-            QProcess::startDetached(path, {});
-            showToast(QStringLiteral("Launched AppImage"));
+            const QString fname = QFileInfo(path).fileName();
+            if (!FinnDialog::confirm(
+                    this, QStringLiteral("Run AppImage?"),
+                    QStringLiteral("Grant executable permission (+x) and launch '%1'?\n\n"
+                                   "Only run AppImages from sources you trust.\nPath: %2")
+                        .arg(fname, path),
+                    QStringLiteral("Run AppImage"), false)) {
+                return;
+            }
+            if (!QFile::setPermissions(path, QFile::permissions(path) | QFile::ExeUser)) {
+                showToast(QStringLiteral("Failed to mark AppImage executable"),
+                          FinnToast::Severity::Error);
+                return;
+            }
+            if (!QProcess::startDetached(path, {})) {
+                showToast(QStringLiteral("Failed to launch AppImage"),
+                          FinnToast::Severity::Error);
+                return;
+            }
+            showToast(QStringLiteral("Launched AppImage"), FinnToast::Severity::Success);
         });
 
         bar->addWidget(flatpak_input_, 1);
@@ -744,7 +758,10 @@ private:
         const auto st = finn::compat::probe_wine_runtime();
         win_status_row_->setSubtitle(QString::fromStdString(st.summary));
         clear_layout(win_list_layout_);
-        const std::string conf_path = (QDir::homePath() + QStringLiteral("/.config/finn/windows.conf")).toStdString();
+        const std::string conf_path =
+            (QDir::homePath() + QLatin1Char('/') +
+             QString::fromLatin1(finn::kUserWindowsConfRel))
+                .toStdString();
         const auto entries = finn::compat::load_windows_apps(conf_path);
         if (entries.empty()) {
             win_list_layout_->addWidget(new FinnEmptyState(
@@ -846,45 +863,120 @@ private:
         root->setContentsMargins(0, 4, 2, 16);
         root->setSpacing(10);
 
-        auto* check_btn = new FinnButton(
+        updates_check_btn_ = new FinnButton(
             QStringLiteral("Check Now"), FinnButton::Variant::Primary,
             QStringLiteral("update"), page);
-        connect(check_btn, &QAbstractButton::clicked, this, [this]() {
+        updates_check_btn_->setAccessibleName(QStringLiteral("Check for updates"));
+        connect(updates_check_btn_, &QAbstractButton::clicked, this, [this]() {
             refreshUpdatesList();
-            showToast(QStringLiteral("Checked pacman and Flatpak updates"));
+            showToast(QStringLiteral("Checking pacman and Flatpak updates..."));
         });
         root->addWidget(new FinnSettingRow(
             QStringLiteral("System & Application Updates"),
-            QStringLiteral("Query Arch Linux pacman repositories and Flathub remotes"),
-            QStringLiteral("download"), check_btn, page));
+            QStringLiteral("Query pacman repositories and Flathub remotes"),
+            QStringLiteral("download"), updates_check_btn_, page));
 
         updates_log_ = new QPlainTextEdit(page);
         updates_log_->setReadOnly(true);
         updates_log_->setMinimumHeight(240);
+        updates_log_->setAccessibleName(QStringLiteral("Updates log"));
         root->addWidget(updates_log_, 1);
         return page;
     }
 
     void refreshUpdatesList() {
         if (!updates_log_) return;
-        QString out;
-        QProcess pac;
-        pac.start(QStringLiteral("pacman"), {QStringLiteral("-Qu")});
-        if (pac.waitForFinished(2500)) {
-            const QString p = QString::fromUtf8(pac.readAllStandardOutput()).trimmed();
-            out += QStringLiteral("=== Arch Packages (pacman -Qu) ===\n");
-            out += p.isEmpty() ? QStringLiteral("All system packages are up to date.\n") : p + QLatin1Char('\n');
+        const quint64 gen = ++updates_gen_;
+        if (updates_pac_proc_) {
+            updates_pac_proc_->disconnect(this);
+            updates_pac_proc_->kill();
+            updates_pac_proc_->deleteLater();
         }
-        if (!QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty()) {
-            QProcess fp;
-            fp.start(QStringLiteral("flatpak"), {QStringLiteral("remote-ls"), QStringLiteral("--updates")});
-            if (fp.waitForFinished(2500)) {
-                const QString f = QString::fromUtf8(fp.readAllStandardOutput()).trimmed();
-                out += QStringLiteral("\n=== Flatpak Updates ===\n");
-                out += f.isEmpty() ? QStringLiteral("No Flatpak updates pending.\n") : f + QLatin1Char('\n');
+        if (updates_fp_proc_) {
+            updates_fp_proc_->disconnect(this);
+            updates_fp_proc_->kill();
+            updates_fp_proc_->deleteLater();
+        }
+
+        if (updates_check_btn_) updates_check_btn_->setEnabled(false);
+        updates_log_->setPlainText(QStringLiteral("Checking pacman and Flatpak updates..."));
+
+        auto run_flatpak_check = [this, gen](QString acc_out) {
+            if (gen != updates_gen_ || !updates_log_) return;
+            if (QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty()) {
+                updates_log_->setPlainText(acc_out);
+                if (updates_check_btn_) updates_check_btn_->setEnabled(true);
+                return;
             }
+            auto* fp = new QProcess(this);
+            updates_fp_proc_ = fp;
+            connect(fp, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                    this, [this, fp, gen, acc_out](int code, QProcess::ExitStatus status) mutable {
+                        if (gen == updates_gen_ && updates_log_) {
+                            const QString f = QString::fromUtf8(fp->readAllStandardOutput()).trimmed();
+                            const QString ferr = QString::fromUtf8(fp->readAllStandardError()).trimmed();
+                            acc_out += QStringLiteral("\n=== Flatpak Updates ===\n");
+                            if (status == QProcess::NormalExit && code == 0) {
+                                acc_out += f.isEmpty()
+                                               ? QStringLiteral("No Flatpak updates pending.\n")
+                                               : f + QLatin1Char('\n');
+                            } else {
+                                acc_out += ferr.isEmpty()
+                                               ? QStringLiteral("Flatpak update check failed (exit %1).\n").arg(code)
+                                               : ferr + QLatin1Char('\n');
+                            }
+                            updates_log_->setPlainText(acc_out);
+                            if (updates_check_btn_) updates_check_btn_->setEnabled(true);
+                        }
+                        fp->deleteLater();
+                    });
+            connect(fp, &QProcess::errorOccurred, this,
+                    [this, fp, gen, acc_out](QProcess::ProcessError) mutable {
+                        if (gen == updates_gen_ && updates_log_) {
+                            acc_out += QStringLiteral("\n=== Flatpak Updates ===\nFailed to invoke flatpak.\n");
+                            updates_log_->setPlainText(acc_out);
+                            if (updates_check_btn_) updates_check_btn_->setEnabled(true);
+                        }
+                        fp->deleteLater();
+                    });
+            fp->start(QStringLiteral("flatpak"),
+                      {QStringLiteral("remote-ls"), QStringLiteral("--updates")});
+        };
+
+        if (QStandardPaths::findExecutable(QStringLiteral("pacman")).isEmpty()) {
+            run_flatpak_check(QStringLiteral("=== System Packages ===\npacman not installed.\n"));
+            return;
         }
-        updates_log_->setPlainText(out);
+
+        auto* pac = new QProcess(this);
+        updates_pac_proc_ = pac;
+        connect(pac, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, pac, gen, run_flatpak_check](int code, QProcess::ExitStatus status) {
+                    QString out;
+                    const QString p = QString::fromUtf8(pac->readAllStandardOutput()).trimmed();
+                    const QString perr = QString::fromUtf8(pac->readAllStandardError()).trimmed();
+                    out += QStringLiteral("=== System Packages (pacman -Qu) ===\n");
+                    if (status == QProcess::NormalExit && (code == 0 || code == 1)) {
+                        out += p.isEmpty()
+                                   ? QStringLiteral("All system packages are up to date.\n")
+                                   : p + QLatin1Char('\n');
+                    } else {
+                        out += perr.isEmpty()
+                                   ? QStringLiteral("pacman -Qu exited with code %1.\n").arg(code)
+                                   : perr + QLatin1Char('\n');
+                    }
+                    pac->deleteLater();
+                    if (gen == updates_gen_) run_flatpak_check(out);
+                });
+        connect(pac, &QProcess::errorOccurred, this,
+                [this, pac, gen, run_flatpak_check](QProcess::ProcessError) {
+                    pac->deleteLater();
+                    if (gen == updates_gen_) {
+                        run_flatpak_check(
+                            QStringLiteral("=== System Packages (pacman -Qu) ===\nFailed to invoke pacman.\n"));
+                    }
+                });
+        pac->start(QStringLiteral("pacman"), {QStringLiteral("-Qu")});
     }
 
     QWidget* buildSdkPage() {
@@ -901,28 +993,145 @@ private:
             page));
 
         sdk_name_edit_ = new FinnTextField(QStringLiteral("Application Name (e.g. Finn Mail)"), page);
+        sdk_name_edit_->setAccessibleName(QStringLiteral("New FinnSDK Application Name"));
         auto* create_btn = new FinnButton(
             QStringLiteral("Scaffold in ~/Projects"), FinnButton::Variant::Primary,
             QStringLiteral("app-grid"), page);
-        connect(create_btn, &QAbstractButton::clicked, this, [this]() {
+        create_btn->setAccessibleName(QStringLiteral("Scaffold FinnSDK project"));
+        connect(create_btn, &QAbstractButton::clicked, this, [this, create_btn]() {
             const QString name = sdk_name_edit_->text().trimmed();
             if (name.isEmpty()) return;
             const QString slug = slugify(name);
             const QString target = QDir::homePath() + QStringLiteral("/Projects/") + slug;
-            QProcess p;
-            p.start(QStringLiteral("finn-sdk"), {QStringLiteral("new"), target});
-            p.waitForFinished(5000);
-            showToast(p.exitCode() == 0
-                          ? QStringLiteral("Created %1").arg(target)
-                          : QStringLiteral("finn-sdk failed"),
-                      p.exitCode() != 0 ? FinnToast::Severity::Error : FinnToast::Severity::Success);
+            create_btn->setEnabled(false);
+            auto* proc = new QProcess(this);
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                    this, [this, proc, create_btn, target](int code, QProcess::ExitStatus status) {
+                        create_btn->setEnabled(true);
+                        const bool ok = (status == QProcess::NormalExit && code == 0);
+                        const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                        showToast(ok ? QStringLiteral("Created %1").arg(target)
+                                     : (err.isEmpty() ? QStringLiteral("finn-sdk failed") : err),
+                                  ok ? FinnToast::Severity::Success : FinnToast::Severity::Error);
+                        proc->deleteLater();
+                    });
+            connect(proc, &QProcess::errorOccurred, this,
+                    [this, proc, create_btn](QProcess::ProcessError) {
+                        create_btn->setEnabled(true);
+                        showToast(QStringLiteral("finn-sdk binary not found"),
+                                  FinnToast::Severity::Error);
+                        proc->deleteLater();
+                    });
+            proc->start(QStringLiteral("finn-sdk"),
+                        {QStringLiteral("new"), target, QStringLiteral("--name"), name});
         });
         auto* row = new QHBoxLayout();
         row->setSpacing(8);
         row->addWidget(sdk_name_edit_, 1);
         row->addWidget(create_btn);
         root->addLayout(row);
-        root->addStretch(1);
+
+        auto* pkg_btn = new FinnButton(
+            QStringLiteral("Verify .finnapp"), FinnButton::Variant::Secondary,
+            QStringLiteral("folder"), page);
+        pkg_btn->setAccessibleName(QStringLiteral("Verify .finnapp bundle"));
+        auto* pkg_dev_toggle = new FinnToggle(false, page);
+        pkg_dev_toggle->setAccessibleName(QStringLiteral("Allow unsigned .finnapp packages"));
+        auto* pkg_controls = new QWidget(page);
+        auto* pkg_ctrl_lay = new QHBoxLayout(pkg_controls);
+        pkg_ctrl_lay->setContentsMargins(0, 0, 0, 0);
+        pkg_ctrl_lay->setSpacing(8);
+        pkg_ctrl_lay->addWidget(new FinnLabel(
+            QStringLiteral("Allow unsigned"), FinnLabel::Role::Caption,
+            FinnLabel::Tone::Dim, pkg_controls));
+        pkg_ctrl_lay->addWidget(pkg_dev_toggle);
+        pkg_ctrl_lay->addWidget(pkg_btn);
+
+        root->addWidget(new FinnSettingRow(
+            QStringLiteral("Inspect & Verify .finnapp Package"),
+            QStringLiteral("Verify manifest schema, payload SHA-256, and Ed25519 signature via finn-sdk"),
+            QStringLiteral("store"), pkg_controls, page));
+
+        finnapp_log_ = new QPlainTextEdit(page);
+        finnapp_log_->setReadOnly(true);
+        finnapp_log_->setMinimumHeight(180);
+        finnapp_log_->setAccessibleName(QStringLiteral("Package verification output"));
+        finnapp_log_->setPlaceholderText(
+            QStringLiteral("Select a .finnapp bundle to inspect its manifest and signature."));
+        root->addWidget(finnapp_log_, 1);
+
+        connect(pkg_btn, &QAbstractButton::clicked, this, [this, pkg_btn, pkg_dev_toggle]() {
+            const QString archive = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select .finnapp Package"), QDir::homePath(),
+                QStringLiteral("FinnApp Bundles (*.finnapp);;All Files (*)"));
+            if (archive.isEmpty()) return;
+
+            QString pubkey;
+            const bool allow_unsigned = pkg_dev_toggle->isChecked();
+            if (!allow_unsigned) {
+                pubkey = QFileDialog::getOpenFileName(
+                    this, QStringLiteral("Select Trusted Ed25519 Public Key (.pem)"),
+                    QFileInfo(archive).absolutePath(),
+                    QStringLiteral("PEM Public Keys (*.pem *.pub);;All Files (*)"));
+            }
+
+            QStringList args{QStringLiteral("verify"), archive, QStringLiteral("--json")};
+            if (!pubkey.isEmpty()) {
+                args << QStringLiteral("--pubkey") << pubkey;
+            } else if (allow_unsigned) {
+                args << QStringLiteral("--allow-unsigned");
+            }
+
+            pkg_btn->setEnabled(false);
+            finnapp_log_->setPlainText(QStringLiteral("Verifying %1...").arg(archive));
+            auto* proc = new QProcess(this);
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                    this, [this, proc, pkg_btn](int, QProcess::ExitStatus) {
+                        pkg_btn->setEnabled(true);
+                        const QByteArray raw = proc->readAllStandardOutput();
+                        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+                        if (!doc.isObject()) {
+                            const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                            finnapp_log_->setPlainText(
+                                err.isEmpty() ? QString::fromUtf8(raw) : err);
+                            showToast(QStringLiteral("Verification failed"),
+                                      FinnToast::Severity::Error);
+                            proc->deleteLater();
+                            return;
+                        }
+                        const QJsonObject obj = doc.object();
+                        const bool valid = obj.value(QStringLiteral("valid")).toBool();
+                        const bool is_signed = obj.value(QStringLiteral("signed")).toBool();
+                        QString summary;
+                        summary += QStringLiteral("Archive: %1\n").arg(obj.value(QStringLiteral("archive")).toString());
+                        summary += QStringLiteral("App ID:  %1\n").arg(obj.value(QStringLiteral("id")).toString(QStringLiteral("-")));
+                        summary += QStringLiteral("Version: %1\n").arg(obj.value(QStringLiteral("version")).toString(QStringLiteral("-")));
+                        summary += QStringLiteral("Signed:  %1\n").arg(is_signed ? QStringLiteral("yes (Ed25519)") : QStringLiteral("no (unsigned dev)"));
+                        summary += QStringLiteral("Valid:   %1\n").arg(valid ? QStringLiteral("PASS") : QStringLiteral("FAIL"));
+                        const QJsonArray errs = obj.value(QStringLiteral("errors")).toArray();
+                        if (!errs.isEmpty()) {
+                            summary += QStringLiteral("\nErrors:\n");
+                            for (const auto& e : errs) {
+                                summary += QStringLiteral("  - %1\n").arg(e.toString());
+                            }
+                        } else if (valid) {
+                            summary += QStringLiteral("\nNote: v1 native app permissions in finn-app.json are declared-only and not enforced by an OS sandbox.\n");
+                        }
+                        finnapp_log_->setPlainText(summary);
+                        showToast(valid ? QStringLiteral(".finnapp verified")
+                                        : QStringLiteral(".finnapp verification failed"),
+                                  valid ? FinnToast::Severity::Success : FinnToast::Severity::Error);
+                        proc->deleteLater();
+                    });
+            connect(proc, &QProcess::errorOccurred, this,
+                    [this, proc, pkg_btn](QProcess::ProcessError) {
+                        pkg_btn->setEnabled(true);
+                        finnapp_log_->setPlainText(QStringLiteral("Failed to run finn-sdk verify."));
+                        showToast(QStringLiteral("finn-sdk not found"), FinnToast::Severity::Error);
+                        proc->deleteLater();
+                    });
+            proc->start(QStringLiteral("finn-sdk"), args);
+        });
         return page;
     }
 
@@ -962,13 +1171,42 @@ private:
         detail_launch_btn_ = new FinnButton(
             QStringLiteral("Open"), FinnButton::Variant::Primary, {}, header);
         detail_launch_btn_->setFixedHeight(30);
+        detail_launch_btn_->setAccessibleName(QStringLiteral("Launch or install application"));
         connect(detail_launch_btn_, &QAbstractButton::clicked, this, [this]() {
-            finn::SessionClient client;
-            std::string err;
-            client.launch(selected_app_.id, &err);
-            showToast(err.empty()
-                          ? QStringLiteral("Launching %1").arg(QString::fromStdString(selected_app_.name))
-                          : QString::fromStdString(err));
+            if (selected_app_.installed) {
+                finn::SessionClient client;
+                std::string err;
+                client.launch(selected_app_.id, &err);
+                showToast(err.empty()
+                              ? QStringLiteral("Launching %1").arg(QString::fromStdString(selected_app_.name))
+                              : QString::fromStdString(err));
+                return;
+            }
+            if (selected_app_.source == finn::AppSource::kFlatpak) {
+                const QString fp_id = QString::fromStdString(selected_app_.id);
+                if (QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty()) {
+                    showToast(QStringLiteral("flatpak binary not installed"),
+                              FinnToast::Severity::Error);
+                    return;
+                }
+                sidebar_->setCurrentId(QStringLiteral("linux"));
+                switchPage(QStringLiteral("linux"));
+                runCommandIntoLog(QStringLiteral("flatpak"),
+                                  {QStringLiteral("install"), QStringLiteral("-y"),
+                                   QStringLiteral("flathub"), fp_id},
+                                  linux_log_);
+                return;
+            }
+            const QString app_name = QString::fromStdString(selected_app_.name);
+            const QString cmd = QString::fromStdString(selected_app_.command);
+            FinnDialog::confirm(
+                this,
+                QStringLiteral("Install %1").arg(app_name),
+                QStringLiteral("Finn Store does not elevate privileges via finnd in v1.\n\n"
+                               "Build and install '%1' from FinnOS sources (make && sudo make install) "
+                               "or verify '%2' is present on disk and listed in /var/lib/finn/installed.")
+                    .arg(app_name, cmd.isEmpty() ? app_name : cmd),
+                QStringLiteral("OK"), false);
         });
         hl->addWidget(detail_launch_btn_);
         root->addWidget(header);
@@ -1028,7 +1266,12 @@ private:
     QVBoxLayout* android_list_layout_ = nullptr;
     QPlainTextEdit* android_log_ = nullptr;
     QPlainTextEdit* updates_log_ = nullptr;
+    FinnButton* updates_check_btn_ = nullptr;
+    QPointer<QProcess> updates_pac_proc_;
+    QPointer<QProcess> updates_fp_proc_;
+    quint64 updates_gen_ = 0;
     FinnTextField* sdk_name_edit_ = nullptr;
+    QPlainTextEdit* finnapp_log_ = nullptr;
 
     FinnButton* back_btn_ = nullptr;
     StoreIconWidget* detail_icon_ = nullptr;

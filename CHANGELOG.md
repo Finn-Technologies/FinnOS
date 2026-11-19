@@ -5,6 +5,95 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Audit, Security & Daily-Driver Fixes (`B6..B12`, `M9..M19`, `m5..m11`)
+
+- **Lock screen & session security (`B6`, `B7`, `B12`, `M11`)**: Wired `ext-session-lock-v1` listener + WM shortcut gating while locked in `finn-comp`; restricted empty-password unlock in `LockScreenWindow` to `passwd -S` `NP` accounts only (blocking `L` locked accounts), made unlock verification async (`M13`), and fixed `loginctl activate <session-id>` user switching. Hardened `vm/finn-chroot.sh` to lock `root` (`passwd -l root`) instead of sharing `finn`'s password, and gated `NOPASSWD` sudo in `base/setup.sh` on `FINN_DEV_VM=1`. Set `FD_CLOEXEC`, `SO_RCVTIMEO`, `0600` socket permissions, and cached registry loading in `finn-session`.
+- **Installer & OOBE (`B8`, `B9`, `B10`, `m11`)**: Fixed `finn-installer` CLI arguments (`--disk`, `--hostname`, `--timezone`, optional `--ab-slots`, `--yes`), stderr capture, exit-status checks, double-click lock, `/usr/share/zoneinfo` timezone list, and `ext4 + FAT32 ESP` labeling. Wired `finn-oobe` account setup (`account.conf`, async `pkexec chpasswd` via stdin, `chfn`, `localectl`), masked Wi-Fi password prompts (`FinnDialog::prompt` `password_mode` & `OobePasswordDialog`), avoided argv password leaks in `FinnDesktopServices::connectWifi`, and cached `ProgressiveBlurOverlay` blurs (`M19`).
+- **Compositor, Terminal, Files, Notes & Apps (`M9`, `M10`, `M12`, `M14`, `M15`, `M17`, `M18`, `M19`, `B11`, `m5..m11`)**: Fixed XDG toplevel `wlr_scene_tree` leak (`M9`), fullscreen layer stacking (`M10`), `finn-notes` Save/Discard/Cancel close guard (`B11`), `finn-terminal` multi-arg `-e` + stateful `QStringDecoder` UTF-8 across PTY reads (`M12`), `finn-files` symlink/self-paste copy loop (`M14`), `finn-store` `kUserWindowsConfRel` / async updates / AppImage confirm (`M15`), `finn-monitor` PID-diffed process updates (`M19`), `finn-wallpaper` synchronous mask flush (`m9`), `finn-settings` RAM stat card (`m5`) + `nmcli -t` colon escaping (`m7`), `src/common/paths.hpp` centralization (`M17`), `NotificationServer` `replaces_id` timer fix (`m6`), `android_runner`/`wine_runner` PE >4 KB fix (`m10`), and `setAccessibleName` + keyboard focus rings (`M18`).
+
+### Design System, Spring Motion & Adaptive Form Factors (`B2`, `M3`, `M8`, `m3`, `m8`)
+
+- **Design Language & Token Expansion (`ui/_tokens.fui`, `tools/tokens.py`, `src/ui/generated_tokens.hpp`)**: Added semantic colors (`surface_canvas`, `surface_input`, `surface_hover`, `surface_pressed`, `danger`, `danger_hover`, `success`, `warning`), 4 px `spacing`, canonical `radii` + `corner_smoothing`, `blur`, `elevation`, and `breakpoints` (`bp_phone_max=599`, `bp_tablet_max=1024`), documented alongside the Figma audit in `docs/figma-audit.md`, `docs/figma-inventory.md`, and `docs/design-language.md`.
+- **Spring Physics (`src/ui/finn/spring.hpp`, `<FinnSDK/Spring.hpp>`)**: Implemented analytic damped-harmonic-oscillator springs, `SpringAnimator` retargeting, `rubber_band` overscroll, `FinnSpringDriver` across `libfinnui` widgets/windows, live `FINN_REDUCED_MOTION`/settings `reduced_motion()` support, and `ReducedCrossfade` / static `FinnProgressRing` (`m8`).
+- **Responsive Phone & Tablet Modes (`B2`)**: Added `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) and `FINN_SIM_*` sizing in `FinnWindow`/`FinnSidebar`, `src/shell/shell_layout.hpp` adaptive shell layouts, and `WLR_INPUT_DEVICE_TOUCH` / `WLR_INPUT_DEVICE_TABLET_TOOL` support in `finn-comp`.
+
+### First-Party Repo Tooling, OTA A/B Updates & SDK (`B1`, `B3`, `B4`, `M1`, `M2`, `M4`, `m1`, `m2`, `m4`)
+
+- **Rebrand & Repo (`repo/`, `base/pkgbuilds/finnos-keyring/`)**: Wired `tools/check-branding.sh` into `make lint`, cleaned remaining distribution copy in `Settings` and `Store`, added `[finnos]` repo signing/publishing scripts (`gen-signing-key.sh`, `publish.sh`, `finnos-mirrorlist`), and added offline `[finnos]` fallback in `base/mkfinniso`, `base/setup.sh`, `vm/finn-install.sh`, and `vm/finn-chroot.sh`.
+- **A/B OTA System (`src/ota/finn-update`, `ota/`, `base/finn-{update-check,boot-health}.*`)**: Added stdlib Python 3 OTA CLI + `finn_ota` package with RFC 8032 Ed25519 manifest verification, HTTP Range download, `zstd --patch-from` deltas, `systemd-boot`/`GRUB` A/B slot switching, `--ab-slots` installer partitioning (`FINNOS_A`/`FINNOS_B`/`FINNOS_DATA`), systemd health-check commit/rollback units, and Settings System Update UI (`tests/test_ota.py`).
+- **SDK Completeness (`tools/finn-sdk`, `sdk/schema/finn-app.schema.json`, `sdk/tests/test_sdk.py`)**: Added `validate`, `keygen`, deterministic Ed25519-signed `.finnapp` `package`/`verify`, and `simulate --form-factor phone|tablet|desktop` plus updated SDK documentation under `docs/sdk/`.
+
+### FinnOS boot chain
+
+- The boot now shows the Finn mark directly instead of a blinking text cursor.
+  A `finnos` Plymouth theme draws the four-dot mark in the family accent on the
+  `#0B0E14` field from inside the initramfs; the theme is installed on the live
+  medium and on installed machines, and carried in both initramfs images.
+- All boot entries pass `quiet splash vt.global_cursor_default=0`. Bootloader
+  waits are three seconds (syslinux, systemd-boot, installed GRUB), and the
+  install medium starts `finn-install` after three seconds instead of ten.
+- Normal boots now show the Finn mark above a quiet, macOS-style progress bar.
+  The bar fills only on real Plymouth boot-progress reports; until one arrives
+  a short highlight sweeps the track without claiming a percentage.
+- Boot entries pass `plymouth.ignore-serial-consoles`; otherwise a serial
+  console makes Plymouth force its text "details" theme and print boot
+  messages instead of the mark. The dev machine's initramfs loads `virtio_gpu`
+  early so Plymouth has a DRM renderer.
+- The ribbon "hi." animation is first-time setup only: `finn-oobe` plays it on
+  its first step. `finn-shell` no longer draws `BootSplashWindow` over a
+  completed desktop on every boot.
+- The lock screen now opens on Super+L, on the idle timeout set in Settings,
+  and before suspend when "Lock Screen on Sleep" is on. It keeps its real
+  `/etc/passwd` users and `su` password check. Apps behind the overlay are
+  not yet inhibited — `ext-session-lock-v1` is still future work.
+- The lock screen is opaque and shows a cover-fitted wallpaper instead of the
+  desktop behind it. A new Settings row, "Lock Screen Wallpaper", chooses or
+  resets that image; with no image chosen it follows the desktop wallpaper.
+- No visible boot or app surface names another distribution: the menus,
+  console, splash theme, identity files, Settings and Store are FinnOS's.
+  `mkfinniso --check`, the ISO workflow and `tests/test_base.py` now enforce it.
+  Documentation still names the engineering base deliberately.
+
+### Recovery mode redesign
+
+- Recovery now speaks FinnOS instead of borrowing macOS Big Sur's recovery
+  chrome: the OOBE brand lockup and wordmark, the same pure-black / warm-bone
+  canvas, a single hairline card, generous quiet space and a circular next
+  control. The install wizard has a four-segment step rail, the utility rows
+  use one chevron instead of four repeated "Open" buttons, and the copy is
+  shorter. No OOBE code was changed.
+
+### Unslop pass across the apps, shell and desktop
+
+- The default desktop wallpaper is now the warm-ivory artwork from the Figma
+  Desktop frame, replacing the purple-to-red gradient blob that dominated every
+  screenshot. `setup.webp` is untouched.
+- Sidebar navigation uses one blue accent for the active or live row and one
+  neutral for the rest, across Files, Settings, Store, Notes, Terminal, Viewer
+  and Monitor. File types, app sources and presets are identified by their icon
+  and metadata instead of six different saturated badge colours.
+- The Finn Store's repeated blue "FinnSDK" badges became quiet mono source text;
+  Monitor's CPU/RAM status badge became quiet mono text; "edited" replaced the
+  bullet that marked a dirty note.
+- `FinnHeroCard` keeps the one green-tinted identity surface but no longer
+  runs a white-to-green hue gradient. The installer's three-stop dusk backdrop
+  became a single neutral surface.
+- `FinnLabel` now follows the Figma scale (16px header, 14px value, 11-12px
+  meta) with weights 400/500; scrollbar QSS lives once in `libfinnui` instead
+  of five private copies. Placeholder copy was shortened and uppercase section
+  labels were put in sentence case.
+- Every app window is now clipped to a rounded frame region, so scroll viewports
+  and text canvases can no longer paint square corners over the window chrome.
+  All four corners stay round in every first-party app.
+- The Control Center panel is no longer pinned to the bottom-right corner: its
+  right edge now lines up with the dock group's right edge, 74px above the
+  bottom, as in Figma `11:19`. The margin is computed from the output width so
+  the alignment holds when the display changes.
+- Scope: every first-party app and the shell; the OOBE experience was left as it
+  is. Both light and dark appearances were checked on the VM.
+- The redline method is unslop by Damir Sokolovsky ([@heydamir](https://x.com/heydamir)),
+  CC BY 4.0.
+
 ### 1:1 Figma FinnUX & FinnUI Toolkit Parity, Accessibility, Store, Installer & OOBE
 
 - **Figma Design Sync & Asset Purge**: Replaced legacy `assets/figma/` assets with

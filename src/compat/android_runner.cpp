@@ -40,7 +40,7 @@ AndroidRuntimeStatus probe_android_runtime() {
     std::error_code ec;
     st.binder_present = fs::exists("/dev/binderfs", ec) || fs::exists("/dev/binder", ec);
     st.container_initialized = fs::exists("/var/lib/waydroid/waydroid.cfg", ec);
-    st.ready = st.waydroid_installed && st.container_initialized;
+    st.ready = st.waydroid_installed && st.binder_present && st.container_initialized;
 
     if (!st.waydroid_installed) {
         st.summary = "Waydroid not installed (pacman -S waydroid)";

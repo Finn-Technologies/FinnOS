@@ -1,0 +1,17 @@
+# FinnOS pacman repository mirrorlist (/etc/pacman.d/finnos-mirrorlist)
+#
+# Used by the [finnos] section in /etc/pacman.conf.
+# Note: https://repo.finnos.org is a placeholder URL until FinnOS hosts a live
+# public package repository. Until then, stage a local or LAN repository with
+# repo/publish.sh and uncomment/adjust a local or staging Server line below.
+#
+# IMPORTANT: Do NOT place upstream Arch Linux mirrors in this file. Pacman
+# expands $repo to the section name ("finnos"), which upstream Arch mirrors do
+# not serve. Upstream fallback mirrors for [core], [extra], and (x86_64)
+# [multilib] belong in /etc/pacman.d/mirrorlist (see docs/repo.md).
+
+# Primary FinnOS repository (placeholder until live hosting is provisioned)
+Server = https://repo.finnos.org/$repo/os/$arch
+
+# Local / staging repository produced by repo/publish.sh (uncomment to test)
+# Server = file:///srv/finnos/repo/$repo/os/$arch

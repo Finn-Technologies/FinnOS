@@ -4,16 +4,22 @@
 
 #include <FinnSDK/FinnSDK.hpp>
 
+#include <QDBusConnection>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTimer>
-#include <cstdlib>
-#include <string>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "common/paths.hpp"
@@ -26,6 +32,92 @@
 #include "shell/notifications.hpp"
 #include "shell/popovers.hpp"
 #include "system/sys_files.hpp"
+
+namespace {
+
+void startOtaStatusPoll(QObject* parent,
+                        finn::shell::NotificationServer* notifications,
+                        const std::shared_ptr<QString>& last_notified_version,
+                        const std::shared_ptr<bool>& notified_pending,
+                        const std::shared_ptr<bool>& notified_rollback) {
+    QString exe = QStandardPaths::findExecutable(QStringLiteral("finn-update"));
+    if (exe.isEmpty()) {
+        const QString fallback = QString::fromLatin1(finn::kFinnUpdateBin);
+        if (QFileInfo::exists(fallback)) exe = fallback;
+    }
+    if (exe.isEmpty()) return;
+
+    auto* proc = new QProcess(parent);
+    QObject::connect(
+        proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), parent,
+        [proc, notifications, last_notified_version, notified_pending,
+         notified_rollback](int exit_code, QProcess::ExitStatus status) {
+            const QByteArray raw = proc->readAllStandardOutput();
+            proc->deleteLater();
+            if (status != QProcess::NormalExit || exit_code != 0) return;
+
+            const QJsonDocument doc = QJsonDocument::fromJson(raw);
+            if (!doc.isObject()) return;
+            const QJsonObject obj = doc.object();
+
+            if (obj.contains(QStringLiteral("slot_committed")) &&
+                !obj.value(QStringLiteral("slot_committed")).toBool(true)) {
+                if (!*notified_rollback) {
+                    *notified_rollback = true;
+                    notifications->pushNotification(
+                        QStringLiteral("System Update"), 0,
+                        QStringLiteral("info"),
+                        QStringLiteral("OS Update Rolled Back"),
+                        QStringLiteral("Boot returned to the previous healthy OS slot."),
+                        7000);
+                }
+                return;
+            }
+
+            const QString pending =
+                obj.value(QStringLiteral("pending_slot")).toString().trimmed();
+            const QJsonValue avail_val =
+                obj.value(QStringLiteral("available_update"));
+            QString avail_ver;
+            if (avail_val.isObject()) {
+                avail_ver = avail_val.toObject()
+                                .value(QStringLiteral("version"))
+                                .toString()
+                                .trimmed();
+            }
+
+            if (!pending.isEmpty()) {
+                if (!*notified_pending) {
+                    *notified_pending = true;
+                    const QString target =
+                        avail_ver.isEmpty() ? pending : avail_ver;
+                    notifications->pushNotification(
+                        QStringLiteral("System Update"), 0,
+                        QStringLiteral("settings-app"),
+                        QStringLiteral("Restart Required to Finish Update"),
+                        QStringLiteral("FinnOS (%1) is staged and ready on reboot.")
+                            .arg(target),
+                        7000);
+                }
+                return;
+            }
+
+            if (!avail_ver.isEmpty() && avail_ver != *last_notified_version) {
+                *last_notified_version = avail_ver;
+                notifications->pushNotification(
+                    QStringLiteral("System Update"), 0,
+                    QStringLiteral("settings-app"),
+                    QStringLiteral("FinnOS %1 Available").arg(avail_ver),
+                    QStringLiteral("Open Settings to review and install."),
+                    6000);
+            }
+        });
+    QObject::connect(proc, &QProcess::errorOccurred, parent,
+                     [proc](QProcess::ProcessError) { proc->deleteLater(); });
+    proc->start(exe, {QStringLiteral("status"), QStringLiteral("--json")});
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
@@ -58,6 +150,47 @@ int main(int argc, char** argv) {
 
     auto* foreign_windows = new finn::shell::ForeignWindowsManager(&app);
     auto* lock_win = new finn::shell::LockScreenWindow();
+
+    // A lock request is a small file in /run/finn/state, written by finn-comp
+    // on Super+L or when the idle timeout in Settings is reached. The shell
+    // owns the overlay and the password check; the compositor owns no UI.
+    const QString state_dir = QString::fromLatin1(finn::kCompositorStateDir);
+    const QString lock_request = QString::fromLatin1(finn::kLockRequestPath);
+    auto* lock_watcher = new QFileSystemWatcher(&app);
+    auto consume_lock_request = [lock_win, lock_request]() {
+        if (!QFile::exists(lock_request)) return;
+        QFile::remove(lock_request);
+        lock_win->lockNow();
+    };
+    if (QDir(state_dir).exists()) {
+        lock_watcher->addPath(state_dir);
+        consume_lock_request();
+    } else {
+        const QString parent_dir = QFileInfo(state_dir).absolutePath();
+        if (QDir(parent_dir).exists()) {
+            lock_watcher->addPath(parent_dir);
+        }
+    }
+    QObject::connect(
+        lock_watcher, &QFileSystemWatcher::directoryChanged, &app,
+        [lock_watcher, state_dir, consume_lock_request](const QString&) {
+            if (QDir(state_dir).exists() &&
+                !lock_watcher->directories().contains(state_dir)) {
+                lock_watcher->addPath(state_dir);
+            }
+            consume_lock_request();
+        });
+
+    // Lock before suspend when the Settings toggle is on. logind's signal is
+    // a real event; no timer is pretending to know when the machine sleeps.
+    if (finn::sys::load_merged_settings().lock_on_sleep) {
+        QDBusConnection::systemBus().connect(
+            QStringLiteral("org.freedesktop.login1"),
+            QStringLiteral("/org/freedesktop/login1"),
+            QStringLiteral("org.freedesktop.login1.Manager"),
+            QStringLiteral("PrepareForSuspend"),
+            lock_win, SLOT(lockNow()));
+    }
 
     auto launch_app = [notifications](const std::string& app_id) {
         finn::SessionClient client;
@@ -208,20 +341,15 @@ int main(int argc, char** argv) {
             });
         oobe_proc->start(oobe_bin, {});
     } else {
+        // A normal boot is the Plymouth splash: the Finn mark on a progress
+        // bar, drawn from inside the initramfs. The ribbon "hi." animation
+        // belongs to first-time setup only — finn-oobe plays it on its first
+        // step — so nothing is drawn over a completed desktop here.
         dock->show();
-
-        auto* boot_splash = new finn::shell::BootSplashWindow();
-        const char* no_splash_env = std::getenv("FINN_NO_BOOT_SPLASH");
-        const char* force_splash_env = std::getenv("FINN_BOOT_SPLASH");
-        const char* hold_splash_env = std::getenv("FINN_BOOT_SPLASH_HOLD");
-        const bool skip_splash =
-            (no_splash_env && *no_splash_env == '1') ||
-            (open_env && *open_env != '\0') ||
-            (finn::ui::FinnThemeManager::instance().reducedMotion() &&
-             !(force_splash_env && *force_splash_env == '1'));
-        if (!skip_splash) {
-            const bool hold = (hold_splash_env && *hold_splash_env == '1');
-            boot_splash->startBootAnimation(hold);
+        const char* no_lock_env = std::getenv("FINN_NO_LOCK");
+        if ((!open_env || *open_env == '\0') &&
+            !(no_lock_env && *no_lock_env == '1')) {
+            lock_win->lockNow();
         }
     }
 
@@ -237,5 +365,26 @@ int main(int argc, char** argv) {
             else if (which == "control") emit dock->statusClicked();
         });
     }
+    // Poll `finn-update status --json` asynchronously (when present) to surface
+    // available, staged, or rolled-back OTA states via NotificationServer.
+    auto ota_last_ver = std::make_shared<QString>();
+    auto ota_notified_pending = std::make_shared<bool>(false);
+    auto ota_notified_rollback = std::make_shared<bool>(false);
+    QTimer::singleShot(5000, &app, [&, ota_last_ver, ota_notified_pending,
+                                     ota_notified_rollback]() {
+        startOtaStatusPoll(&app, notifications, ota_last_ver,
+                           ota_notified_pending, ota_notified_rollback);
+    });
+    auto* ota_poll_timer = new QTimer(&app);
+    ota_poll_timer->setInterval(4 * 3600 * 1000);
+    QObject::connect(ota_poll_timer, &QTimer::timeout, &app,
+                     [&, ota_last_ver, ota_notified_pending,
+                      ota_notified_rollback]() {
+                         startOtaStatusPoll(&app, notifications, ota_last_ver,
+                                            ota_notified_pending,
+                                            ota_notified_rollback);
+                     });
+    ota_poll_timer->start();
+
     return app.exec();
 }

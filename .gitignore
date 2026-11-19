@@ -11,10 +11,23 @@
 /apps/files/finn-files
 /apps/settings/finn-settings
 /apps/wallpaper/finn-wallpaper
+/apps/terminal/finn-terminal
+/apps/notes/finn-notes
+/apps/store/finn-store
+/apps/viewer/finn-viewer
+/apps/monitor/finn-monitor
+/apps/installer/finn-installer
+/apps/oobe/finn-oobe
+/apps/flourish/finn-flourish
 /sdk/template/finn-counter
 /tests/unit/test_app_registry
 /tests/unit/test_animation
 /tests/unit/test_session_client
+/tests/unit/test_search
+/tests/unit/test_compat
+/tests/unit/test_sys_files
+/tests/unit/test_spring
+/tests/unit/test_ota
 *.dSYM/
 
 # Captures. A session's PPM and PNG files are artefacts, not the OS.
@@ -46,6 +59,3 @@ build/
 
 # The agent's local state (taste files and scratch data), not the tree.
 .commandcode/
-/tests/unit/test_search
-/tests/unit/test_compat
-/tests/unit/test_sys_files

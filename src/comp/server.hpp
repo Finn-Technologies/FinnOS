@@ -11,7 +11,10 @@
 #include <cstdint>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace finn {
 
@@ -35,6 +38,8 @@ public:
     struct LockSurface;
     struct KeyboardDevice;
     struct PointerDevice;
+    struct TouchDevice;
+    struct TabletDevice;
     struct OutputDevice;
 
     Server();
@@ -55,11 +60,19 @@ public:
     void minimize_all_toggle();
     ManagedWindow* find_xdg_toplevel(const wlr_xdg_toplevel* top) const;
 
-    // Pointer / interactive window ops
+    // Pointer / touch / interactive window ops
     void process_cursor_motion(uint32_t time_msec);
+    void handle_pointer_button(uint32_t time_msec, uint32_t button,
+                               wl_pointer_button_state state);
+    wlr_surface* surface_at(double lx, double ly, double* sx, double* sy,
+                            bool* in_top_or_overlay_layer,
+                            bool* in_lock_layer) const;
     void update_cursor_shape_or_edge(double lx, double ly);
     void begin_move(ManagedWindow* win);
     void begin_resize(ManagedWindow* win, uint32_t edges);
+
+    bool is_session_locked() const { return session_locked_; }
+    bool is_input_locked() const;
 
     void create_popup(wlr_xdg_popup* popup, wlr_scene_tree* parent_tree);
     wlr_scene_tree* parent_tree_for_xdg(wlr_surface* parent) const;
@@ -78,6 +91,7 @@ public:
     }
     wlr_xwayland* xwayland() const { return xwayland_; }
     wlr_scene_tree* toplevel_tree() const { return toplevel_tree_; }
+    wlr_scene_tree* fullscreen_tree() const { return fullscreen_tree_; }
     wlr_scene_tree* top_layer_tree() const { return layer_trees_[2]; }
     bool dark_theme() const { return dark_theme_; }
     bool reduced_motion() const { return reduced_motion_; }
@@ -87,12 +101,33 @@ public:
     CursorMode cursor_mode() const { return cursor_mode_; }
 
 private:
+    struct ActiveTouchPoint {
+        int32_t touch_id = -1;
+        double start_lx = 0.0;
+        double start_ly = 0.0;
+        double cur_lx = 0.0;
+        double cur_ly = 0.0;
+        double surf_origin_lx = 0.0;
+        double surf_origin_ly = 0.0;
+        bool has_surface = false;
+        bool edge_candidate = false;
+        bool gesture_triggered = false;
+    };
+
+    static std::vector<std::string> settings_paths();
+    static std::optional<std::string> read_setting_value(std::string_view key);
     static OutputConfig read_output_config();
     static bool read_dark_setting();
     static bool read_reduced_motion_setting();
+    static int read_auto_lock_minutes();
+    static int read_cursor_size_setting();
+    static std::string read_kb_layout_setting();
+    void apply_keyboard_layout(wlr_keyboard* kb, const std::string& layout) const;
     void apply_output_config(wlr_output* output, const OutputConfig& cfg);
     void sync_all_ssd_themes();
     void reload_cursor_theme();
+    void focus_lock_surface(wlr_surface* surface);
+    void update_lock_backdrop();
 
     void shutdown();
 
@@ -108,10 +143,15 @@ private:
     wlr_output_manager_v1* output_manager_ = nullptr;
 
     wlr_scene_rect* background_rect_ = nullptr;
-    // Strict scene stack order: Background, Bottom, Toplevels (separate), Top, Overlay
+    // Strict scene stack order:
+    // Background -> layer 0 -> layer 1 -> toplevels -> layer 2 (top) -> fullscreen -> layer 3 (overlay) -> lock
     std::array<wlr_scene_tree*, 4> layer_trees_{};
     wlr_scene_tree* toplevel_tree_ = nullptr;
+    wlr_scene_tree* fullscreen_tree_ = nullptr;
     wlr_scene_tree* lock_tree_ = nullptr;
+    wlr_scene_rect* lock_bg_rect_ = nullptr;
+    wlr_session_lock_v1* active_lock_ = nullptr;
+    bool session_locked_ = false;
 
     wlr_compositor* compositor_ = nullptr;
     wlr_xdg_shell* xdg_shell_ = nullptr;
@@ -141,15 +181,21 @@ private:
     bool dark_theme_ = false;
     bool reduced_motion_ = false;
     bool all_minimized_state_ = false;
+    uint64_t last_activity_msec_ = 0;
     int cursor_size_ = 24;
     std::string active_cursor_name_ = "left_ptr";
+    std::string active_kb_layout_;
 
     std::list<std::unique_ptr<OutputDevice>> outputs_;
     std::list<std::unique_ptr<KeyboardDevice>> keyboards_;
     std::list<std::unique_ptr<PointerDevice>> pointers_;
+    std::list<std::unique_ptr<TouchDevice>> touches_;
+    std::list<std::unique_ptr<TabletDevice>> tablets_;
     std::list<std::unique_ptr<ManagedWindow>> windows_;
     std::list<std::unique_ptr<PopupSurface>> popups_;
     std::list<std::unique_ptr<LayerSurface>> layers_;
+    std::list<std::unique_ptr<LockSurface>> lock_surfaces_;
+    std::vector<ActiveTouchPoint> active_touches_;
 
     wl_event_source* watchdog_timer_ = nullptr;
     wl_event_source* theme_timer_ = nullptr;
@@ -170,6 +216,19 @@ private:
     wl_listener cursor_button_{};
     wl_listener cursor_axis_{};
     wl_listener cursor_frame_{};
+    wl_listener cursor_touch_down_{};
+    wl_listener cursor_touch_up_{};
+    wl_listener cursor_touch_motion_{};
+    wl_listener cursor_touch_frame_{};
+    wl_listener cursor_touch_cancel_{};
+    wl_listener cursor_tablet_axis_{};
+    wl_listener cursor_tablet_proximity_{};
+    wl_listener cursor_tablet_tip_{};
+    wl_listener cursor_tablet_button_{};
+    wl_listener new_session_lock_{};
+    wl_listener active_lock_new_surface_{};
+    wl_listener active_lock_unlock_{};
+    wl_listener active_lock_destroy_{};
     wl_listener output_mgr_apply_{};
     wl_listener output_mgr_test_{};
     wl_listener xwayland_ready_{};
@@ -191,6 +250,16 @@ private:
     static void on_cursor_button(wl_listener* listener, void* data);
     static void on_cursor_axis(wl_listener* listener, void* data);
     static void on_cursor_frame(wl_listener* listener, void* data);
+    static void on_cursor_touch_down(wl_listener* listener, void* data);
+    static void on_cursor_touch_up(wl_listener* listener, void* data);
+    static void on_cursor_touch_motion(wl_listener* listener, void* data);
+    static void on_cursor_touch_frame(wl_listener* listener, void* data);
+    static void on_cursor_touch_cancel(wl_listener* listener, void* data);
+    static void on_cursor_tablet_axis(wl_listener* listener, void* data);
+    static void on_cursor_tablet_proximity(wl_listener* listener, void* data);
+    static void on_cursor_tablet_tip(wl_listener* listener, void* data);
+    static void on_cursor_tablet_button(wl_listener* listener, void* data);
+    static void on_new_session_lock(wl_listener* listener, void* data);
     static void on_output_mgr_apply(wl_listener* listener, void* data);
     static void on_output_mgr_test(wl_listener* listener, void* data);
     static void on_xwayland_ready(wl_listener* listener, void* data);

@@ -35,31 +35,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-QString rgba_css(const QColor& c) {
-    return QStringLiteral("rgba(%1, %2, %3, %4)")
-        .arg(c.red())
-        .arg(c.green())
-        .arg(c.blue())
-        .arg(c.alpha());
-}
-
-QString scrollbar_qss(const finn::ui::FinnTokens& t) {
-    const QColor thumb(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 68 : 52);
-    const QColor hover(t.ink.red(), t.ink.green(), t.ink.blue(), t.dark ? 112 : 88);
-    return QStringLiteral(
-               "QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }"
-               "QScrollBar::handle:vertical { background: %1; border-radius: 4px; min-height: 28px; }"
-               "QScrollBar::handle:vertical:hover { background: %2; }"
-               "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
-               "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-               "QScrollBar:horizontal { background: transparent; height: 8px; margin: 2px; }"
-               "QScrollBar::handle:horizontal { background: %1; border-radius: 4px; min-width: 28px; }"
-               "QScrollBar::handle:horizontal:hover { background: %2; }"
-               "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
-               "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }")
-        .arg(rgba_css(thumb), rgba_css(hover));
-}
-
 void apply_header_16px_regular(finn::ui::FinnLabel* lbl) {
     if (!lbl) return;
     auto sync = [lbl]() {
@@ -84,8 +59,34 @@ QString format_bytes(qint64 bytes) {
     return QStringLiteral("%1 GB").arg(bytes / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
 }
 
+bool is_same_or_descendant(const QString& candidate_dst, const QString& src_dir) {
+    std::error_code ec;
+    const fs::path src_c = fs::weakly_canonical(src_dir.toStdString(), ec);
+    if (ec) return false;
+    const fs::path dst_c = fs::weakly_canonical(candidate_dst.toStdString(), ec);
+    if (ec) return false;
+    auto s_it = src_c.begin();
+    auto d_it = dst_c.begin();
+    for (; s_it != src_c.end(); ++s_it, ++d_it) {
+        if (d_it == dst_c.end() || *s_it != *d_it) return false;
+    }
+    return true;
+}
+
 bool copy_recursive(const QFileInfo& src, const QString& dst_path) {
+    if (src.isSymLink()) {
+        std::error_code ec;
+        const fs::path src_p(src.absoluteFilePath().toStdString());
+        const fs::path dst_p(dst_path.toStdString());
+        fs::remove(dst_p, ec);
+        ec.clear();
+        fs::copy_symlink(src_p, dst_p, ec);
+        return !ec;
+    }
     if (src.isDir()) {
+        if (is_same_or_descendant(dst_path, src.absoluteFilePath())) {
+            return false;
+        }
         if (!QDir().mkpath(dst_path)) return false;
         const QDir src_dir(src.absoluteFilePath());
         for (const QFileInfo& entry :
@@ -107,7 +108,6 @@ struct FileEntryData {
     QString size_text;
     QString modified_text;
     QString icon_name;
-    QColor badge_color;
     bool is_dir = false;
 };
 
@@ -118,6 +118,8 @@ public:
     FileEntryCard(FileEntryData data, bool grid_mode, QWidget* parent = nullptr)
         : QWidget(parent), data_(std::move(data)), grid_mode_(grid_mode) {
         setAttribute(Qt::WA_Hover, true);
+        setFocusPolicy(Qt::StrongFocus);
+        setAccessibleName(data_.name);
         setCursor(Qt::PointingHandCursor);
         setFixedHeight(grid_mode_ ? 64 : 52);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -173,6 +175,21 @@ protected:
         QWidget::mouseDoubleClickEvent(event);
     }
 
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            if (on_select_) on_select_();
+            if (on_activate_) on_activate_();
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Space) {
+            if (on_select_) on_select_();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
     void paintEvent(QPaintEvent*) override {
         const auto& tm = finn::ui::FinnThemeManager::instance();
         const auto& t = tm.tokens();
@@ -187,26 +204,26 @@ protected:
             bg = t.tile_on;
             border = t.accent;
         } else if (hovered_) {
-            bg = t.dark ? t.tile.lighter(108) : QColor(0xF8, 0xFA, 0xFC);
+            bg = t.surface_hover;
         }
 
         p.setBrush(bg);
-        p.setPen(QPen(border, selected_ ? 1.4 : 1.0));
+        p.setPen(QPen(hasFocus() ? t.accent : border, (selected_ || hasFocus()) ? 1.6 : 1.0));
         p.drawRoundedRect(r, finn::ui::kRadiusMd, finn::ui::kRadiusMd);
 
         // 36x36 crisp icon container on the left
         const QRectF icon_box(12.0, (height() - 36.0) / 2.0, 36.0, 36.0);
-        QColor badge_bg = data_.badge_color;
+        const QColor badge_tint = t.mute;
+        QColor badge_bg = badge_tint;
         badge_bg.setAlpha(t.dark ? 42 : 26);
         p.setBrush(badge_bg);
         p.setPen(Qt::NoPen);
         p.drawRoundedRect(icon_box, 6.0, 6.0);
 
-        const QRectF glyph_rect(icon_box.x() + 7.0, icon_box.y() + 7.0, 22.0, 22.0);
-        tm.paintIcon(&p, glyph_rect, data_.icon_name, data_.badge_color);
+        const QRectF glyph_rect(icon_box.x() + 8.0, icon_box.y() + 8.0, 20.0, 20.0);
+        tm.paintIcon(&p, glyph_rect, data_.icon_name, badge_tint);
 
-        const QColor muted_half =
-            t.dark ? QColor(255, 255, 255, 128) : QColor(0, 0, 0, 128);
+        const QColor muted_half = t.mute;
 
         QFont name_font = finn::ui::finn_font(10.5, QFont::Normal);
         name_font.setPixelSize(13);
@@ -216,7 +233,7 @@ protected:
         meta_font.setPixelSize(12);
         const QFontMetrics meta_fm(meta_font);
 
-        const int text_x = 60;
+        const int text_x = 56;
         if (grid_mode_) {
             const int avail_w = std::max(20, width() - text_x - 12);
             p.setFont(name_font);
@@ -234,7 +251,7 @@ protected:
                        Qt::AlignLeft | Qt::AlignVCenter,
                        meta_fm.elidedText(meta, Qt::ElideRight, avail_w));
         } else {
-            const int right_meta_w = 190;
+            const int right_meta_w = 192;
             const int avail_name_w = std::max(40, width() - text_x - right_meta_w - 16);
             p.setFont(name_font);
             p.setPen(t.ink);
@@ -321,35 +338,35 @@ private:
                     this, [this](const QString&) { refreshListing(); });
         }
 
+        // Places are navigation, not categories: one accent for Home, one
+        // neutral for the rest. The icon glyph carries the meaning.
         auto add_place = [&](const QString& id, const QString& icon,
                              const QString& label, const QString& path,
-                             const QColor& badge_color) {
+                             bool accent = false) {
             places_.push_back({id, path});
-            sidebar_->addItem(id, icon, label, badge_color);
+            sidebar_->addItem(id, icon, label,
+                              accent ? finn::ui::nav_accent_light()
+                                     : finn::ui::nav_neutral_light(),
+                              accent ? finn::ui::nav_accent_dark()
+                                     : finn::ui::nav_neutral_dark());
         };
 
         add_place(QStringLiteral("home"), QStringLiteral("home-09"),
-                  QStringLiteral("Home"), QDir::homePath(),
-                  QColor(0x00, 0x7B, 0xFF));
+                  QStringLiteral("Home"), QDir::homePath(), true);
         add_place(QStringLiteral("desktop"), QStringLiteral("display"),
                   QStringLiteral("Desktop"),
-                  QStandardPaths::writableLocation(QStandardPaths::DesktopLocation),
-                  QColor(0x3B, 0x82, 0xF6));
+                  QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
         add_place(QStringLiteral("docs"), QStringLiteral("notes"),
                   QStringLiteral("Documents"),
-                  QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
-                  QColor(0x58, 0x56, 0xD6));
+                  QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
         add_place(QStringLiteral("downloads"), QStringLiteral("download"),
                   QStringLiteral("Downloads"),
-                  QStandardPaths::writableLocation(QStandardPaths::DownloadLocation),
-                  QColor(0x22, 0xC5, 0x5E));
+                  QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
         add_place(QStringLiteral("pictures"), QStringLiteral("paint-brush"),
                   QStringLiteral("Pictures"),
-                  QStandardPaths::writableLocation(QStandardPaths::PicturesLocation),
-                  QColor(0xF5, 0x9E, 0x0B));
+                  QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
         add_place(QStringLiteral("root"), QStringLiteral("folder"),
-                  QStringLiteral("Root"), QStringLiteral("/"),
-                  QColor(0xAB, 0xAB, 0xAB));
+                  QStringLiteral("Root"), QStringLiteral("/"));
 
         const QString wine_c =
             QDir::homePath() + QStringLiteral("/") +
@@ -357,8 +374,7 @@ private:
         if (QFileInfo::exists(wine_c)) {
             sidebar_->addSectionSpacer(12);
             add_place(QStringLiteral("wine_c"), QStringLiteral("view-open-windows"),
-                      QStringLiteral("Windows C:"), wine_c,
-                      QColor(0x0E, 0xA5, 0xE9));
+                      QStringLiteral("Windows C:"), wine_c);
         }
 
         sidebar_->addStretch();
@@ -389,8 +405,10 @@ private:
 
         back_btn_ = new finn::ui::FinnIconButton(QStringLiteral("chevron-left"), 28, 15, page);
         back_btn_->setToolTip(QStringLiteral("Back"));
+        back_btn_->setAccessibleName(QStringLiteral("Back"));
         up_btn_ = new finn::ui::FinnIconButton(QStringLiteral("chevron-right"), 28, 15, page);
         up_btn_->setToolTip(QStringLiteral("Parent Folder"));
+        up_btn_->setAccessibleName(QStringLiteral("Parent Folder"));
 
         folder_title_ = new finn::ui::FinnLabel(
             QStringLiteral("Home"), finn::ui::FinnLabel::Role::Title,
@@ -402,16 +420,19 @@ private:
         auto* new_folder_btn = new finn::ui::FinnButton(
             QStringLiteral("New Folder"), finn::ui::FinnButton::Variant::Secondary,
             QStringLiteral("folder"), page);
+        new_folder_btn->setAccessibleName(QStringLiteral("New Folder"));
         new_folder_btn->setFixedHeight(28);
 
         auto* term_btn = new finn::ui::FinnButton(
             QStringLiteral("Terminal"), finn::ui::FinnButton::Variant::Secondary,
             {}, page);
+        term_btn->setAccessibleName(QStringLiteral("Open Terminal here"));
         term_btn->setFixedHeight(28);
 
         view_toggle_btn_ = new finn::ui::FinnButton(
             QStringLiteral("List"), finn::ui::FinnButton::Variant::Secondary,
             QStringLiteral("app-grid"), page);
+        view_toggle_btn_->setAccessibleName(QStringLiteral("Switch between Grid and List view"));
         view_toggle_btn_->setFixedHeight(28);
         view_toggle_btn_->setToolTip(QStringLiteral("Switch between Grid and List view"));
 
@@ -440,37 +461,44 @@ private:
         open_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Open"), finn::ui::FinnButton::Variant::Primary,
             {}, action_bar_);
+        open_btn_->setAccessibleName(QStringLiteral("Open selected item"));
         open_btn_->setFixedHeight(28);
 
         wine_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Run in Wine"), finn::ui::FinnButton::Variant::Primary,
             QStringLiteral("view-open-windows"), action_bar_);
+        wine_btn_->setAccessibleName(QStringLiteral("Run in Wine"));
         wine_btn_->setFixedHeight(28);
         wine_btn_->setVisible(false);
 
         rename_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Rename"), finn::ui::FinnButton::Variant::Secondary,
             QStringLiteral("edit-01"), action_bar_);
+        rename_btn_->setAccessibleName(QStringLiteral("Rename selected item"));
         rename_btn_->setFixedHeight(28);
 
         copy_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Copy"), finn::ui::FinnButton::Variant::Secondary,
             {}, action_bar_);
+        copy_btn_->setAccessibleName(QStringLiteral("Copy selected item"));
         copy_btn_->setFixedHeight(28);
 
         cut_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Cut"), finn::ui::FinnButton::Variant::Secondary,
             {}, action_bar_);
+        cut_btn_->setAccessibleName(QStringLiteral("Cut selected item"));
         cut_btn_->setFixedHeight(28);
 
         paste_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Paste"), finn::ui::FinnButton::Variant::Secondary,
             {}, action_bar_);
+        paste_btn_->setAccessibleName(QStringLiteral("Paste item"));
         paste_btn_->setFixedHeight(28);
 
         delete_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Delete"), finn::ui::FinnButton::Variant::Danger,
             {}, action_bar_);
+        delete_btn_->setAccessibleName(QStringLiteral("Delete selected item"));
         delete_btn_->setFixedHeight(28);
 
         act_lay->addWidget(selection_lbl_, 1);
@@ -692,34 +720,28 @@ private:
                 ++dirs;
                 d.kind = QStringLiteral("Folder");
                 d.icon_name = QStringLiteral("folder");
-                d.badge_color = QColor(0x00, 0x7B, 0xFF);
             } else {
                 ++files;
                 total_bytes += fi.size();
                 if (ext == QStringLiteral("exe") || ext == QStringLiteral("msi")) {
                     d.kind = QStringLiteral("Windows Executable");
                     d.icon_name = QStringLiteral("view-open-windows");
-                    d.badge_color = QColor(0x0E, 0xA5, 0xE9);
                 } else if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg") ||
                            ext == QStringLiteral("jpeg") || ext == QStringLiteral("webp") ||
                            ext == QStringLiteral("svg")) {
                     d.kind = QStringLiteral("Image");
                     d.icon_name = QStringLiteral("paint-brush");
-                    d.badge_color = QColor(0xF5, 0x9E, 0x0B);
                 } else if (fi.isExecutable()) {
                     d.kind = QStringLiteral("Executable");
                     d.icon_name = QStringLiteral("terminal");
-                    d.badge_color = QColor(0x22, 0xC5, 0x5E);
                 } else if (ext == QStringLiteral("md") || ext == QStringLiteral("txt") ||
                            ext == QStringLiteral("json") || ext == QStringLiteral("conf")) {
                     d.kind = QStringLiteral("Document");
                     d.icon_name = QStringLiteral("edit-01");
-                    d.badge_color = QColor(0x58, 0x56, 0xD6);
                 } else {
                     d.kind = ext.isEmpty() ? QStringLiteral("File")
                                            : QStringLiteral("%1 File").arg(ext.toUpper());
                     d.icon_name = QStringLiteral("edit-01");
-                    d.badge_color = QColor(0x64, 0x74, 0x8B);
                 }
             }
 
@@ -827,7 +849,7 @@ private:
         if (scroll_) {
             scroll_->setStyleSheet(
                 QStringLiteral("QScrollArea { background: transparent; border: none; }%1")
-                    .arg(scrollbar_qss(t)));
+                    .arg(finn::ui::scrollbar_qss(t)));
         }
     }
 
@@ -946,6 +968,13 @@ private:
             return;
         }
         QString dst = QDir(current_dir_).absoluteFilePath(src.fileName());
+        if (src.isDir() && !src.isSymLink() &&
+            is_same_or_descendant(current_dir_, src.absoluteFilePath()) &&
+            dst != src.absoluteFilePath()) {
+            showToast(QStringLiteral("Cannot paste a folder into itself"),
+                      finn::ui::FinnToast::Severity::Warning);
+            return;
+        }
         if (dst == src.absoluteFilePath()) {
             dst = QDir(current_dir_)
                       .absoluteFilePath(src.fileName() + QStringLiteral(" copy"));

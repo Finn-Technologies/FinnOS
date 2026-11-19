@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=FinnOS
+Description=The Finn boot mark on the FinnOS dark field, with no cursor or progress text.
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/finnos
+ScriptFile=/usr/share/plymouth/themes/finnos/finnos.script
