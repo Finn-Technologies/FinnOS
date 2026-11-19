@@ -368,7 +368,7 @@ private:
         apply_header_16px_regular(hdr_lbl);
         side_root->addWidget(hdr_lbl);
 
-        sidebar_search_ = new FinnSearchField(QStringLiteral("Filter images"), sidebar_);
+        sidebar_search_ = new FinnSearchField(QStringLiteral("Filter"), sidebar_);
         sidebar_search_->setAccessibleName(QStringLiteral("Filter images in folder"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
@@ -376,20 +376,15 @@ private:
                 this, [this](const QString&) { rebuildSidebarImages(); });
         side_root->addWidget(sidebar_search_);
 
-        // Presets use one accent for the current folder and one neutral for
-        // the rest; the icon glyph names the kind of image.
         auto* presets_col = new QVBoxLayout();
         presets_col->setContentsMargins(0, 0, 0, 2);
         presets_col->setSpacing(4);
 
         auto add_preset = [&](const QString& id, const QString& icon,
                               const QString& label, bool accent = false) {
+            (void)accent;
             auto* item = new FinnNavItem(icon, label, sidebar_);
             item->setAccessibleName(label);
-            item->setBadgeColor(accent ? finn::ui::nav_accent_light()
-                                       : finn::ui::nav_neutral_light(),
-                                accent ? finn::ui::nav_accent_dark()
-                                       : finn::ui::nav_neutral_dark());
             presets_col->addWidget(item);
             preset_items_.push_back({id, item});
             connect(item, &QAbstractButton::clicked, this, [this, id]() {
@@ -401,9 +396,9 @@ private:
             });
         };
 
-        add_preset(QStringLiteral("wallpapers"), QStringLiteral("display"),
+        add_preset(QStringLiteral("wallpapers"), QStringLiteral("image"),
                    QStringLiteral("Wallpapers"), true);
-        add_preset(QStringLiteral("icons"), QStringLiteral("paint-brush"),
+        add_preset(QStringLiteral("icons"), QStringLiteral("grid"),
                    QStringLiteral("System Icons"));
         add_preset(QStringLiteral("pointers"), QStringLiteral("cursor"),
                    QStringLiteral("Pointers"));
@@ -412,7 +407,7 @@ private:
         side_root->addLayout(presets_col);
 
         folder_caption_ = new FinnLabel(
-            QStringLiteral("Images in folder"),
+            QStringLiteral("Images"),
             FinnLabel::Role::Caption, FinnLabel::Tone::Mute, sidebar_);
         folder_caption_->setContentsMargins(6, 4, 6, 0);
         side_root->addWidget(folder_caption_);
@@ -423,9 +418,11 @@ private:
         side_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         side_scroll_->setAutoFillBackground(false);
         side_scroll_->viewport()->setAutoFillBackground(false);
+        side_scroll_->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
 
         auto* list_host = new QWidget(side_scroll_);
         list_host->setAutoFillBackground(false);
+        list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         images_list_layout_ = new QVBoxLayout(list_host);
         images_list_layout_->setContentsMargins(0, 0, 0, 4);
         images_list_layout_->setSpacing(4);
@@ -668,8 +665,8 @@ private:
             const bool is_cur = (abs == current_path_);
             const QString ext = fi.suffix().toLower();
             const QString ico = (ext == QLatin1String("svg") || ext == QLatin1String("svgz"))
-                                    ? QStringLiteral("paint-brush")
-                                    : QStringLiteral("display");
+                                    ? QStringLiteral("grid")
+                                    : QStringLiteral("image");
             auto* item = new FinnNavItem(ico, fi.fileName(), sidebar_);
             item->setBadgeColor(is_cur ? finn::ui::nav_accent_light()
                                        : finn::ui::nav_neutral_light(),

@@ -228,7 +228,7 @@ public:
         sidebar_ = new FinnSidebar(250, this);
         sidebar_->setHeaderTitle(QStringLiteral("Finn Store"));
         apply_header_16px_regular(sidebar_->headerLabel());
-        sidebar_->setSearchEnabled(true, QStringLiteral("Search apps & packages"));
+        sidebar_->setSearchEnabled(true, QStringLiteral("Search"));
 
         if (sidebar_->searchField()) {
             sidebar_->searchField()->disconnect(sidebar_);
@@ -245,22 +245,22 @@ public:
         }
 
         // The glyph says what the source is; colour is not a category here.
-        sidebar_->addItem(QStringLiteral("discover"), QStringLiteral("boot-mark"),
+        sidebar_->addItem(QStringLiteral("discover"), QStringLiteral("compass"),
                           QStringLiteral("Discover"), nav_accent_light(), nav_accent_dark());
-        sidebar_->addItem(QStringLiteral("all"), QStringLiteral("store"),
+        sidebar_->addItem(QStringLiteral("all"), QStringLiteral("layers"),
                           QStringLiteral("All Apps"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
-        sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("linux"),
+        sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("package"),
                           QStringLiteral("Linux & Flatpak"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("view-open-windows"),
+        sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("window"),
                           QStringLiteral("Windows (Wine)"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("android"), QStringLiteral("android"),
+        sidebar_->addItem(QStringLiteral("android"), QStringLiteral("smartphone"),
                           QStringLiteral("Android"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addSectionSpacer(12);
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
-                          QStringLiteral("Installed & Updates"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal"),
-                          QStringLiteral("FinnSDK Studio"), nav_neutral_light(), nav_neutral_dark());
+                          QStringLiteral("Updates"), nav_neutral_light(), nav_neutral_dark());
+        sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal-square"),
+                          QStringLiteral("FinnSDK"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
@@ -541,26 +541,18 @@ private:
         auto* col = new QVBoxLayout();
         col->setContentsMargins(0, 0, 0, 0);
         col->setSpacing(2);
+        const QString app_name = QString::fromStdString(app.name);
+        QString app_note = QString::fromStdString(app.note).trimmed();
+        if (app_note.isEmpty() || app_note.compare(app_name, Qt::CaseInsensitive) == 0) {
+            app_note = source_label(app.source);
+        }
         auto* name = new ElidedFinnLabel(
-            QString::fromStdString(app.name),
-            FinnLabel::Role::Body, FinnLabel::Tone::Ink, card);
-        name->setFont(finn_font_px(13, QFont::Normal));
+            app_name, FinnLabel::Role::Body, FinnLabel::Tone::Ink, card);
+        name->setFont(finn_font_px(13, QFont::Medium));
         auto* note = new ElidedFinnLabel(
-            QString::fromStdString(app.note),
-            FinnLabel::Role::Caption, FinnLabel::Tone::Dim, card);
+            app_note, FinnLabel::Role::Caption, FinnLabel::Tone::Dim, card);
         col->addWidget(name);
         col->addWidget(note);
-
-        auto* meta_row = new QHBoxLayout();
-        meta_row->setContentsMargins(0, 0, 0, 0);
-        meta_row->setSpacing(6);
-        // Quiet mono source text, not a blue badge on every tile.
-        auto* source = new FinnLabel(source_label(app.source),
-                                     FinnLabel::Role::Mono,
-                                     FinnLabel::Tone::Mute, card);
-        meta_row->addWidget(source);
-        meta_row->addStretch(1);
-        col->addLayout(meta_row);
         lay->addLayout(col, 1);
 
         auto* action_btn = new FinnButton(

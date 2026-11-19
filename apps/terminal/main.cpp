@@ -742,7 +742,7 @@ private:
         side_root->addWidget(hdr_lbl);
 
         sidebar_search_ = new FinnSearchField(
-            QStringLiteral("Search sessions"), sidebar_);
+            QStringLiteral("Search"), sidebar_);
         sidebar_search_->setAccessibleName(QStringLiteral("Search terminal sessions"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
@@ -751,10 +751,8 @@ private:
         side_root->addWidget(sidebar_search_);
 
         auto* new_session_item = new FinnNavItem(
-            QStringLiteral("terminal"), QStringLiteral("New Session"), sidebar_);
+            QStringLiteral("plus"), QStringLiteral("New Session"), sidebar_);
         new_session_item->setAccessibleName(QStringLiteral("New Terminal Session"));
-        new_session_item->setBadgeColor(finn::ui::nav_accent_light(),
-                                        finn::ui::nav_accent_dark());
         connect(new_session_item, &QAbstractButton::clicked, this, [this]() {
             createSession(initial_cwd_, {});
         });
@@ -765,10 +763,13 @@ private:
         side_scroll->setFrameShape(QFrame::NoFrame);
         side_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         side_scroll->setAutoFillBackground(false);
+        side_scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
         side_scroll->viewport()->setAutoFillBackground(false);
+        side_scroll->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
 
         auto* list_host = new QWidget(side_scroll);
         list_host->setAutoFillBackground(false);
+        list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         side_list_layout_ = new QVBoxLayout(list_host);
         side_list_layout_->setContentsMargins(0, 2, 0, 4);
         side_list_layout_->setSpacing(4);
@@ -960,7 +961,7 @@ private:
                 continue;
             }
             const bool active = (static_cast<int>(i) == current_idx_);
-            auto* item = new FinnNavItem(QStringLiteral("terminal"), s.title, sidebar_);
+            auto* item = new FinnNavItem(QStringLiteral("terminal-square"), s.title, sidebar_);
             item->setBadgeColor(active ? finn::ui::nav_accent_light()
                                        : finn::ui::nav_neutral_light(),
                                 active ? finn::ui::nav_accent_dark()

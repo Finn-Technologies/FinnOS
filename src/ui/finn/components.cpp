@@ -1439,9 +1439,9 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
     apply_press_scale(p, this, press_scale_);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    const qreal radius = badge_color_.isValid() ? 5.0 : kRadiusMd;
+    const qreal radius = kRadiusMd;
     if (selected_) {
-        p.setBrush(badge_color_.isValid() ? t.nav_sel : t.tile_on);
+        p.setBrush(t.nav_sel);
         p.setPen(Qt::NoPen);
         p.drawRoundedRect(r, radius, radius);
     } else if (hover_progress_ > 0.001) {
@@ -1450,42 +1450,26 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
         p.drawRoundedRect(r, radius, radius);
     }
 
-    const QColor fg = (selected_ && !badge_color_.isValid()) ? t.on : t.ink;
+    const QColor text_fg = selected_ ? t.ink : t.ink;
+    const QColor icon_fg = selected_ ? t.accent : t.dim;
     int text_left = 12;
     if (!icon_name_.isEmpty()) {
-        if (badge_color_.isValid()) {
-            // Figma Settings 26x26 circular icon badge with 17x17 white icon.
-            const QRectF circle(5, (height() - 26) / 2.0, 26, 26);
-            QColor resolved_badge = (t.dark && badge_dark_color_.isValid())
-                                        ? badge_dark_color_
-                                        : badge_color_;
-            if (t.dark && !badge_dark_color_.isValid() &&
-                badge_color_.lightness() < 60) {
-                resolved_badge = t.surface_input;
-            }
-            p.setBrush(resolved_badge);
-            p.setPen(t.dark ? QPen(t.hair, 1.0) : Qt::NoPen);
-            p.drawEllipse(circle);
-            FinnThemeManager::instance().paintIcon(
-                &p, QRectF(circle.x() + 4.5, circle.y() + 4.5, 17, 17),
-                icon_name_, QColor::fromRgba(colors::fill_light));
-            text_left = 41;
-        } else {
-            FinnThemeManager::instance().paintIcon(
-                &p, QRectF(10, (height() - 16) / 2.0, 16, 16), icon_name_, fg);
-            text_left = 34;
-        }
+        FinnThemeManager::instance().paintIcon(
+            &p, QRectF(10, (height() - 18) / 2.0, 18, 18), icon_name_, icon_fg);
+        text_left = 36;
     }
 
-    p.setFont(finn_font_px(13, QFont::Normal));
-    p.setPen(fg);
+    p.setFont(finn_font_px(13, selected_ ? QFont::Medium : QFont::Normal));
+    p.setPen(text_fg);
     const int badge_reserve = badge_.isEmpty() ? 8 : 42;
-    p.drawText(QRect(text_left, 0, width() - text_left - badge_reserve, height()),
-               Qt::AlignVCenter | Qt::AlignLeft, text());
+    const int avail_w = std::max(0, width() - text_left - badge_reserve);
+    const QString label = p.fontMetrics().elidedText(text(), Qt::ElideRight, avail_w);
+    p.drawText(QRect(text_left, 0, avail_w, height()),
+               Qt::AlignVCenter | Qt::AlignLeft, label);
 
     if (!badge_.isEmpty()) {
         p.setFont(finn_mono_font(8.5, QFont::Normal));
-        p.setPen(selected_ ? t.on : t.mute);
+        p.setPen(t.mute);
         p.drawText(QRect(width() - 40, 0, 30, height()),
                    Qt::AlignVCenter | Qt::AlignRight, badge_);
     }
@@ -1534,8 +1518,8 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
       form_factor_(resolve_form_factor()) {
     setFormFactor(form_factor_);
     root_layout_ = new QVBoxLayout(this);
-    root_layout_->setContentsMargins(12, 24, 12, 12);
-    root_layout_->setSpacing(10);
+    root_layout_->setContentsMargins(12, 20, 12, 12);
+    root_layout_->setSpacing(8);
 
     header_label_ = new FinnLabel(QString(), FinnLabel::Role::Title,
                                   FinnLabel::Tone::Ink, this);
@@ -1567,13 +1551,17 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setAutoFillBackground(false);
+    scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
     scroll->viewport()->setAutoFillBackground(false);
+    scroll->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
 
     auto* container = new QWidget(scroll);
     container->setAutoFillBackground(false);
+    container->setStyleSheet(QStringLiteral("background: transparent;"));
     items_layout_ = new QVBoxLayout(container);
     items_layout_->setContentsMargins(0, 0, 0, 0);
-    items_layout_->setSpacing(5);
+    items_layout_->setSpacing(4);
 
     scroll->setWidget(container);
     install_overscroll_physics(scroll);

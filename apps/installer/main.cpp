@@ -454,7 +454,7 @@ private:
         col->addWidget(hdr);
 
         auto* sub = new FinnLabel(
-            QStringLiteral("Install FinnOS, inspect disks, or open a terminal."),
+            QStringLiteral("Choose an option"),
             FinnLabel::Role::Body, FinnLabel::Tone::Dim, page);
         sub->setAlignment(Qt::AlignCenter);
         col->addWidget(sub);

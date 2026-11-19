@@ -207,7 +207,7 @@ private:
         apply_header_16px_regular(hdr_lbl);
         side_root->addWidget(hdr_lbl);
 
-        sidebar_search_ = new FinnSearchField(QStringLiteral("Search notes"), sidebar_);
+        sidebar_search_ = new FinnSearchField(QStringLiteral("Search"), sidebar_);
         sidebar_search_->setAccessibleName(QStringLiteral("Search notes"));
         sidebar_search_->setFixedHeight(30);
         sidebar_search_->setPillMode(true);
@@ -215,12 +215,9 @@ private:
                 this, [this](const QString&) { rebuildSidebarList(); });
         side_root->addWidget(sidebar_search_);
 
-        // The one accent in the sidebar: create a note.
         new_note_item_ = new FinnNavItem(
-            QStringLiteral("edit-01"), QStringLiteral("New Note"), sidebar_);
+            QStringLiteral("plus"), QStringLiteral("New Note"), sidebar_);
         new_note_item_->setAccessibleName(QStringLiteral("New Note"));
-        new_note_item_->setBadgeColor(finn::ui::nav_accent_light(),
-                                      finn::ui::nav_accent_dark());
         connect(new_note_item_, &QAbstractButton::clicked, this, [this]() { newTab(); });
         side_root->addWidget(new_note_item_);
 
@@ -229,10 +226,13 @@ private:
         side_scroll_->setFrameShape(QFrame::NoFrame);
         side_scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         side_scroll_->setAutoFillBackground(false);
+        side_scroll_->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
         side_scroll_->viewport()->setAutoFillBackground(false);
+        side_scroll_->viewport()->setStyleSheet(QStringLiteral("background: transparent;"));
 
         auto* list_host = new QWidget(side_scroll_);
         list_host->setAutoFillBackground(false);
+        list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         notes_list_layout_ = new QVBoxLayout(list_host);
         notes_list_layout_->setContentsMargins(0, 2, 0, 4);
         notes_list_layout_->setSpacing(4);
@@ -500,7 +500,7 @@ private:
                 continue;
             }
             const bool is_active = (static_cast<int>(i) == current_idx_);
-            auto* nav = new FinnNavItem(QStringLiteral("notes"), d.title, sidebar_);
+            auto* nav = new FinnNavItem(QStringLiteral("file-text"), d.title, sidebar_);
             nav->setBadgeColor(is_active ? accent_light : neutral_light,
                                is_active ? accent_dark : neutral_dark);
             if (d.dirty) {
@@ -526,7 +526,7 @@ private:
                 !fi.fileName().contains(query, Qt::CaseInsensitive)) {
                 continue;
             }
-            auto* nav = new FinnNavItem(QStringLiteral("notes"), fi.fileName(), sidebar_);
+            auto* nav = new FinnNavItem(QStringLiteral("file-text"), fi.fileName(), sidebar_);
             nav->setBadgeColor(neutral_light, neutral_dark);
             nav->setToolTip(abs);
             connect(nav, &QAbstractButton::clicked, this,

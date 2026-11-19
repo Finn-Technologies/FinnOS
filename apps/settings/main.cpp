@@ -267,7 +267,7 @@ public:
                           QStringLiteral("Network"), accent_light, accent_dark);
         sidebar_->addSectionSpacer(12);
 
-        sidebar_->addItem(QStringLiteral("general"), QStringLiteral("settings-02"),
+        sidebar_->addItem(QStringLiteral("general"), QStringLiteral("sliders"),
                           QStringLiteral("General"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("appearance"), QStringLiteral("paint-brush"),
                           QStringLiteral("Appearance"), neutral_light, neutral_dark);
@@ -285,19 +285,11 @@ public:
                           QStringLiteral("Privacy & Security"), neutral_light, neutral_dark);
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("update"),
                           QStringLiteral("Updates"), neutral_light, neutral_dark);
-        sidebar_->addItem(QStringLiteral("compat"), QStringLiteral("windows"),
+        sidebar_->addItem(QStringLiteral("compat"), QStringLiteral("window"),
                           QStringLiteral("Compatibility"), neutral_light, neutral_dark);
+        sidebar_->addItem(QStringLiteral("about"), QStringLiteral("info"),
+                          QStringLiteral("About"), accent_light, accent_dark);
         sidebar_->addStretch();
-
-        // Pin About at the bottom of the sidebar (addFooterWidget) so it stays visible
-        // below the scroll area and keeps Wi-Fi at the top matching Figma 20:64.
-        about_item_ = new finn::ui::FinnNavItem(
-            QStringLiteral("info"), QStringLiteral("About"), sidebar_);
-        about_item_->setBadgeColor(accent_light, accent_dark);
-        connect(about_item_, &QAbstractButton::clicked, this, [this]() {
-            selectPage(QStringLiteral("about"));
-        });
-        sidebar_->addFooterWidget(about_item_);
         setSidebarWidget(sidebar_);
 
         stack_ = new QStackedWidget(this);
@@ -325,7 +317,6 @@ public:
 
         connect(sidebar_, &finn::ui::FinnSidebar::selected, this,
                 [this](const QString& id) {
-                    if (about_item_) about_item_->setSelected(id == QLatin1String("about"));
                     if (page_indices_.contains(id)) {
                         stack_->setCurrentIndex(page_indices_.value(id));
                         if (id == QLatin1String("updates")) refreshOtaStatus();
@@ -356,13 +347,7 @@ public:
 private:
     void selectPage(const QString& id) {
         if (!page_indices_.contains(id)) return;
-        if (id == QLatin1String("about")) {
-            sidebar_->setCurrentId(QString());
-            if (about_item_) about_item_->setSelected(true);
-        } else {
-            if (about_item_) about_item_->setSelected(false);
-            sidebar_->setCurrentId(id);
-        }
+        sidebar_->setCurrentId(id);
         stack_->setCurrentIndex(page_indices_.value(id));
         if (id == QLatin1String("updates")) refreshOtaStatus();
     }
@@ -946,12 +931,12 @@ private:
                 });
         });
         root->addWidget(new finn::ui::FinnSettingRow(
-            QStringLiteral("Release Channel"),
-            QStringLiteral("Choose Stable, Beta, or Dev OTA manifest feed"),
+            QStringLiteral("Release channel"),
+            QStringLiteral("Stable, Beta, or Dev"),
             QStringLiteral("internet"), ota_channel_box_, page));
 
         ota_auto_check_toggle_ = new finn::ui::FinnToggle(true, page);
-        ota_auto_check_toggle_->setAccessibleName(QStringLiteral("Automatic Update Checks"));
+        ota_auto_check_toggle_->setAccessibleName(QStringLiteral("Automatic checks"));
         connect(ota_auto_check_toggle_, &QAbstractButton::toggled, this, [this](bool on) {
             runOtaCommand(
                 QStringLiteral("config"),
@@ -960,17 +945,17 @@ private:
                  QStringLiteral("--json")},
                 [this, on](int code, const QJsonObject&, const QString& err) {
                     if (code != 0) {
-                        showToast(err.isEmpty() ? QStringLiteral("Failed to save auto-check") : err);
+                        showToast(err.isEmpty() ? QStringLiteral("Failed to save setting") : err);
                         refreshOtaStatus();
                         return;
                     }
-                    showToast(on ? QStringLiteral("Automatic update checks enabled")
-                                 : QStringLiteral("Automatic update checks disabled"));
+                    showToast(on ? QStringLiteral("Automatic checks enabled")
+                                 : QStringLiteral("Automatic checks disabled"));
                 });
         });
         root->addWidget(new finn::ui::FinnSettingRow(
-            QStringLiteral("Automatic Update Checks"),
-            QStringLiteral("Check signed manifests periodically via finn-update-check.timer"),
+            QStringLiteral("Automatic checks"),
+            QStringLiteral("Check for updates daily"),
             QStringLiteral("update"), ota_auto_check_toggle_, page));
 
         auto* action_row = new QWidget(page);
@@ -1045,19 +1030,19 @@ private:
         nlay->setContentsMargins(14, 12, 14, 12);
         nlay->setSpacing(6);
         nlay->addWidget(new finn::ui::FinnLabel(
-            QStringLiteral("Release Details & Changelog"),
+            QStringLiteral("Release notes"),
             finn::ui::FinnLabel::Role::Headline, finn::ui::FinnLabel::Tone::Ink, notes_card));
         ota_notes_label_ = new finn::ui::FinnLabel(
-            QStringLiteral("No update check run yet."),
+            QStringLiteral("Not checked yet"),
             finn::ui::FinnLabel::Role::Body, finn::ui::FinnLabel::Tone::Dim, notes_card);
         ota_notes_label_->setWordWrap(true);
         nlay->addWidget(ota_notes_label_);
         root->addWidget(notes_card);
 
         auto* pkg_row = new finn::ui::FinnSettingRow(
-            QStringLiteral("System Packages (pacman)"),
-            QStringLiteral("Query pending repository package updates asynchronously"),
-            QStringLiteral("update"), nullptr, page);
+            QStringLiteral("System packages"),
+            QStringLiteral("Check pacman updates"),
+            QStringLiteral("package"), nullptr, page);
         check_updates_btn_ = new finn::ui::FinnButton(
             QStringLiteral("Check Packages"), finn::ui::FinnButton::Variant::Secondary,
             QStringLiteral("update"), page);
@@ -1556,7 +1541,6 @@ private:
                 const bool committed = obj.value(QStringLiteral("slot_committed")).toBool(true);
                 const bool auto_chk = obj.value(QStringLiteral("auto_check")).toBool(true);
                 const QString last_chk = obj.value(QStringLiteral("last_check")).toString();
-                const QString notes = obj.value(QStringLiteral("notes")).toString();
 
                 ota_layout_ = layout;
                 if (ota_channel_box_) {
@@ -1584,15 +1568,9 @@ private:
                     ota_slot_badge_->setTone(finn::ui::FinnBadge::Tone::Warning);
                     ota_slot_badge_->setText(QStringLiteral("Single Slot"));
                     ota_status_row_->setSubtitle(
-                        QStringLiteral("FinnOS %1 (%2 · %3) · %4 — Last check: %5")
-                            .arg(cur_ver, ch, backend, feed_label,
-                                 last_chk.isEmpty() ? QStringLiteral("never") : last_chk));
-                    setOtaBanner(
-                        finn::ui::FinnBadge::Tone::Warning, QStringLiteral("Single-Slot"),
-                        QStringLiteral("A/B OTA Unavailable"),
-                        notes.isEmpty()
-                            ? QStringLiteral("Single-partition layout detected; A/B image updates require FINNOS_A and FINNOS_B slots.")
-                            : notes);
+                        QStringLiteral("FinnOS %1 · %2 · %3")
+                            .arg(cur_ver, ch, feed_label));
+                    if (ota_banner_row_) ota_banner_row_->setVisible(false);
                     ota_rollback_btn_->setEnabled(false);
                 } else {
                     const QString slot_summary =
@@ -1781,7 +1759,6 @@ private:
     }
 
     finn::ui::FinnSidebar* sidebar_ = nullptr;
-    finn::ui::FinnNavItem* about_item_ = nullptr;
     QStackedWidget* stack_ = nullptr;
     QMap<QString, int> page_indices_;
     finn::ui::FinnButton* check_updates_btn_ = nullptr;

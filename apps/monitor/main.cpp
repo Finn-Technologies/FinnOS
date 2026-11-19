@@ -204,7 +204,7 @@ private:
         sidebar_ = new FinnSidebar(250, this);
         sidebar_->setHeaderTitle(QStringLiteral("Monitor"));
         apply_header_16px_regular(sidebar_->headerLabel());
-        sidebar_->setSearchEnabled(true, QStringLiteral("Filter processes"));
+        sidebar_->setSearchEnabled(true, QStringLiteral("Filter"));
 
         if (sidebar_->searchField()) {
             sidebar_->searchField()->disconnect(sidebar_);
@@ -218,17 +218,17 @@ private:
                     });
         }
 
-        sidebar_->addItem(QStringLiteral("overview"), QStringLiteral("monitor"),
-                          QStringLiteral("System Overview"),
+        sidebar_->addItem(QStringLiteral("overview"), QStringLiteral("activity"),
+                          QStringLiteral("Overview"),
                           finn::ui::nav_accent_light(), finn::ui::nav_accent_dark());
-        sidebar_->addItem(QStringLiteral("processes"), QStringLiteral("settings-02"),
+        sidebar_->addItem(QStringLiteral("processes"), QStringLiteral("layers"),
                           QStringLiteral("Processes"),
                           finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("performance"), QStringLiteral("sun-01"),
+        sidebar_->addItem(QStringLiteral("performance"), QStringLiteral("cpu"),
                           QStringLiteral("Performance"),
                           finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("disks"), QStringLiteral("folder"),
-                          QStringLiteral("Storage & Disks"),
+        sidebar_->addItem(QStringLiteral("disks"), QStringLiteral("hard-drive"),
+                          QStringLiteral("Storage"),
                           finn::ui::nav_neutral_light(), finn::ui::nav_neutral_dark());
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
@@ -255,8 +255,9 @@ private:
         apply_header_16px_regular(page_title_);
 
         summary_pill_ = new FinnLabel(
-            QStringLiteral("CPU 0% · RAM 0%"), FinnLabel::Role::Mono,
+            QString(), FinnLabel::Role::Mono,
             FinnLabel::Tone::Mute, content);
+        summary_pill_->setVisible(false);
 
         auto* refresh_btn = new FinnButton(
             QStringLiteral("Refresh"), FinnButton::Variant::Secondary,

@@ -328,7 +328,7 @@ private:
         sidebar_ = new finn::ui::FinnSidebar(250, this);
         sidebar_->setHeaderTitle(QStringLiteral("Files"));
         apply_header_16px_regular(sidebar_->headerLabel());
-        sidebar_->setSearchEnabled(true, QStringLiteral("Search files"));
+        sidebar_->setSearchEnabled(true, QStringLiteral("Search"));
 
         // Disconnect FinnSidebar's internal item filter so typing in "Search files"
         // filters the current directory view instead of hiding sidebar places.
@@ -356,16 +356,16 @@ private:
         add_place(QStringLiteral("desktop"), QStringLiteral("display"),
                   QStringLiteral("Desktop"),
                   QStandardPaths::writableLocation(QStandardPaths::DesktopLocation));
-        add_place(QStringLiteral("docs"), QStringLiteral("notes"),
+        add_place(QStringLiteral("docs"), QStringLiteral("file-text"),
                   QStringLiteral("Documents"),
                   QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
         add_place(QStringLiteral("downloads"), QStringLiteral("download"),
                   QStringLiteral("Downloads"),
                   QStandardPaths::writableLocation(QStandardPaths::DownloadLocation));
-        add_place(QStringLiteral("pictures"), QStringLiteral("paint-brush"),
+        add_place(QStringLiteral("pictures"), QStringLiteral("image"),
                   QStringLiteral("Pictures"),
                   QStandardPaths::writableLocation(QStandardPaths::PicturesLocation));
-        add_place(QStringLiteral("root"), QStringLiteral("folder"),
+        add_place(QStringLiteral("root"), QStringLiteral("hard-drive"),
                   QStringLiteral("Root"), QStringLiteral("/"));
 
         const QString wine_c =
@@ -718,19 +718,19 @@ private:
             const QString ext = fi.suffix().toLower();
             if (fi.isDir()) {
                 ++dirs;
-                d.kind = QStringLiteral("Folder");
+                d.kind = QString();
                 d.icon_name = QStringLiteral("folder");
             } else {
                 ++files;
                 total_bytes += fi.size();
                 if (ext == QStringLiteral("exe") || ext == QStringLiteral("msi")) {
-                    d.kind = QStringLiteral("Windows Executable");
-                    d.icon_name = QStringLiteral("view-open-windows");
+                    d.kind = QStringLiteral("Windows App");
+                    d.icon_name = QStringLiteral("window");
                 } else if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg") ||
                            ext == QStringLiteral("jpeg") || ext == QStringLiteral("webp") ||
                            ext == QStringLiteral("svg")) {
                     d.kind = QStringLiteral("Image");
-                    d.icon_name = QStringLiteral("paint-brush");
+                    d.icon_name = QStringLiteral("image");
                 } else if (fi.isExecutable()) {
                     d.kind = QStringLiteral("Executable");
                     d.icon_name = QStringLiteral("terminal");
