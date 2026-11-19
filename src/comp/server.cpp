@@ -455,8 +455,75 @@ void Server::cycle_focus(bool forward) {
         }
     }
     ManagedWindow* target = eligible[idx];
-    if (target->minimized) target->set_minimized(false);
+    if (target->minimized) {
+        target->set_minimized(false);
+    } else if (target != focused_window_) {
+        // Subtle macOS Alt-Tab spring lift when raising a background window.
+        target->start_spring_animation(target->x, target->y + 10, 0.90, 1.0,
+                                       finn::ui::springs::kSnappy, false);
+    }
     focus_window(target);
+}
+
+void Server::toggle_overview() {
+    if (overview_active_) {
+        exit_overview(focused_window_);
+        return;
+    }
+    std::vector<ManagedWindow*> visible;
+    for (auto& w : windows_) {
+        if (w->mapped && !w->minimized && !w->override_redirect && !w->fullscreen) {
+            visible.push_back(w.get());
+        }
+    }
+    if (visible.empty()) return;
+
+    overview_active_ = true;
+    const wlr_box area = usable_area_for();
+    const int n = static_cast<int>(visible.size());
+    const int cols = (n <= 1) ? 1 : (n <= 4 ? 2 : 3);
+    const int rows = (n + cols - 1) / cols;
+    const int pad = 24;
+    const int cell_w = std::max(260, (area.width - pad * (cols + 1)) / cols);
+    const int cell_h = std::max(200, (area.height - pad * (rows + 1)) / rows);
+
+    for (int i = 0; i < n; ++i) {
+        ManagedWindow* w = visible[static_cast<std::size_t>(i)];
+        w->overview_saved_geometry = wlr_box{w->x, w->y, w->width, w->height};
+        w->overview_saved_maximized = w->maximized;
+        const double old_x = w->anim_timer ? w->spring_x.value() : static_cast<double>(w->x);
+        const double old_y = w->anim_timer ? w->spring_y.value() : static_cast<double>(w->y);
+
+        const int col = i % cols;
+        const int row = i / cols;
+        const int nx = area.x + pad + col * (cell_w + pad);
+        const int ny = area.y + pad + row * (cell_h + pad);
+        w->set_position(nx, ny);
+        w->configure_size(cell_w, std::max(160, cell_h - w->title_offset()));
+        w->start_spring_animation(old_x, old_y, w->cur_opacity, 1.0,
+                                  finn::ui::springs::kSmooth, false);
+    }
+    process_cursor_motion(monotonic_msec());
+}
+
+void Server::exit_overview(ManagedWindow* focus_target) {
+    if (!overview_active_) return;
+    overview_active_ = false;
+
+    for (auto& w : windows_) {
+        if (!w->mapped || w->minimized || w->override_redirect || w->fullscreen) continue;
+        const double old_x = w->anim_timer ? w->spring_x.value() : static_cast<double>(w->x);
+        const double old_y = w->anim_timer ? w->spring_y.value() : static_cast<double>(w->y);
+        const wlr_box& saved = w->overview_saved_geometry;
+        w->set_position(saved.x, saved.y);
+        w->configure_size(std::max(160, saved.width), std::max(120, saved.height));
+        w->start_spring_animation(old_x, old_y, w->cur_opacity, 1.0,
+                                  finn::ui::springs::kSmooth, false);
+    }
+    if (focus_target && focus_target->mapped && !focus_target->minimized) {
+        focus_window(focus_target);
+    }
+    process_cursor_motion(monotonic_msec());
 }
 
 void Server::minimize_all_toggle() {
@@ -765,8 +832,23 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                                     if (input_locked) {
                                         continue;
                                     }
+                                    if (s->overview_active() && sym == XKB_KEY_Escape) {
+                                        s->exit_overview(s->focused_window_);
+                                        handled = true;
+                                        break;
+                                    }
+                                    if (sym == XKB_KEY_F3) {
+                                        s->toggle_overview();
+                                        handled = true;
+                                        break;
+                                    }
                                     if ((mods & WLR_MODIFIER_ALT) && sym == XKB_KEY_Tab) {
                                         s->cycle_focus(!(mods & WLR_MODIFIER_SHIFT));
+                                        handled = true;
+                                        break;
+                                    }
+                                    if ((mods & WLR_MODIFIER_LOGO) && sym == XKB_KEY_Tab) {
+                                        s->toggle_overview();
                                         handled = true;
                                         break;
                                     }
@@ -944,7 +1026,8 @@ void Server::on_new_xdg_toplevel(wl_listener* listener, void* data) {
                         w->ensure_foreign_handle();
                         w->sync_foreign_state();
                         if (!w->minimized) {
-                            w->start_animation(w->x, w->y + 14, 150);
+                            w->start_spring_animation(w->x, w->y + 24, 0.0, 1.0,
+                                                      finn::ui::springs::kSmooth, false);
                         }
                         w->server->focus_window(w);
                         w->server->process_cursor_motion(monotonic_msec());
@@ -1211,6 +1294,10 @@ void Server::handle_pointer_button(uint32_t time_msec, uint32_t button,
         if (hz == ManagedWindow::HitZone::kNone) continue;
 
         hit_any_window = true;
+        if (overview_active_) {
+            exit_overview(w.get());
+            return;
+        }
         focus_window(w.get());
 
         if (hz == ManagedWindow::HitZone::kClient) {

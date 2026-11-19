@@ -57,6 +57,18 @@ def _find_proton_wine() -> Optional[str]:
     return None
 
 
+def _elf_is_aarch64(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        real = os.path.realpath(path)
+        with open(real, "rb") as f:
+            hdr = f.read(20)
+        return len(hdr) >= 20 and hdr[:4] == b"\x7fELF" and int.from_bytes(hdr[18:20], "little") == 183
+    except OSError:
+        return False
+
+
 def _detect_runtime() -> Dict[str, object]:
     arch = platform.machine().lower()
     override = os.environ.get("FINN_WIN_RUNTIME", "").strip()
@@ -93,11 +105,13 @@ def _detect_runtime() -> Dict[str, object]:
     prefix_ready = os.path.isfile(os.path.join(prefix, "system.reg"))
     win11_stamp = os.path.isfile(os.path.join(prefix, ".finn-win11-ready"))
 
-    ready = bool(selected_bin) and (arch in ("x86_64", "amd64") or bool(emu_bin))
+    native_arm_wine = (arch not in ("x86_64", "amd64")) and _elf_is_aarch64(selected_bin)
+    ready = bool(selected_bin) and (arch in ("x86_64", "amd64") or native_arm_wine or bool(emu_bin))
     return {
         "host_arch": arch,
         "engine": engine,
         "selected_bin": selected_bin,
+        "native_arm_wine": native_arm_wine,
         "proton_bin": proton_bin,
         "wine_bin": wine_bin,
         "emulator_bin": emu_bin,
@@ -122,8 +136,11 @@ def _build_env(rt: Dict[str, object]) -> Dict[str, str]:
     if not env.get("FINN_WIN_DEBUG"):
         env.setdefault("WINEDEBUG", "-all")
 
-    # Detect Xwayland display written by finn-comp if DISPLAY is unset
-    if not env.get("DISPLAY") and os.path.isfile("/run/finn/xdisplay"):
+    # Prefer native Wayland driver (winewayland.drv) when WAYLAND_DISPLAY is present;
+    # fall back to Xwayland only if WAYLAND_DISPLAY is absent or FINN_WIN_USE_X11=1.
+    if env.get("WAYLAND_DISPLAY") and not env.get("FINN_WIN_USE_X11"):
+        env.pop("DISPLAY", None)
+    elif not env.get("DISPLAY") and os.path.isfile("/run/finn/xdisplay"):
         try:
             disp = Path("/run/finn/xdisplay").read_text(encoding="utf-8").strip()
             if disp:
@@ -131,7 +148,15 @@ def _build_env(rt: Dict[str, object]) -> Dict[str, str]:
         except OSError:
             pass
 
+    if os.path.isdir("/opt/hangover/usr/lib/aarch64-linux-gnu"):
+        ho_lib = "/opt/hangover/usr/lib/aarch64-linux-gnu:/opt/hangover/usr/lib/aarch64-linux-gnu/wine"
+        prev_ld = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{ho_lib}:{prev_ld}" if prev_ld else ho_lib
+        env.setdefault("WINEDLLPATH", "/opt/hangover/usr/lib/aarch64-linux-gnu/wine")
+
     overrides = []
+    if not env.get("FINN_WIN_ALLOW_MONO"):
+        overrides.append("mscoree,mshtml=")
     if rt.get("dxvk_path"):
         overrides.append("d3d9,d3d10core,d3d11,dxgi=n,b")
     if rt.get("vkd3d_path"):
@@ -157,7 +182,7 @@ def _install_dll_dir(src_dir: str, dst_dir: str) -> None:
 
 def _wrap_cmd(rt: Dict[str, object], cmd: List[str]) -> List[str]:
     arch = str(rt["host_arch"])
-    if arch not in ("x86_64", "amd64") and rt.get("emulator_bin"):
+    if arch not in ("x86_64", "amd64") and not rt.get("native_arm_wine") and rt.get("emulator_bin"):
         return [str(rt["emulator_bin"]), *cmd]
     return cmd
 
@@ -180,14 +205,22 @@ def init_prefix(rt: Dict[str, object], force: bool = False) -> int:
     env = _build_env(rt)
     wine_bin = str(rt["selected_bin"])
 
-    # Initialize or update prefix silently
-    subprocess.run(_wrap_cmd(rt, [wine_bin, "wineboot", "-u"]), env=env, check=False)
+    # Initialize or update prefix silently without blocking on Mono/Gecko prompts
+    init_env = dict(env)
+    prev_ovr = init_env.get("WINEDLLOVERRIDES", "")
+    init_env["WINEDLLOVERRIDES"] = f"{prev_ovr};mscoree,mshtml=" if prev_ovr else "mscoree,mshtml="
+    try:
+        subprocess.run(_wrap_cmd(rt, [wine_bin, "wineboot", "-u"]), env=init_env, check=False, timeout=45)
+    except subprocess.TimeoutExpired:
+        pass
 
     # Apply Windows 11 Pro + ClearType + Wayland driver registry keys
     reg_path = os.path.join(prefix, ".finn-win11.reg")
     Path(reg_path).write_text(WIN11_REG, encoding="utf-8")
     try:
-        subprocess.run(_wrap_cmd(rt, [wine_bin, "regedit", "/S", reg_path]), env=env, check=False)
+        subprocess.run(_wrap_cmd(rt, [wine_bin, "regedit", "/S", reg_path]), env=init_env, check=False, timeout=20)
+    except subprocess.TimeoutExpired:
+        pass
     finally:
         try:
             os.remove(reg_path)
@@ -214,10 +247,21 @@ def launch_target(rt: Dict[str, object], target: str, extra_args: List[str]) -> 
         )
         return 1
 
-    abs_target = os.path.abspath(target)
-    if not os.path.isfile(abs_target):
-        print(f"error: file not found: {abs_target}", file=sys.stderr)
-        return 1
+    # Allow bare Windows system executables (notepad.exe, winver.exe, winecfg, etc.)
+    # and Windows drive paths (C:\...) to pass directly to Wine; otherwise require a real host file.
+    is_win_builtin = (
+        "/" not in target
+        and "\\" not in target
+        and not os.path.exists(target)
+    ) or (len(target) >= 3 and target[1:3] in (":\\", ":/"))
+
+    if is_win_builtin:
+        resolved_target = target
+    else:
+        resolved_target = os.path.abspath(target)
+        if not os.path.isfile(resolved_target):
+            print(f"error: file not found: {resolved_target}", file=sys.stderr)
+            return 1
 
     rc = init_prefix(rt, force=False)
     if rc != 0:
@@ -225,15 +269,15 @@ def launch_target(rt: Dict[str, object], target: str, extra_args: List[str]) -> 
 
     env = _build_env(rt)
     wine_bin = str(rt["selected_bin"])
-    low = abs_target.lower()
+    low = resolved_target.lower()
     if low.endswith(".msi"):
-        cmd = [wine_bin, "msiexec", "/i", abs_target, *extra_args]
+        cmd = [wine_bin, "msiexec", "/i", resolved_target, *extra_args]
     elif low.endswith(".bat") or low.endswith(".cmd"):
-        cmd = [wine_bin, "cmd", "/c", abs_target, *extra_args]
+        cmd = [wine_bin, "cmd", "/c", resolved_target, *extra_args]
     else:
-        cmd = [wine_bin, abs_target, *extra_args]
+        cmd = [wine_bin, resolved_target, *extra_args]
 
-    cwd = os.path.dirname(abs_target) or None
+    cwd = None if is_win_builtin else (os.path.dirname(resolved_target) or None)
     proc = subprocess.run(_wrap_cmd(rt, cmd), env=env, cwd=cwd)
     return proc.returncode
 

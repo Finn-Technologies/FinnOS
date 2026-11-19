@@ -58,6 +58,9 @@ public:
     void focus_top_window();
     void cycle_focus(bool forward);
     void minimize_all_toggle();
+    void toggle_overview();
+    void exit_overview(ManagedWindow* focus_target = nullptr);
+    bool overview_active() const { return overview_active_; }
     ManagedWindow* find_xdg_toplevel(const wlr_xdg_toplevel* top) const;
 
     // Pointer / touch / interactive window ops
@@ -181,6 +184,7 @@ private:
     bool dark_theme_ = false;
     bool reduced_motion_ = false;
     bool all_minimized_state_ = false;
+    bool overview_active_ = false;
     uint64_t last_activity_msec_ = 0;
     int cursor_size_ = 24;
     std::string active_cursor_name_ = "left_ptr";

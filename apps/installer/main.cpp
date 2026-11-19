@@ -384,7 +384,7 @@ public:
         card_lay->setContentsMargins(36, 28, 36, 24);
         card_lay->setSpacing(14);
 
-        stack_ = new QStackedWidget(card_);
+        stack_ = new FinnPageStack(card_);
         finn::ui::install_stack_animator(stack_);
         stack_->addWidget(buildRecoveryHubPage());   // 0: recovery utilities
         stack_->addWidget(buildInstallWizardPage()); // 1: install wizard
@@ -543,7 +543,7 @@ private:
         step_rail_ = new StepRail(page);
         col->addWidget(step_rail_, 0, Qt::AlignHCenter);
 
-        wiz_stack_ = new QStackedWidget(page);
+        wiz_stack_ = new FinnPageStack(page);
         wiz_stack_->setAutoFillBackground(false);
         finn::ui::install_stack_animator(wiz_stack_);
 
@@ -915,10 +915,10 @@ private:
     }
 
     FinnGlassPanel* card_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    FinnPageStack* stack_ = nullptr;
 
     FinnLabel* wiz_title_ = nullptr;
-    QStackedWidget* wiz_stack_ = nullptr;
+    FinnPageStack* wiz_stack_ = nullptr;
     StepRail* step_rail_ = nullptr;
     FinnButton* hub_btn_ = nullptr;
     FinnButton* wiz_back_ = nullptr;

@@ -1553,7 +1553,7 @@ public:
         root->setContentsMargins(0, 0, 0, 0);
         root->setSpacing(0);
 
-        stack_ = new QStackedWidget(this);
+        stack_ = new FinnPageStack(this);
         stack_->addWidget(buildHiPage());
         stack_->addWidget(buildLanguagePage());
         stack_->addWidget(buildWifiPage());
@@ -2620,7 +2620,7 @@ private:
     double fixed_phase_ = -1.0;
     QString selected_language_ = QStringLiteral("English (UK)");
     QString selected_locale_ = QStringLiteral("en_GB.UTF-8");
-    QStackedWidget* stack_ = nullptr;
+    FinnPageStack* stack_ = nullptr;
     QWidget* shared_nav_box_ = nullptr;
     QPointer<OobeSlideTransitionOverlay> slide_overlay_;
     QPointer<OobeHiToLangOverlay> hi_lang_overlay_;

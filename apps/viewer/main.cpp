@@ -505,7 +505,7 @@ private:
         header_row->addWidget(checker_btn_);
         root->addLayout(header_row);
 
-        stack_ = new QStackedWidget(content);
+        stack_ = new FinnPageStack(content);
         finn::ui::install_stack_animator(stack_);
 
         auto* empty_card = new FinnCard(kRadiusMd, false, stack_);
@@ -713,7 +713,7 @@ private:
     QVBoxLayout* images_list_layout_ = nullptr;
 
     FinnLabel* title_label_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    FinnPageStack* stack_ = nullptr;
     ImageCanvas* canvas_ = nullptr;
     FinnLabel* info_label_ = nullptr;
     FinnLabel* zoom_label_ = nullptr;

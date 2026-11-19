@@ -2414,7 +2414,7 @@ public:
             }
             progress_ = std::clamp(v, 0.0, 1.0);
             if (active_page_) {
-                active_page_->move(0, qRound((1.0 - progress_) * 8.0));
+                active_page_->move(0, qRound((1.0 - progress_) * 12.0 * direction_));
             }
             update();
             if (spring_.animator.settled()) {
@@ -2443,8 +2443,8 @@ protected:
         if (outgoing_pixmap_.isNull() || progress_ >= 1.0) return;
         QPainter p(this);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        p.setOpacity((1.0 - progress_) * 0.45);
-        p.drawPixmap(QPoint(0, -qRound(progress_ * 4.0)), outgoing_pixmap_);
+        p.setOpacity((1.0 - progress_) * 0.55);
+        p.drawPixmap(QPoint(0, -qRound(progress_ * 6.0 * direction_)), outgoing_pixmap_);
     }
 
 private:
@@ -2488,9 +2488,11 @@ private:
                               QWidget::DrawChildren);
         }
 
+        const int prev_idx = prev_page ? stack_->indexOf(prev_page) : -1;
+        direction_ = (prev_idx >= 0 && next_idx < prev_idx) ? -1.0 : 1.0;
         active_page_ = next_page;
         progress_ = 0.0;
-        active_page_->move(0, 8);
+        active_page_->move(0, qRound(12.0 * direction_));
         setGeometry(stack_->rect());
         show();
         raise();
@@ -2507,6 +2509,7 @@ private:
     QPointer<QWidget> last_page_;
     QPixmap outgoing_pixmap_;
     qreal progress_ = 1.0;
+    qreal direction_ = 1.0;
     bool enabled_ = true;
 };
 

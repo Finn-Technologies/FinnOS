@@ -317,7 +317,9 @@ void BrowserWindow::setupContentArea() {
     splitter_ = new QSplitter(Qt::Horizontal, viewport_surface);
     splitter_->setHandleWidth(2);
     primary_stack_ = new QStackedWidget(splitter_);
+    finn::ui::install_stack_animator(primary_stack_);
     split_stack_ = new QStackedWidget(splitter_);
+    finn::ui::install_stack_animator(split_stack_);
     split_stack_->setVisible(false);
 
     splitter_->addWidget(primary_stack_);

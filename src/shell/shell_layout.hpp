@@ -139,8 +139,8 @@ inline void draw_focus_ring(QPainter& p,
     p.restore();
 }
 
-// Drives a single scalar SpringAnimator on a 60 Hz QTimer while preserving
-// instantaneous settling under reduced-motion mode.
+// Drives a single scalar SpringAnimator on a 120 Hz QTimer (adaptive elapsed dt)
+// while preserving instantaneous settling under reduced-motion mode.
 class ShellSpringDriver final {
 public:
     ShellSpringDriver(QObject* parent,
@@ -152,7 +152,7 @@ public:
           timer_(parent),
           on_value_(std::move(on_value)),
           on_settled_(std::move(on_settled)) {
-        timer_.setInterval(16);
+        timer_.setInterval(8);
         QObject::connect(&timer_, &QTimer::timeout, parent, [this]() { tick(); });
     }
 

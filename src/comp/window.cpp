@@ -227,72 +227,155 @@ void Server::ManagedWindow::configure_size(int client_w, int client_h) {
     update_ssd_layout();
 }
 
+namespace {
+
+void apply_tree_opacity(wlr_scene_tree* tree, float alpha) {
+    if (!tree) return;
+    wlr_scene_node* node = nullptr;
+    wl_list_for_each(node, &tree->children, link) {
+        if (node->type == WLR_SCENE_NODE_BUFFER) {
+            wlr_scene_buffer_set_opacity(wlr_scene_buffer_from_node(node), alpha);
+        } else if (node->type == WLR_SCENE_NODE_TREE) {
+            apply_tree_opacity(wlr_scene_tree_from_node(node), alpha);
+        }
+    }
+}
+
+}  // namespace
+
+void Server::ManagedWindow::apply_opacity(double opacity) {
+    cur_opacity = std::clamp(opacity, 0.0, 1.0);
+    if (!scene_tree) return;
+    apply_tree_opacity(scene_tree, static_cast<float>(cur_opacity));
+}
+
 void Server::ManagedWindow::stop_animation() {
     if (anim_timer) {
         wl_event_source_remove(anim_timer);
         anim_timer = nullptr;
     }
+    anim_hide_on_settle = false;
 }
 
-void Server::ManagedWindow::start_animation(double from_x, double from_y,
-                                            uint32_t duration_ms) {
+void Server::ManagedWindow::start_spring_animation(
+    double from_x, double from_y, double from_opacity, double to_opacity,
+    const finn::ui::SpringParams& params, bool hide_on_settle,
+    double target_x_override, double target_y_override) {
     if (!scene_tree) return;
-    if (!server || !server->display() || server->reduced_motion() || duration_ms == 0) {
+    const double target_x = (target_x_override < 1e8) ? target_x_override : static_cast<double>(x);
+    const double target_y = (target_y_override < 1e8) ? target_y_override : static_cast<double>(y);
+
+    if (!server || !server->display() || server->reduced_motion()) {
         stop_animation();
-        wlr_scene_node_set_position(&scene_tree->node, x, y);
+        wlr_scene_node_set_position(&scene_tree->node,
+                                    static_cast<int>(std::lround(target_x)),
+                                    static_cast<int>(std::lround(target_y)));
+        apply_opacity(to_opacity);
+        if (hide_on_settle) {
+            wlr_scene_node_set_enabled(&scene_tree->node, false);
+        }
         return;
     }
 
-    anim_from_x = from_x;
-    anim_from_y = from_y;
-    anim_duration_ms = duration_ms;
-    anim_start_ms = Server::monotonic_msec();
+    // Preserve velocity if retargeting mid-flight for 100% interruptible macOS motion.
+    const bool mid_flight = (anim_timer != nullptr);
+    const double vx = mid_flight ? spring_x.velocity() : 0.0;
+    const double vy = mid_flight ? spring_y.velocity() : 0.0;
+    const double vo = mid_flight ? spring_opacity.velocity() : 0.0;
+
+    spring_x.set_thresholds(0.25, 0.5);
+    spring_y.set_thresholds(0.25, 0.5);
+    spring_opacity.set_thresholds(0.005, 0.01);
+
+    spring_x.set(mid_flight ? spring_x.value() : from_x, vx);
+    spring_y.set(mid_flight ? spring_y.value() : from_y, vy);
+    spring_opacity.set(mid_flight ? spring_opacity.value() : from_opacity, vo);
+
+    spring_x.retarget(target_x, params);
+    spring_y.retarget(target_y, params);
+    spring_opacity.retarget(std::clamp(to_opacity, 0.0, 1.0), params);
+
+    anim_hide_on_settle = hide_on_settle;
+    anim_last_ms = Server::monotonic_msec();
+
     wlr_scene_node_set_position(&scene_tree->node,
-                                static_cast<int>(std::lround(from_x)),
-                                static_cast<int>(std::lround(from_y)));
+                                static_cast<int>(std::lround(spring_x.value())),
+                                static_cast<int>(std::lround(spring_y.value())));
+    apply_opacity(spring_opacity.value());
 
     if (!anim_timer) {
         wl_event_loop* loop = wl_display_get_event_loop(server->display());
         if (!loop) {
             wlr_scene_node_set_position(&scene_tree->node, x, y);
+            apply_opacity(to_opacity);
+            if (hide_on_settle) wlr_scene_node_set_enabled(&scene_tree->node, false);
             return;
         }
         anim_timer = wl_event_loop_add_timer(
             loop,
             [](void* data) -> int {
                 auto* win = static_cast<Server::ManagedWindow*>(data);
-                if (!win->scene_tree || !win->mapped || win->minimized) {
+                if (!win->scene_tree || !win->mapped) {
                     if (win->scene_tree) {
                         wlr_scene_node_set_position(&win->scene_tree->node, win->x, win->y);
+                        win->apply_opacity(1.0);
                     }
                     win->stop_animation();
                     return 0;
                 }
                 const uint64_t now = Server::monotonic_msec();
-                const uint64_t elapsed =
-                    (now > win->anim_start_ms) ? (now - win->anim_start_ms) : 0;
-                if (elapsed >= win->anim_duration_ms) {
-                    wlr_scene_node_set_position(&win->scene_tree->node, win->x, win->y);
+                const double dt = std::clamp(
+                    static_cast<double>(now > win->anim_last_ms ? (now - win->anim_last_ms) : 8) *
+                        0.001,
+                    0.001, 0.05);
+                win->anim_last_ms = now;
+
+                const double cx = win->spring_x.step(dt);
+                const double cy = win->spring_y.step(dt);
+                const double co = win->spring_opacity.step(dt);
+
+                wlr_scene_node_set_position(&win->scene_tree->node,
+                                            static_cast<int>(std::lround(cx)),
+                                            static_cast<int>(std::lround(cy)));
+                win->apply_opacity(co);
+
+                if (win->spring_x.settled() && win->spring_y.settled() &&
+                    win->spring_opacity.settled()) {
+                    const bool hide_after = win->anim_hide_on_settle;
+                    wlr_scene_node_set_position(
+                        &win->scene_tree->node,
+                        static_cast<int>(std::lround(win->spring_x.target())),
+                        static_cast<int>(std::lround(win->spring_y.target())));
+                    win->apply_opacity(win->spring_opacity.target());
                     win->stop_animation();
+                    if (hide_after && win->scene_tree) {
+                        wlr_scene_node_set_enabled(&win->scene_tree->node, false);
+                        wlr_scene_node_set_position(&win->scene_tree->node, win->x, win->y);
+                        win->apply_opacity(1.0);
+                    }
                     return 0;
                 }
-                const double t = static_cast<double>(elapsed) /
-                                 static_cast<double>(win->anim_duration_ms);
-                const double inv = 1.0 - t;
-                const double ease = 1.0 - inv * inv * inv;  // cubic ease-out
-                const int cur_x = static_cast<int>(
-                    std::lround(win->anim_from_x + (win->x - win->anim_from_x) * ease));
-                const int cur_y = static_cast<int>(
-                    std::lround(win->anim_from_y + (win->y - win->anim_from_y) * ease));
-                wlr_scene_node_set_position(&win->scene_tree->node, cur_x, cur_y);
-                wl_event_source_timer_update(win->anim_timer, 16);
+                wl_event_source_timer_update(win->anim_timer, 8);
                 return 0;
             },
             this);
     }
     if (anim_timer) {
-        wl_event_source_timer_update(anim_timer, 16);
+        wl_event_source_timer_update(anim_timer, 8);
     }
+}
+
+void Server::ManagedWindow::start_animation(double from_x, double from_y,
+                                            uint32_t duration_ms) {
+    if (duration_ms == 0) {
+        stop_animation();
+        if (scene_tree) {
+            wlr_scene_node_set_position(&scene_tree->node, x, y);
+            apply_opacity(1.0);
+        }
+        return;
+    }
+    start_spring_animation(from_x, from_y, 0.0, 1.0, finn::ui::springs::kSmooth, false);
 }
 
 void Server::ManagedWindow::set_position(int nx, int ny) {
@@ -329,7 +412,8 @@ void Server::ManagedWindow::set_activated(bool active) {
 void Server::ManagedWindow::set_maximized(bool on) {
     if (override_redirect || maximized == on) return;
     if (fullscreen) set_fullscreen(false);
-    stop_animation();
+    const double old_x = anim_timer ? spring_x.value() : static_cast<double>(x);
+    const double old_y = anim_timer ? spring_y.value() : static_cast<double>(y);
     if (on) {
         saved_geometry = wlr_box{x, y, width, height};
         const wlr_box area = server->usable_area_for();
@@ -342,7 +426,8 @@ void Server::ManagedWindow::set_maximized(bool on) {
         configure_size(saved_geometry.width, saved_geometry.height);
     }
     if (mapped && !minimized) {
-        start_animation(x, y + 10, 140);
+        start_spring_animation(old_x, old_y, cur_opacity, 1.0,
+                               finn::ui::springs::kSmooth, false);
     }
     if (is_xwayland && xwayland_surface) {
         wlr_xwayland_surface_set_maximized(xwayland_surface, maximized, maximized);
@@ -356,7 +441,8 @@ void Server::ManagedWindow::set_maximized(bool on) {
 void Server::ManagedWindow::set_fullscreen(bool on) {
     if (override_redirect) return;
     if (fullscreen != on) {
-        stop_animation();
+        const double old_x = anim_timer ? spring_x.value() : static_cast<double>(x);
+        const double old_y = anim_timer ? spring_y.value() : static_cast<double>(y);
         if (on) {
             if (!maximized) saved_geometry = wlr_box{x, y, width, height};
             saved_maximized = maximized;
@@ -387,6 +473,10 @@ void Server::ManagedWindow::set_fullscreen(bool on) {
             }
         }
         update_ssd_layout();
+        if (mapped && !minimized) {
+            start_spring_animation(old_x, old_y, cur_opacity, 1.0,
+                                   finn::ui::springs::kSmooth, false);
+        }
     }
     if (is_xwayland && xwayland_surface) {
         wlr_xwayland_surface_set_fullscreen(xwayland_surface, fullscreen);
@@ -400,25 +490,51 @@ void Server::ManagedWindow::set_fullscreen(bool on) {
 void Server::ManagedWindow::set_minimized(bool on) {
     if (override_redirect || minimized == on) return;
     minimized = on;
+    const wlr_box area = server ? server->usable_area_for() : wlr_box{0, 0, 1440, 900};
+    const double dock_y = static_cast<double>(area.y + area.height - 60);
+
     if (minimized) {
-        stop_animation();
+        if (is_xwayland && xwayland_surface) {
+            wlr_xwayland_surface_set_minimized(xwayland_surface, true);
+        }
+        sync_foreign_state();
+        if (server && server->focused_window() == this) {
+            server->focus_top_window();
+        }
+        if (scene_tree && mapped) {
+            // Smooth macOS minimize-to-dock spring glide + fade out, then disable node.
+            const double from_x = anim_timer ? spring_x.value() : static_cast<double>(x);
+            const double from_y = anim_timer ? spring_y.value() : static_cast<double>(y);
+            start_spring_animation(from_x, from_y, cur_opacity, 0.0,
+                                   finn::ui::springs::kSnappy, true,
+                                   static_cast<double>(x), dock_y);
+        } else if (scene_tree) {
+            wlr_scene_node_set_enabled(&scene_tree->node, false);
+        }
+    } else {
+        if (scene_tree) {
+            wlr_scene_node_set_enabled(&scene_tree->node, mapped);
+        }
+        if (is_xwayland && xwayland_surface) {
+            wlr_xwayland_surface_set_minimized(xwayland_surface, false);
+        }
+        sync_foreign_state();
+        if (scene_tree && mapped) {
+            const double from_x = anim_timer ? spring_x.value() : static_cast<double>(x);
+            const double from_y = anim_timer ? spring_y.value() : std::min(dock_y, static_cast<double>(y + 90));
+            const double from_op = anim_timer ? cur_opacity : 0.0;
+            start_spring_animation(from_x, from_y, from_op, 1.0,
+                                   finn::ui::springs::kSmooth, false);
+        }
+        if (server) server->focus_window(this);
     }
-    if (scene_tree) wlr_scene_node_set_enabled(&scene_tree->node, mapped && !minimized);
-    if (is_xwayland && xwayland_surface) {
-        wlr_xwayland_surface_set_minimized(xwayland_surface, minimized);
-    }
-    sync_foreign_state();
-    if (minimized && server->focused_window() == this) {
-        server->focus_top_window();
-    } else if (!minimized) {
-        start_animation(x, y + 14, 150);
-        server->focus_window(this);
-    }
-    server->process_cursor_motion(Server::monotonic_msec());
+    if (server) server->process_cursor_motion(Server::monotonic_msec());
 }
 
 void Server::ManagedWindow::snap_half(bool left) {
     if (override_redirect) return;
+    const double old_x = anim_timer ? spring_x.value() : static_cast<double>(x);
+    const double old_y = anim_timer ? spring_y.value() : static_cast<double>(y);
     if (!maximized) saved_geometry = wlr_box{x, y, width, height};
     maximized = false;
     const wlr_box area = server->usable_area_for();
@@ -429,6 +545,10 @@ void Server::ManagedWindow::snap_half(bool left) {
     const int ch = std::max(160, area.height - gap * 2 - title_offset());
     set_position(nx, ny);
     configure_size(half_w, ch);
+    if (mapped && !minimized) {
+        start_spring_animation(old_x, old_y, cur_opacity, 1.0,
+                               finn::ui::springs::kSmooth, false);
+    }
     if (!is_xwayland && xdg_toplevel) wlr_xdg_toplevel_set_maximized(xdg_toplevel, false);
     sync_foreign_state();
 }
@@ -637,7 +757,8 @@ void setup_xwayland_window(Server::ManagedWindow* w, wlr_xwayland_surface* xsurf
                         mw->ensure_foreign_handle();
                         mw->sync_foreign_state();
                         if (!mw->minimized) {
-                            mw->start_animation(mw->x, mw->y + 14, 150);
+                            mw->start_spring_animation(mw->x, mw->y + 24, 0.0, 1.0,
+                                                       finn::ui::springs::kSmooth, false);
                         }
                         mw->server->focus_window(mw);
                     } else if (wlr_xwayland_surface_override_redirect_wants_focus(

@@ -177,9 +177,16 @@ public:
                               : QStringLiteral("%1: %2").arg(n.app_name, n.summary));
         enter_anim_ = std::make_unique<ShellSpringDriver>(
             this, finn::ui::springs::kSnappy,
-            finn::ui::reduced_motion() ? 1.0 : 0.0, [this](double v) {
+            finn::ui::reduced_motion() ? 1.0 : 0.0,
+            [this](double v) {
                 enter_progress_ = std::clamp(v, 0.0, 1.0);
                 update();
+            },
+            [this]() {
+                if (dismissing_ && on_dismiss_) {
+                    auto cb = std::move(on_dismiss_);
+                    cb();
+                }
             });
         enter_anim_->retarget(1.0);
 
@@ -217,10 +224,16 @@ public:
         right_col->addWidget(time_lbl_, 0, Qt::AlignRight);
 
         close_btn_ = new NotificationDismissButton(this);
-        connect(close_btn_, &QAbstractButton::clicked, this,
-                [cb = std::move(on_dismiss)]() {
-                    if (cb) cb();
-                });
+        on_dismiss_ = std::move(on_dismiss);
+        connect(close_btn_, &QAbstractButton::clicked, this, [this]() {
+            if (dismissing_) return;
+            dismissing_ = true;
+            if (finn::ui::reduced_motion()) {
+                if (on_dismiss_) on_dismiss_();
+                return;
+            }
+            enter_anim_->retarget(0.0, &finn::ui::springs::kSnappy);
+        });
         right_col->addWidget(close_btn_, 0, Qt::AlignRight);
         row->addLayout(right_col);
 
@@ -244,7 +257,8 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setOpacity(enter_progress_);
-        p.translate(0.0, (1.0 - enter_progress_) * -8.0);
+        // macOS notification banner glide from top-right.
+        p.translate((1.0 - enter_progress_) * 26.0, (1.0 - enter_progress_) * -4.0);
 
         const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
         p.setBrush(shell_glass_fill(t));
@@ -259,7 +273,9 @@ private:
     QLabel* time_lbl_ = nullptr;
     NotificationDismissButton* close_btn_ = nullptr;
     std::unique_ptr<ShellSpringDriver> enter_anim_;
+    std::function<void()> on_dismiss_;
     double enter_progress_ = 1.0;
+    bool dismissing_ = false;
 };
 
 }  // namespace

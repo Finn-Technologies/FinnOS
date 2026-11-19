@@ -292,7 +292,7 @@ public:
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
-        stack_ = new QStackedWidget(this);
+        stack_ = new finn::ui::FinnPageStack(this);
         stack_->setAutoFillBackground(false);
         finn::ui::install_stack_animator(stack_);
         const QVector<QPair<QString, QWidget*>> pages = {
@@ -1759,7 +1759,7 @@ private:
     }
 
     finn::ui::FinnSidebar* sidebar_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    finn::ui::FinnPageStack* stack_ = nullptr;
     QMap<QString, int> page_indices_;
     finn::ui::FinnButton* check_updates_btn_ = nullptr;
     QProcess* pacman_check_proc_ = nullptr;

@@ -64,7 +64,12 @@ public:
             });
         bounce_anim_ = std::make_unique<ShellSpringDriver>(
             this, finn::ui::springs::kBouncy, 0.0, [this](double val) {
-                bounce_offset_ = std::clamp(val, -6.0, 2.0);
+                bounce_offset_ = std::clamp(val, -8.0, 2.0);
+                update();
+            });
+        press_anim_ = std::make_unique<ShellSpringDriver>(
+            this, finn::ui::springs::kSnappy, 0.0, [this](double val) {
+                press_progress_ = std::clamp(val, 0.0, 1.0);
                 update();
             });
     }
@@ -100,6 +105,7 @@ protected:
         hovered_ = false;
         pressed_ = false;
         hover_anim_->retarget(0.0);
+        press_anim_->retarget(0.0);
         QAbstractButton::leaveEvent(event);
     }
 
@@ -117,6 +123,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton) {
             pressed_ = true;
+            press_anim_->retarget(1.0);
             triggerBounce();
             update();
             if (on_activate_) on_activate_();
@@ -129,6 +136,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override {
         if (pressed_) {
             pressed_ = false;
+            press_anim_->retarget(0.0);
             update();
         }
         QAbstractButton::mouseReleaseEvent(event);
@@ -140,8 +148,9 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
-        const qreal lift_y = -3.5 * hover_progress_ + bounce_offset_;
-        const qreal scale = pressed_ ? 0.92 : 1.0;
+        // macOS-style spring hover lift + subtle magnification + elastic press compression.
+        const qreal lift_y = -4.5 * hover_progress_ + bounce_offset_;
+        const qreal scale = (1.0 + 0.12 * hover_progress_) * (1.0 - 0.10 * press_progress_);
 
         p.save();
         p.translate(16.0, 4.0 + lift_y + 16.0);
@@ -177,8 +186,10 @@ private:
     std::function<void()> on_activate_;
     std::unique_ptr<ShellSpringDriver> hover_anim_;
     std::unique_ptr<ShellSpringDriver> bounce_anim_;
+    std::unique_ptr<ShellSpringDriver> press_anim_;
     qreal hover_progress_ = 0.0;
     qreal bounce_offset_ = 0.0;
+    qreal press_progress_ = 0.0;
     bool running_ = false;
     bool activated_ = false;
     bool hovered_ = false;

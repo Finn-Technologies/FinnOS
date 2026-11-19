@@ -2,6 +2,7 @@
 #define FINN_COMP_INTERNAL_HPP
 
 #include "comp/server.hpp"
+#include "ui/finn/spring.hpp"
 
 #include <wayland-util.h>
 
@@ -69,14 +70,25 @@ struct Server::ManagedWindow {
     int width = 880;
     int height = 600;
     wlr_box saved_geometry{80, 60, 880, 600};
+    wlr_box overview_saved_geometry{80, 60, 880, 600};
+    bool overview_saved_maximized = false;
 
     wl_event_source* anim_timer = nullptr;
-    uint64_t anim_start_ms = 0;
-    uint32_t anim_duration_ms = 150;
-    double anim_from_x = 0.0;
-    double anim_from_y = 0.0;
+    uint64_t anim_last_ms = 0;
+    finn::ui::SpringAnimator spring_x{finn::ui::springs::kSmooth, 0.0};
+    finn::ui::SpringAnimator spring_y{finn::ui::springs::kSmooth, 0.0};
+    finn::ui::SpringAnimator spring_opacity{finn::ui::springs::kSmooth, 1.0};
+    double cur_opacity = 1.0;
+    bool anim_hide_on_settle = false;
 
+    void start_spring_animation(double from_x, double from_y, double from_opacity,
+                                double to_opacity,
+                                const finn::ui::SpringParams& params = finn::ui::springs::kSmooth,
+                                bool hide_on_settle = false,
+                                double target_x_override = 1e9,
+                                double target_y_override = 1e9);
     void start_animation(double from_x, double from_y, uint32_t duration_ms = 150);
+    void apply_opacity(double opacity);
     void stop_animation();
 
     // Scene-graph SSD frame + Figma-style top-right 3-button controls

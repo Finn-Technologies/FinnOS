@@ -280,7 +280,7 @@ private:
         header_row->addWidget(end_btn_);
         root->addLayout(header_row);
 
-        stack_ = new QStackedWidget(content);
+        stack_ = new FinnPageStack(content);
         finn::ui::install_stack_animator(stack_);
         stack_->addWidget(buildOverviewAndProcessesPage());  // 0: overview & processes
         stack_->addWidget(buildPerformancePage());           // 1: performance
@@ -750,7 +750,7 @@ private:
     FinnLabel* page_title_ = nullptr;
     FinnLabel* summary_pill_ = nullptr;
     FinnButton* end_btn_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    FinnPageStack* stack_ = nullptr;
 
     QWidget* overview_header_wrap_ = nullptr;
     FinnHeroCard* hero_card_ = nullptr;

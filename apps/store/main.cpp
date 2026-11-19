@@ -290,7 +290,7 @@ public:
         header_row->addWidget(refresh_btn);
         right_col->addLayout(header_row);
 
-        stack_ = new QStackedWidget(right_host_);
+        stack_ = new FinnPageStack(right_host_);
         finn::ui::install_stack_animator(stack_);
         stack_->addWidget(wrapScroll(buildDiscoverPage()));  // 0
         stack_->addWidget(wrapScroll(buildAppsPage()));      // 1
@@ -1465,7 +1465,7 @@ private:
     QWidget* right_host_ = nullptr;
     FinnSidebar* sidebar_ = nullptr;
     FinnLabel* page_title_ = nullptr;
-    QStackedWidget* stack_ = nullptr;
+    FinnPageStack* stack_ = nullptr;
     QString last_list_page_ = QStringLiteral("discover");
     std::vector<finn::App> apps_;
     finn::App selected_app_{};
