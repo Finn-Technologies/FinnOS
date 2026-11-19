@@ -833,10 +833,10 @@ bool MachoLoader::load_image(const std::string& path, bool is_main,
         const std::string sname = fixed_cstr(seg.segname, 16);
         if (sname == "__PAGEZERO" || seg.vmsize == 0) continue;
         const std::size_t rel = static_cast<std::size_t>(seg.vmaddr - min_vm);
-        const std::size_t seg_span = align_up(static_cast<std::size_t>(seg.vmsize), page);
         std::uint8_t* dst = img->map_base + rel;
 
 #if defined(__APPLE__) && defined(__aarch64__)
+        const std::size_t seg_span = align_up(static_cast<std::size_t>(seg.vmsize), page);
         const bool is_exec = (seg.initprot & kVmProtExecute) != 0;
         if (!is_exec) {
             if (::mmap(dst, seg_span, PROT_READ | PROT_WRITE,

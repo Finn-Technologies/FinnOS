@@ -749,6 +749,7 @@ void register_objc_symbols(std::unordered_map<std::string, void*>* table) {
     add("_objc_retainAutorelease", &shim_objc_retainAutorelease);
     add("_objc_retainAutoreleaseReturnValue", &shim_objc_retainAutoreleaseReturnValue);
     add("_objc_claimAutoreleasedReturnValue", &shim_objc_retainAutoreleasedReturnValue);
+    add("_objc_unsafeClaimAutoreleasedReturnValue", &shim_objc_retainAutoreleasedReturnValue);
     add("_objc_storeStrong", &shim_objc_storeStrong);
     add("_objc_initWeak", &shim_objc_initWeak);
     add("_objc_storeWeak", &shim_objc_storeWeak);

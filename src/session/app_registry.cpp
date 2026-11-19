@@ -276,7 +276,7 @@ void AppRegistry::merge_macos_entries(const std::string& macos_apps_dir) {
         App app;
         app.id = b.id;
         app.name = b.name;
-        app.icon = b.icon_path.empty() ? "laptop.svg" : b.icon_path;
+        app.icon = b.icon_path.empty() ? "display.svg" : b.icon_path;
         app.command = b.bundle_path;
         app.note = b.version.empty() ? "macOS application via finn-darwin"
                                      : ("macOS application v" + b.version + " via finn-darwin");

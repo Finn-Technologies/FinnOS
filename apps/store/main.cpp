@@ -259,7 +259,7 @@ public:
                           QStringLiteral("Flathub"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("view-open-windows"),
                           QStringLiteral("Windows"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("macos"), QStringLiteral("laptop"),
+        sidebar_->addItem(QStringLiteral("macos"), QStringLiteral("display"),
                           QStringLiteral("macOS"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("ohos"), QStringLiteral("smartphone"),
                           QStringLiteral("OpenHarmony"), nav_neutral_light(), nav_neutral_dark());
@@ -1240,28 +1240,27 @@ private:
         macos_status_row_ = new FinnSettingRow(
             QStringLiteral("FinnOS macOS Runtime (finn-darwin)"),
             QStringLiteral("Checking..."),
-            QStringLiteral("laptop"), nullptr, page);
+            QStringLiteral("display"), nullptr, page);
         root->addWidget(macos_status_row_);
 
-        auto* actions = new QWidget(page);
-        auto* act_lay = new QHBoxLayout(actions);
+        auto* act_lay = new QHBoxLayout();
         act_lay->setContentsMargins(0, 0, 0, 0);
-        act_lay->setSpacing(6);
+        act_lay->setSpacing(8);
 
         macos_install_btn_ = new FinnButton(
             QStringLiteral("Install .dmg / .pkg"), FinnButton::Variant::Primary,
-            QStringLiteral("download"), actions);
+            QStringLiteral("download"), page);
         macos_install_btn_->setFixedHeight(28);
         connect(macos_install_btn_, &QAbstractButton::clicked, this, [this]() {
             const QString file = QFileDialog::getOpenFileName(
-                this, QStringLiteral("Select macOS Installer (.dmg / .pkg)"), QDir::homePath(),
-                QStringLiteral("macOS Installers (*.dmg *.pkg *.mpkg);;All Files (*)"));
+                this, QStringLiteral("Select macOS Installer (.dmg / .pkg / .zip)"), QDir::homePath(),
+                QStringLiteral("macOS Installers (*.dmg *.pkg *.mpkg *.zip);;All Files (*)"));
             if (!file.isEmpty()) inspectMacosTarget(file);
         });
 
         macos_run_btn_ = new FinnButton(
-            QStringLiteral("Add / Run .app"), FinnButton::Variant::Secondary,
-            QStringLiteral("laptop"), actions);
+            QStringLiteral("Add .app"), FinnButton::Variant::Secondary,
+            QStringLiteral("display"), page);
         macos_run_btn_->setFixedHeight(28);
         connect(macos_run_btn_, &QAbstractButton::clicked, this, [this]() {
             const QString dir = QFileDialog::getExistingDirectory(
@@ -1270,8 +1269,8 @@ private:
         });
 
         auto* url_btn = new FinnButton(
-            QStringLiteral("Install URL"), FinnButton::Variant::Ghost,
-            QStringLiteral("globe"), actions);
+            QStringLiteral("Install URL"), FinnButton::Variant::Secondary,
+            QStringLiteral("globe"), page);
         url_btn->setFixedHeight(28);
         url_btn->setToolTip(QStringLiteral("Download and install a macOS .dmg, .pkg, or .zip from URL"));
         connect(url_btn, &QAbstractButton::clicked, this, [this]() {
@@ -1296,7 +1295,8 @@ private:
         act_lay->addWidget(macos_install_btn_);
         act_lay->addWidget(macos_run_btn_);
         act_lay->addWidget(url_btn);
-        macos_status_row_->setTrailingWidget(actions);
+        act_lay->addStretch(1);
+        root->addLayout(act_lay);
 
         macos_detail_row_ = new FinnSettingRow(
             QStringLiteral("Installer Extractors (.dmg / .pkg)"),
@@ -1351,9 +1351,9 @@ private:
         const auto bundles = finn::compat::discover_macos_bundles();
         if (bundles.empty()) {
             macos_list_layout_->addWidget(new FinnEmptyState(
-                QStringLiteral("laptop"),
+                QStringLiteral("display"),
                 QStringLiteral("No macOS applications installed"),
-                QStringLiteral("Use 'Install .dmg / .pkg' or 'Add / Run .app' above to install macOS apps."),
+                QStringLiteral("Use 'Install .dmg / .pkg', 'Add .app', or 'Install URL' above to install macOS apps."),
                 {}, macos_list_layout_->parentWidget()));
             return;
         }
@@ -1433,11 +1433,12 @@ private:
             rl->addWidget(open_btn);
             rl->addWidget(rm_btn);
             const QString sub = b.version.empty()
-                                    ? bundle_path
-                                    : QStringLiteral("v%1 · %2")
-                                          .arg(QString::fromStdString(b.version), bundle_path);
+                                    ? QString::fromStdString(b.bundle_id)
+                                    : QStringLiteral("%1 · v%2")
+                                          .arg(QString::fromStdString(b.bundle_id.empty() ? b.bundle_path : b.bundle_id),
+                                               QString::fromStdString(b.version));
             macos_list_layout_->addWidget(new FinnSettingRow(
-                app_name, sub, QStringLiteral("laptop"), row_actions,
+                app_name, sub, QStringLiteral("display"), row_actions,
                 macos_list_layout_->parentWidget()));
         }
     }

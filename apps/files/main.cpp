@@ -729,7 +729,7 @@ private:
                 if (ext == QStringLiteral("app") &&
                     QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/Contents/Info.plist"))) {
                     d.kind = QStringLiteral("macOS App");
-                    d.icon_name = QStringLiteral("laptop");
+                    d.icon_name = QStringLiteral("display");
                 } else {
                     d.kind = QString();
                     d.icon_name = QStringLiteral("folder");
@@ -748,10 +748,10 @@ private:
                     d.icon_name = QStringLiteral("package");
                 } else if (ext == QStringLiteral("dmg")) {
                     d.kind = QStringLiteral("macOS Disk Image");
-                    d.icon_name = QStringLiteral("laptop");
+                    d.icon_name = QStringLiteral("display");
                 } else if (ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
                     d.kind = QStringLiteral("macOS Installer");
-                    d.icon_name = QStringLiteral("laptop");
+                    d.icon_name = QStringLiteral("display");
                 } else if (ext == QStringLiteral("hap")) {
                     d.kind = QStringLiteral("OpenHarmony App");
                     d.icon_name = QStringLiteral("package");
