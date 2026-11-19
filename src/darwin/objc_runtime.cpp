@@ -1,5 +1,7 @@
 #include "darwin/objc_runtime.hpp"
 
+#include "darwin/compat_symbols.hpp"
+
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -518,6 +520,8 @@ void finn_objc_release(ObjcId obj) {
     auto* hdr = heap_header_of(obj);
     if (!hdr) return;
     if (hdr->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        // A weak reference must read as nil after the last strong release.
+        compat_weak_zero(obj);
         if (obj->isa && obj->isa->cpp_destructor) {
             obj->isa->cpp_destructor(obj);
         }

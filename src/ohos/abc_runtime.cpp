@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <set>
 #include <sstream>
 
@@ -30,6 +31,7 @@ struct finn_napi_env__ {
     finn::ohos::AbcRuntime* runtime = nullptr;
     std::vector<std::unique_ptr<finn_napi_value__>> arena;
     std::vector<napi_module*> registered_modules;
+    std::string last_error;
 
     napi_value alloc(finn::ohos::AbcValue v) {
         auto ptr = std::make_unique<finn_napi_value__>();
@@ -203,6 +205,140 @@ napi_status napi_get_value_string_utf8(napi_env env, napi_value value,
     return napi_ok;
 }
 
+napi_status napi_get_undefined(napi_env env, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_undefined());
+    return napi_ok;
+}
+
+napi_status napi_get_null(napi_env env, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_null());
+    return napi_ok;
+}
+
+napi_status napi_get_boolean(napi_env env, bool value, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_bool(value));
+    return napi_ok;
+}
+
+napi_status napi_typeof(napi_env env, napi_value value, napi_valuetype* result) {
+    if (!env || !value || !result) return napi_invalid_arg;
+    using Kind = finn::ohos::AbcValue::Kind;
+    switch (value->val.kind) {
+        case Kind::Undefined: *result = napi_undefined; break;
+        case Kind::Null: *result = napi_null; break;
+        case Kind::Bool: *result = napi_boolean; break;
+        case Kind::Int:
+        case Kind::Double: *result = napi_number; break;
+        case Kind::String: *result = napi_string; break;
+        case Kind::Object: *result = napi_object; break;
+        case Kind::NativeFunction:
+        case Kind::AbcFunction: *result = napi_function; break;
+    }
+    return napi_ok;
+}
+
+napi_status napi_create_int64(napi_env env, std::int64_t value, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_int(value));
+    return napi_ok;
+}
+
+napi_status napi_get_value_int64(napi_env env, napi_value value,
+                                 std::int64_t* result) {
+    if (!env || !value || !result) return napi_invalid_arg;
+    *result = value->val.to_int64();
+    return napi_ok;
+}
+
+napi_status napi_create_uint32(napi_env env, std::uint32_t value, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_int(static_cast<std::int64_t>(value)));
+    return napi_ok;
+}
+
+napi_status napi_get_value_bool(napi_env env, napi_value value, bool* result) {
+    if (!env || !value || !result) return napi_invalid_arg;
+    *result = value->val.is_truthy();
+    return napi_ok;
+}
+
+napi_status napi_create_array(napi_env env, napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    *result = env->alloc(finn::ohos::AbcValue::make_array());
+    return napi_ok;
+}
+
+napi_status napi_create_array_with_length(napi_env env, std::size_t length,
+                                          napi_value* result) {
+    if (!env || !result) return napi_invalid_arg;
+    // Cap a host-allotted dense array so a hostile module cannot force an
+    // unbounded allocation; larger requests fail honestly.
+    if (length > (1u << 20u)) return napi_invalid_arg;
+    auto arr = finn::ohos::AbcValue::make_array();
+    arr.obj_val->array_val.assign(length, finn::ohos::AbcValue::make_undefined());
+    *result = env->alloc(std::move(arr));
+    return napi_ok;
+}
+
+napi_status napi_is_array(napi_env env, napi_value value, bool* result) {
+    if (!env || !value || !result) return napi_invalid_arg;
+    *result = value->val.kind == finn::ohos::AbcValue::Kind::Object &&
+              value->val.obj_val && value->val.obj_val->class_name == "Array";
+    return napi_ok;
+}
+
+napi_status napi_get_array_length(napi_env env, napi_value value,
+                                  std::uint32_t* result) {
+    if (!env || !value || !result) return napi_invalid_arg;
+    if (value->val.kind != finn::ohos::AbcValue::Kind::Object ||
+        !value->val.obj_val || value->val.obj_val->class_name != "Array") {
+        return napi_object_expected;
+    }
+    *result = static_cast<std::uint32_t>(value->val.obj_val->array_val.size());
+    return napi_ok;
+}
+
+napi_status napi_set_element(napi_env env, napi_value object,
+                             std::uint32_t index, napi_value value) {
+    if (!env || !object || !value) return napi_invalid_arg;
+    if (object->val.kind != finn::ohos::AbcValue::Kind::Object ||
+        !object->val.obj_val) {
+        return napi_object_expected;
+    }
+    if (index >= (1u << 20u)) return napi_invalid_arg;
+    auto& cells = object->val.obj_val->array_val;
+    if (static_cast<std::size_t>(index) >= cells.size()) {
+        cells.resize(static_cast<std::size_t>(index) + 1,
+                     finn::ohos::AbcValue::make_undefined());
+    }
+    cells[index] = value->val;
+    return napi_ok;
+}
+
+napi_status napi_get_element(napi_env env, napi_value object,
+                             std::uint32_t index, napi_value* result) {
+    if (!env || !object || !result) return napi_invalid_arg;
+    if (object->val.kind != finn::ohos::AbcValue::Kind::Object ||
+        !object->val.obj_val) {
+        return napi_object_expected;
+    }
+    const auto& cells = object->val.obj_val->array_val;
+    *result = (index < cells.size())
+                  ? env->alloc(cells[index])
+                  : env->alloc(finn::ohos::AbcValue::make_undefined());
+    return napi_ok;
+}
+
+napi_status napi_throw_error(napi_env env, const char* code, const char* message) {
+    if (!env) return napi_invalid_arg;
+    env->last_error = std::string(code ? code : "Error") + ": " +
+                      std::string(message ? message : "unknown error");
+    return napi_ok;
+}
+
 }  // extern "C"
 
 namespace finn::ohos {
@@ -278,6 +414,236 @@ std::string sanitize_conf_field(std::string_view s) {
     return out;
 }
 
+// RFC 4648 base64 over the raw bytes of a UTF-8 string. Decoding is strict:
+// invalid alphabet characters or a bad length produce an empty result rather
+// than a plausible-looking guess.
+std::string base64_encode_bytes(std::string_view in) {
+    static constexpr char kAlphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    std::size_t i = 0;
+    while (i + 3 <= in.size()) {
+        const std::uint32_t v = (static_cast<std::uint8_t>(in[i]) << 16) |
+                                (static_cast<std::uint8_t>(in[i + 1]) << 8) |
+                                static_cast<std::uint8_t>(in[i + 2]);
+        out.push_back(kAlphabet[(v >> 18) & 0x3fu]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3fu]);
+        out.push_back(kAlphabet[(v >> 6) & 0x3fu]);
+        out.push_back(kAlphabet[v & 0x3fu]);
+        i += 3;
+    }
+    const std::size_t rem = in.size() - i;
+    if (rem == 1) {
+        const std::uint32_t v = static_cast<std::uint8_t>(in[i]) << 16;
+        out.push_back(kAlphabet[(v >> 18) & 0x3fu]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3fu]);
+        out.push_back('=');
+        out.push_back('=');
+    } else if (rem == 2) {
+        const std::uint32_t v = (static_cast<std::uint8_t>(in[i]) << 16) |
+                                (static_cast<std::uint8_t>(in[i + 1]) << 8);
+        out.push_back(kAlphabet[(v >> 18) & 0x3fu]);
+        out.push_back(kAlphabet[(v >> 12) & 0x3fu]);
+        out.push_back(kAlphabet[(v >> 6) & 0x3fu]);
+        out.push_back('=');
+    }
+    return out;
+}
+
+std::string base64_decode_bytes(std::string_view in) {
+    auto sextet = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    if (in.size() % 4 != 0) return {};
+    std::string out;
+    out.reserve((in.size() / 4) * 3);
+    for (std::size_t i = 0; i < in.size(); i += 4) {
+        const bool pad2 = (in[i + 2] == '=');
+        const bool pad1 = (in[i + 3] == '=');
+        if (pad2 && !pad1) return {};  // '=' in position 3 requires one in position 4
+        const int a = sextet(in[i]);
+        const int b = sextet(in[i + 1]);
+        const int c = pad2 ? 0 : sextet(in[i + 2]);
+        const int d = pad1 ? 0 : sextet(in[i + 3]);
+        if (a < 0 || b < 0 || c < 0 || d < 0) return {};
+        // Canonical RFC 4648: unused low bits of the final sextet(s) must be 0.
+        if (pad1 && (c & 0x03u) != 0) return {};
+        if (pad2 && (b & 0x0fu) != 0) return {};
+        const std::uint32_t v = (static_cast<std::uint32_t>(a) << 18) |
+                                (static_cast<std::uint32_t>(b) << 12) |
+                                (static_cast<std::uint32_t>(c) << 6) |
+                                static_cast<std::uint32_t>(d);
+        out.push_back(static_cast<char>((v >> 16) & 0xffu));
+        if (!pad2) out.push_back(static_cast<char>((v >> 8) & 0xffu));
+        if (!pad1) out.push_back(static_cast<char>(v & 0xffu));
+    }
+    return out;
+}
+
+std::string generate_uuid_v4() {
+    std::random_device rd;
+    std::mt19937_64 gen((static_cast<std::uint64_t>(rd()) << 32) ^ rd());
+    std::uniform_int_distribution<std::uint16_t> byte_dist(0, 0xffu);
+    std::uint8_t b[16] = {};
+    for (auto& x : b) x = static_cast<std::uint8_t>(byte_dist(gen));
+    b[6] = static_cast<std::uint8_t>((b[6] & 0x0fu) | 0x40u);  // version 4
+    b[8] = static_cast<std::uint8_t>((b[8] & 0x3fu) | 0x80u);  // variant RFC4122
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(36);
+    for (std::size_t i = 0; i < 16; ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
+        out.push_back(kHex[(b[i] >> 4) & 0x0fu]);
+        out.push_back(kHex[b[i] & 0x0fu]);
+    }
+    return out;
+}
+
+// Reads a Panda ES module record: [literalnum:u32][numRequests:u32]
+// [request string ids:u32...][numRegularImports:u32]
+// [localName:u32, importName:u32, requestIdx:u16 ...]. The trailing export
+// sections are not needed to resolve imported bindings.
+std::optional<AbcModuleRecord> parse_module_record_at(
+    const std::vector<std::uint8_t>& buf, std::size_t pos) {
+    const std::size_t size = buf.size();
+    auto read_u32 = [&](std::uint32_t* out) -> bool {
+        if (pos + 4 > size) return false;
+        *out = read_le32(buf.data() + pos);
+        pos += 4;
+        return true;
+    };
+    auto read_str = [&](std::uint32_t id, std::string* out) -> bool {
+        if (id == 0 || id >= size) return false;
+        std::size_t p = id;
+        std::string s = read_mutf8_at(buf, &p);
+        if (s.empty()) return false;
+        *out = std::move(s);
+        return true;
+    };
+
+    std::uint32_t literal_num = 0;
+    if (!read_u32(&literal_num)) return std::nullopt;
+    (void)literal_num;
+    std::uint32_t num_requests = 0;
+    if (!read_u32(&num_requests) || num_requests == 0 || num_requests > 512) {
+        return std::nullopt;
+    }
+    std::vector<std::string> requests;
+    for (std::uint32_t i = 0; i < num_requests; ++i) {
+        std::uint32_t id = 0;
+        std::string s;
+        if (!read_u32(&id) || !read_str(id, &s) || s.empty() || s.front() != '@') {
+            return std::nullopt;
+        }
+        requests.push_back(std::move(s));
+    }
+
+    std::uint32_t num_imports = 0;
+    if (!read_u32(&num_imports) || num_imports > 8192) return std::nullopt;
+    AbcModuleRecord record;
+    for (std::uint32_t i = 0; i < num_imports; ++i) {
+        std::uint32_t local_id = 0;
+        std::uint32_t import_id = 0;
+        if (!read_u32(&local_id) || !read_u32(&import_id)) return std::nullopt;
+        if (pos + 2 > size) return std::nullopt;
+        const std::uint16_t req_idx = read_le16(buf.data() + pos);
+        pos += 2;
+        if (req_idx >= requests.size()) return std::nullopt;
+        AbcModuleImport imp;
+        if (!read_str(local_id, &imp.local_name) ||
+            !read_str(import_id, &imp.import_name)) {
+            return std::nullopt;
+        }
+        imp.module_request = requests[req_idx];
+        record.imports.push_back(std::move(imp));
+    }
+    if (record.imports.empty()) return std::nullopt;
+    return record;
+}
+
+// Minimal but real ECMAScript value helpers used by compiled ArkTS code.
+AbcValue json_to_value(const JsonValue& j) {
+    switch (j.kind) {
+        case JsonValue::Kind::Null: return AbcValue::make_null();
+        case JsonValue::Kind::Bool: return AbcValue::make_bool(j.bool_val);
+        case JsonValue::Kind::Number: return AbcValue::make_double(j.num_val);
+        case JsonValue::Kind::String: return AbcValue::make_string(j.str_val);
+        case JsonValue::Kind::Array: {
+            AbcValue arr = AbcValue::make_array();
+            for (const auto& item : j.array_val) {
+                arr.obj_val->array_val.push_back(json_to_value(item));
+            }
+            return arr;
+        }
+        case JsonValue::Kind::Object: {
+            AbcValue obj = AbcValue::make_object("Object");
+            for (const auto& [k, v] : j.object_val) {
+                obj.obj_val->properties[k] = json_to_value(v);
+            }
+            return obj;
+        }
+    }
+    return AbcValue::make_undefined();
+}
+
+std::string value_to_json(const AbcValue& v, int depth = 0) {
+    if (depth > 32) return "null";
+    switch (v.kind) {
+        case AbcValue::Kind::Undefined: return "null";
+        case AbcValue::Kind::Null: return "null";
+        case AbcValue::Kind::Bool: return v.bool_val ? "true" : "false";
+        case AbcValue::Kind::Int: return std::to_string(v.int_val);
+        case AbcValue::Kind::Double: {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%.17g", v.double_val);
+            return buf;
+        }
+        case AbcValue::Kind::String: {
+            std::string out = "\"";
+            for (unsigned char c : v.str_val) {
+                if (c == '"' || c == '\\') { out.push_back('\\'); out.push_back(static_cast<char>(c)); }
+                else if (c == '\n') out += "\\n";
+                else if (c == '\r') out += "\\r";
+                else if (c == '\t') out += "\\t";
+                else out.push_back(static_cast<char>(c));
+            }
+            out.push_back('"');
+            return out;
+        }
+        case AbcValue::Kind::Object: {
+            if (v.obj_val && v.obj_val->class_name == "Array") {
+                std::string out = "[";
+                for (std::size_t i = 0; i < v.obj_val->array_val.size(); ++i) {
+                    if (i) out += ',';
+                    out += value_to_json(v.obj_val->array_val[i], depth + 1);
+                }
+                out.push_back(']');
+                return out;
+            }
+            std::string out = "{";
+            bool first = true;
+            if (v.obj_val) {
+                for (const auto& [k, val] : v.obj_val->properties) {
+                    if (!first) out += ',';
+                    first = false;
+                    out += value_to_json(AbcValue::make_string(k));
+                    out += ':';
+                    out += value_to_json(val, depth + 1);
+                }
+            }
+            out.push_back('}');
+            return out;
+        }
+        default: return "null";
+    }
+}
+
 bool is_supported_kit_specifier(std::string_view spec) {
     static constexpr std::string_view kSupported[] = {
         "@ohos.hilog",
@@ -289,6 +655,12 @@ bool is_supported_kit_specifier(std::string_view spec) {
         "@ohos.data.preferences",
         "@ohos.file.fs",
         "@ohos.deviceInfo",
+        "@ohos.util",
+        "@ohos.bundle.bundleManager",
+        "@ohos.bundle",
+        "@ohos.app",
+        "@ohos.curves",
+        "@ohos.matrix4",
         "@kit.ArkUI",
         "@kit.PerformanceAnalysisKit",
         "@kit.BasicServicesKit",
@@ -344,7 +716,8 @@ bool is_known_unsupported_kit(std::string_view spec) {
 
 void scan_kit_tokens(std::string_view text,
                      std::set<std::string>* supported,
-                     std::set<std::string>* unsupported) {
+                     std::set<std::string>* unsupported,
+                     std::set<std::string>* unknown) {
     std::size_t pos = 0;
     while (pos < text.size()) {
         const std::size_t at = text.find('@', pos);
@@ -362,7 +735,7 @@ void scan_kit_tokens(std::string_view text,
             } else if (is_supported_kit_specifier(token)) {
                 supported->insert(token);
             } else {
-                unsupported->insert(token);
+                unknown->insert(token);
             }
             pos = end;
         } else {
@@ -672,6 +1045,26 @@ AbcFile parse_abc_bytes(const std::uint8_t* data, std::size_t size) {
         push_unique_string(&file.strings, run);
     }
 
+    // Locate ES module records by their validated structure. Each record's
+    // regular-import list is the index space used by ldexternalmodulevar.
+    for (std::size_t off = kPandaHeaderSize; off + 12 <= h.file_size; off += 4) {
+        auto rec = parse_module_record_at(file.raw_bytes, off);
+        if (!rec) continue;
+        bool duplicate = false;
+        for (const auto& existing : file.module_records) {
+            if (existing.imports.size() == rec->imports.size() &&
+                !existing.imports.empty() &&
+                existing.imports.front().module_request ==
+                    rec->imports.front().module_request &&
+                existing.imports.front().local_name ==
+                    rec->imports.front().local_name) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) file.module_records.push_back(std::move(*rec));
+    }
+
     file.valid = true;
     return file;
 }
@@ -697,12 +1090,14 @@ AbcFile parse_abc_file(const std::string& path) {
 KitAudit audit_ohos_kits(const std::vector<std::string>& strings) {
     std::set<std::string> sup;
     std::set<std::string> unsup;
+    std::set<std::string> unknown;
     for (const auto& s : strings) {
-        scan_kit_tokens(s, &sup, &unsup);
+        scan_kit_tokens(s, &sup, &unsup, &unknown);
     }
     KitAudit out;
     out.supported.assign(sup.begin(), sup.end());
     out.unsupported.assign(unsup.begin(), unsup.end());
+    out.unknown.assign(unknown.begin(), unknown.end());
     return out;
 }
 
@@ -755,6 +1150,10 @@ AbcValue AbcValue::make_object(std::string class_name) {
     return v;
 }
 
+AbcValue AbcValue::make_array() {
+    return make_object("Array");
+}
+
 AbcValue AbcValue::make_native(NativeFn fn) {
     AbcValue v;
     v.kind = Kind::NativeFunction;
@@ -802,6 +1201,14 @@ double AbcValue::to_number() const {
 std::int32_t AbcValue::to_int32() const {
     if (kind == Kind::Int) return static_cast<std::int32_t>(int_val);
     return static_cast<std::int32_t>(to_number());
+}
+
+std::int64_t AbcValue::to_int64() const {
+    if (kind == Kind::Int) return int_val;
+    if (kind == Kind::Double) return static_cast<std::int64_t>(double_val);
+    if (kind == Kind::Bool) return bool_val ? 1 : 0;
+    if (kind == Kind::String) return std::strtoll(str_val.c_str(), nullptr, 10);
+    return 0;
 }
 
 std::string AbcValue::to_string() const {
@@ -860,9 +1267,22 @@ AbcRuntime::~AbcRuntime() {
 void AbcRuntime::set_bundle_context(const std::string& bundle_name,
                                     const std::string& app_root_dir,
                                     const std::string& ohos_root_dir) {
-    if (!bundle_name.empty()) bundle_name_ = bundle_name;
+    if (!bundle_name.empty()) {
+        bundle_name_ = bundle_name;
+        bundle_info_.name = bundle_name;
+    }
     app_root_dir_ = app_root_dir;
     ohos_root_dir_ = ohos_root_dir.empty() ? default_ohos_root() : ohos_root_dir;
+}
+
+void AbcRuntime::set_bundle_info(OhosBundleInfo info) {
+    bundle_info_ = std::move(info);
+    // Keep the sandbox identity in step with the manifest facts.
+    if (!bundle_info_.name.empty()) bundle_name_ = bundle_info_.name;
+}
+
+std::string AbcRuntime::last_napi_error() const {
+    return napi_env_ ? napi_env_->last_error : std::string();
 }
 
 void AbcRuntime::set_arkui(ArkUiEngine* engine) {
@@ -896,7 +1316,68 @@ bool AbcRuntime::load_abc(AbcFile file, std::string* error) {
             }
         }
     }
+
+    // Resolve ES import bindings by module-record index. An import of a
+    // supported @ohos kit binds to the real shim; an app-internal binding that
+    // finn-ohos cannot link gets a placeholder whose method calls are logged
+    // as skipped (never silently presented as working).
+    external_module_vars_.clear();
+    if (!abc_.module_records.empty()) {
+        for (const auto& imp : abc_.module_records.front().imports) {
+            AbcValue binding;
+            std::string spec = imp.module_request;
+            if (spec.rfind("@ohos:", 0) == 0) {
+                spec.replace(0, 6, "@ohos.");
+            }
+            const auto mod = modules_.find(spec);
+            if (mod != modules_.end()) {
+                binding = mod->second;
+            } else if (const auto glob = globals_.find(imp.local_name);
+                       glob != globals_.end() &&
+                       glob->second.kind == AbcValue::Kind::Object) {
+                binding = glob->second;
+            } else {
+                AbcValue placeholder = AbcValue::make_object(
+                    "UnresolvedImport(" + imp.local_name + ")");
+                const std::string label = imp.local_name;
+                placeholder.obj_val->property_fallback =
+                    [label](const std::string& member) {
+                        return AbcValue::make_native(
+                            [label, member](AbcRuntime& rt, const AbcValue& recv,
+                                            const std::vector<AbcValue>&) {
+                                rt.log("[module] " + label + "." + member +
+                                       " skipped: import not linked by finn-ohos");
+                                return recv;
+                            });
+                    };
+                binding = std::move(placeholder);
+            }
+            external_module_vars_.push_back(std::move(binding));
+        }
+    }
     return true;
+}
+
+void AbcRuntime::set_external_module_var(std::size_t index, AbcValue value) {
+    if (external_module_vars_.size() <= index) {
+        external_module_vars_.resize(index + 1, AbcValue::make_undefined());
+    }
+    external_module_vars_[index] = std::move(value);
+}
+
+AbcValue AbcRuntime::unresolved_module_binding(std::size_t index) const {
+    const std::string label = "externalModuleVar#" + std::to_string(index);
+    AbcValue v = AbcValue::make_object("UnresolvedImport(" + label + ")");
+    v.obj_val->property_fallback = [label](const std::string& member) {
+        return AbcValue::make_native(
+            [label, member](AbcRuntime& rt, const AbcValue& recv,
+                            const std::vector<AbcValue>&) {
+                rt.log("[module] " + label + "." + member +
+                       " skipped: import not linked by finn-ohos");
+                return recv;
+            });
+    };
+    return v;
 }
 
 void AbcRuntime::set_global(const std::string& name, AbcValue value) {
@@ -954,6 +1435,32 @@ void AbcRuntime::install_builtin_modules() {
     console_obj.obj_val->properties["error"] = make_console_fn("error");
     globals_["console"] = console_obj;
 
+    // ECMAScript builtins that compiled ArkTS bytecode expects as globals.
+    globals_["Number"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_double(a.empty() ? 0.0 : a[0].to_number());
+        });
+    globals_["String"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_string(a.empty() ? "" : a[0].to_string());
+        });
+    globals_["Boolean"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_bool(!a.empty() && a[0].is_truthy());
+        });
+    AbcValue json_obj = AbcValue::make_object("JSON");
+    json_obj.obj_val->properties["stringify"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_string(a.empty() ? "undefined" : value_to_json(a[0]));
+        });
+    json_obj.obj_val->properties["parse"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            if (a.empty()) return AbcValue::make_undefined();
+            auto parsed = parse_json5(a[0].to_string());
+            return parsed ? json_to_value(*parsed) : AbcValue::make_undefined();
+        });
+    globals_["JSON"] = json_obj;
+
     // @ohos.hilog
     AbcValue hilog_obj = AbcValue::make_object("HiLog");
     auto make_hilog_fn = [](std::string level) {
@@ -972,6 +1479,11 @@ void AbcRuntime::install_builtin_modules() {
     hilog_obj.obj_val->properties["warn"] = make_hilog_fn("W");
     hilog_obj.obj_val->properties["error"] = make_hilog_fn("E");
     hilog_obj.obj_val->properties["fatal"] = make_hilog_fn("F");
+    // Conventional short aliases used by real ArkTS apps.
+    hilog_obj.obj_val->properties["d"] = hilog_obj.obj_val->properties["debug"];
+    hilog_obj.obj_val->properties["i"] = hilog_obj.obj_val->properties["info"];
+    hilog_obj.obj_val->properties["w"] = hilog_obj.obj_val->properties["warn"];
+    hilog_obj.obj_val->properties["e"] = hilog_obj.obj_val->properties["error"];
     globals_["hilog"] = hilog_obj;
     modules_["@ohos.hilog"] = hilog_obj;
 
@@ -986,6 +1498,181 @@ void AbcRuntime::install_builtin_modules() {
     dev_obj.obj_val->properties["abiList"] = AbcValue::make_string(host_ohos_abi());
     globals_["deviceInfo"] = dev_obj;
     modules_["@ohos.deviceInfo"] = dev_obj;
+
+    // @ohos.util. Entropy comes from std::random_device; base64 is strict
+    // RFC 4648 and reports invalid input with an empty result, never a guess.
+    AbcValue util_obj = AbcValue::make_object("Util");
+    util_obj.obj_val->properties["generateRandomUUID"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>&) {
+            return AbcValue::make_string(generate_uuid_v4());
+        });
+    util_obj.obj_val->properties["getRandom"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            if (a.size() < 2) return AbcValue::make_int(0);
+            std::int64_t lo = a[0].to_int64();
+            std::int64_t hi = a[1].to_int64();
+            if (lo > hi) std::swap(lo, hi);
+            std::random_device rd;
+            std::mt19937_64 gen((static_cast<std::uint64_t>(rd()) << 32) ^ rd());
+            std::uniform_int_distribution<std::int64_t> dist(lo, hi);
+            return AbcValue::make_int(dist(gen));
+        });
+    AbcValue base64_obj = AbcValue::make_object("Base64");
+    base64_obj.obj_val->properties["encode"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_string(
+                a.empty() ? "" : base64_encode_bytes(a[0].to_string()));
+        });
+    base64_obj.obj_val->properties["decode"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            return AbcValue::make_string(
+                a.empty() ? "" : base64_decode_bytes(a[0].to_string()));
+        });
+    util_obj.obj_val->properties["Base64"] = base64_obj;
+    util_obj.obj_val->properties["Base64Encoder"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>&) {
+            AbcValue enc = AbcValue::make_object("Base64Encoder");
+            enc.obj_val->properties["encodeSync"] = AbcValue::make_native(
+                [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+                    return AbcValue::make_string(
+                        a.empty() ? "" : base64_encode_bytes(a[0].to_string()));
+                });
+            return enc;
+        });
+    util_obj.obj_val->properties["Base64Decoder"] = AbcValue::make_native(
+        [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>&) {
+            AbcValue dec = AbcValue::make_object("Base64Decoder");
+            dec.obj_val->properties["decodeSync"] = AbcValue::make_native(
+                [](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+                    return AbcValue::make_string(
+                        a.empty() ? "" : base64_decode_bytes(a[0].to_string()));
+                });
+            return dec;
+        });
+    globals_["util"] = util_obj;
+    modules_["@ohos.util"] = util_obj;
+
+    // @ohos.bundle.bundleManager. FinnOS returns the BundleInfo synchronously
+    // from real manifest facts (no Promise / no IPC); see docs/ohos-kit-coverage.md.
+    AbcValue bm_obj = AbcValue::make_object("BundleManager");
+    bm_obj.obj_val->properties["getBundleInfoForSelf"] = AbcValue::make_native(
+        [](AbcRuntime& rt, const AbcValue&, const std::vector<AbcValue>&) {
+            const OhosBundleInfo& info = rt.bundle_info();
+            AbcValue v = AbcValue::make_object("BundleInfo");
+            v.obj_val->properties["name"] = AbcValue::make_string(info.name);
+            v.obj_val->properties["bundleName"] = AbcValue::make_string(info.name);
+            v.obj_val->properties["versionName"] = AbcValue::make_string(info.version_name);
+            v.obj_val->properties["versionCode"] = AbcValue::make_int(info.version_code);
+            v.obj_val->properties["moduleName"] = AbcValue::make_string(info.module_name);
+            v.obj_val->properties["mainElement"] = AbcValue::make_string(info.main_element);
+            v.obj_val->properties["apiVersion"] = AbcValue::make_int(info.api_version);
+            return v;
+        });
+    globals_["bundleManager"] = bm_obj;
+    modules_["@ohos.bundle.bundleManager"] = bm_obj;
+
+    // @ohos.app — real manifest-derived identity for the running bundle.
+    AbcValue app_obj = AbcValue::make_object("App");
+    app_obj.obj_val->properties["getAppInfo"] = AbcValue::make_native(
+        [](AbcRuntime& rt, const AbcValue&, const std::vector<AbcValue>&) {
+            const OhosBundleInfo& info = rt.bundle_info();
+            AbcValue v = AbcValue::make_object("AppInfo");
+            v.obj_val->properties["name"] = AbcValue::make_string(info.name);
+            v.obj_val->properties["versionName"] = AbcValue::make_string(info.version_name);
+            v.obj_val->properties["versionCode"] = AbcValue::make_int(info.version_code);
+            v.obj_val->properties["apiVersion"] = AbcValue::make_int(info.api_version);
+            return v;
+        });
+    globals_["app"] = app_obj;
+    modules_["@ohos.app"] = app_obj;
+
+    // @ohos.curves — real pure easing functions (t clamped to 0..1).
+    AbcValue curves_obj = AbcValue::make_object("Curves");
+    auto make_curve = [](int mode) {
+        return AbcValue::make_native(
+            [mode](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+                double t = a.empty() ? 0.0 : a[0].to_number();
+                t = std::clamp(t, 0.0, 1.0);
+                double y = t;
+                switch (mode) {
+                    case 1: y = t * t; break;                                  // easeIn
+                    case 2: y = 1.0 - (1.0 - t) * (1.0 - t); break;            // easeOut
+                    case 3: y = t < 0.5 ? 2.0 * t * t
+                                        : 1.0 - 2.0 * (1.0 - t) * (1.0 - t);  // easeInOut
+                    default: break;                                            // linear
+                }
+                return AbcValue::make_double(y);
+            });
+    };
+    curves_obj.obj_val->properties["linear"] = make_curve(0);
+    curves_obj.obj_val->properties["easeIn"] = make_curve(1);
+    curves_obj.obj_val->properties["easeOut"] = make_curve(2);
+    curves_obj.obj_val->properties["easeInOut"] = make_curve(3);
+    globals_["curves"] = curves_obj;
+    modules_["@ohos.curves"] = curves_obj;
+
+    // @ohos.matrix4 — real column-major 4x4 matrix arithmetic.
+    AbcValue matrix_obj = AbcValue::make_object("Matrix4");
+    auto make_matrix_value = [](std::vector<double> cells) {
+        AbcValue v = AbcValue::make_array();
+        v.obj_val->array_val.reserve(cells.size());
+        for (double c : cells) v.obj_val->array_val.push_back(AbcValue::make_double(c));
+        return v;
+    };
+    auto read_matrix = [](const AbcValue& v) {
+        std::vector<double> m(16, 0.0);
+        if (v.kind == AbcValue::Kind::Object && v.obj_val) {
+            for (std::size_t i = 0; i < 16 && i < v.obj_val->array_val.size(); ++i) {
+                m[i] = v.obj_val->array_val[i].to_number();
+            }
+        }
+        return m;
+    };
+    matrix_obj.obj_val->properties["identity"] = AbcValue::make_native(
+        [make_matrix_value](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>&) {
+            std::vector<double> m(16, 0.0);
+            m[0] = m[5] = m[10] = m[15] = 1.0;
+            return make_matrix_value(std::move(m));
+        });
+    matrix_obj.obj_val->properties["translation"] = AbcValue::make_native(
+        [make_matrix_value](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            std::vector<double> m(16, 0.0);
+            m[0] = m[5] = m[10] = m[15] = 1.0;
+            for (int i = 0; i < 3 && i < static_cast<int>(a.size()); ++i) {
+                m[12 + i] = a[static_cast<std::size_t>(i)].to_number();
+            }
+            return make_matrix_value(std::move(m));
+        });
+    matrix_obj.obj_val->properties["scaling"] = AbcValue::make_native(
+        [make_matrix_value](AbcRuntime&, const AbcValue&, const std::vector<AbcValue>& a) {
+            std::vector<double> m(16, 0.0);
+            m[15] = 1.0;
+            for (int i = 0; i < 3 && i < static_cast<int>(a.size()); ++i) {
+                m[5 * i + i] = a[static_cast<std::size_t>(i)].to_number();
+            }
+            return make_matrix_value(std::move(m));
+        });
+    matrix_obj.obj_val->properties["multiply"] = AbcValue::make_native(
+        [make_matrix_value, read_matrix](AbcRuntime&, const AbcValue&,
+                                         const std::vector<AbcValue>& a) {
+            if (a.size() < 2) return make_matrix_value(std::vector<double>(16, 0.0));
+            const auto lhs = read_matrix(a[0]);
+            const auto rhs = read_matrix(a[1]);
+            std::vector<double> out(16, 0.0);
+            for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 4; ++r) {
+                    double sum = 0.0;
+                    for (int k = 0; k < 4; ++k) {
+                        sum += lhs[static_cast<std::size_t>(k * 4 + r)] *
+                               rhs[static_cast<std::size_t>(c * 4 + k)];
+                    }
+                    out[static_cast<std::size_t>(c * 4 + r)] = sum;
+                }
+            }
+            return make_matrix_value(std::move(out));
+        });
+    globals_["matrix4"] = matrix_obj;
+    modules_["@ohos.matrix4"] = matrix_obj;
 
     // @ohos.router
     AbcValue router_obj = AbcValue::make_object("Router");
@@ -1214,6 +1901,26 @@ void AbcRuntime::install_builtin_modules() {
             rt.log("[runtime] module not implemented: " + spec);
             return AbcValue::make_undefined();
         });
+
+    // Real apps routinely import a module by one local name and call a member
+    // finn-ohos does not implement. Report the skipped member honestly instead
+    // of leaving an undefined value that aborts the whole UIAbility lifecycle.
+    for (auto& [spec, mod] : modules_) {
+        if (mod.kind != AbcValue::Kind::Object || !mod.obj_val ||
+            mod.obj_val->property_fallback) {
+            continue;
+        }
+        const std::string label = spec;
+        mod.obj_val->property_fallback = [label](const std::string& member) {
+            return AbcValue::make_native(
+                [label, member](AbcRuntime& rt, const AbcValue& recv,
+                                const std::vector<AbcValue>&) {
+                    rt.log("[module] " + label + "." + member +
+                           " skipped: not implemented by finn-ohos");
+                    return recv;
+                });
+        };
+    }
 }
 
 bool AbcRuntime::load_declarative_page(const std::string& page_path) {
@@ -1337,7 +2044,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
             case AbcOpcode::CreateEmptyArray:
                 if (!need(1)) { --call_depth_; return res; }
                 ++pc;  // imm8 IC slot
-                acc = AbcValue::make_object("Array");
+                acc = AbcValue::make_array();
                 break;
             case AbcOpcode::Mov4: {
                 if (!need(1)) { --call_depth_; return res; }
@@ -1381,10 +2088,12 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 break;
             }
             case AbcOpcode::LdaStr: {
-                if (!need(4)) { --call_depth_; return res; }
-                const std::uint32_t str_off = read_le32(code.data() + pc);
-                pc += 4;
-                acc = AbcValue::make_string(abc_.read_mutf8_string(str_off));
+                // Public ISA: lda.str string_id has format op_id_16 (2 bytes).
+                if (!need(2)) { --call_depth_; return res; }
+                const std::uint16_t id16 = read_le16(code.data() + pc);
+                pc += 2;
+                acc = AbcValue::make_string(
+                    abc_.resolve_id16_string(method.offset, id16));
                 break;
             }
             case AbcOpcode::Add2: {
@@ -1558,7 +2267,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 if (!need(1)) { --call_depth_; return res; }
                 ++pc;
                 auto [ok, rv] = invoke_callable(acc, this_val, {}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1567,7 +2276,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 ++pc;
                 const std::uint8_t a0 = code[pc++];
                 auto [ok, rv] = invoke_callable(acc, this_val, {regs[a0]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1577,7 +2286,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::uint8_t a0 = code[pc++];
                 const std::uint8_t a1 = code[pc++];
                 auto [ok, rv] = invoke_callable(acc, this_val, {regs[a0], regs[a1]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1589,7 +2298,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::uint8_t a2 = code[pc++];
                 auto [ok, rv] = invoke_callable(
                     acc, this_val, {regs[a0], regs[a1], regs[a2]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1598,7 +2307,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 ++pc;
                 const std::uint8_t recv = code[pc++];
                 auto [ok, rv] = invoke_callable(acc, regs[recv], {}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1608,7 +2317,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::uint8_t recv = code[pc++];
                 const std::uint8_t a0 = code[pc++];
                 auto [ok, rv] = invoke_callable(acc, regs[recv], {regs[a0]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1620,7 +2329,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::uint8_t a1 = code[pc++];
                 auto [ok, rv] = invoke_callable(
                     acc, regs[recv], {regs[a0], regs[a1]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1633,7 +2342,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::uint8_t a2 = code[pc++];
                 auto [ok, rv] = invoke_callable(
                     acc, regs[recv], {regs[a0], regs[a1], regs[a2]}, &res.error);
-                if (!ok) { --call_depth_; return res; }
+                if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                 acc = std::move(rv);
                 break;
             }
@@ -1654,7 +2363,7 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 if (ctor.kind == AbcValue::Kind::NativeFunction ||
                     ctor.kind == AbcValue::Kind::AbcFunction) {
                     auto [ok, rv] = invoke_callable(ctor, instance, cargs, &res.error);
-                    if (!ok) { --call_depth_; return res; }
+                    if (!ok) { --call_depth_; if (res.error.find("pc=") == std::string::npos) res.error += " at pc=" + std::to_string(inst_pc) + " in " + method.name; return res; }
                     acc = (rv.kind == AbcValue::Kind::Object) ? std::move(rv) : std::move(instance);
                 } else {
                     acc = std::move(instance);
@@ -1671,17 +2380,25 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 const std::string prop = abc_.resolve_id16_string(method.offset, id16);
                 if (acc.kind == AbcValue::Kind::Object && acc.obj_val) {
                     const auto it = acc.obj_val->properties.find(prop);
-                    acc = (it != acc.obj_val->properties.end())
-                              ? it->second
-                              : AbcValue::make_undefined();
+                    if (it != acc.obj_val->properties.end()) {
+                        acc = it->second;
+                    } else if (acc.obj_val->property_fallback) {
+                        acc = acc.obj_val->property_fallback(prop);
+                    } else {
+                        acc = AbcValue::make_undefined();
+                    }
                 } else {
                     acc = AbcValue::make_undefined();
                 }
                 break;
             }
             case AbcOpcode::StObjByName8:
-            case AbcOpcode::StObjByName16: {
-                const std::size_t ic_bytes = (static_cast<AbcOpcode>(op) == AbcOpcode::StObjByName16) ? 2 : 1;
+            case AbcOpcode::StObjByName16:
+            case AbcOpcode::StOwnByName8:
+            case AbcOpcode::StOwnByName16: {
+                const std::size_t ic_bytes =
+                    (op == static_cast<std::uint8_t>(AbcOpcode::StObjByName16) ||
+                     op == static_cast<std::uint8_t>(AbcOpcode::StOwnByName16)) ? 2 : 1;
                 if (!need(ic_bytes + 3)) { --call_depth_; return res; }
                 pc += ic_bytes;
                 const std::uint16_t id16 = read_le16(code.data() + pc);
@@ -1715,6 +2432,105 @@ AbcExecResult AbcRuntime::execute_method(const AbcMethod& method,
                 pc += 2;
                 const std::string name = abc_.resolve_id16_string(method.offset, id16);
                 globals_[name] = acc;
+                break;
+            }
+            case AbcOpcode::Neg: {
+                if (!need(1)) { --call_depth_; return res; }
+                ++pc;  // imm8 IC slot
+                acc = AbcValue::make_double(-acc.to_number());
+                break;
+            }
+            case AbcOpcode::IsTrue:
+            case AbcOpcode::IsFalse: {
+                const bool strict_true =
+                    acc.kind == AbcValue::Kind::Bool && acc.bool_val;
+                acc = AbcValue::make_bool(op == static_cast<std::uint8_t>(AbcOpcode::IsTrue)
+                                              ? strict_true
+                                              : !strict_true);
+                break;
+            }
+            case AbcOpcode::DefineFunc: {
+                // Class/function definition is not linked; consume its
+                // operands and leave the accumulator untouched.
+                if (!need(4)) { --call_depth_; return res; }
+                pc += 4;
+                break;
+            }
+            case AbcOpcode::DefineFieldByName: {
+                if (!need(4)) { --call_depth_; return res; }
+                pc += 4;
+                break;
+            }
+            case AbcOpcode::LdGlobal: {
+                // Expose the real globals this runtime provides as globalThis.
+                AbcValue g = AbcValue::make_object("GlobalThis");
+                for (const auto& [name, value] : globals_) {
+                    g.obj_val->properties[name] = value;
+                }
+                acc = std::move(g);
+                break;
+            }
+            case AbcOpcode::CreateObjectWithBuffer: {
+                if (!need(3)) { --call_depth_; return res; }
+                pc += 3;  // imm8 IC slot + id16 literal-buffer id
+                // Literal-array initialisation is not evaluated; an empty real
+                // object is returned rather than a fabricated value.
+                acc = AbcValue::make_object("Object");
+                break;
+            }
+            case AbcOpcode::NewLexEnv: {
+                if (!need(1)) { --call_depth_; return res; }
+                ++pc;  // slot count; finn-ohos uses a flat lexical slot table
+                acc = AbcValue::make_object("LexEnv");
+                break;
+            }
+            case AbcOpcode::PopLexEnv:
+                break;
+            case AbcOpcode::LdExternalModuleVar:
+            case AbcOpcode::LdLocalModuleVar: {
+                if (!need(1)) { --call_depth_; return res; }
+                const std::uint8_t index = code[pc++];
+                if (index < external_module_vars_.size() &&
+                    external_module_vars_[index].kind != AbcValue::Kind::Undefined) {
+                    acc = external_module_vars_[index];
+                } else {
+                    acc = unresolved_module_binding(index);
+                }
+                break;
+            }
+            case AbcOpcode::LdLexVar:
+            case AbcOpcode::StLexVar: {
+                if (!need(1)) { --call_depth_; return res; }
+                const std::uint8_t packed = code[pc++];
+                const std::size_t key =
+                    static_cast<std::size_t>((packed >> 4) & 0x0fu) * 16u +
+                    static_cast<std::size_t>(packed & 0x0fu);
+                if (static_cast<AbcOpcode>(op) == AbcOpcode::LdLexVar) {
+                    acc = (key < lexical_slots_.size())
+                              ? lexical_slots_[key]
+                              : AbcValue::make_undefined();
+                } else {
+                    if (lexical_slots_.size() <= key) {
+                        lexical_slots_.resize(key + 1, AbcValue::make_undefined());
+                    }
+                    lexical_slots_[key] = acc;
+                }
+                break;
+            }
+            case AbcOpcode::ThrowPrefixed: {
+                if (!need(1)) { --call_depth_; return res; }
+                const std::uint8_t sub = code[pc++];
+                if (sub == 0x09u) {  // undefinedifholewithname id16
+                    if (!need(2)) { --call_depth_; return res; }
+                    pc += 2;  // name id; no HOLE kind in this runtime, acc passes through
+                } else {
+                    char hex[16];
+                    std::snprintf(hex, sizeof(hex), "0x%02x", static_cast<unsigned>(sub));
+                    --call_depth_;
+                    res.error = std::string("unimplemented throw-prefixed sub-opcode ") +
+                                hex + " in " + method.name;
+                    return res;
+                }
                 break;
             }
             case AbcOpcode::Return:
@@ -1767,6 +2583,15 @@ AbilityRunReport AbcRuntime::run_ability_lifecycle(const OhosModuleManifest& man
                               ? manifest.main_element
                               : (!manifest.abilities.empty() ? manifest.abilities[0].name
                                                              : "EntryAbility");
+
+    OhosBundleInfo binfo;
+    binfo.name = manifest.bundle_name;
+    binfo.version_name = manifest.version_name;
+    binfo.version_code = manifest.version_code;
+    binfo.module_name = manifest.module_name;
+    binfo.main_element = report.ability_name;
+    binfo.api_version = manifest.target_api_version;
+    set_bundle_info(std::move(binfo));
 
     AbcValue ability_this = AbcValue::make_object(report.ability_name);
     AbcValue want = AbcValue::make_object("Want");

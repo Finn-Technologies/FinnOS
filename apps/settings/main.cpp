@@ -33,6 +33,7 @@
 #include <functional>
 
 #include "common/paths.hpp"
+#include "compat/android_runner.hpp"
 #include "compat/desktop_entry.hpp"
 #include "compat/wine_runner.hpp"
 #include "system/desktop_services.hpp"
@@ -1122,15 +1123,16 @@ private:
                 page),
             page));
 
-        const bool has_waydroid = !QStandardPaths::findExecutable(QStringLiteral("waydroid")).isEmpty();
+        const auto android_rt = finn::compat::probe_android_runtime();
         root->addWidget(new finn::ui::FinnSettingRow(
-            QStringLiteral("Android Applications (Waydroid)"),
-            has_waydroid ? QStringLiteral("Waydroid container runtime installed for windowed Android apps")
-                         : QStringLiteral("Waydroid not installed — install waydroid + binder kernel module"),
+            QStringLiteral("Android Applications (finn-android)"),
+            QString::fromStdString(android_rt.summary),
             QStringLiteral("android"),
             new finn::ui::FinnBadge(
-                has_waydroid ? QStringLiteral("Ready") : QStringLiteral("Not Installed"),
-                has_waydroid ? finn::ui::FinnBadge::Tone::Success : finn::ui::FinnBadge::Tone::Neutral,
+                android_rt.ready ? QStringLiteral("Ready")
+                                 : QStringLiteral("Not Installed"),
+                android_rt.ready ? finn::ui::FinnBadge::Tone::Success
+                                 : finn::ui::FinnBadge::Tone::Neutral,
                 page),
             page));
 

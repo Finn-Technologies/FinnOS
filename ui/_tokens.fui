@@ -16,6 +16,9 @@ theme FinnTokens {
   color: tile_light #FFFFFF, tile_dark #161922
   color: tile_on_light #DCEBFF, tile_on_dark #223B61
   color: hair_light #14000000, hair_dark #1CFFFFFF
+  // Figma 20:106 (Window Options): the pill border is #000000@5% at 0.5 px,
+  // half the weight of `hair`. Kept separate so neither border drifts.
+  color: hair_soft_light #0D000000, hair_soft_dark #0DFFFFFF
 
   color: ink_light #0F141A, ink_dark #F2F4F8
   color: mute_light #868E9B, mute_dark #8891A0
@@ -63,6 +66,7 @@ theme FinnTokens {
   radius: r_md 8.0       // app icon tiles, hover fills, in-app toasts
   radius: r_lg 12.0      // windows, dock pills, Home/Search/Control Center panels
   radius: r_xl 20.0      // notification cards, mobile/tablet bottom sheets
+  radius: r_nav 5.0      // Figma 21:131 sidebar rows (distinct from 6 px cards)
   radius: r_bubble 10.4  // legacy ref-8 alias for dock pills
   radius: r_panel 10.4   // legacy ref-8 alias for Control Center and Home Menu
   radius: r_tile 5.37    // legacy ref-4.14 alias for status sub-tiles

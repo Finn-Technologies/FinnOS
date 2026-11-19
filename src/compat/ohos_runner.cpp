@@ -1,6 +1,7 @@
 #include "compat/ohos_runner.hpp"
 
 #include "compat/desktop_entry.hpp"
+#include "compat/zip_entries.hpp"
 
 #include <sys/utsname.h>
 
@@ -41,18 +42,6 @@ bool starts_with_ci(std::string_view s, std::string_view prefix) {
         }
     }
     return true;
-}
-
-std::uint16_t read_u16_le(const std::uint8_t* p) {
-    return static_cast<std::uint16_t>(static_cast<std::uint16_t>(p[0]) |
-                                      (static_cast<std::uint16_t>(p[1]) << 8));
-}
-
-std::uint32_t read_u32_le(const std::uint8_t* p) {
-    return static_cast<std::uint32_t>(p[0]) |
-           (static_cast<std::uint32_t>(p[1]) << 8) |
-           (static_cast<std::uint32_t>(p[2]) << 16) |
-           (static_cast<std::uint32_t>(p[3]) << 24);
 }
 
 std::string host_machine() {
@@ -100,64 +89,8 @@ std::vector<std::string> split_pipe_line(std::string_view line) {
     return out;
 }
 
-// Reads uncompressed ZIP central directory filenames with zero zlib dependency.
-bool read_zip_filenames(const std::string& path, std::vector<std::string>* names) {
-    std::error_code ec;
-    if (!fs::is_regular_file(path, ec)) return false;
-    const auto sz = fs::file_size(path, ec);
-    if (ec || sz < 22 || sz > 512u * 1024u * 1024u) return false;
-
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    std::uint8_t magic[4] = {};
-    in.read(reinterpret_cast<char*>(magic), 4);
-    if (in.gcount() != 4 || read_u32_le(magic) != 0x04034b50u) return false;
-
-    const std::size_t tail_len = static_cast<std::size_t>(std::min<std::uintmax_t>(sz, 65557u));
-    std::vector<std::uint8_t> tail(tail_len);
-    in.seekg(static_cast<std::streamoff>(sz - tail_len), std::ios::beg);
-    in.read(reinterpret_cast<char*>(tail.data()), static_cast<std::streamsize>(tail_len));
-    if (static_cast<std::size_t>(in.gcount()) != tail_len) return false;
-
-    std::size_t eocd_in_tail = std::string::npos;
-    for (std::size_t pos = tail_len - 22; ; --pos) {
-        if (read_u32_le(tail.data() + pos) == 0x06054b50u) {
-            const std::uint16_t clen = read_u16_le(tail.data() + pos + 20);
-            if (pos + 22u + clen == tail_len) {
-                eocd_in_tail = pos;
-                break;
-            }
-        }
-        if (pos == 0) break;
-    }
-    if (eocd_in_tail == std::string::npos) return false;
-
-    const std::uint16_t count = read_u16_le(tail.data() + eocd_in_tail + 10);
-    const std::uint32_t cd_size = read_u32_le(tail.data() + eocd_in_tail + 12);
-    const std::uint32_t cd_off = read_u32_le(tail.data() + eocd_in_tail + 16);
-    if (cd_size > 16u * 1024u * 1024u ||
-        static_cast<std::uint64_t>(cd_off) + cd_size > sz) {
-        return false;
-    }
-
-    std::vector<std::uint8_t> cd(cd_size);
-    in.seekg(static_cast<std::streamoff>(cd_off), std::ios::beg);
-    in.read(reinterpret_cast<char*>(cd.data()), static_cast<std::streamsize>(cd_size));
-    if (static_cast<std::size_t>(in.gcount()) != cd_size) return false;
-
-    std::size_t cur = 0;
-    for (std::uint16_t i = 0; i < count && cur + 46 <= cd.size(); ++i) {
-        if (read_u32_le(cd.data() + cur) != 0x02014b50u) return false;
-        const std::uint16_t nlen = read_u16_le(cd.data() + cur + 28);
-        const std::uint16_t xlen = read_u16_le(cd.data() + cur + 30);
-        const std::uint16_t clen = read_u16_le(cd.data() + cur + 32);
-        const std::size_t next = cur + 46u + nlen + xlen + clen;
-        if (next > cd.size()) return false;
-        names->emplace_back(reinterpret_cast<const char*>(cd.data() + cur + 46), nlen);
-        cur = next;
-    }
-    return true;
-}
+// ZIP parsing lives in compat/zip_entries.hpp so the macOS and OpenHarmony
+// installers agree on what counts as a package.
 
 }  // namespace
 
@@ -184,17 +117,17 @@ OhosPackageType classify_ohos_package_path(const std::string& path) {
     if (ends_with_ci(path, ".hap")) {
         if (!exists) return OhosPackageType::Hap;
         std::vector<std::string> names;
-        return read_zip_filenames(path, &names) ? OhosPackageType::Hap : OhosPackageType::Unknown;
+        return read_zip_entry_names(path, &names) ? OhosPackageType::Hap : OhosPackageType::Unknown;
     }
     if (ends_with_ci(path, ".hsp")) {
         if (!exists) return OhosPackageType::Hsp;
         std::vector<std::string> names;
-        return read_zip_filenames(path, &names) ? OhosPackageType::Hsp : OhosPackageType::Unknown;
+        return read_zip_entry_names(path, &names) ? OhosPackageType::Hsp : OhosPackageType::Unknown;
     }
     if (ends_with_ci(path, ".app")) {
         if (!exists) return OhosPackageType::Unknown;
         std::vector<std::string> names;
-        if (!read_zip_filenames(path, &names)) return OhosPackageType::Unknown;
+        if (!read_zip_entry_names(path, &names)) return OhosPackageType::Unknown;
         for (const auto& n : names) {
             if (n == "pack.info" || ends_with_ci(n, ".hap") || ends_with_ci(n, ".hsp")) {
                 return OhosPackageType::AppPack;

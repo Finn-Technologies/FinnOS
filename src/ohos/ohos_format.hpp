@@ -81,27 +81,48 @@ enum class AbcOpcode : std::uint8_t {
     LdFalse = 0x03u,
     CreateEmptyObject = 0x04u,
     CreateEmptyArray = 0x05u,
+    CreateObjectWithBuffer = 0x07u,  // op_imm_8_id_16
+    NewLexEnv = 0x09u,   // newlexenv imm:u8
+    PopLexEnv = 0x69u,   // poplexenv
+    DefineFunc = 0x33u,      // op_imm1_8_id_16_imm2_8
     NewObjRange = 0x08u,
     Add2 = 0x0au,
     Sub2 = 0x0bu,
     Mul2 = 0x0cu,
     Div2 = 0x0du,
     Mod2 = 0x0eu,
-    Eq = 0x24u,
-    NotEq = 0x25u,
-    Less = 0x26u,
-    Greater = 0x28u,
-    CallArg0 = 0x2du,
-    CallArg1 = 0x2eu,
-    CallArgs2 = 0x2fu,
-    CallArgs3 = 0x30u,
-    CallThis0 = 0x31u,
-    CallThis1 = 0x32u,
-    CallThis2 = 0x33u,
-    CallThis3 = 0x34u,
+    Neg = 0x1fu,     // neg imm:u8 (acc = -acc)
+    // istrue / isfalse: op_none, acc becomes a strict boolean test result
+    // (public Panda ISA 0x23 / 0x24).
+    IsTrue = 0x23u,
+    IsFalse = 0x24u,
+    // Comparison / call opcode values follow the public Panda ESM ISA
+    // (arkcompiler_ets_runtime/ecmascript/isa.yaml), not a local guess.
+    Eq = 0x0fu,
+    NotEq = 0x10u,
+    Less = 0x11u,
+    Greater = 0x13u,
+    CallArg0 = 0x29u,
+    CallArg1 = 0x2au,
+    CallArgs2 = 0x2bu,
+    CallArgs3 = 0x2cu,
+    CallThis0 = 0x2du,
+    CallThis1 = 0x2eu,
+    CallThis2 = 0x2fu,
+    CallThis3 = 0x30u,
     LdaStr = 0x3eu,
+    LdLexVar = 0x3cu,    // imm1:u4 (level), imm2:u4 (slot) packed in one byte
+    StLexVar = 0x3du,
+    TryLdGlobalByName8 = 0x3fu,
+    TryStGlobalByName8 = 0x40u,
     LdObjByName8 = 0x42u,
     StObjByName8 = 0x43u,
+    // stownbyname imm:u8, string_id, v:in:top — store an own property. The
+    // public Panda ISA gives 0x7a (8-bit IC slot) and 0xcc (16-bit IC slot).
+    // This runtime has no prototype chain, so own-property and object stores
+    // share the same backing object.
+    StOwnByName8 = 0x7au,
+    StOwnByName16 = 0xccu,
     Mov4 = 0x44u,
     Mov8 = 0x45u,
     Jmp8 = 0x4du,
@@ -109,19 +130,26 @@ enum class AbcOpcode : std::uint8_t {
     Jeqz8 = 0x4fu,
     Jeqz16 = 0x50u,
     Jnez8 = 0x51u,
-    Jnez16 = 0x52u,
+    Jnez16 = 0x9bu,
     Lda = 0x60u,
     Sta = 0x61u,
     Ldai = 0x62u,
     Fldai = 0x63u,
     Return = 0x64u,
     ReturnUndefined = 0x65u,
-    TryLdGlobalByName8 = 0x8cu,
-    TryStGlobalByName8 = 0x8du,
+    LdGlobal = 0x6du,    // ldglobal (op_none)
+    DefineFieldByName = 0xdbu,  // op_imm_8_id_16_v_8
+    LdLocalModuleVar = 0x7du,
+    // ldexternalmodulevar imm:u8 — load an imported binding into the
+    // accumulator (public Panda ISA, format op_imm_8).
+    LdExternalModuleVar = 0x7eu,
+    TryLdGlobalByName16 = 0x8cu,
+    TryStGlobalByName16 = 0x8du,
     LdObjByName16 = 0x90u,
     StObjByName16 = 0x91u,
-    TryLdGlobalByName16 = 0x92u,
-    TryStGlobalByName16 = 0x93u,
+    // Two-byte prefixed instructions: 0xfe selects the "throw" prefix.
+    // Sub-opcode 0x09 is undefinedifholewithname (id16).
+    ThrowPrefixed = 0xfeu,
 };
 
 enum class OhosPackageKind {

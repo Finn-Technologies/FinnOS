@@ -48,6 +48,8 @@ add_executable(finn-shell
     ../compat/macos_runner.cpp
     ../compat/ohos_runner.cpp
     ../compat/wine_runner.cpp
+    ../compat/wine_prefix.cpp
+    ../compat/windows_registry.cpp
     ../system/desktop_services.cpp
     ../system/desktop_services.hpp
     "${FOREIGN_HDR}"

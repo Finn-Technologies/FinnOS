@@ -4,8 +4,12 @@
 // SO_PEERCRED-protected UNIX socket with posix_spawn process isolation.
 
 #include "common/paths.hpp"
+#include "compat/android_runner.hpp"
+#include "compat/appimage_runner.hpp"
 #include "compat/desktop_entry.hpp"
 #include "compat/flatpak_installer.hpp"
+#include "compat/linux_app_probe.hpp"
+#include "compat/linux_sandbox.hpp"
 #include "compat/macos_runner.hpp"
 #include "compat/ohos_runner.hpp"
 #include "compat/wine_runner.hpp"
@@ -89,8 +93,26 @@ private:
         if (const char* home = std::getenv("HOME"); home && *home) {
             targets.push_back(std::string(home) + "/" + finn::kUserAppsRel);
             targets.push_back(std::string(home) + "/" + finn::kUserWindowsConfRel);
+            // macOS .app bundles and OpenHarmony packs are discovered by
+            // load_all(), so their directories must be part of the cache key.
+            // Without this, an app installed while the session is running is
+            // invisible until some unrelated watched file happens to change.
+            targets.push_back(std::string(home) + "/" + finn::kUserMacosAppsRel);
+            targets.push_back(std::string(home) + "/" + finn::kUserOhosRegistryRel);
+            // APK installs change the Android registry; watch it so an app
+            // installed while the session is running appears without restart.
+            targets.push_back(std::string(home) + "/" + finn::kUserAndroidRegistryRel);
+            // A Windows app installed into the default prefix creates Uninstall
+            // keys and executables that load_all() discovers. Watching the
+            // prefix makes them appear without a session restart.
+            targets.push_back(std::string(home) + "/" + finn::kWinePrefixRel);
         }
         for (const auto& [dir, _] : finn::compat::default_desktop_dirs()) {
+            targets.push_back(dir);
+        }
+        // AppImages are discovered by load_all(); an image dropped into one of
+        // these directories must appear without a session restart.
+        for (const auto& dir : finn::default_appimage_dirs()) {
             targets.push_back(dir);
         }
 
@@ -155,6 +177,34 @@ bool ends_with_ci(std::string_view s, std::string_view ext) {
     return ascii_lower(s.substr(s.size() - ext.size())) == ext;
 }
 
+// windows.conf keeps arguments in one field. Split them without a shell so a
+// quoted Windows path stays one argv element and nothing is re-interpreted.
+std::vector<std::string> split_command_line(std::string_view text) {
+    std::vector<std::string> out;
+    std::string token;
+    bool in_quotes = false;
+    bool started = false;
+    for (char c : text) {
+        if (c == '"') {
+            in_quotes = !in_quotes;
+            started = true;
+            continue;
+        }
+        if (!in_quotes && (c == ' ' || c == '\t')) {
+            if (started) {
+                out.push_back(token);
+                token.clear();
+                started = false;
+            }
+            continue;
+        }
+        token.push_back(c);
+        started = true;
+    }
+    if (started) out.push_back(token);
+    return out;
+}
+
 std::string read_xdisplay() {
     std::ifstream in(finn::kXwaylandDisplayFile);
     std::string line;
@@ -214,41 +264,28 @@ bool spawn_argv(const std::vector<std::string>& argv,
         return false;
     }
 
-    // Build merged child environment preserving user session + Qt FinnOS theme.
-    std::vector<std::pair<std::string, std::string>> overrides = {
-        {"WAYLAND_DISPLAY", finn::kWaylandPath},
-        {"QT_QPA_PLATFORM", "wayland;xcb"},
-        {"QT_QPA_PLATFORMTHEME", "finn"},
-        {"QT_STYLE_OVERRIDE", "finn"},
-        {"XDG_CURRENT_DESKTOP", "FinnOS"},
-        {"XDG_SESSION_TYPE", "wayland"},
-        {"GDK_BACKEND", "wayland,x11"},
-        {"SDL_VIDEODRIVER", "wayland,x11"},
-    };
-    const std::string xdisp = read_xdisplay();
-    if (!xdisp.empty()) overrides.emplace_back("DISPLAY", xdisp);
-    for (const auto& kv : extra_env) overrides.push_back(kv);
+    // Build the child environment through the shared, headless-testable
+    // builder: third-party apps get the FinnOS theme and display variables,
+    // while loader/plugin hijack variables are stripped.
+    finn::compat::LinuxSandboxOptions sandbox;
+    sandbox.third_party = true;
+    sandbox.set_theme = true;
+    sandbox.wayland_display = finn::kWaylandPath;
+    sandbox.xdisplay = read_xdisplay();
+    auto launch_env = finn::compat::build_linux_launch_env(sandbox);
+    for (const auto& kv : extra_env) launch_env.overrides.push_back(kv);
 
-    std::vector<std::string> env_storage;
+    std::vector<std::pair<std::string, std::string>> inherited;
     if (environ != nullptr) {
         for (char** ep = environ; *ep != nullptr; ++ep) {
             const std::string entry(*ep);
             const std::size_t eq = entry.find('=');
             if (eq == std::string::npos) continue;
-            const std::string key = entry.substr(0, eq);
-            bool replaced = false;
-            for (const auto& [ok, _] : overrides) {
-                if (ok == key) {
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) env_storage.push_back(entry);
+            inherited.emplace_back(entry.substr(0, eq), entry.substr(eq + 1));
         }
     }
-    for (const auto& [k, v] : overrides) {
-        env_storage.push_back(k + "=" + v);
-    }
+    std::vector<std::string> env_storage =
+        finn::compat::apply_linux_launch_env(inherited, launch_env);
 
     std::vector<char*> argv_ptrs;
     argv_ptrs.reserve(argv.size() + 1);
@@ -282,7 +319,9 @@ bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
     }
 
     if (app.source == finn::AppSource::kWindows) {
-        std::vector<std::string> extra;
+        // The registered app's own arguments are part of its identity; an
+        // argument passed to APP.LAUNCH is added after them.
+        std::vector<std::string> extra = split_command_line(app.launch_args);
         if (!arg.empty()) extra.emplace_back(arg);
         const auto plan = finn::compat::build_wine_launch(
             app.command, extra, app.desktop_file, read_xdisplay());
@@ -317,6 +356,30 @@ bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
         auto argv = plan.argv;
         if (!arg.empty()) argv.emplace_back(arg);
         if (!spawn_argv(argv, {}, error)) return false;
+        finn::sys::record_recent_app(app.id);
+        return true;
+    }
+
+    if (app.source == finn::AppSource::kAndroid) {
+        const auto plan = finn::compat::build_android_launch_plan(app.command);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        auto argv = plan.argv;
+        if (!arg.empty()) argv.emplace_back(arg);
+        if (!spawn_argv(argv, {}, error)) return false;
+        finn::sys::record_recent_app(app.id);
+        return true;
+    }
+
+    if (!app.appimage_path.empty()) {
+        const auto plan = finn::compat::build_appimage_launch_plan(app.appimage_path);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        if (!spawn_argv(plan.argv, plan.env, error)) return false;
         finn::sys::record_recent_app(app.id);
         return true;
     }
@@ -375,10 +438,27 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
         }
         return spawn_argv(plan.argv, {}, error);
     }
+    if (ends_with_ci(t, ".appimage")) {
+        const auto plan = finn::compat::build_appimage_launch_plan(t);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        return spawn_argv(plan.argv, plan.env, error);
+    }
     if (ends_with_ci(t, ".dmg") || ends_with_ci(t, ".pkg") || ends_with_ci(t, ".mpkg") ||
-        finn::compat::is_ohos_package_path(t)) {
+        ends_with_ci(t, ".msix") || finn::compat::is_ohos_package_path(t) ||
+        finn::compat::is_apk_package_path(t)) {
         if (const finn::App* store = reg.find("store")) {
             return spawn_argv({store->command, "--install", t}, {}, error);
+        }
+        if (finn::compat::is_apk_package_path(t)) {
+            const auto plan = finn::compat::build_android_install_plan(t);
+            if (!plan.ok) {
+                if (error) *error = plan.error;
+                return false;
+            }
+            return spawn_argv(plan.argv, {}, error);
         }
     }
     if (ends_with_ci(t, ".exe") || ends_with_ci(t, ".msi")) {
@@ -432,11 +512,26 @@ std::string build_compat_reply() {
     const std::string xdisp = read_xdisplay();
     const bool has_xwayland = wine.xwayland_available || !xdisp.empty();
     const bool has_flatpak = finn::compat::executable_exists("flatpak");
+    const bool has_fuse = finn::compat::appimage_fuse_runtime_available();
+    const auto launch_env = finn::compat::build_linux_launch_env({});
+    const auto android = finn::compat::probe_android_runtime();
+    // Report prefix state explicitly. A Wine engine being installed is not the
+    // same as a prefix being initialised, and callers disable launch controls on
+    // the honest answer rather than on an assumed default.
     return "OK arch=" + wine.host_arch + "|wayland=" + finn::kWaylandPath +
            "|display=" + xdisp + "|xwayland=" + (has_xwayland ? "1" : "0") +
            "|wine=" + (wine.ready ? "1" : "0") +
            "|flatpak=" + (has_flatpak ? "1" : "0") +
-           "|wine_summary=" + sanitize(wine.summary) + "\n";
+           "|finn_win=" + (wine.finn_win_installed ? "1" : "0") +
+           "|prefix_ready=" + (wine.prefix_initialized ? "1" : "0") +
+           "|prefix=" + sanitize(wine.default_prefix) +
+           "|appimage=1|appimage_fuse=" + (has_fuse ? "1" : "0") +
+           "|linux_sandbox=env-only|linux_theme=finn" +
+           "|android=" + (android.ready ? "1" : "0") +
+           "|android_api=" + std::to_string(android.target_api_level) +
+           "|launch_env=" + sanitize(launch_env.diagnostics) +
+           "|wine_summary=" + sanitize(wine.summary) +
+           "|android_summary=" + sanitize(android.summary) + "\n";
 }
 
 void handle_client(int fd) {
@@ -458,6 +553,21 @@ void handle_client(int fd) {
     }
     if (line == "COMPAT.STATUS") {
         (void)write_all(fd, build_compat_reply());
+        return;
+    }
+    if (line.rfind("COMPAT.PROBE ", 0) == 0) {
+        // Reporting verb only: reads the binary and answers with honest
+        // architecture, interpreter and missing-library diagnostics.
+        const std::string path = line.substr(13);
+        const auto probe = finn::compat::probe_linux_binary(path);
+        std::string reply = "OK arch=" + probe.elf.arch_name +
+                            "|host=" + probe.host_arch +
+                            "|compatible=" + (probe.arch_compatible ? "1" : "0") +
+                            "|interp=" + sanitize(probe.elf.interpreter) +
+                            "|needed=" + std::to_string(probe.elf.needed.size()) +
+                            "|missing=" + std::to_string(probe.missing_libraries.size()) +
+                            "|summary=" + sanitize(probe.summary) + "\n";
+        (void)write_all(fd, reply);
         return;
     }
 

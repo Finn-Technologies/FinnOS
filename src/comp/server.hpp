@@ -132,6 +132,8 @@ private:
     void reload_cursor_theme();
     void focus_lock_surface(wlr_surface* surface);
     void update_lock_backdrop();
+    // Render a frame with a real CPU Gaussian blur behind glass layer surfaces.
+    bool commit_output_with_backdrop_blur(OutputDevice* od);
 
     void shutdown();
 

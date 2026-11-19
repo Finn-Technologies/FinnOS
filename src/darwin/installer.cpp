@@ -615,10 +615,32 @@ void attach_macho_diagnoses(InstallResult* result) {
             app.runnable = d.runnable;
             app.diagnosis_summary = d.summary;
             result->log.push_back("Compatibility (" + app.name + "): " + d.summary);
+            if (!d.missing_frameworks.empty()) {
+                std::string line = "  unresolved frameworks:";
+                for (const auto& name : d.missing_frameworks) line += " " + name;
+                result->log.push_back(std::move(line));
+            }
+            if (!d.framework_gaps.empty()) {
+                std::string line = "  unimplemented frameworks:";
+                for (const auto& g : d.framework_gaps) {
+                    line += " " + g.name + " (" + g.reason + ")";
+                }
+                result->log.push_back(std::move(line));
+            }
             if (!d.missing_symbols.empty()) {
-                result->log.push_back("  missing symbols: " +
-                                      std::to_string(d.missing_symbols.size()) +
-                                      " (first: " + d.missing_symbols[0] + ")");
+                const std::size_t show = std::min<std::size_t>(d.missing_symbols.size(), 8);
+                std::string line = "  missing symbols: " +
+                                   std::to_string(d.missing_symbols.size()) + " [";
+                for (std::size_t i = 0; i < show; ++i) {
+                    if (i) line += ", ";
+                    line += d.missing_symbols[i];
+                }
+                if (d.missing_symbols.size() > show) {
+                    line += ", ... +" +
+                            std::to_string(d.missing_symbols.size() - show) + " more";
+                }
+                line += "]";
+                result->log.push_back(std::move(line));
             }
         } else {
             app.runnable = false;
@@ -673,22 +695,39 @@ InstalledMacosApp read_installed_app_meta(const fs::path& bundle_path,
 }
 
 void find_app_bundles_recursive(const fs::path& dir, std::vector<fs::path>* out) {
-    std::error_code ec;
-    if (!fs::is_directory(dir, ec)) return;
-    for (const auto& entry : fs::directory_iterator(dir, ec)) {
-        if (ec) break;
-        if (!entry.is_directory(ec)) continue;
+    std::error_code iter_ec;
+    if (!fs::is_directory(dir, iter_ec)) return;
+    for (const auto& entry : fs::directory_iterator(dir, iter_ec)) {
+        // Each query needs its own error_code. Reusing one across iterations
+        // makes a self-referential symlink (ELOOP) abort the whole scan before
+        // a sibling .app bundle is ever visited.
+        std::error_code entry_ec;
+        // Never follow symlinks: a link such as Applications -> . would loop
+        // forever. Real .app bundles are directories, not links.
+        if (entry.is_symlink(entry_ec)) continue;
+        if (!entry.is_directory(entry_ec)) continue;
         const fs::path p = entry.path();
-        if (p.extension() == ".app" &&
-            fs::is_regular_file(p / "Contents" / "Info.plist", ec)) {
-            out->push_back(p);
-        } else {
-            find_app_bundles_recursive(p, out);
+        if (p.extension() == ".app") {
+            std::error_code plist_ec;
+            if (fs::is_regular_file(p / "Contents" / "Info.plist", plist_ec)) {
+                out->push_back(p);
+                continue;
+            }
         }
+        find_app_bundles_recursive(p, out);
     }
 }
 
 }  // namespace
+
+std::vector<std::string> discover_app_bundles_in_tree(const std::string& root) {
+    std::vector<fs::path> found;
+    find_app_bundles_recursive(fs::path(root), &found);
+    std::vector<std::string> out;
+    out.reserve(found.size());
+    for (const auto& p : found) out.push_back(p.string());
+    return out;
+}
 
 std::string default_macos_apps_dir() {
     if (const char* home = std::getenv("HOME"); home && *home) {
@@ -836,7 +875,13 @@ PkgInspection inspect_pkg_native(const std::string& pkg_path) {
         if (dstart != std::string_view::npos && dend != std::string_view::npos &&
             dend < fend) {
             PkgFileEntry entry;
+            // XAR producers disagree on <name> placement: some write it before
+            // <data>, Apple's installer TOC writes it after </data>. Accept
+            // both; without the second lookup the real Payload is dropped.
             entry.name = extract_xml_tag_text(xml, "name", fstart, dstart);
+            if (entry.name.empty()) {
+                entry.name = extract_xml_tag_text(xml, "name", dend, fend);
+            }
             const std::string off_s = extract_xml_tag_text(xml, "offset", dstart, dend);
             const std::string len_s = extract_xml_tag_text(xml, "length", dstart, dend);
             const std::string sz_s = extract_xml_tag_text(xml, "size", dstart, dend);
@@ -979,9 +1024,14 @@ InstallResult install_pkg_native(const std::string& pkg_path,
         return result;
     }
     if (!extracted_any_payload) {
-        result.error =
-            "XAR .pkg parsed (" + std::to_string(pkg.entries.size()) +
-            " entries), but payload uses pbzx/xz compression without 7z installed.";
+        // Report what actually happened. Claiming "7z not installed" here was
+        // wrong whenever 7z existed but the TOC parser had dropped Payload.
+        const bool has_7z = finn::compat::executable_exists("7z") ||
+                            finn::compat::executable_exists("7zz");
+        result.error = "XAR .pkg parsed (" + std::to_string(pkg.entries.size()) +
+                       " entries), but no payload was extracted (supported: gzip+cpio, "
+                       "raw cpio" +
+                       (has_7z ? ", pbzx via 7z" : "; pbzx needs 7z/p7zip installed") + ").";
     } else {
         result.error = "extracted .pkg payload contained no macOS .app bundle";
     }

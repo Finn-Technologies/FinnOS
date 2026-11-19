@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace finn {
 
@@ -38,8 +39,14 @@ inline constexpr const char* kUserMacosAppsRel = ".local/share/finn/macos/Applic
 inline constexpr const char* kUserMacosIconsRel = ".local/share/finn/macos/icons";
 inline constexpr const char* kUserOhosRootRel = ".local/share/finn/ohos";
 inline constexpr const char* kUserOhosRegistryRel = ".local/share/finn/ohos/registry.conf";
+inline constexpr const char* kUserAndroidRootRel = ".local/share/finn/android";
+inline constexpr const char* kUserAndroidRegistryRel = ".local/share/finn/android/registry.conf";
 inline constexpr const char* kRecentAppsRel = ".local/state/finn/recent-apps";
-inline constexpr const char* kWinePrefixRel = ".local/share/finn/wine/default";
+// The default Wine prefix is shared by finn-win, finn-session and Finn Files.
+// It is the directory finn-win actually initialises (drive_c/system.reg live
+// directly here); a "default" subdirectory was never created. Keep tools/finn-win's
+// DEFAULT_PREFIX in step with this value (tests/test_wine_prefix_path.py checks).
+inline constexpr const char* kWinePrefixRel = ".local/share/finn/wine";
 inline constexpr const char* kOobeCompleteRel = ".config/finn/oobe_complete";
 inline constexpr const char* kOobeBinPath = "/usr/local/bin/finn-oobe";
 inline constexpr const char* kFinnTerminalBin = "/usr/local/bin/finn-terminal";
@@ -47,6 +54,19 @@ inline constexpr const char* kFinnInstallBin = "/usr/local/bin/finn-install";
 inline constexpr const char* kFinnUpdateBin = "/usr/local/bin/finn-update";
 inline constexpr const char* kFinnDarwinBin = "/usr/local/bin/finn-darwin";
 inline constexpr const char* kFinnOhosBin = "/usr/local/bin/finn-ohos";
+inline constexpr const char* kFinnAndroidBin = "/usr/local/bin/finn-android";
+
+/// Directories searched for AppImages. Shared by the session registry and the
+/// registry cache so the set of scanned directories cannot drift.
+inline std::vector<std::string> default_appimage_dirs() {
+    std::vector<std::string> dirs;
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        dirs.emplace_back(std::string(home) + "/Applications");
+        dirs.emplace_back(std::string(home) + "/.local/share/finn/appimages");
+    }
+    dirs.emplace_back("/opt");
+    return dirs;
+}
 
 /// Resolves the active user settings file path via FINN_SETTINGS_PATH, $HOME, or /home/finn.
 inline std::string user_settings_path() {

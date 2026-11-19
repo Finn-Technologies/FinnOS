@@ -17,6 +17,9 @@ add_executable(finn-store
     ../../src/compat/macos_runner.cpp
     ../../src/compat/ohos_runner.cpp
     ../../src/compat/wine_runner.cpp
+    ../../src/compat/wine_prefix.cpp
+    ../../src/compat/msi_installer.cpp
+    ../../src/compat/windows_registry.cpp
     ../../src/compat/android_runner.cpp
     ../../src/system/sys_files.cpp
 )

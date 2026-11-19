@@ -101,4 +101,4 @@ Shared paths live in `src/common/paths.hpp`. Palette tokens live in
 
 ## Non-goals for the current release
 
-No multi-monitor independent scale/layout manager, no compositor GPU shader backdrop blur, no Secure Boot / `dm-verity` / TPM2 sealing, no cellular telephony stack, and no built-in AI model or telemetry.
+No multi-monitor independent scale/layout manager, no Secure Boot / `dm-verity` / TPM2 sealing, no cellular telephony stack, and no built-in AI model or telemetry. Backdrop blur for glass layer surfaces is implemented in `src/comp/backdrop_blur.cpp` as a CPU Gaussian pass over the real composited backdrop (35 px glass, 15 px notifications).

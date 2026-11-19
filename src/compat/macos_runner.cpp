@@ -2,6 +2,7 @@
 
 #include "common/paths.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/zip_entries.hpp"
 
 #include <sys/utsname.h>
 
@@ -247,6 +248,10 @@ MacosInstallerInfo inspect_macos_installer(const std::string& path) {
         info.kind = MacosInstallerKind::Dmg;
     } else if (ends_with_ci(path, ".pkg") || ends_with_ci(path, ".mpkg")) {
         info.kind = MacosInstallerKind::Pkg;
+    } else if (ends_with_ci(path, ".zip")) {
+        // Real macOS app releases are commonly shipped as .zip archives; finn-darwin
+        // installs them natively, but the Store must accept the file first.
+        info.kind = MacosInstallerKind::Zip;
     } else {
         info.error = "unsupported macOS installer extension";
         return info;
@@ -279,6 +284,23 @@ MacosInstallerInfo inspect_macos_installer(const std::string& path) {
             return info;
         }
         info.error = "missing xar! header (not a valid macOS .pkg)";
+        return info;
+    }
+
+    if (info.kind == MacosInstallerKind::Zip) {
+        char magic[4] = {};
+        in.read(magic, 4);
+        const bool pk = in.gcount() == 4 && magic[0] == 'P' && magic[1] == 'K' &&
+                        ((magic[2] == '\x03' && magic[3] == '\x04') ||
+                         (magic[2] == '\x05' && magic[3] == '\x06'));
+        if (!pk) {
+            info.error = "missing PK header (not a valid ZIP archive)";
+            return info;
+        }
+        info.valid = true;
+        info.format_detail = zip_contains_macos_app(path)
+                                 ? "ZIP archive (macOS .app bundle)"
+                                 : "ZIP archive";
         return info;
     }
 
@@ -391,6 +413,23 @@ MacosCommandPlan build_macos_extract_plan(const std::string& installer_path,
             return plan;
         }
         plan.error = "No .dmg extractor installed (install 7zip/p7zip or darling-dmg).";
+        return plan;
+    }
+
+    if (info.kind == MacosInstallerKind::Zip) {
+        if (executable_exists("unzip")) {
+            plan.argv = {"unzip", "-q", "-o", installer_path, "-d", dest_dir};
+            plan.note = "Extract .zip app archive with unzip";
+            plan.ok = true;
+            return plan;
+        }
+        if (rt.pkg_extractor_bin == "7z" || rt.pkg_extractor_bin == "7zz") {
+            plan.argv = {rt.pkg_extractor_bin, "x", "-y", "-o" + dest_dir, installer_path};
+            plan.note = "Extract .zip app archive with " + rt.pkg_extractor_bin;
+            plan.ok = true;
+            return plan;
+        }
+        plan.error = "No .zip extractor installed (install unzip or 7zip/p7zip).";
         return plan;
     }
 
@@ -525,7 +564,11 @@ std::vector<MacosBundleEntry> discover_macos_bundles(const std::string& apps_dir
         if (!fs::is_directory(root, ec)) continue;
         for (const auto& entry : fs::directory_iterator(root, ec)) {
             if (ec) break;
-            if (!entry.is_directory(ec)) continue;
+            // A broken or looping symlink makes is_directory report an error.
+            // Use a separate error_code so one bad entry cannot abort the scan
+            // before the real bundles later in the directory are seen.
+            std::error_code entry_ec;
+            if (!entry.is_directory(entry_ec)) continue;
             if (entry.path().extension() != ".app") continue;
             const MacosAppInfo info = inspect_macos_app_bundle(entry.path().string());
             MacosBundleEntry b;
@@ -538,7 +581,10 @@ std::vector<MacosBundleEntry> discover_macos_bundles(const std::string& apps_dir
             b.id = "macos:" + slug;
             if (!icons_dir.empty()) {
                 const fs::path png = icons_dir / (slug + ".png");
-                if (fs::is_regular_file(png, ec)) b.icon_path = png.string();
+                // Use a separate error_code: reusing the directory iterator's
+                // ec would make a missing icon abort the rest of the scan.
+                std::error_code icon_ec;
+                if (fs::is_regular_file(png, icon_ec)) b.icon_path = png.string();
             }
             out.push_back(std::move(b));
         }

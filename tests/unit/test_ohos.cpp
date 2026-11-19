@@ -13,6 +13,8 @@
 #include <zlib.h>
 
 #include <atomic>
+#include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -368,9 +370,9 @@ void emit_fldai(std::vector<std::uint8_t>& c, double v) {
     std::memcpy(&bits, &v, sizeof(bits));
     append_le64(c, bits);
 }
-void emit_lda_str(std::vector<std::uint8_t>& c, std::uint32_t str_off) {
+void emit_lda_str(std::vector<std::uint8_t>& c, std::uint16_t id16) {
     emit_op(c, finn::ohos::AbcOpcode::LdaStr);
-    append_le32(c, str_off);
+    append_le16(c, id16);  // real Panda ISA uses a 2-byte string_id here
 }
 void emit_binop(std::vector<std::uint8_t>& c, finn::ohos::AbcOpcode op, std::uint8_t lhs_reg) {
     emit_op(c, op);
@@ -453,17 +455,17 @@ std::vector<std::uint8_t> build_demo_abc() {
     const std::uint16_t id_flushSync = b.add_id16_string("flushSync");
     const std::uint16_t id_customProp = b.add_id16_string("customProp");
 
-    const std::uint32_t s_tag = b.add_string("DemoAbility");
-    const std::uint32_t s_created = b.add_string("onCreate ready");
-    const std::uint32_t s_page = b.add_string("pages/Index");
-    const std::uint32_t s_fg = b.add_string("EntryAbility foreground");
-    const std::uint32_t s_bg = b.add_string("EntryAbility background");
-    const std::uint32_t s_destroy = b.add_string("EntryAbility destroy");
-    const std::uint32_t s_count = b.add_string("count");
-    const std::uint32_t s_inc_msg = b.add_string("incremented counter");
-    const std::uint32_t s_ctx = b.add_string("ctx");
-    const std::uint32_t s_pref_name = b.add_string("app");
-    const std::uint32_t s_pref_key = b.add_string("last_bundle");
+    const std::uint16_t s_tag = b.add_id16_string("DemoAbility");
+    const std::uint16_t s_created = b.add_id16_string("onCreate ready");
+    const std::uint16_t s_page = b.add_id16_string("pages/Index");
+    const std::uint16_t s_fg = b.add_id16_string("EntryAbility foreground");
+    const std::uint16_t s_bg = b.add_id16_string("EntryAbility background");
+    const std::uint16_t s_destroy = b.add_id16_string("EntryAbility destroy");
+    const std::uint16_t s_count = b.add_id16_string("count");
+    const std::uint16_t s_inc_msg = b.add_id16_string("incremented counter");
+    const std::uint16_t s_ctx = b.add_id16_string("ctx");
+    const std::uint16_t s_pref_name = b.add_id16_string("app");
+    const std::uint16_t s_pref_key = b.add_id16_string("last_bundle");
     (void)b.add_string("@ohos.hilog");
     (void)b.add_string("@ohos.window");
     (void)b.add_string("@ohos.data.preferences");
@@ -610,7 +612,7 @@ std::vector<std::uint8_t> build_demo_abc() {
     emit_op(c_onWin, finn::ohos::AbcOpcode::ReturnUndefined);
 
     // 6. onForeground / onBackground / onDestroy
-    auto make_console_logger = [&](std::uint32_t msg_str_off) {
+    auto make_console_logger = [&](std::uint16_t msg_str_off) {
         std::vector<std::uint8_t> c;
         emit_tryldglobal(c, id_console);
         emit_sta(c, 0);
@@ -1277,6 +1279,448 @@ bool test_abc_vm_arkui_lifecycle_and_napi() {
     return true;
 }
 
+bool test_util_and_bundle_kits() {
+    finn::ohos::AbcRuntime rt;
+    const auto util = rt.get_global("util");
+    CHECK(util.kind == finn::ohos::AbcValue::Kind::Object);
+    auto call_util = [&](const std::string& name,
+                         const std::vector<finn::ohos::AbcValue>& args) {
+        return util.obj_val->properties.at(name).native_fn(rt, util, args);
+    };
+
+    // @ohos.util.generateRandomUUID: real RFC 4122 v4, host entropy.
+    const std::string u1 = call_util("generateRandomUUID", {}).to_string();
+    const std::string u2 = call_util("generateRandomUUID", {}).to_string();
+    CHECK(u1.size() == 36);
+    CHECK(u1[8] == '-' && u1[13] == '-' && u1[18] == '-' && u1[23] == '-');
+    CHECK(u1[14] == '4');
+    CHECK(u1[19] == '8' || u1[19] == '9' || u1[19] == 'a' || u1[19] == 'b');
+    for (char c : u1) {
+        if (c != '-') CHECK(std::isxdigit(static_cast<unsigned char>(c)) != 0);
+    }
+    CHECK(u1 != u2);
+
+    // @ohos.util.getRandom: inclusive bounds, reversed bounds normalised.
+    CHECK(call_util("getRandom", {finn::ohos::AbcValue::make_int(5),
+                                  finn::ohos::AbcValue::make_int(5)})
+              .to_int32() == 5);
+    for (int i = 0; i < 64; ++i) {
+        const int v = call_util("getRandom", {finn::ohos::AbcValue::make_int(10),
+                                              finn::ohos::AbcValue::make_int(20)})
+                          .to_int32();
+        CHECK(v >= 10 && v <= 20);
+    }
+    const int flipped = call_util("getRandom", {finn::ohos::AbcValue::make_int(20),
+                                                finn::ohos::AbcValue::make_int(10)})
+                            .to_int32();
+    CHECK(flipped >= 10 && flipped <= 20);
+
+    // @ohos.util.Base64: strict RFC 4648, honest failure on malformed input.
+    const auto base64 = util.obj_val->properties.at("Base64");
+    auto b64_encode = [&](const std::string& s) {
+        return base64.obj_val->properties.at("encode").native_fn(
+            rt, base64, {finn::ohos::AbcValue::make_string(s)}).to_string();
+    };
+    auto b64_decode = [&](const std::string& s) {
+        return base64.obj_val->properties.at("decode").native_fn(
+            rt, base64, {finn::ohos::AbcValue::make_string(s)}).to_string();
+    };
+    CHECK(b64_encode("finn") == "Zmlubg==");
+    CHECK(b64_encode("OpenHarmony") == "T3Blbkhhcm1vbnk=");
+    CHECK(b64_encode("") == "");
+    CHECK(b64_decode("Zmlubg==") == "finn");
+    CHECK(b64_decode("T3Blbkhhcm1vbnk=") == "OpenHarmony");
+    CHECK(b64_decode("!!!").empty());
+    CHECK(b64_decode("Zml").empty());   // length not a multiple of four
+    CHECK(b64_decode("Zml=").empty());  // impossible padding: '=' at position 3 only
+    const std::string utf8 = "FinnOS \xe4\xb8\xad\xe6\x96\x87";
+    CHECK(b64_decode(b64_encode(utf8)) == utf8);
+
+    // Class-style Base64Encoder / Base64Decoder constructors.
+    const auto encoder = call_util("Base64Encoder", {});
+    CHECK(encoder.obj_val->properties.at("encodeSync")
+              .native_fn(rt, encoder, {finn::ohos::AbcValue::make_string("abc")})
+              .to_string() == "YWJj");
+    const auto decoder = call_util("Base64Decoder", {});
+    CHECK(decoder.obj_val->properties.at("decodeSync")
+              .native_fn(rt, decoder, {finn::ohos::AbcValue::make_string("YWJj")})
+              .to_string() == "abc");
+
+    // @ohos.bundle.bundleManager returns only real manifest facts. Unset fields
+    // stay empty rather than receiving plausible defaults.
+    const auto bm = rt.get_global("bundleManager");
+    auto self_info = [&]() {
+        return bm.obj_val->properties.at("getBundleInfoForSelf")
+            .native_fn(rt, bm, {});
+    };
+    CHECK(self_info().obj_val->properties.at("name").to_string().empty());
+
+    finn::ohos::OhosBundleInfo info;
+    info.name = "com.example.ohosapp";
+    info.version_name = "2.3.4";
+    info.version_code = 20304;
+    info.module_name = "entry";
+    info.main_element = "MainAbility";
+    info.api_version = 23;
+    rt.set_bundle_info(info);
+    const auto bundle = self_info();
+    CHECK(bundle.obj_val->properties.at("name").to_string() == info.name);
+    CHECK(bundle.obj_val->properties.at("bundleName").to_string() == info.name);
+    CHECK(bundle.obj_val->properties.at("versionName").to_string() == "2.3.4");
+    CHECK(bundle.obj_val->properties.at("versionCode").to_int32() == 20304);
+    CHECK(bundle.obj_val->properties.at("moduleName").to_string() == "entry");
+    CHECK(bundle.obj_val->properties.at("mainElement").to_string() == "MainAbility");
+    CHECK(bundle.obj_val->properties.at("apiVersion").to_int32() == 23);
+
+    // Kit audit reports the new shims as supported and hardware kits as missing.
+    const auto audit = finn::ohos::audit_ohos_kits(
+        {"@ohos.util", "@ohos.bundle.bundleManager", "@kit.ArkWeb", "@ohos.nfc",
+         "@ohos.aKitThatDoesNotExist"});
+    auto contains = [](const std::vector<std::string>& v, const std::string& s) {
+        return std::find(v.begin(), v.end(), s) != v.end();
+    };
+    CHECK(contains(audit.supported, "@ohos.util"));
+    CHECK(contains(audit.supported, "@ohos.bundle.bundleManager"));
+    CHECK(contains(audit.unsupported, "@kit.ArkWeb"));
+    CHECK(contains(audit.unsupported, "@ohos.nfc"));
+    CHECK(contains(audit.unknown, "@ohos.aKitThatDoesNotExist"));
+    return true;
+}
+
+bool test_napi_full_surface() {
+    finn::ohos::AbcRuntime rt;
+    napi_env env = rt.napi_env_handle();
+    napi_value v = nullptr;
+    napi_valuetype type = napi_undefined;
+
+    CHECK(napi_get_undefined(env, &v) == napi_ok);
+    CHECK(napi_typeof(env, v, &type) == napi_ok && type == napi_undefined);
+    CHECK(napi_get_null(env, &v) == napi_ok);
+    CHECK(napi_typeof(env, v, &type) == napi_ok && type == napi_null);
+    CHECK(napi_get_boolean(env, true, &v) == napi_ok);
+    bool b = false;
+    CHECK(napi_get_value_bool(env, v, &b) == napi_ok && b);
+    CHECK(napi_typeof(env, v, &type) == napi_ok && type == napi_boolean);
+
+    std::int64_t i64 = 0;
+    CHECK(napi_create_int64(env, -9000000000LL, &v) == napi_ok);
+    CHECK(napi_get_value_int64(env, v, &i64) == napi_ok);
+    CHECK(i64 == -9000000000LL);
+    CHECK(napi_typeof(env, v, &type) == napi_ok && type == napi_number);
+    CHECK(napi_create_uint32(env, 4000000000u, &v) == napi_ok);
+    CHECK(napi_get_value_int64(env, v, &i64) == napi_ok);
+    CHECK(i64 == 4000000000LL);
+
+    // Dense arrays with holes, element access, and honest type reporting.
+    napi_value arr = nullptr;
+    CHECK(napi_create_array(env, &arr) == napi_ok);
+    bool is_array = false;
+    CHECK(napi_is_array(env, arr, &is_array) == napi_ok && is_array);
+    std::uint32_t len = 99;
+    CHECK(napi_get_array_length(env, arr, &len) == napi_ok && len == 0);
+    napi_value elem = nullptr;
+    CHECK(napi_create_int32(env, 11, &elem) == napi_ok);
+    CHECK(napi_set_element(env, arr, 0, elem) == napi_ok);
+    CHECK(napi_create_int32(env, 44, &elem) == napi_ok);
+    CHECK(napi_set_element(env, arr, 3, elem) == napi_ok);
+    CHECK(napi_get_array_length(env, arr, &len) == napi_ok && len == 4);
+    CHECK(napi_get_element(env, arr, 0, &elem) == napi_ok);
+    std::int32_t i32 = 0;
+    CHECK(napi_get_value_int32(env, elem, &i32) == napi_ok && i32 == 11);
+    CHECK(napi_get_element(env, arr, 1, &elem) == napi_ok);
+    CHECK(napi_typeof(env, elem, &type) == napi_ok && type == napi_undefined);
+
+    napi_value sized = nullptr;
+    CHECK(napi_create_array_with_length(env, 2, &sized) == napi_ok);
+    CHECK(napi_get_array_length(env, sized, &len) == napi_ok && len == 2);
+
+    CHECK(napi_create_string_utf8(env, "not-an-array", NAPI_AUTO_LENGTH, &v) == napi_ok);
+    CHECK(napi_get_array_length(env, v, &len) == napi_object_expected);
+    CHECK(napi_is_array(env, v, &is_array) == napi_ok && !is_array);
+    CHECK(napi_create_array_with_length(env, (1u << 21u), &v) == napi_invalid_arg);
+
+    // Errors are recorded rather than silently swallowed.
+    CHECK(napi_throw_error(env, "ERR_OHOS", "kit unavailable") == napi_ok);
+    CHECK(rt.last_napi_error() == "ERR_OHOS: kit unavailable");
+    CHECK(napi_typeof(env, nullptr, &type) == napi_invalid_arg);
+    CHECK(napi_set_element(env, arr, (1u << 21u), elem) == napi_invalid_arg);
+    return true;
+}
+
+bool test_arkui_containers_and_image_resources() {
+    CHECK(finn::ohos::parse_ark_component_kind("Tabs") ==
+          finn::ohos::ArkComponentKind::Tabs);
+    CHECK(finn::ohos::parse_ark_component_kind("TabContent") ==
+          finn::ohos::ArkComponentKind::TabContent);
+    CHECK(finn::ohos::parse_ark_component_kind("Swiper") ==
+          finn::ohos::ArkComponentKind::Swiper);
+    CHECK(finn::ohos::parse_ark_component_kind("RelativeContainer") ==
+          finn::ohos::ArkComponentKind::RelativeContainer);
+    CHECK(finn::ohos::ark_component_kind_name(
+              finn::ohos::ArkComponentKind::RelativeContainer) == "RelativeContainer");
+
+    TempDir tmp("arkui");
+    const fs::path app = tmp.path("app");
+    fs::create_directories(app / "resources" / "base" / "media");
+    fs::create_directories(app / "resources" / "rawfile");
+    {
+        const auto png = make_test_png();
+        std::ofstream p(app / "resources" / "base" / "media" / "logo.png",
+                        std::ios::binary | std::ios::trunc);
+        p.write(reinterpret_cast<const char*>(png.data()),
+                static_cast<std::streamsize>(png.size()));
+    }
+    {
+        std::ofstream p(app / "resources" / "rawfile" / "notes.txt");
+        p << "real rawfile content";
+    }
+
+    const std::string doc = R"JSON({
+  "title": "Containers",
+  "root": {
+    "type": "Column", "id": "root",
+    "children": [
+      { "type": "Tabs", "id": "tabs", "children": [
+          { "type": "TabContent", "id": "tab1", "text": "One", "children": [
+              { "type": "Text", "id": "t1", "text": "First" } ] },
+          { "type": "TabContent", "id": "tab2", "text": "Two" }
+      ] },
+      { "type": "Swiper", "id": "swiper", "children": [
+          { "type": "Text", "id": "s1", "text": "Slide 1" } ] },
+      { "type": "RelativeContainer", "id": "rel", "children": [
+          { "type": "Text", "id": "r1", "text": "Relative" } ] },
+      { "type": "Image", "id": "img_ok", "src": "$media:logo" },
+      { "type": "Image", "id": "img_r", "src": "$r('app.media.logo')" },
+      { "type": "Image", "id": "img_raw", "src": "$rawfile:notes.txt" },
+      { "type": "Image", "id": "img_missing", "src": "$media:does_not_exist" }
+    ]
+  }
+})JSON";
+
+    finn::ohos::ArkUiEngine eng;
+    eng.set_resource_root(app.string());
+    std::string err;
+    CHECK(eng.load_from_json(doc, &err));
+
+    const auto* tabs = eng.find_node("tabs");
+    CHECK(tabs != nullptr && tabs->kind == finn::ohos::ArkComponentKind::Tabs);
+    CHECK(tabs->children.size() == 2);
+    const auto* tab = eng.find_node("tab1");
+    CHECK(tab != nullptr && tab->kind == finn::ohos::ArkComponentKind::TabContent);
+    const auto* swiper = eng.find_node("swiper");
+    CHECK(swiper != nullptr && swiper->kind == finn::ohos::ArkComponentKind::Swiper);
+    const auto* relative = eng.find_node("rel");
+    CHECK(relative != nullptr &&
+          relative->kind == finn::ohos::ArkComponentKind::RelativeContainer);
+
+    const std::string media_path =
+        (app / "resources" / "base" / "media" / "logo.png").string();
+    const std::string raw_path =
+        (app / "resources" / "rawfile" / "notes.txt").string();
+    CHECK(eng.resolve_resource_path("$media:logo") == media_path);
+    CHECK(eng.resolve_resource_path("$r('app.media.logo')") == media_path);
+    CHECK(eng.resolve_resource_path("$rawfile:notes.txt") == raw_path);
+    CHECK(eng.resolve_resource_path("$media:does_not_exist").empty());
+    CHECK(eng.resolve_image_src(*eng.find_node("img_ok")) == media_path);
+    CHECK(eng.resolve_image_src(*eng.find_node("img_r")) == media_path);
+    CHECK(eng.resolve_image_src(*eng.find_node("img_raw")) == raw_path);
+    CHECK(eng.resolve_image_src(*eng.find_node("img_missing")).empty());
+
+    const std::string summary = eng.render_headless_summary();
+    CHECK(summary.find("Tabs#tabs pages=2") != std::string::npos);
+    CHECK(summary.find("Swiper#swiper pages=1") != std::string::npos);
+    CHECK(summary.find("RelativeContainer#rel children=1") != std::string::npos);
+    CHECK(summary.find("logo.png") != std::string::npos);
+    CHECK(summary.find("Image missing: $media:does_not_exist") != std::string::npos);
+
+    eng.mount();
+    bool saw_attach = false;
+    for (const auto& ev : eng.lifecycle_log()) {
+        if (ev == "onAttach:tabs") saw_attach = true;
+    }
+    CHECK(saw_attach);
+    return true;
+}
+
+// Contacts.hap (openharmony/applications_hap) failed onCreate on the public
+// Panda opcode 0x7a (stownbyname). It must store an own property with the same
+// semantics as stobjbyname in this prototype-chain-free runtime.
+bool test_own_property_store_opcode() {
+    AbcBuilder b;
+    const std::uint16_t id_prop = b.add_id16_string("ownProp");
+    std::vector<std::uint8_t> code;
+    emit_op(code, finn::ohos::AbcOpcode::CreateEmptyObject);
+    emit_sta(code, 0);  // v0 = {}
+    emit_ldai(code, 42);
+    emit_op(code, static_cast<finn::ohos::AbcOpcode>(0x7au));  // stownbyname
+    code.push_back(0);  // IC slot
+    append_le16(code, id_prop);
+    code.push_back(0);  // object register v0
+    emit_lda(code, 0);
+    emit_ldobj(code, id_prop);  // acc = v0.ownProp
+    emit_op(code, finn::ohos::AbcOpcode::Return);
+
+    // istrue/isfalse (0x23/0x24) are op_none strict boolean tests.
+    std::vector<std::uint8_t> c_true;
+    emit_op(c_true, finn::ohos::AbcOpcode::LdTrue);
+    emit_op(c_true, finn::ohos::AbcOpcode::IsTrue);
+    emit_op(c_true, finn::ohos::AbcOpcode::Return);
+    std::vector<std::uint8_t> c_false;
+    emit_op(c_false, finn::ohos::AbcOpcode::LdTrue);
+    emit_op(c_false, finn::ohos::AbcOpcode::IsFalse);
+    emit_op(c_false, finn::ohos::AbcOpcode::Return);
+    b.add_class("LOwnStore;", "OwnStore.ets",
+                {{"store", 4, 0, code},
+                 {"isTrue", 4, 0, c_true},
+                 {"isFalse", 4, 0, c_false}});
+    const auto bytes = b.finish();
+    finn::ohos::AbcFile abc = finn::ohos::parse_abc_bytes(bytes.data(), bytes.size());
+    CHECK(abc.valid);
+    finn::ohos::AbcRuntime vm;
+    std::string err;
+    CHECK(vm.load_abc(std::move(abc), &err));
+    const auto res = vm.call_method_by_name("store");
+    CHECK(res.ok);
+    CHECK(res.return_value.to_int32() == 42);
+    const auto t = vm.call_method_by_name("isTrue");
+    CHECK(t.ok && t.return_value.is_truthy());
+    const auto f = vm.call_method_by_name("isFalse");
+    CHECK(f.ok && !f.return_value.is_truthy());
+    return true;
+}
+
+bool test_kit_shims_and_module_opcodes() {
+    finn::ohos::AbcRuntime rt;
+
+    // @ohos.app returns only real manifest facts.
+    finn::ohos::OhosBundleInfo info;
+    info.name = "com.example.kits";
+    info.version_name = "4.5.6";
+    info.version_code = 456;
+    info.api_version = 23;
+    rt.set_bundle_info(info);
+    const auto app = rt.get_global("app");
+    CHECK(app.obj_val->properties.at("getAppInfo")
+              .native_fn(rt, app, {})
+              .obj_val->properties.at("versionName")
+              .to_string() == "4.5.6");
+
+    // @ohos.curves — real easing maths with clamping.
+    const auto curves = rt.get_global("curves");
+    auto curve = [&](const std::string& name, double t) {
+        return curves.obj_val->properties.at(name)
+            .native_fn(rt, curves, {finn::ohos::AbcValue::make_double(t)})
+            .to_number();
+    };
+    CHECK(curve("linear", 0.25) == 0.25);
+    CHECK(curve("easeIn", 0.5) == 0.25);
+    CHECK(curve("easeOut", 0.5) == 0.75);
+    CHECK(curve("easeInOut", 0.25) == 0.125);
+    CHECK(curve("easeInOut", -1.0) == 0.0);
+    CHECK(curve("easeInOut", 2.0) == 1.0);
+
+    // @ohos.matrix4 — real column-major arithmetic.
+    const auto matrix = rt.get_global("matrix4");
+    auto mat_call = [&](const std::string& name,
+                        const std::vector<finn::ohos::AbcValue>& args) {
+        return matrix.obj_val->properties.at(name).native_fn(rt, matrix, args);
+    };
+    const auto ident = mat_call("identity", {});
+    CHECK(ident.obj_val->array_val.size() == 16);
+    CHECK(ident.obj_val->array_val[0].to_number() == 1.0);
+    CHECK(ident.obj_val->array_val[5].to_number() == 1.0);
+    CHECK(ident.obj_val->array_val[10].to_number() == 1.0);
+    CHECK(ident.obj_val->array_val[15].to_number() == 1.0);
+    CHECK(ident.obj_val->array_val[1].to_number() == 0.0);
+    const auto t1 = mat_call("translation", {finn::ohos::AbcValue::make_int(1),
+                                             finn::ohos::AbcValue::make_int(2),
+                                             finn::ohos::AbcValue::make_int(3)});
+    CHECK(t1.obj_val->array_val[12].to_number() == 1.0);
+    CHECK(t1.obj_val->array_val[13].to_number() == 2.0);
+    CHECK(t1.obj_val->array_val[14].to_number() == 3.0);
+    const auto t2 = mat_call("translation", {finn::ohos::AbcValue::make_int(4),
+                                             finn::ohos::AbcValue::make_int(5),
+                                             finn::ohos::AbcValue::make_int(6)});
+    const auto combined = mat_call("multiply", {t1, t2});
+    CHECK(combined.obj_val->array_val[12].to_number() == 5.0);
+    CHECK(combined.obj_val->array_val[13].to_number() == 7.0);
+    CHECK(combined.obj_val->array_val[14].to_number() == 9.0);
+
+    // Diagnostics classify the three previously rejected specifiers as supported.
+    const auto audit = finn::ohos::audit_ohos_kits(
+        {"@ohos.app", "@ohos.curves", "@ohos.matrix4", "@kit.ArkWeb"});
+    auto contains = [](const std::vector<std::string>& v, const std::string& s) {
+        return std::find(v.begin(), v.end(), s) != v.end();
+    };
+    CHECK(contains(audit.supported, "@ohos.app"));
+    CHECK(contains(audit.supported, "@ohos.curves"));
+    CHECK(contains(audit.supported, "@ohos.matrix4"));
+    CHECK(contains(audit.unsupported, "@kit.ArkWeb"));
+
+    // Real Panda ISA opcode 0x7e (ldexternalmodulevar) and 0xfe/0x09
+    // (undefinedifholewithname), plus packed lexical load/store.
+    AbcBuilder b;
+    const std::uint32_t s_name = b.add_string("test_module");
+    (void)s_name;
+    std::vector<std::uint8_t> c_ext;
+    emit_op(c_ext, static_cast<finn::ohos::AbcOpcode>(0x7eu));  // LdExternalModuleVar
+    c_ext.push_back(0);                                          // import index 0
+    emit_op(c_ext, static_cast<finn::ohos::AbcOpcode>(0xfeu));  // ThrowPrefixed
+    c_ext.push_back(0x09);                                       // undefinedifholewithname
+    append_le16(c_ext, 0);                                       // name id16
+    emit_op(c_ext, finn::ohos::AbcOpcode::Return);
+
+    std::vector<std::uint8_t> c_lex;
+    emit_ldai(c_lex, 7);
+    emit_op(c_lex, static_cast<finn::ohos::AbcOpcode>(0x3du));  // StLexVar level0/slot1
+    c_lex.push_back(0x01);
+    emit_op(c_lex, static_cast<finn::ohos::AbcOpcode>(0x3cu));  // LdLexVar level0/slot1
+    c_lex.push_back(0x01);
+    emit_op(c_lex, finn::ohos::AbcOpcode::Return);
+
+    b.add_class("LModuleOps;", "ModuleOps.ets",
+                {{"loadExternal", 4, 0, c_ext}, {"lexical", 4, 0, c_lex}});
+    const auto bytes = b.finish();
+    finn::ohos::AbcFile abc = finn::ohos::parse_abc_bytes(bytes.data(), bytes.size());
+    CHECK(abc.valid);
+    finn::ohos::AbcRuntime vm;
+    std::string lerr;
+    CHECK(vm.load_abc(std::move(abc), &lerr));
+
+    // An unlinked external var is an honest placeholder (never a guessed value).
+    const auto missing = vm.call_method_by_name("loadExternal");
+    CHECK(missing.ok);
+    CHECK(missing.return_value.kind == finn::ohos::AbcValue::Kind::Object);
+    CHECK(missing.return_value.obj_val->class_name.find("UnresolvedImport") !=
+          std::string::npos);
+
+    vm.set_external_module_var(0, finn::ohos::AbcValue::make_int(23));
+    const auto loaded = vm.call_method_by_name("loadExternal");
+    CHECK(loaded.ok);
+    CHECK(loaded.return_value.to_int32() == 23);
+
+    const auto lex = vm.call_method_by_name("lexical");
+    CHECK(lex.ok);
+    CHECK(lex.return_value.to_int32() == 7);
+
+    // ECMAScript globals used by real compiled ArkTS bytecode.
+    CHECK(rt.get_global("Number").native_fn(
+              rt, rt.get_global("Number"),
+              {finn::ohos::AbcValue::make_string("42")}).to_number() == 42.0);
+    CHECK(rt.get_global("String").native_fn(
+              rt, rt.get_global("String"),
+              {finn::ohos::AbcValue::make_int(7)}).to_string() == "7");
+    CHECK(rt.get_global("Boolean").native_fn(
+              rt, rt.get_global("Boolean"),
+              {finn::ohos::AbcValue::make_int(0)}).is_truthy() == false);
+    const auto json = rt.get_global("JSON");
+    const auto round = json.obj_val->properties.at("parse").native_fn(
+        rt, json, {json.obj_val->properties.at("stringify").native_fn(
+                      rt, json, {finn::ohos::AbcValue::make_int(17)})});
+    CHECK(round.to_number() == 17.0);
+    return true;
+}
+
 int run_cli_cmd(const std::vector<std::string>& argv, const std::string& home_dir) {
     const pid_t pid = ::fork();
     if (pid < 0) return -1;
@@ -1342,6 +1786,39 @@ bool test_cli_and_compat_plans() {
 
     CHECK(run_cli_cmd({bin.string(), "status"}, fake_home) == 0);
     CHECK(run_cli_cmd({bin.string(), "diagnose", hap_path.string()}, fake_home) == 0);
+
+    // A package requiring a genuinely missing hardware kit is reported
+    // precisely and fails cleanly (exit 2) rather than pretending to work.
+    AbcBuilder camera_abc;
+    (void)camera_abc.add_string("@kit.CameraKit");
+    camera_abc.add_class("LCameraAbility;", "CameraAbility.ets", {});
+    ZipBuilder camera_hap;
+    camera_hap.add_text("module.json", R"({
+      "app": { "bundleName": "com.example.camera", "versionCode": 1, "versionName": "1.0",
+               "minAPIVersion": 12, "targetAPIVersion": 23 },
+      "module": { "name": "entry", "type": "entry", "mainElement": "CameraAbility" }
+    })");
+    camera_hap.add("ets/modules.abc", camera_abc.finish());
+    const fs::path camera_path = tmp.path("camera.hap");
+    CHECK(camera_hap.write_to(camera_path));
+    const auto camera_diag = finn::ohos::diagnose_ohos_package(camera_path.string());
+    CHECK(camera_diag.valid && !camera_diag.runnable);
+    CHECK(std::find(camera_diag.unsupported_kits.begin(),
+                    camera_diag.unsupported_kits.end(),
+                    "@kit.CameraKit") != camera_diag.unsupported_kits.end());
+    CHECK(run_cli_cmd({bin.string(), "diagnose", camera_path.string()}, fake_home) == 2);
+
+    // Running and installing the same package refuse it with the same precise
+    // reason: no silent "kit unavailable" continuation.
+    std::string run_err;
+    CHECK(finn::ohos::run_ohos_target(camera_path.string(), 0, nullptr, true,
+                                      {}, nullptr, &run_err) == 2);
+    CHECK(run_err.find("@kit.CameraKit") != std::string::npos);
+    const auto camera_install = finn::ohos::install_ohos_package(
+        camera_path.string(), tmp.path("camera_root").string());
+    CHECK(!camera_install.ok);
+    CHECK(camera_install.error.find("@kit.CameraKit") != std::string::npos);
+
     CHECK(run_cli_cmd({bin.string(), "install", app_path.string()}, fake_home) == 0);
     CHECK(run_cli_cmd({bin.string(), "list"}, fake_home) == 0);
     CHECK(run_cli_cmd({bin.string(), "run", "com.finnos.ohosdemo", "--headless"},
@@ -1363,6 +1840,11 @@ int main() {
         {"hap_hsp_app_pack_and_diagnostics", &test_hap_hsp_app_pack_and_diagnostics},
         {"live_http_download_and_install", &test_live_http_download_and_install},
         {"abc_vm_arkui_lifecycle_and_napi", &test_abc_vm_arkui_lifecycle_and_napi},
+        {"util_and_bundle_kits", &test_util_and_bundle_kits},
+        {"napi_full_surface", &test_napi_full_surface},
+        {"arkui_containers_and_image_resources", &test_arkui_containers_and_image_resources},
+        {"kit_shims_and_module_opcodes", &test_kit_shims_and_module_opcodes},
+        {"own_property_store_opcode", &test_own_property_store_opcode},
         {"cli_and_compat_plans", &test_cli_and_compat_plans},
     };
     int failed = 0;

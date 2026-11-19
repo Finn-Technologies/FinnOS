@@ -18,11 +18,24 @@
 #include <vector>
 
 #ifdef FINN_DARWIN_QT6
+#include "compat/finn_qt_theme.hpp"
+#include "darwin/foundation.hpp"
+#include "darwin/plist.hpp"
+#include "ui/finn/window.hpp"
+
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QColor>
 #include <QEvent>
+#include <QHBoxLayout>
+#include <QIcon>
+#include <QLabel>
+#include <QMenuBar>
+#include <QMouseEvent>
+#include <QRegion>
+#include <QVBoxLayout>
+#include <QWindow>
 #include <QFileDialog>
 #include <QFont>
 #include <QKeySequence>
@@ -38,6 +51,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
+#include <QString>
 #include <QTimer>
 #include <QWidget>
 #endif
@@ -242,6 +256,9 @@ QApplication* ensure_qapp() {
     if (!g_qapp) {
         if (!QApplication::instance()) {
             g_qapp = new QApplication(g_qt_argc, g_qt_argv);
+            // A guest macOS app must look like a native FinnOS app: same live
+            // palette, font, Finn widget style and FinnOS window surfaces.
+            finn::compat::apply_finn_qt_theme(g_qapp);
         }
     }
     return qobject_cast<QApplication*>(QApplication::instance());
@@ -278,6 +295,103 @@ protected:
 
 private:
     NSWindowObj* win_;
+};
+
+// A QMainWindow is kept as the NSWindow host because the AppKit bridge owns a
+// real QMenuBar. It is given the same frameless rounded chrome as a native
+// FinnWindow: the system title bar is removed, a FinnOS title/icon/control
+// pill is drawn in its place, and the surface is masked to the token radius.
+class FinnGuestChrome final : public QWidget {
+public:
+    explicit FinnGuestChrome(QMainWindow* host, QWidget* parent = nullptr)
+        : QWidget(parent), host_(host) {
+        setObjectName(QStringLiteral("finn_guest_chrome"));
+        setFixedHeight(40);
+        auto* row = new QHBoxLayout(this);
+        row->setContentsMargins(14, 0, 8, 0);
+        row->setSpacing(8);
+
+        icon_ = new QLabel(this);
+        icon_->setObjectName(QStringLiteral("finn_guest_icon"));
+        const QIcon app_icon =
+            finn::ui::FinnThemeManager::instance().icon(QStringLiteral("darwin"));
+        if (!app_icon.isNull()) icon_->setPixmap(app_icon.pixmap(20, 20));
+        row->addWidget(icon_);
+
+        title_ = new QLabel(this);
+        title_->setObjectName(QStringLiteral("finn_guest_title"));
+        title_->setText(host_ ? host_->windowTitle() : QString());
+        row->addWidget(title_);
+
+        // The AppKit bridge owns a real QMenuBar. Give the chrome its own bar
+        // and hide QMainWindow's, so there is a single top strip as in a
+        // FinnWindow. attach_main_menu_to_window() finds this bar by name.
+        auto* bar = new QMenuBar(this);
+        bar->setObjectName(QStringLiteral("finn_guest_menubar"));
+        row->addWidget(bar);
+        row->addStretch(1);
+
+        // Use the exact FinnOS window control pill from libfinnui.
+        controls_ = new finn::ui::FinnWindowControls(this);
+        row->addWidget(controls_);
+        connect(controls_, &finn::ui::FinnWindowControls::minimizeRequested,
+                host_, &QWidget::showMinimized);
+        connect(controls_, &finn::ui::FinnWindowControls::maximizeRequested,
+                this, [this] {
+                    if (!host_) return;
+                    if (host_->isMaximized()) host_->showNormal();
+                    else host_->showMaximized();
+                });
+        connect(controls_, &finn::ui::FinnWindowControls::closeRequested,
+                host_, &QWidget::close);
+    }
+
+    void set_title(const QString& text) {
+        if (title_) title_->setText(text);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent*) override {
+        if (host_ && host_->window() && host_->window()->windowHandle()) {
+            host_->window()->windowHandle()->startSystemMove();
+        }
+    }
+
+private:
+    QMainWindow* host_ = nullptr;
+    QLabel* icon_ = nullptr;
+    QLabel* title_ = nullptr;
+    finn::ui::FinnWindowControls* controls_ = nullptr;
+};
+
+// Applies FinnWindow's measured 20px rounded mask to the frameless host.
+class RoundedGuestFilter final : public QObject {
+public:
+    explicit RoundedGuestFilter(QObject* parent = nullptr) : QObject(parent) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Resize || event->type() == QEvent::Show) {
+            if (auto* w = qobject_cast<QWidget*>(watched); w && !w->isMaximized()) {
+                const QRect r = w->rect();
+                constexpr int radius = 20;
+                if (!r.isEmpty()) {
+                    const int d = 2 * radius;
+                    QRegion mask(QRect(r.left() + radius, r.top(), r.width() - d, r.height()));
+                    mask |= QRegion(QRect(r.left(), r.top() + radius, r.width(), r.height() - d));
+                    mask |= QRegion(QRect(r.left(), r.top(), d, d), QRegion::Ellipse);
+                    mask |= QRegion(QRect(r.right() - d + 1, r.top(), d, d), QRegion::Ellipse);
+                    mask |= QRegion(QRect(r.left(), r.bottom() - d + 1, d, d), QRegion::Ellipse);
+                    mask |= QRegion(QRect(r.right() - d + 1, r.bottom() - d + 1, d, d),
+                                    QRegion::Ellipse);
+                    w->setMask(mask);
+                }
+            } else if (auto* w = qobject_cast<QWidget*>(watched); w && w->isMaximized()) {
+                w->clearMask();
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
 };
 
 void populate_qt_menu(QMenu* qmenu, NSMenuObj* nsmenu) {
@@ -333,7 +447,8 @@ void attach_main_menu_to_window(QMainWindow* qwin) {
     if (!app->main_menu) return;
     auto* top_menu = reinterpret_cast<NSMenuObj*>(app->main_menu);
     if (!top_menu->items) return;
-    QMenuBar* bar = qwin->menuBar();
+    QMenuBar* bar = qwin->findChild<QMenuBar*>(QStringLiteral("finn_guest_menubar"));
+    if (!bar) bar = qwin->menuBar();
     bar->clear();
     for (ObjcId item_id : *top_menu->items) {
         auto* item = reinterpret_cast<NSMenuItemObj*>(item_id);
@@ -1256,12 +1371,44 @@ ObjcId nswindow_init(ObjcId self, ObjcSel, DarwinRect rect, std::uintptr_t,
 #ifdef FINN_DARWIN_QT6
     (void)ensure_qapp();
     w->window = new QMainWindow();
+    w->window->setObjectName(QStringLiteral("finn_guest_root"));
+    w->window->setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    w->window->setStyleSheet(finn::compat::finn_guest_window_qss() + QStringLiteral("\n") +
+                             finn::compat::finn_guest_chrome_qss());
+    // Reserve the chrome's height so the guest content is not clipped.
     w->window->resize(std::max(120, static_cast<int>(rect.size.width)),
-                      std::max(80, static_cast<int>(rect.size.height)));
+                      std::max(80, static_cast<int>(rect.size.height)) + 40);
     w->window->installEventFilter(new WindowCloseFilter(w, w->window));
+    w->window->installEventFilter(new RoundedGuestFilter(w->window));
     auto* cv = reinterpret_cast<NSViewObj*>(content);
-    if (cv->widget) w->window->setCentralWidget(cv->widget);
+    auto* chrome = new FinnGuestChrome(w->window);
+    if (QMenuBar* native = w->window->menuBar()) native->hide();
     attach_main_menu_to_window(w->window);
+    // A guest binary often never calls setTitle:. Label the chrome with the
+    // bundle's own CFBundleName so the window is identifiable either way.
+    if (w->window->windowTitle().isEmpty()) {
+        const std::string bundle = main_bundle_path();
+        if (!bundle.empty()) {
+            std::string err;
+            const auto info = parse_plist_file(bundle + "/Contents/Info.plist", &err);
+            if (info) {
+                const std::string name = info->get_string("CFBundleDisplayName",
+                                                          info->get_string("CFBundleName"));
+                if (!name.empty()) chrome->set_title(QString::fromStdString(name));
+            }
+        }
+    }
+    // Chrome above content in one stack, set as the central widget: Qt lays it
+    // out reliably, unlike setMenuWidget() with a frameless QMainWindow.
+    auto* wrapper = new QWidget(w->window);
+    wrapper->setObjectName(QStringLiteral("finn_guest_wrapper"));
+    auto* stack = new QVBoxLayout(wrapper);
+    stack->setObjectName(QStringLiteral("finn_guest_stack"));
+    stack->setContentsMargins(0, 0, 0, 0);
+    stack->setSpacing(0);
+    stack->addWidget(chrome);
+    if (cv->widget) stack->addWidget(cv->widget, 1);
+    w->window->setCentralWidget(wrapper);
 #endif
     return self;
 }
@@ -1272,7 +1419,13 @@ void nswindow_setTitle(ObjcId self, ObjcSel, ObjcId title) {
     if (!w->title) w->title = new std::string();
     *w->title = s;
 #ifdef FINN_DARWIN_QT6
-    if (w->window) w->window->setWindowTitle(QString::fromStdString(s));
+    if (w->window) {
+        w->window->setWindowTitle(QString::fromStdString(s));
+        if (auto* label =
+                w->window->findChild<QLabel*>(QStringLiteral("finn_guest_title"))) {
+            label->setText(QString::fromStdString(s));
+        }
+    }
 #endif
 }
 ObjcId nswindow_title(ObjcId self, ObjcSel) {
@@ -1291,7 +1444,19 @@ void nswindow_setContentView(ObjcId self, ObjcSel, ObjcId view) {
     }
 #ifdef FINN_DARWIN_QT6
     auto* v = reinterpret_cast<NSViewObj*>(view);
-    if (w->window && v && v->widget) w->window->setCentralWidget(v->widget);
+    if (w->window && v && v->widget) {
+        if (auto* stack = w->window->findChild<QVBoxLayout*>(
+                QStringLiteral("finn_guest_stack"))) {
+            while (stack->count() > 1) {
+                QLayoutItem* old = stack->takeAt(stack->count() - 1);
+                if (old->widget()) old->widget()->setParent(nullptr);
+                delete old;
+            }
+            stack->addWidget(v->widget, 1);
+        } else {
+            w->window->setCentralWidget(v->widget);
+        }
+    }
 #endif
 }
 void nswindow_setMinSize(ObjcId self, ObjcSel, DarwinSize sz) {

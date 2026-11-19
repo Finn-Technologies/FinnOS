@@ -7,6 +7,7 @@ find_package(Qt6 COMPONENTS Widgets QUIET)
 add_executable(finn-darwin
     main.cpp
     plist.cpp
+    framework_coverage.cpp
     icns.cpp
     installer.cpp
     objc_runtime.cpp
@@ -15,8 +16,15 @@ add_executable(finn-darwin
     foundation.cpp
     coregraphics.cpp
     swift_runtime.cpp
+    compat_symbols.cpp
     appkit_bridge.cpp
     macho_loader.cpp
+    carbon_compat.cpp
+    swiftui/abi_metadata.cpp
+    swiftui/swift_runtime_ext.cpp
+    swiftui/views_and_scene.cpp
+    swiftui/state_and_combine.cpp
+    swiftui/registry.cpp
     ../compat/desktop_entry.cpp
 )
 
@@ -31,7 +39,7 @@ target_link_libraries(finn-darwin PRIVATE
 
 if(Qt6Widgets_FOUND)
     target_compile_definitions(finn-darwin PRIVATE FINN_DARWIN_QT6)
-    target_link_libraries(finn-darwin PRIVATE Qt6::Widgets)
+    target_link_libraries(finn-darwin PRIVATE Qt6::Widgets FinnSDK::FinnUI)
 endif()
 
 include(GNUInstallDirs)

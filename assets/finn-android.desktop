@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FinnOS Android Installer
+Comment=Inspect and install Android 17 (.apk) packages via the clean-room finn-android runtime
+Exec=/usr/local/bin/finn-store --install %f
+Icon=android
+NoDisplay=true
+Terminal=false
+MimeType=application/vnd.android.package-archive;

@@ -8,6 +8,7 @@
 #include "compat/flatpak_installer.hpp"
 #include "compat/macos_runner.hpp"
 #include "compat/ohos_runner.hpp"
+#include "compat/zip_entries.hpp"
 
 #include <QDateTime>
 #include <QDir>
@@ -33,6 +34,7 @@
 #include <vector>
 
 #include "common/paths.hpp"
+#include "compat/msi_installer.hpp"
 #include "compat/wine_runner.hpp"
 
 namespace {
@@ -752,6 +754,11 @@ private:
                 } else if (ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
                     d.kind = QStringLiteral("macOS Installer");
                     d.icon_name = QStringLiteral("display");
+                } else if (ext == QStringLiteral("zip") &&
+                           finn::compat::zip_contains_macos_app(
+                               fi.absoluteFilePath().toStdString())) {
+                    d.kind = QStringLiteral("macOS App Archive");
+                    d.icon_name = QStringLiteral("display");
                 } else if (ext == QStringLiteral("hap")) {
                     d.kind = QStringLiteral("OpenHarmony App");
                     d.icon_name = QStringLiteral("package");
@@ -861,10 +868,22 @@ private:
         const QFileInfo fi(selected_path_);
         selection_lbl_->setText(fi.fileName());
         const QString ext = fi.suffix().toLower();
+        const auto package_kind = finn::compat::detect_windows_package_kind(
+            fi.absoluteFilePath().toStdString());
+        const bool is_msix = package_kind == finn::compat::WindowsPackageKind::Msix;
         const bool is_pe =
             fi.isFile() &&
-            (ext == QStringLiteral("exe") || ext == QStringLiteral("msi"));
-        wine_btn_->setVisible(is_pe);
+            (ext == QStringLiteral("exe") || ext == QStringLiteral("msi")) && !is_msix;
+        wine_btn_->setVisible(is_pe || is_msix);
+        if (is_msix) {
+            // MSIX is detected, not installed: never offer a button that would
+            // report success for an install that did not happen.
+            wine_btn_->setEnabled(false);
+            wine_btn_->setToolTip(QStringLiteral(
+                "MSIX installation is not implemented in FinnOS v1 (Wine has no App Installer)."));
+            detail_label_->setText(QStringLiteral("Windows MSIX package: not installable in v1"));
+            return;
+        }
         if (is_pe) {
             const auto rt = finn::compat::probe_wine_runtime();
             wine_btn_->setEnabled(rt.ready);
@@ -903,8 +922,11 @@ private:
                 return;
             }
         }
+        const bool macos_zip = ext == QStringLiteral("zip") &&
+                               finn::compat::zip_contains_macos_app(
+                                   fi.absoluteFilePath().toStdString());
         if (fi.isFile() && (ext == QStringLiteral("dmg") || ext == QStringLiteral("pkg") ||
-                            ext == QStringLiteral("mpkg"))) {
+                            ext == QStringLiteral("mpkg") || macos_zip)) {
             const auto inst = finn::compat::inspect_macos_installer(
                 fi.absoluteFilePath().toStdString());
             detail_label_->setText(
@@ -951,6 +973,8 @@ private:
         if (ext == QStringLiteral("flatpakref") || ext == QStringLiteral("flatpak") ||
             ext == QStringLiteral("flatpakrepo") || ext == QStringLiteral("dmg") ||
             ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg") ||
+            (ext == QStringLiteral("zip") &&
+             finn::compat::zip_contains_macos_app(fi.absoluteFilePath().toStdString())) ||
             ext == QStringLiteral("hap") || ext == QStringLiteral("hsp") ||
             (ext == QStringLiteral("app") &&
              finn::compat::is_ohos_package_path(fi.absoluteFilePath().toStdString()))) {

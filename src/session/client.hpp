@@ -28,6 +28,9 @@ struct CompatStatus {
     bool xwayland_ready = false;
     bool wine_ready = false;
     bool flatpak_ready = false;
+    bool finn_win_ready = false;
+    bool wine_prefix_ready = false;
+    std::string wine_prefix;
     std::string wine_summary;
 };
 

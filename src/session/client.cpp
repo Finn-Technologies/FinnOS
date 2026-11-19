@@ -251,6 +251,9 @@ bool SessionClient::compat_status(CompatStatus* out, std::string* error) {
         else if (k == "xwayland") out->xwayland_ready = (v == "1");
         else if (k == "wine") out->wine_ready = (v == "1");
         else if (k == "flatpak") out->flatpak_ready = (v == "1");
+        else if (k == "finn_win") out->finn_win_ready = (v == "1");
+        else if (k == "prefix_ready") out->wine_prefix_ready = (v == "1");
+        else if (k == "prefix") out->wine_prefix = v;
         else if (k == "wine_summary") out->wine_summary = v;
     }
     return true;

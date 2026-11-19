@@ -2,6 +2,7 @@
 
 #include "common/paths.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/wine_prefix.hpp"
 
 #include <sys/utsname.h>
 
@@ -244,14 +245,17 @@ WineLaunchPlan build_wine_launch(const std::string& exe_path,
     std::error_code ec;
     if (!fs::is_regular_file(exe_path, ec)) {
         plan.error = "executable does not exist: " + exe_path;
+        plan.diagnostics.push_back(plan.error);
         return plan;
     }
 
     const bool is_msi = ends_with_ci(exe_path, ".msi");
+    PeInfo pe;
     if (!is_msi) {
-        const PeInfo pe = inspect_pe_file(exe_path);
+        pe = inspect_pe_file(exe_path);
         if (!pe.valid) {
             plan.error = "not a valid Windows PE executable (" + pe.error + ")";
+            plan.diagnostics.push_back(plan.error);
             return plan;
         }
     }
@@ -259,6 +263,7 @@ WineLaunchPlan build_wine_launch(const std::string& exe_path,
     const WineRuntimeStatus runtime = probe_wine_runtime();
     if (!runtime.ready) {
         plan.error = runtime.summary;
+        plan.diagnostics.push_back(plan.error);
         return plan;
     }
 
@@ -284,7 +289,106 @@ WineLaunchPlan build_wine_launch(const std::string& exe_path,
     }
     for (const std::string& arg : extra_args) plan.argv.push_back(arg);
     plan.ok = true;
+
+    const WineDllOverridePlan dll_plan = build_wine_dll_override_plan(runtime, pe);
+    plan.diagnostics.insert(plan.diagnostics.end(), dll_plan.diagnostics.begin(),
+                            dll_plan.diagnostics.end());
+    if (!fs::is_directory(fs::path(resolved_prefix) / "drive_c", ec)) {
+        plan.diagnostics.push_back("prefix " + resolved_prefix +
+                                   " is not initialized yet (no drive_c)");
+    }
     return plan;
+}
+
+WineDllOverridePlan build_wine_dll_override_plan(const WineRuntimeStatus& runtime,
+                                                 const PeInfo& target,
+                                                 bool mono_present,
+                                                 bool mono_disabled) {
+    WineDllOverridePlan plan;
+    if (runtime.dxvk_available) {
+        plan.overrides.push_back("d3d11=n,b");
+        plan.overrides.push_back("dxgi=n,b");
+    } else {
+        plan.diagnostics.push_back(
+            "DXVK is not installed; d3d11/dxgi overrides are not applied");
+    }
+    if (runtime.vkd3d_available) {
+        plan.overrides.push_back("d3d12=n,b");
+        plan.overrides.push_back("d3d12core=n,b");
+    } else {
+        plan.diagnostics.push_back(
+            "VKD3D is not installed; d3d12/d3d12core overrides are not applied");
+    }
+    if (mono_disabled) {
+        plan.overrides.push_back("mscoree,mshtml=");
+        plan.diagnostics.push_back(
+            "Mono is deliberately disabled; mscoree,mshtml= override applied");
+    }
+    if (target.is_dotnet) {
+        if (mono_disabled) {
+            plan.diagnostics.push_back(
+                "target needs .NET; Mono is deliberately disabled in this runtime");
+        } else if (!mono_present) {
+            plan.diagnostics.push_back(
+                "target needs .NET; Mono is not confirmed installed; .NET support "
+                "needs Mono or an equivalent runtime");
+        }
+    }
+    if (target.arch == PeArch::Arm64) {
+        const bool native_arm =
+            runtime.host_arch == "aarch64" || runtime.host_arch == "arm64";
+        if (!native_arm && !runtime.emulator_installed) {
+            plan.diagnostics.push_back(
+                "target is ARM64; this host cannot run arm64 PEs (no "
+                "emulator/translator installed)");
+        }
+    }
+    return plan;
+}
+
+std::string diagnose_wine_target(const std::string& exe_path) {
+    const PeInfo pe = inspect_pe_file(exe_path);
+    const WineRuntimeStatus runtime = probe_wine_runtime();
+    const WineDllOverridePlan dll_plan = build_wine_dll_override_plan(runtime, pe);
+    const std::string prefix_id = prefix_id_for(exe_path);
+
+    std::string out = "target: " + exe_path + "\n";
+    if (pe.valid) {
+        out += std::string("pe: arch=") + pe_arch_name(pe.arch) +
+               (pe.is_dotnet ? " dotnet=yes" : " dotnet=no") + "\n";
+    } else {
+        out += "pe: not a valid PE file (" + pe.error + ")\n";
+    }
+    out += "runtime: wine=" +
+           (runtime.wine_installed ? runtime.wine_bin : std::string("absent")) +
+           " proton=" +
+           (runtime.proton_installed ? runtime.proton_bin : std::string("absent")) +
+           " dxvk=" + (runtime.dxvk_available ? "present" : "absent") +
+           " vkd3d=" + (runtime.vkd3d_available ? "present" : "absent") +
+           " emulator=" +
+           (runtime.emulator_installed ? runtime.emulator_bin : std::string("absent")) +
+           " host=" + runtime.host_arch + "\n";
+    if (dll_plan.overrides.empty()) {
+        out += "overrides: none\n";
+    } else {
+        out += "overrides:";
+        for (const std::string& o : dll_plan.overrides) out += " " + o;
+        out += "\n";
+    }
+    for (const std::string& note : dll_plan.diagnostics) {
+        out += "note: " + note + "\n";
+    }
+    if (prefix_id.empty()) {
+        out += "prefix: none (no safe per-app prefix id derived from the exe path)\n";
+    } else {
+        const PrefixInfo pinfo = prefix_info(prefix_id);
+        out += "prefix: id=" + pinfo.id +
+               " path=" + (pinfo.path.empty() ? std::string("<unresolved>") : pinfo.path) +
+               " arch=" + (pinfo.arch.empty() ? "unknown" : pinfo.arch) +
+               " drive_c=" + (pinfo.drive_c_present ? "present" : "absent") +
+               " system.reg=" + (pinfo.system_reg_present ? "present" : "absent") + "\n";
+    }
+    return out;
 }
 
 std::vector<WindowsAppEntry> load_windows_apps(const std::string& conf_path) {

@@ -7,7 +7,7 @@ Canonical machine-readable tokens live in [`ui/_tokens.fui`](../ui/_tokens.fui) 
 >
 > **Implementation Status & Figma Scope:**
 > - **Implemented (Desktop):** Desktop `libfinnui`, `finn-shell` (Dock, Home, Spotlight, Control Center, Open Windows, Notifications, Lock Screen), `finn-settings`, and first-party desktop apps (`>= 1025 dp`).
-> - **Specified-Only (Not Yet Implemented):** Phone (`< 600 dp`) and Tablet (`600–1024 dp`) layouts, touch/gesture input in `finn-comp`/`finn-shell` (Audit **B2**), compositor Gaussian backdrop blur shader (`35 px` / `15 px`), continuous squircle clipping (`corner_smoothing = 0.6`), and focus rings on custom-painted `libfinnui` controls.
+> - **Specified-Only (Not Yet Implemented):** Phone (`< 600 dp`) and Tablet (`600–1024 dp`) layouts, touch/gesture input in `finn-comp`/`finn-shell` (Audit **B2**), and compositor Gaussian backdrop blur shader (`35 px` / `15 px`). Focus rings on custom-painted `libfinnui` controls are **implemented** via `draw_focus_ring()`; smooth corners (`corner_smoothing = 0.6`) are **implemented** on Qt surfaces via `finn_rounded_path()` in `src/ui/finn/components.cpp`.
 > - **Figma reality:** `FinnOS - Abhi` contains desktop (`1280×832`), OOBE, Notification, and Pointer frames only; **no phone or tablet screens exist in Figma** (see [`docs/figma-audit.md`](figma-audit.md) **FA-B4**).
 
 ---
@@ -43,6 +43,7 @@ One semantic name resolves to two appearance halves (`_light` and `_dark`). Appe
 | `nav_sel` | `#120F141A` (7% ink) | `#24FFFFFF` (14% white) | Selected badged sidebar row | Implemented |
 | `hero_tint` | `#EBFFDF` | `#15221B` | `FinnHeroCard` identity surface | Implemented |
 | `hair` | `#14000000` (8% black) | `#1CFFFFFF` (11% white) | 1 px hairline borders & `FinnDivider` | Implemented |
+| `hair_soft` | `#0D000000` (5% black) | `#0DFFFFFF` (5% white) | Figma `20:106` window-control pill: `0.5 px` inside stroke | Implemented |
 
 ### 2.2 Text, Accent & Feedback
 
@@ -76,9 +77,9 @@ One semantic name resolves to two appearance halves (`_light` and `_dark`). Appe
 | **Display / Lock Clock** | `58 / 64` (Lock), `34 / 40` (`time`) | `500` / `400` | `time` | Lock screen clock, hero telemetry |
 | **Setup Prompt** | `24 / 30` | `400` | OOBE prompt | OOBE step prompts, section titles |
 | **Title Large** | `18 / 24` | `500` (code) / `400` (`clock`) | `TitleLarge` / `clock` | Dialog/page display titles, dock clock (`16 px` in `TimePill`) |
-| **Title** | `16 / 22` | `400` (Figma `20:64`) / `500` (`FinnLabel::Title`) | `Title` / `title` | Window sidebar title & page headers |
+| **Title** | `16 / 22` | `400` (Figma `20:64`; `FinnLabel::Title`) | `Title` / `title` | Window sidebar title & page headers |
 | **Headline** | `14 / 20` | `500` | `Headline` | Card headers, window titlebar, setting row titles |
-| **Body** | `14 / 20` | `400` | `Body` | Primary body copy, list labels, setting values (`13 px` in `FinnNavItem`) |
+| **Body** | `14 / 20` | `400` | `Body` | Primary body copy, list labels, setting values (`14 px` Regular in `FinnNavItem`, per Figma `21:131`) |
 | **Caption / Label** | `12 / 16` | `400` | `Caption` / `label` | Card captions, metadata, secondary descriptions |
 | **Micro** | `10–11 / 14–15` | `400`–`600` | `label_sm` / `detail` | Badges (`8.8 pt`), timestamps, keyboard shortcuts (never `< 10 px` on desktop/tablet/phone; `8 px` in Figma `11:274` is deprecated) |
 | **Mono** | `9–10 pt / 14` | `400` | `Mono` | Terminal, version tags, dirty/edited badges, path previews |
@@ -115,6 +116,7 @@ Every margin, padding, and stack/grid gap must snap to the **4 px** scale (with 
 | Token | Value | `kRadius*` Alias | Corner Smoothing | Surfaces |
 |---|---|---|---|---|
 | `r_xs` | `4.0 px` | `kRadiusSm` | `0.6` (spec) | Checkboxes, window control buttons, album-art inset, scrollbar thumb |
+| `r_nav` | `5.0 px` | — | `0.6` (spec) | Figma `21:131` sidebar rows (the one 5 px radius, not the 6 px card scale) |
 | `r_sm` | `6.0 px` | `kRadiusMd` | `0.6` (spec) | `FinnButton`, `FinnStatCard`, `FinnHeroCard`, `FinnSettingRow`, Control Center sub-tiles, `FinnWindowControls` pill |
 | `r_md` | `8.0 px` | `kRadiusLg` | `0.6` (spec) | App icon tiles (`32×32`), hover highlight fills, `FinnCard` default, `FinnToast`, `FinnSurface` default |
 | `r_lg` | `12.0 px` | `kRadiusXl` | `0.6` (spec) | `FinnWindow` frame, Dock pills (`44 px`), `HomeMenuPopover`, `SpotlightPopover` results, `ControlCenterPopover`, `OpenWindowsPopover` |
@@ -122,7 +124,7 @@ Every margin, padding, and stack/grid gap must snap to the **4 px** scale (with 
 | `r_hero` | `39.0 px` | — | `0.6` (spec) | OOBE hero cards (`ref 30`) |
 | `r_pill` | `999.0 px` | — | `0.0` (capsule) | `FinnToggle`, pill `FinnSlider`, pill `FinnSearchField`, `FinnBadge`, OOBE `56×56` circle nav |
 
-**Implementation status:** Qt `QPainter::drawRoundedRect` currently renders circular arcs (`smoothing = 0`). Continuous squircle rendering (`corner_smoothing = 0.6`) is **specified-only**.
+**Implementation status:** `finn_rounded_path(rect, radius)` in `src/ui/finn/components.cpp` renders every painted Finn surface — and `FinnWindow`'s clip and mask — with a cubic-Bezier corner whose control length is `0.5522847498 + 0.3 × corner_smoothing`. This approximates Figma's `cornerSmoothing = 0.6` (roughly a superellipse of order 3.2) and replaces the old circular `drawRoundedRect` arcs. Verified on the VM against Figma `20:98` and `21:131`.
 
 ### 5.2 Blur (`finn::ui::blur`)
 
@@ -144,11 +146,14 @@ FinnOS relies on **1 px `hair` borders + translucent layering** first, and subtl
 | `4` | `elev_popover` | `(0, 4)` blur `35 px`, `5%` alpha | Dock, `HomeMenuPopover`, `SpotlightPopover`, `ControlCenterPopover`, `OpenWindowsPopover` | **Specified-Only** (no compositor drop shadow on layer surfaces) |
 | `4` | `elev_notification` | `(0, 4)` blur `25 px`, `5%` alpha | `NotificationCard`, `FinnToast` | **Specified-Only** |
 
+The blur and elevation values above are authoritative in `ui/_tokens.fui`. Their rendering lives in modules outside this design-token scope: the blur pass belongs at `src/comp/server.cpp:1862` / `src/comp/layer.cpp:131`, and layer-surface shadows at `src/shell/dock.cpp:686`, `src/shell/popovers.cpp:536,1240,1701` and `src/shell/notifications.cpp:255`. See [`docs/figma-audit.md`](figma-audit.md) "Deliberate equivalents and precise handoffs".
+
 ---
 
 ## 6. Iconography
 
 - **UI Glyphs (`assets/icons/shell/`):** Drawn on a **`24×24`** pixel grid with **`1.5 px` uniform stroke**, rounded caps and joins (`stroke-linecap="round"`, `stroke-linejoin="round"`), and **`stroke="currentColor"`** (or `#000000`) so `FinnThemeManager` tints them dynamically for Light/Dark/Accent/Disabled. (Existing SVGs with `14–60 px` viewBoxes or `1.4–3.0 px` strokes are logged in [`docs/figma-audit.md`](figma-audit.md) for normalization.)
+- **Figma layer-name aliases:** `minimise`, `wifi`, `globe`, `cog`, `swatch-book` and `sun-dim` resolve through `finn::ui::resolve_icon_path()` as byte-for-byte copies of the equivalent FinnOS glyphs. See [`assets/icons/shell/ALIASES.md`](../assets/icons/shell/ALIASES.md).
 - **App Icons (`assets/icons/apps/`):** Multi-color rounded-square app tiles (`r_md = 8 px` at `32 px`, `26×26` SVG source with `5.91 px` corner radius). `FinnThemeManager` never flattens multi-color app tiles.
 - **Standard Rendered Sizes:**
   - `14 px`: chevrons, tiny inline indicators

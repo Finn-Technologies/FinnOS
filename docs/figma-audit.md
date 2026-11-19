@@ -2,6 +2,37 @@
 
 > **Figma file reference:** File name `FinnOS - Abhi`. The Figwright MCP session reports `fileKey: null` (Audit finding **M8**), so `figma.com` URLs cannot be generated; every finding below cites `Page / Frame Name <nodeId>` directly from the `figwright` page dumps.
 
+## Live re-verification (2026-11-19)
+
+The Figwright plugin was connected (`FinnOS - Abhi`, page `Settings App` `20:63`, plugin 0.7.0). Values below were re-read with `get_node` / `get_design_context` — the source of truth — not measured from a screenshot. `get_screenshot` of `20:98` was compared against a real VM capture of `finn-settings` and `finn-files`.
+
+| Grounded node | Figma value | Code before this pass | Resolution |
+|---|---|---|---|
+| `20:98` Settings window | `800x500`, `r=12`, `cornerSmoothing 0.6`, fill `#FFFFFF@70%`, `BACKGROUND_BLUR 35` | `FinnWindow` `r=12`, opaque `t.bone`, circular arcs, no compositor blur | Radius aligned; smooth corners implemented in Qt. Opaque bone is a deliberate legibility choice while compositor blur is unimplemented (handoff below). |
+| `20:106` Window Options | `88x28`, `r=6`, fill `#FFFFFF@100%`, stroke `#000000@5%` `0.5px` INSIDE, three `20x20` icons with `1.5px` strokes | `88x28`, `r=6`, fill `t.glass` (70% white), stroke `t.hair` (8%) `1px` | **Fixed:** opaque `t.tile`; new `hair_soft` token at `0.5px`; callers use the Figma name `minimise`. |
+| `21:118`, `25:134`, `21:131` sidebar | `16px` Regular headers, `14px` Regular rows, selected `#505050@10%`, `r=5`, `250/12/5/36` grid, `26 px` coloured icon circle + `21 px` white glyph at `x=5`, label `x=41`, `226x30` search | `216 px` cap, `10 px` inset, `2 px` gap, `28 px` rows, `r=6`, `16 px` Medium title, `13 px` Medium selected row, flat `16 px` glyph at `x=8` | **Fixed:** all of the above; per-row colour comes from the existing `setBadgeColor()` call. Verified on VM against the Figma frame. |
+| `20:98`, `21:131`, `25:136` | `cornerSmoothing = 0.6` on rounded frames | `QPainter::drawRoundedRect` (circular arcs) | **Fixed for Qt surfaces:** shared `finn_rounded_path()` cubic-Bezier approximation drives paints **and** `FinnWindow`'s clip/mask. |
+| File-wide icon names | `minimise`, `wifi`, `globe`, `cog`, `swatch-book`, `sun-dim` | Only `minus-sign`, `wifi-02`, `internet`, `settings-02`, `paint-brush`, `sun-01` | **Fixed:** byte-for-byte aliases added under `assets/icons/shell/` (see `ALIASES.md`); installed and rendered on the VM. |
+| `36:37` `"hi."` | `Bumbbled Regular 36 px` | Traced polyline + `assets/icons/shell/oobe-hi.svg` | Faithful equivalent already present — see below. |
+| File-wide | `get_variable_defs` → `{"collections":[],"variables":[]}`; `get_styles` → all four arrays empty | `ui/_tokens.fui` is the only source of truth | FA-B1 still holds: there are no Figma styles or variables to bind to. |
+| `20:98`, `2:285`, `2:169`, `36:3` | `get_motion_context`: `coverage.status = "complete"`, `animatedNodes = 0` on all four roots | code-authored motion in `docs/motion.md` | Nothing animates in Figma; the OS motion is an authored extension, not a drift. |
+
+Two findings above are now stale against the live file:
+
+- **FA-M3** — the four sections in `21:131` now use the correct glyphs (`cog`, `swatch-book`, `sun-dim`, `volume-02`, `globe`, `bluetooth`) and only the selected `About` row has a visible `#505050@10%` fill. Only `About` (`24:74`) still carries the `wifi` placeholder. The claim that "Display/Sound/About use wifi" and "all eight items are selected" no longer holds.
+- **FA-B2** — keyboard focus rings are no longer missing from `libfinnui`. `draw_focus_ring()` is called by `FinnCard`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider` and `FinnNavItem` in `src/ui/finn/components.cpp`.
+
+Figwright's `token_map`, `component_map` and `icon_map` are JS/web-oriented helpers (they detect `framework=unknown`, `language=js`, and scan `.tsx/.jsx/.vue/.svelte`); they are not applicable to this C++ Qt tree. Grounding uses `get_design_context`, `get_node` and `get_screenshot` instead.
+
+### Deliberate equivalents and precise handoffs
+
+Nothing below is an open defect in this scope; the first two are intentional equivalents and the last is a compositor/shell change owned by other modules.
+
+- **Hero card** (`25:145`): Figma `#FFFFFF → #EBFFDF` gradient; code paints solid `t.hero_tint`. Documented decision in `docs/design.md`.
+- **`Bumbbled Regular`** (`36:37`): `get_node` confirms the font family is `Bumbbled`, and `assets/fonts/` contains only `FixelDisplay-*`. The faithful equivalent is already shipped: `src/ui/finn/components.cpp` (comment `// Figma node 36:37 (Bumbbled Regular), traced in natural handwriting order`) traces the glyph as a polyline and `assets/icons/shell/oobe-hi.svg` provides the mark. No font asset is required; adding an unlicensed font would be a regression.
+- **Compositor backdrop blur** — tokens are authoritative in `ui/_tokens.fui` (`blur_glass 35`, `blur_notification 15`, `blur_progressive 20`). Code handoff: insert a blur pass at `src/comp/server.cpp:1862` (layer-tree creation) and apply it where layer surfaces enter the scene at `src/comp/layer.cpp:131`, using `finn::ui::blur::blur_glass` for bottom/top layers and `blur_notification` for notification surfaces.
+- **Drop shadows on layer surfaces** — `elev_popover` / `elev_notification` are defined in `ui/_tokens.fui` as `(0,4) blur 35/25, #000@5%`. Code handoff: `src/shell/dock.cpp:686` (dock pill), `src/shell/popovers.cpp:1701` (Control Center; same pattern in `HomeMenuPopover::paintEvent` :536, `SpotlightPopover::paintEvent` :1240), `src/shell/notifications.cpp:255` (notification card). `FinnWindow` already has its own 6-ring ambient shadow.
+
 ## Executive Summary
 
 Inspected all **8 pages** of `FinnOS - Abhi` (`Cover` `0:1`, `Colors` `2:287`, `Text Styles` `2:289`, `Pointers` `1:3`, `Notifications` `2:146`, `First Time Setup` `36:2`, `Desktop` `2:283`, `Settings App` `20:63`) alongside `ui/_tokens.fui`, `tools/tokens.py`, `src/ui/finn/tokens.hpp`, `src/ui/finn/components.cpp`, `src/ui/finn/window.cpp`, `src/shell/`, `apps/`, `assets/icons/`, and `docs/design.md`.

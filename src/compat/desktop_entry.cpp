@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -96,6 +97,45 @@ std::string probe_icon_dir(const fs::path& dir, std::string_view icon_name) {
     return {};
 }
 
+// A desktop Exec= value has no shell. We still remove control characters from
+// the value a caller supplies so an inserted filename cannot carry a newline
+// or escape sequence into the child's argv.
+std::string clean_arg(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (uc >= 0x20 && uc != 0x7f) out.push_back(c);
+    }
+    return out;
+}
+
+// Expands field codes embedded inside one token (e.g. "--url=%u") without ever
+// splitting the result into shell words. Unknown codes are removed: passing a
+// literal "%n" to a child is never useful and can be interpreted downstream.
+std::string expand_embedded_codes(std::string_view token, std::string_view icon,
+                                  std::string_view name, std::string_view desktop_file,
+                                  std::string_view target) {
+    std::string out;
+    out.reserve(token.size() + target.size());
+    for (std::size_t i = 0; i < token.size(); ++i) {
+        if (token[i] == '%' && i + 1 < token.size()) {
+            const char code = token[++i];
+            switch (code) {
+                case '%': out.push_back('%'); break;
+                case 'f': case 'F': case 'u': case 'U': out += target; break;
+                case 'i': out += icon; break;
+                case 'c': out += name; break;
+                case 'k': out += desktop_file; break;
+                default: break;  // %d, %n, %v, %m and unknown codes are dropped.
+            }
+        } else {
+            out.push_back(token[i]);
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 bool executable_exists(std::string_view program) {
@@ -115,37 +155,53 @@ bool executable_exists(std::string_view program) {
 }
 
 std::optional<DesktopEntry> parse_desktop_content(std::string_view content,
-                                                  const std::string& path,
-                                                  std::string_view source,
-                                                  bool check_try_exec) {
+                                                   const std::string& path,
+                                                   std::string_view source,
+                                                   bool check_try_exec) {
     std::istringstream in{std::string(content)};
     std::string line;
-    bool in_entry = false;
+
+    enum class Section { None, Entry, Action };
+    Section section = Section::None;
     bool saw_entry = false;
     std::string type;
     std::vector<std::string> only_show_in;
     std::vector<std::string> not_show_in;
+    DesktopAction action;
+    bool have_action = false;
 
     DesktopEntry entry;
     entry.desktop_file = path;
     entry.desktop_id = desktop_stem(path);
     entry.source = std::string(source);
 
+    auto finish_action = [&]() {
+        if (have_action && !action.name.empty() && !action.exec.empty()) {
+            entry.action_defs.push_back(action);
+        }
+        action = DesktopAction{};
+        have_action = false;
+    };
+
     while (std::getline(in, line)) {
         const std::string trimmed = trim(line);
         if (trimmed.empty() || trimmed[0] == '#') continue;
         if (trimmed.front() == '[' && trimmed.back() == ']') {
+            finish_action();
             if (trimmed == "[Desktop Entry]") {
-                in_entry = true;
+                section = Section::Entry;
                 saw_entry = true;
+            } else if (trimmed.rfind("[Desktop Action ", 0) == 0) {
+                action.id = trim(std::string_view(trimmed).substr(
+                    16, trimmed.size() - 17));  // drop "[Desktop Action " and "]".
+                section = action.id.empty() ? Section::None : Section::Action;
+                have_action = section == Section::Action;
             } else {
-                // Stop reading on [Desktop Action ...] or secondary groups.
-                if (in_entry) break;
-                in_entry = false;
+                section = Section::None;
             }
             continue;
         }
-        if (!in_entry) continue;
+        if (section == Section::None) continue;
 
         const std::size_t eq = trimmed.find('=');
         if (eq == std::string::npos) continue;
@@ -155,6 +211,13 @@ std::optional<DesktopEntry> parse_desktop_content(std::string_view content,
         // Skip localized keys (e.g. Name[fr]) in favor of canonical unlocalized keys.
         if (key.find('[') != std::string::npos) continue;
 
+        if (section == Section::Action) {
+            if (key == "Name") action.name = val;
+            else if (key == "Icon") action.icon = val;
+            else if (key == "Exec") action.exec = val;
+            continue;
+        }
+
         if (key == "Type") type = val;
         else if (key == "Name") entry.name = val;
         else if (key == "GenericName") entry.generic_name = val;
@@ -162,6 +225,7 @@ std::optional<DesktopEntry> parse_desktop_content(std::string_view content,
         else if (key == "Exec") entry.exec = val;
         else if (key == "TryExec") entry.try_exec = val;
         else if (key == "Icon") entry.icon = val;
+        else if (key == "Actions") entry.actions = split_semicolon(val);
         else if (key == "Categories") entry.categories = split_semicolon(val);
         else if (key == "MimeType") entry.mime_types = split_semicolon(val);
         else if (key == "Terminal") entry.terminal = (ascii_lower(val) == "true");
@@ -170,6 +234,7 @@ std::optional<DesktopEntry> parse_desktop_content(std::string_view content,
         else if (key == "OnlyShowIn") only_show_in = split_semicolon(val);
         else if (key == "NotShowIn") not_show_in = split_semicolon(val);
     }
+    finish_action();
 
     if (!saw_entry || type != "Application") return std::nullopt;
     if (entry.hidden || entry.no_display) return std::nullopt;
@@ -193,8 +258,8 @@ std::optional<DesktopEntry> parse_desktop_content(std::string_view content,
 }
 
 std::optional<DesktopEntry> parse_desktop_file(const std::string& path,
-                                               std::string_view source,
-                                               bool check_try_exec) {
+                                                std::string_view source,
+                                                bool check_try_exec) {
     std::ifstream in(path);
     if (!in) return std::nullopt;
     std::ostringstream buf;
@@ -203,10 +268,14 @@ std::optional<DesktopEntry> parse_desktop_file(const std::string& path,
 }
 
 std::vector<std::string> expand_desktop_exec(std::string_view exec_line,
-                                             std::string_view icon,
-                                             std::string_view name,
-                                             std::string_view desktop_file,
-                                             std::string_view target_arg) {
+                                              std::string_view icon,
+                                              std::string_view name,
+                                              std::string_view desktop_file,
+                                              std::string_view target_arg) {
+    const std::string target = clean_arg(target_arg);
+    const std::string safe_icon = clean_arg(icon);
+    const std::string safe_name = clean_arg(name);
+    const std::string safe_desktop_file = clean_arg(desktop_file);
     std::vector<std::string> raw_tokens;
     std::string current;
     bool in_single = false;
@@ -214,6 +283,9 @@ std::vector<std::string> expand_desktop_exec(std::string_view exec_line,
     bool have_token = false;
 
     for (std::size_t i = 0; i < exec_line.size(); ++i) {
+        const unsigned char uc = static_cast<unsigned char>(exec_line[i]);
+        // Control characters are never part of a legitimate Exec= value.
+        if (uc < 0x20 && exec_line[i] != ' ' && exec_line[i] != '\t') continue;
         const char ch = exec_line[i];
         if (in_single) {
             if (ch == '\'') in_single = false;
@@ -251,32 +323,46 @@ std::vector<std::string> expand_desktop_exec(std::string_view exec_line,
     std::vector<std::string> result;
     for (const std::string& tok : raw_tokens) {
         if (tok == "%f" || tok == "%F" || tok == "%u" || tok == "%U") {
-            if (!target_arg.empty()) result.emplace_back(target_arg);
+            if (!target.empty()) result.emplace_back(target);
             continue;
         }
         if (tok == "%i") {
-            if (!icon.empty()) {
+            if (!safe_icon.empty()) {
                 result.emplace_back("--icon");
-                result.emplace_back(icon);
+                result.emplace_back(safe_icon);
             }
             continue;
         }
         if (tok == "%c") {
-            if (!name.empty()) result.emplace_back(name);
+            if (!safe_name.empty()) result.emplace_back(safe_name);
             continue;
         }
         if (tok == "%k") {
-            if (!desktop_file.empty()) result.emplace_back(desktop_file);
+            if (!safe_desktop_file.empty()) result.emplace_back(safe_desktop_file);
             continue;
         }
-        // Strip deprecated/unknown standalone field codes (%d, %D, %n, %N, %v, %m).
-        if (tok.size() == 2 && tok[0] == '%' &&
-            std::string_view("dDnNvm").find(tok[1]) != std::string_view::npos) {
-            continue;
-        }
-        result.push_back(tok);
+        std::string expanded =
+            expand_embedded_codes(tok, safe_icon, safe_name, safe_desktop_file, target);
+        if (!expanded.empty()) result.push_back(std::move(expanded));
     }
     return result;
+}
+
+std::optional<DesktopAction> find_desktop_action(const DesktopEntry& entry,
+                                                  std::string_view action_id) {
+    for (const DesktopAction& action : entry.action_defs) {
+        if (action.id == action_id) return action;
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> expand_desktop_action_exec(const DesktopEntry& entry,
+                                                     std::string_view action_id,
+                                                     std::string_view target_arg) {
+    const auto action = find_desktop_action(entry, action_id);
+    if (!action.has_value() || action->exec.empty()) return {};
+    return expand_desktop_exec(action->exec, action->icon, action->name,
+                               entry.desktop_file, target_arg);
 }
 
 std::vector<std::pair<std::string, std::string>> default_desktop_dirs() {
@@ -324,9 +410,36 @@ std::vector<DesktopEntry> scan_desktop_dirs(
     return out;
 }
 
+bool is_safe_icon_name(std::string_view icon_name) {
+    if (icon_name.empty() || icon_name.size() > 256) return false;
+    for (char c : icon_name) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (uc < 0x20 || uc == 0x7f) return false;
+    }
+    if (icon_name.find("..") != std::string_view::npos ||
+        icon_name.find('\\') != std::string_view::npos ||
+        icon_name.front() == '~') {
+        return false;
+    }
+    if (icon_name.front() != '/') {
+        // Freedesktop icon names are plain names, not relative paths.
+        return icon_name.find('/') == std::string_view::npos;
+    }
+    // Absolute icon paths are allowed only from system icon locations. This
+    // keeps an untrusted .desktop file from pointing the UI at /etc/shadow.
+    static constexpr const char* kAllowed[] = {
+        "/usr/share/", "/usr/local/share/", "/var/lib/flatpak/",
+        "/home/", "/run/user/", "/tmp/",
+    };
+    for (const char* prefix : kAllowed) {
+        if (icon_name.rfind(prefix, 0) == 0) return true;
+    }
+    return false;
+}
+
 std::string resolve_icon_path(std::string_view icon_name,
-                              const std::vector<std::string>& extra_dirs) {
-    if (icon_name.empty()) return {};
+                               const std::vector<std::string>& extra_dirs) {
+    if (!is_safe_icon_name(icon_name)) return {};
     if (icon_name.front() == '/') {
         std::error_code ec;
         return fs::is_regular_file(fs::path(icon_name), ec) ? std::string(icon_name)

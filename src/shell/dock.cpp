@@ -805,12 +805,15 @@ DockWindow::DockWindow(const std::vector<finn::App>* apps,
     setAnchors(AnchorBottom | AnchorLeft | AnchorRight);
     setKeyboardMode(KeyboardMode::None);
     setExclusiveZone(59);
-    setLayerMargins(QMargins(0, 0, 0, 15));
-    setDesiredSize(QSize(0, 44));
+    setLayerMargins(QMargins(0, 0, 0, std::max(0, 15 - kPopoverShadowPad)));
+    // The surface carries a transparent rim so the pills' elevation shadows
+    // are not clipped; the visible pills keep their Figma 44 px geometry.
+    setDesiredSize(QSize(0, 44 + 2 * kPopoverShadowPad));
     setAccessibleName(QStringLiteral("Dock"));
 
     root_layout_ = new QHBoxLayout(this);
-    root_layout_->setContentsMargins(16, 0, 16, 0);
+    root_layout_->setContentsMargins(16, kPopoverShadowPad, 16,
+                                     kPopoverShadowPad);
     root_layout_->setSpacing(15);
     root_layout_->addStretch(1);
 
@@ -865,6 +868,23 @@ DockWindow::~DockWindow() {
     phone_status_bar_ = nullptr;
 }
 
+void DockWindow::paintEvent(QPaintEvent*) {
+    // Shadows belong to the parent layer surface: a child pill's painter is
+    // clipped to the pill's own 44 px rect. Each pill keeps its Figma rect and
+    // the surface carries the surrounding transparent rim.
+    QPainter p(this);
+    const QWidget* const pills[] = {apps_pill_, home_pill_, status_pill_,
+                                    time_pill_};
+    for (const QWidget* pill : pills) {
+        if (pill && pill->isVisible()) {
+            paintLayerShadow(p, QRectF(pill->geometry()),
+                             finn::ui::radii::r_lg,
+                             finn::ui::blur::blur_glass,
+                             finn::ui::elevation::elev_popover);
+        }
+    }
+}
+
 void DockWindow::applyResponsiveLayout() {
     const FormFactor ff = current_form_factor();
     const int sw = primary_screen_size().width();
@@ -877,9 +897,11 @@ void DockWindow::applyResponsiveLayout() {
         phone_status_bar_->show();
 
         setExclusiveZone(54);
-        setLayerMargins(QMargins(0, 0, 0, 10));
+        setLayerMargins(QMargins(0, 0, 0,
+                                 std::max(0, 10 - kPopoverShadowPad)));
         if (root_layout_) {
-            root_layout_->setContentsMargins(8, 0, 8, 0);
+            root_layout_->setContentsMargins(8, kPopoverShadowPad, 8,
+                                             kPopoverShadowPad);
             root_layout_->setSpacing(8);
         }
         if (status_pill_) status_pill_->setVisible(false);
@@ -891,12 +913,13 @@ void DockWindow::applyResponsiveLayout() {
         const bool compact_tablet =
             (ff == FormFactor::Tablet) && (sw < 840);
         setExclusiveZone(ff == FormFactor::Tablet ? 52 : 59);
-        setLayerMargins(QMargins(0, 0, 0, ff == FormFactor::Tablet ? 8 : 15));
+        const int base_margin = ff == FormFactor::Tablet ? 8 : 15;
+        setLayerMargins(QMargins(0, 0, 0,
+                                 std::max(0, base_margin - kPopoverShadowPad)));
         if (root_layout_) {
-            root_layout_->setContentsMargins(ff == FormFactor::Tablet ? 10 : 16,
-                                             0,
-                                             ff == FormFactor::Tablet ? 10 : 16,
-                                             0);
+            const int side = ff == FormFactor::Tablet ? 10 : 16;
+            root_layout_->setContentsMargins(side, kPopoverShadowPad, side,
+                                             kPopoverShadowPad);
             root_layout_->setSpacing(ff == FormFactor::Tablet ? 10 : 15);
         }
         if (status_pill_) status_pill_->setVisible(true);
@@ -1044,17 +1067,23 @@ void DockWindow::updateStatusPill() {
 
 void DockWindow::updateInputMask() {
     QVector<QRect> regions;
+    // QWidget's mask also clips painting, so each region must include the
+    // transparent elevation rim or the shadow outside the pill is discarded.
+    const auto with_shadow_rim = [](const QRect& r) {
+        return r.adjusted(-kPopoverShadowPad, -kPopoverShadowPad,
+                          kPopoverShadowPad, kPopoverShadowPad);
+    };
     if (apps_pill_ && apps_pill_->isVisible()) {
-        regions.push_back(apps_pill_->geometry());
+        regions.push_back(with_shadow_rim(apps_pill_->geometry()));
     }
     if (home_pill_ && home_pill_->isVisible()) {
-        regions.push_back(home_pill_->geometry());
+        regions.push_back(with_shadow_rim(home_pill_->geometry()));
     }
     if (status_pill_ && status_pill_->isVisible()) {
-        regions.push_back(status_pill_->geometry());
+        regions.push_back(with_shadow_rim(status_pill_->geometry()));
     }
     if (time_pill_ && time_pill_->isVisible()) {
-        regions.push_back(time_pill_->geometry());
+        regions.push_back(with_shadow_rim(time_pill_->geometry()));
     }
     setInputRegions(regions);
 }

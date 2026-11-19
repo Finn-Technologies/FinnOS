@@ -1,4 +1,5 @@
 #include "comp/internal.hpp"
+#include "comp/backdrop_blur.hpp"
 #include "common/paths.hpp"
 
 #include <linux/input-event-codes.h>
@@ -777,7 +778,7 @@ void Server::on_new_output(wl_listener* listener, void* data) {
     attach_listener(wlr_out->events.frame, d->frame_l,
                     [](wl_listener* l, void*) {
                         OutputDevice* od = wl_container_of(l, od, frame_l);
-                        wlr_scene_output_commit(od->scene_output, nullptr);
+                        od->server->commit_output_with_backdrop_blur(od);
                         timespec now{};
                         clock_gettime(CLOCK_MONOTONIC, &now);
                         wlr_scene_output_send_frame_done(od->scene_output, &now);
@@ -1088,9 +1089,17 @@ void Server::on_new_xdg_toplevel(wl_listener* listener, void* data) {
                     [](wl_listener* l, void*) {
                         ManagedWindow* w = wl_container_of(l, w, commit_l);
                         if (w->xdg_toplevel->base->initial_commit) {
-                            wlr_xdg_toplevel_set_size(w->xdg_toplevel, 0, 0);
+                            // The xdg surface is not initialized yet; a
+                            // configure here would trip a wlroots assertion.
+                            if (w->xdg_ready()) {
+                                wlr_xdg_toplevel_set_size(w->xdg_toplevel, 0, 0);
+                            }
                             return;
                         }
+                        // The client has completed its first commit, so the
+                        // surface is initialized: replay any size/maximize/
+                        // fullscreen state requested before that point.
+                        w->apply_pending_xdg_state();
                         if (w->mapped) w->update_size_from_surface();
                     });
 
@@ -1859,6 +1868,9 @@ int Server::run() {
     // Background rect -> layer 0 -> layer 1 -> toplevels -> layer 2 (top) -> fullscreen -> layer 3 (overlay) -> lock
     const float bg_init[4] = {0.918f, 0.925f, 0.941f, 1.0f};
     background_rect_ = wlr_scene_rect_create(&scene_->tree, 1440, 900, bg_init);
+    // Glass layer surfaces receive a real CPU Gaussian backdrop blur
+    // (35/15 px from ui/_tokens.fui) in commit_output_with_backdrop_blur().
+    comp::backdrop_blur::report_once();
     layer_trees_[0] = wlr_scene_tree_create(&scene_->tree);
     layer_trees_[1] = wlr_scene_tree_create(&scene_->tree);
     toplevel_tree_ = wlr_scene_tree_create(&scene_->tree);

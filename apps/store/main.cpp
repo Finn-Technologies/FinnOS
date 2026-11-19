@@ -1,5 +1,5 @@
 // Finn Store: native software hub for FinnOS Native, Linux (pacman/Flatpak/AppImage),
-// Windows (Wine/Proton), and Android (Waydroid) applications.
+// Windows (Wine/Proton), and Android (clean-room finn-android) applications.
 // Redesigned to match Figma Settings (20:64) 1:1 with ChromeMode::FigmaSplit,
 // 250px FinnSidebar with 26x26 circular colored icon badges, FinnHeroCard spotlight,
 // and 2-column Settings-style r=6 app cards.
@@ -11,6 +11,7 @@
 #include "compat/desktop_entry.hpp"
 #include "compat/flatpak_installer.hpp"
 #include "compat/macos_runner.hpp"
+#include "compat/msi_installer.hpp"
 #include "compat/ohos_runner.hpp"
 #include "compat/wine_runner.hpp"
 #include "session/app_registry.hpp"
@@ -208,6 +209,7 @@ QString source_label(finn::AppSource src) {
         case finn::AppSource::kWinget:  return QStringLiteral("Windows");
         case finn::AppSource::kMacos:   return QStringLiteral("macOS");
         case finn::AppSource::kOhos:    return QStringLiteral("OpenHarmony");
+        case finn::AppSource::kAndroid: return QStringLiteral("Android");
         case finn::AppSource::kUnknown: return QStringLiteral("App");
     }
     return QStringLiteral("App");
@@ -345,6 +347,15 @@ public:
             return;
         }
         const QString low = clean.toLower();
+        if (low.endsWith(QStringLiteral(".msix"))) {
+            // Wine has no working App Installer in v1. Claiming otherwise would
+            // leave the user with a "successful" install that never happened.
+            openPage(QStringLiteral("windows"));
+            showToast(QStringLiteral("MSIX installation is not implemented: Wine has no working "
+                                     "App Installer. Extract the .msix and run its .exe instead."),
+                      FinnToast::Severity::Error, 6000);
+            return;
+        }
         if (low.endsWith(QStringLiteral(".exe")) || low.endsWith(QStringLiteral(".msi"))) {
             openPage(QStringLiteral("windows"));
             launchWindowsInstaller(clean);
@@ -1038,6 +1049,17 @@ private:
             QStringLiteral("view-open-windows"), nullptr, page);
         root->addWidget(win_status_row_);
 
+        // A read-only report, not a claim: it names the missing runtime pieces
+        // and the prefix state that was actually found on disk.
+        root->addWidget(new FinnLabel(QStringLiteral("Runtime diagnostics"),
+                                      FinnLabel::Role::Caption, FinnLabel::Tone::Dim, page));
+        win_diag_view_ = new QPlainTextEdit(page);
+        win_diag_view_->setReadOnly(true);
+        win_diag_view_->setMaximumHeight(120);
+        win_diag_view_->setPlaceholderText(
+            QStringLiteral("No Windows runtime diagnostics available."));
+        root->addWidget(win_diag_view_);
+
         auto* actions = new QWidget(page);
         auto* act_lay = new QHBoxLayout(actions);
         act_lay->setContentsMargins(0, 0, 0, 0);
@@ -1087,9 +1109,15 @@ private:
     }
 
     void launchWindowsInstaller(const QString& exe) {
-        const auto plan = finn::compat::build_wine_launch(exe.toStdString());
+        const auto runtime = finn::compat::probe_wine_runtime();
+        if (!runtime.ready) {
+            showToast(QString::fromStdString(runtime.summary), FinnToast::Severity::Error, 5000);
+            return;
+        }
+        const auto plan = finn::compat::build_install_plan(exe.toStdString(),
+                                                           runtime.default_prefix);
         if (!plan.ok || plan.argv.empty()) {
-            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Error, 4500);
+            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Error, 6000);
             return;
         }
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -1097,16 +1125,24 @@ private:
             env.insert(QString::fromStdString(k), QString::fromStdString(v));
         }
         QStringList args;
-        for (size_t i = 1; i < plan.argv.size(); ++i) {
-            args << QString::fromStdString(plan.argv[i]);
-        }
+        for (const auto& arg : plan.argv) args << QString::fromStdString(arg);
         QProcess proc;
-        proc.setProgram(QString::fromStdString(plan.argv[0]));
+        // build_install_plan returns the Wine-side command (msiexec /i ... or
+        // the installer itself); the runner is the caller's responsibility.
+        proc.setProgram(QString::fromStdString(runtime.proton_installed
+                                                   ? runtime.proton_bin
+                                                   : runtime.wine_bin));
         proc.setArguments(args);
         proc.setProcessEnvironment(env);
         if (proc.startDetached()) {
             showToast(QStringLiteral("Launched %1 via Wine").arg(QFileInfo(exe).fileName()),
                       FinnToast::Severity::Success);
+            // The plan says when a silent switch was guessed. Surface that
+            // instead of implying every installer was quieted successfully.
+            if (!plan.notes.empty()) {
+                showToast(QString::fromStdString(plan.notes.front()),
+                          FinnToast::Severity::Warning, 6000);
+            }
         } else {
             showToast(QStringLiteral("Failed to launch %1").arg(QFileInfo(exe).fileName()),
                       FinnToast::Severity::Error);
@@ -1160,6 +1196,10 @@ private:
         if (!win_status_row_) return;
         const auto st = finn::compat::probe_wine_runtime();
         win_status_row_->setSubtitle(QString::fromStdString(st.summary));
+        if (win_diag_view_) {
+            win_diag_view_->setPlainText(
+                QString::fromStdString(finn::compat::diagnose_wine_target({})));
+        }
         if (win_install_btn_) {
             win_install_btn_->setEnabled(st.ready);
             win_install_btn_->setToolTip(
@@ -1307,7 +1347,7 @@ private:
         auto* note = new FinnLabel(
             QStringLiteral("finn-darwin loads unmodified 64-bit Mach-O binaries with clean-room "
                            "libSystem, Objective-C 2.0, Foundation, and basic AppKit-on-Qt6 "
-                           "support, plus native .pkg/.dmg/.app installation. Apps requiring "
+                           "support, plus native .pkg/.dmg/.zip/.app installation. Apps requiring "
                            "SwiftUI, Metal, WebKit, CoreData, or App Store/iCloud report missing "
                            "frameworks clearly via Diagnose."),
             FinnLabel::Role::Caption, FinnLabel::Tone::Dim, page);
@@ -1745,7 +1785,7 @@ private:
         root->setSpacing(10);
 
         android_status_row_ = new FinnSettingRow(
-            QStringLiteral("Waydroid Runtime"),
+            QStringLiteral("Android 17 Runtime (finn-android)"),
             QStringLiteral("Probing..."),
             QStringLiteral("android"), nullptr, page);
         root->addWidget(android_status_row_);
@@ -1758,9 +1798,18 @@ private:
                 this, QStringLiteral("Select Android APK"), QDir::homePath(),
                 QStringLiteral("Android Package (*.apk);;All Files (*)"));
             if (apk.isEmpty()) return;
-            runCommandIntoLog(QStringLiteral("waydroid"),
-                              {QStringLiteral("app"), QStringLiteral("install"), apk},
-                              android_log_);
+            const auto plan = finn::compat::build_android_install_plan(
+                apk.toStdString());
+            if (!plan.ok) {
+                android_log_->appendPlainText(QString::fromStdString(plan.error));
+                return;
+            }
+            QStringList args;
+            for (size_t i = 1; i < plan.argv.size(); ++i) {
+                args << QString::fromStdString(plan.argv[i]);
+            }
+            showToast(QStringLiteral("Installing Android APK..."));
+            runCommandIntoLog(QString::fromStdString(plan.argv[0]), args, android_log_);
         });
         android_status_row_->setTrailingWidget(android_install_btn_);
 
@@ -1787,7 +1836,7 @@ private:
             android_list_layout_->addWidget(new FinnEmptyState(
                 QStringLiteral("android"),
                 st.ready ? QStringLiteral("No Android apps installed")
-                         : QStringLiteral("Waydroid container inactive"),
+                         : QStringLiteral("finn-android runtime not installed"),
                 QString::fromStdString(st.summary),
                 {}, android_list_layout_->parentWidget()));
             return;
@@ -1798,8 +1847,13 @@ private:
                 android_list_layout_->parentWidget());
             const QString pkg = QString::fromStdString(a.package_name);
             connect(launch, &QAbstractButton::clicked, this, [pkg]() {
-                QProcess::startDetached(QStringLiteral("waydroid"),
-                                        {QStringLiteral("app"), QStringLiteral("launch"), pkg});
+                const auto plan = finn::compat::build_android_launch_plan(pkg.toStdString());
+                if (!plan.ok) return;
+                QStringList args;
+                for (size_t i = 1; i < plan.argv.size(); ++i) {
+                    args << QString::fromStdString(plan.argv[i]);
+                }
+                QProcess::startDetached(QString::fromStdString(plan.argv[0]), args);
             });
             android_list_layout_->addWidget(new FinnSettingRow(
                 QString::fromStdString(a.name), pkg,
@@ -2217,6 +2271,7 @@ private:
     FinnButton* win_install_btn_ = nullptr;
     FinnButton* win_add_btn_ = nullptr;
     QVBoxLayout* win_list_layout_ = nullptr;
+    QPlainTextEdit* win_diag_view_ = nullptr;
     FinnSettingRow* android_status_row_ = nullptr;
     FinnButton* android_install_btn_ = nullptr;
     QVBoxLayout* android_list_layout_ = nullptr;

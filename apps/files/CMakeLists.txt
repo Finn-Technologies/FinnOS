@@ -14,6 +14,8 @@ add_executable(finn-files
     ../../src/compat/macos_runner.cpp
     ../../src/compat/ohos_runner.cpp
     ../../src/compat/wine_runner.cpp
+    ../../src/compat/wine_prefix.cpp
+    ../../src/compat/msi_installer.cpp
 )
 target_include_directories(finn-files PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src

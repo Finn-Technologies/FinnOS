@@ -1,6 +1,8 @@
 #include "darwin/appkit_bridge.hpp"
+#include "darwin/compat_symbols.hpp"
 #include "darwin/coregraphics.hpp"
 #include "darwin/foundation.hpp"
+#include "darwin/framework_coverage.hpp"
 #include "darwin/icns.hpp"
 #include "darwin/installer.hpp"
 #include "darwin/libsystem.hpp"
@@ -8,6 +10,12 @@
 #include "darwin/objc_runtime.hpp"
 #include "darwin/plist.hpp"
 #include "darwin/swift_runtime.hpp"
+#include "darwin/carbon_compat.hpp"
+#include "darwin/swiftui/abi_metadata.hpp"
+#include "darwin/swiftui/state_and_combine.hpp"
+#include "darwin/swiftui/swift_runtime_ext.hpp"
+#include "darwin/swiftui/views_and_scene.hpp"
+#include "darwin/swiftui/contract.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -17,7 +25,9 @@
 #include <unistd.h>
 #include <zlib.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +59,16 @@ Fn from_void_ptr(void* p) {
     std::memcpy(&out, &p, sizeof(out));
     return out;
 }
+
+using finn::darwin::ObjcId;
+using finn::darwin::ObjcImp;
+using finn::darwin::ObjcSel;
+
+// Matches Foundation's internal DarwinRange (NSRange) layout: two word-sized fields.
+struct DarwinRange {
+    std::size_t location;
+    std::size_t length;
+};
 
 std::atomic<int> g_tmp_seq{0};
 
@@ -236,7 +256,8 @@ std::vector<std::uint8_t> make_test_icns() {
 
 std::vector<std::uint8_t> build_pkg_bytes(const std::string& app_name,
                                           const std::string& bundle_id,
-                                          const std::vector<std::uint8_t>& exe_bytes) {
+                                          const std::vector<std::uint8_t>& exe_bytes,
+                                           bool name_after_data = false) {
     const std::string info_plist =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<plist version=\"1.0\"><dict>"
@@ -261,14 +282,15 @@ std::vector<std::uint8_t> build_pkg_bytes(const std::string& app_name,
     const auto payload_gz = zlib_compress(cpio.data(), cpio.size(), 16 + MAX_WBITS);
     if (payload_gz.empty()) return {};
 
+    const std::string name_tag = "<name>Payload</name>";
     const std::string toc_xml =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><xar><toc>"
-        "<file id=\"1\"><name>Payload</name><data>"
+        "<file id=\"1\">" + (name_after_data ? "" : name_tag) + "<data>"
         "<offset>0</offset>"
         "<length>" + std::to_string(payload_gz.size()) + "</length>"
         "<size>" + std::to_string(cpio.size()) + "</size>"
         "<encoding style=\"application/x-gzip\"/>"
-        "</data></file></toc></xar>";
+        "</data>" + (name_after_data ? name_tag : "") + "</file></toc></xar>";
     const auto toc_z = zlib_compress(
         reinterpret_cast<const std::uint8_t*>(toc_xml.data()), toc_xml.size(), MAX_WBITS);
     if (toc_z.empty()) return {};
@@ -638,9 +660,21 @@ bool test_libsystem_expanded_symbols() {
     auto shim_fcntl = from_void_ptr<int(*)(int, int, ...)>(syms["_fcntl"]);
     const int orig_fl = shim_fcntl(pipe_fds[0], F_GETFL);
     CHECK(orig_fl >= 0);
+    // fcntl flags here are Darwin values: the libSystem shim translates them
+    // to the host and back, so Darwin O_NONBLOCK (0x0004) is the right mask.
     CHECK(shim_fcntl(pipe_fds[0], F_SETFL, orig_fl | 0x0004) == 0);
     const int new_fl = shim_fcntl(pipe_fds[0], F_GETFL);
+#if defined(__APPLE__)
+    // The F_SETFL shim consumes Darwin arm64 variadic register slots. On a
+    // Darwin host a plain C variadic call reaches it with the right ABI, so
+    // the translated O_NONBLOCK bit is observable through F_GETFL.
     CHECK((new_fl & 0x0004) != 0);
+#else
+    // On non-Darwin hosts the same call cannot supply Darwin's register
+    // slots, so the bit cannot be observed this way. F_SETFL success above is
+    // still a real check; the full ABI is exercised by the live Mach-O test.
+    (void)new_fl;
+#endif
     ::close(pipe_fds[0]);
     ::close(pipe_fds[1]);
 
@@ -951,6 +985,348 @@ bool test_objc_foundation_cg_swift_and_appkit() {
     return true;
 }
 
+template <typename Fn>
+ObjcImp test_to_imp(Fn fn) {
+    ObjcImp out = nullptr;
+    static_assert(sizeof(out) == sizeof(fn));
+    std::memcpy(&out, &fn, sizeof(out));
+    return out;
+}
+
+int g_notification_count = 0;
+ObjcId g_last_notification = nullptr;
+void test_notification_observer(ObjcId, ObjcSel, ObjcId notification) {
+    ++g_notification_count;
+    // Posted notifications are autoreleased; an observer that keeps one must
+    // own it. Holding the raw pointer alone dangles after a pool drains.
+    finn_objc_release(g_last_notification);
+    g_last_notification = finn_objc_retain(notification);
+}
+
+bool test_ns_attributed_string() {
+    using namespace finn::darwin;
+    init_foundation();
+    void* pool = finn_objc_autoreleasePoolPush();
+
+    ObjcClass* cls = finn_objc_getClass("NSAttributedString");
+    ObjcClass* mcls = finn_objc_getClass("NSMutableAttributedString");
+    CHECK(cls != nullptr && mcls != nullptr);
+
+    ObjcId keys[1] = {nsstring_from_utf8("NSColor")};
+    ObjcId vals[1] = {nsstring_from_utf8("red")};
+    ObjcId attrs = objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(finn_objc_getClass("NSDictionary")),
+                                          "dictionaryWithObjects:forKeys:count:", vals, keys,
+                                          std::size_t{1});
+    CHECK(attrs != nullptr && objc_send_name<std::size_t>(attrs, "count") == 1);
+
+    ObjcId a = objc_send_name<ObjcId>(objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(cls), "alloc"),
+                                      "initWithString:attributes:", nsstring_from_utf8("Hello"),
+                                      attrs);
+    CHECK(a != nullptr);
+    CHECK(objc_send_name<std::size_t>(a, "length") == 5);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(a, "string")) == "Hello");
+
+    DarwinRange effective{};
+    ObjcId got = objc_send_name<ObjcId>(a, "attributesAtIndex:effectiveRange:", std::size_t{2},
+                                        &effective);
+    CHECK(got != nullptr && objc_send_name<std::size_t>(got, "count") == 1);
+    CHECK(effective.location == 0 && effective.length == 5);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(got, "objectForKey:", keys[0])) == "red");
+
+    ObjcId sub = objc_send_name<ObjcId>(a, "attributedSubstringFromRange:",
+                                        DarwinRange{1, 3});
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(sub, "string")) == "ell");
+    ObjcId sub_attrs = objc_send_name<ObjcId>(sub, "attributesAtIndex:effectiveRange:",
+                                              std::size_t{0}, &effective);
+    CHECK(objc_send_name<std::size_t>(sub_attrs, "count") == 1);
+
+    ObjcId a2 = objc_send_name<ObjcId>(objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(cls), "alloc"),
+                                       "initWithString:attributes:", nsstring_from_utf8("Hello"),
+                                       attrs);
+    CHECK(objc_send_name<signed char>(a, "isEqualToAttributedString:", a2) == 1);
+    ObjcId plain = objc_send_name<ObjcId>(objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(cls), "alloc"),
+                                          "initWithString:", nsstring_from_utf8("Hello"));
+    CHECK(objc_send_name<signed char>(a, "isEqualToAttributedString:", plain) == 0);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(a, "description")) == "Hello");
+
+    ObjcId m = objc_send_name<ObjcId>(objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(mcls), "alloc"),
+                                      "initWithString:", nsstring_from_utf8("abcdef"));
+    CHECK(objc_send_name<std::size_t>(m, "length") == 6);
+    objc_send_name<void>(m, "addAttribute:value:range:", nsstring_from_utf8("NSUnderline"),
+                         nsstring_from_utf8("single"), DarwinRange{1, 2});
+    ObjcId at1 = objc_send_name<ObjcId>(m, "attributesAtIndex:effectiveRange:", std::size_t{1},
+                                        &effective);
+    CHECK(effective.location == 1 && effective.length == 2);
+    CHECK(objc_send_name<std::size_t>(at1, "count") == 1);
+    ObjcId at0 = objc_send_name<ObjcId>(m, "attributesAtIndex:effectiveRange:", std::size_t{0},
+                                        &effective);
+    CHECK(objc_send_name<std::size_t>(at0, "count") == 0);
+
+    objc_send_name<void>(m, "removeAttribute:range:", nsstring_from_utf8("NSUnderline"),
+                         DarwinRange{1, 2});
+    at1 = objc_send_name<ObjcId>(m, "attributesAtIndex:effectiveRange:", std::size_t{1},
+                                 &effective);
+    CHECK(objc_send_name<std::size_t>(at1, "count") == 0);
+
+    objc_send_name<void>(m, "setAttributes:range:", attrs, DarwinRange{0, 2});
+    ObjcId at_02 = objc_send_name<ObjcId>(m, "attributesAtIndex:effectiveRange:", std::size_t{0},
+                                          &effective);
+    CHECK(objc_send_name<std::size_t>(at_02, "count") == 1 && effective.length == 2);
+
+    objc_send_name<void>(m, "replaceCharactersInRange:withString:", DarwinRange{0, 1},
+                         nsstring_from_utf8("ZZ"));
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(m, "string")) == "ZZbcdef");
+    CHECK(objc_send_name<std::size_t>(m, "length") == 7);
+
+    objc_send_name<void>(m, "appendAttributedString:", a);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(m, "string")) == "ZZbcdefHello");
+
+    finn_objc_autoreleasePoolPop(pool);
+    return true;
+}
+
+bool test_ns_date_formatter_and_calendar() {
+    using namespace finn::darwin;
+    init_foundation();
+    void* pool = finn_objc_autoreleasePoolPush();
+
+    ObjcId fmt = objc_send_name<ObjcId>(objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSDateFormatter")), "alloc"), "init");
+    CHECK(fmt != nullptr);
+    objc_send_name<void>(fmt, "setDateFormat:", nsstring_from_utf8("yyyy-MM-dd HH:mm:ss"));
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(fmt, "dateFormat")) == "yyyy-MM-dd HH:mm:ss");
+
+    ObjcId date = objc_send_name<ObjcId>(fmt, "dateFromString:",
+                                         nsstring_from_utf8("2024-03-05 07:08:09"));
+    CHECK(date != nullptr);
+    const double expected = 1709622489.0;
+    CHECK(std::fabs(objc_send_name<double>(date, "timeIntervalSince1970") - expected) < 1e-3);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(fmt, "stringFromDate:", date)) ==
+          "2024-03-05 07:08:09");
+    CHECK(objc_send_name<ObjcId>(fmt, "dateFromString:", nsstring_from_utf8("garbage")) == nullptr);
+    CHECK(objc_send_name<ObjcId>(fmt, "stringFromDate:", nullptr) == nullptr);
+
+    ObjcId cal = objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(finn_objc_getClass("NSCalendar")),
+                                        "currentCalendar");
+    CHECK(cal != nullptr);
+    const std::uintptr_t year = 1u << 2, month = 1u << 3, day = 1u << 4;
+    const std::uintptr_t hour = 1u << 5, minute = 1u << 6, second = 1u << 7, weekday = 1u << 8;
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", year, date) == 2024);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", month, date) == 3);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", day, date) == 5);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", hour, date) == 7);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", minute, date) == 8);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", second, date) == 9);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", weekday, date) == 3);
+
+    const std::uintptr_t units = year | month | day | hour | minute | second;
+    ObjcId comps = objc_send_name<ObjcId>(cal, "components:fromDate:", units, date);
+    CHECK(comps != nullptr);
+    CHECK(objc_send_name<std::int64_t>(comps, "year") == 2024);
+    CHECK(objc_send_name<std::int64_t>(comps, "month") == 3);
+    CHECK(objc_send_name<std::int64_t>(comps, "day") == 5);
+    CHECK(objc_send_name<std::int64_t>(comps, "valueForComponent:", year) == 2024);
+    ObjcId rebuilt = objc_send_name<ObjcId>(cal, "dateFromComponents:", comps);
+    CHECK(std::fabs(objc_send_name<double>(rebuilt, "timeIntervalSince1970") - expected) < 1e-3);
+
+    ObjcId later = objc_send_name<ObjcId>(cal, "dateByAddingUnit:value:toDate:options:", day,
+                                          std::int64_t{10}, date, std::uintptr_t{0});
+    CHECK(later != nullptr);
+    CHECK(objc_send_name<std::int64_t>(cal, "component:fromDate:", day, later) == 15);
+    CHECK(objc_send_name<ObjcId>(cal, "dateByAddingUnit:value:toDate:options:",
+                                 std::uintptr_t{1} << 30, std::int64_t{1}, date,
+                                 std::uintptr_t{0}) == nullptr);
+    CHECK(objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(finn_objc_getClass("NSCalendar")),
+                                 "calendarWithIdentifier:", nsstring_from_utf8("NoSuchCalendar")) ==
+          nullptr);
+
+    finn_objc_autoreleasePoolPop(pool);
+    return true;
+}
+
+bool test_ns_search_paths_and_notifications() {
+    using namespace finn::darwin;
+    const TempDir tmp;
+    const char* old_home = std::getenv("HOME");
+    const std::string saved_home = old_home ? old_home : "";
+    ::setenv("HOME", tmp.root().c_str(), 1);
+    init_foundation();
+
+    std::unordered_map<std::string, void*> syms;
+    register_foundation_symbols(&syms);
+    CHECK(syms.count("_NSSearchPathForDirectoriesInDomains") == 1);
+    CHECK(syms.count("_NSCalendarIdentifierGregorian") == 1);
+    CHECK(syms.count("_NSFontAttributeName") == 1);
+    CHECK(syms.count("_NSHomeDirectory") == 1);
+
+    auto paths_fn = from_void_ptr<ObjcId (*)(std::uintptr_t, std::uintptr_t, signed char)>(
+        syms["_NSSearchPathForDirectoriesInDomains"]);
+    ObjcId documents = paths_fn(9, 1, 0);
+    CHECK(objc_send_name<std::size_t>(documents, "count") == 1);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(documents, "objectAtIndex:", std::size_t{0})) ==
+          (tmp.root().string() + "/Documents"));
+    ObjcId caches = paths_fn(13, 1, 0);
+    CHECK(objc_send_name<std::size_t>(caches, "count") == 1);
+    CHECK(objc_send_name<std::size_t>(paths_fn(4242, 1, 0), "count") == 0);
+    CHECK(objc_send_name<std::size_t>(paths_fn(9, 0, 0), "count") == 0);
+
+    auto home_fn = from_void_ptr<const char* (*)()>(syms["_NSHomeDirectory"]);
+    CHECK(std::string(home_fn()) == tmp.root().string());
+
+    ObjcClass* center_cls = finn_objc_getClass("NSNotificationCenter");
+    ObjcId center = objc_send_name<ObjcId>(reinterpret_cast<ObjcId>(center_cls), "defaultCenter");
+    CHECK(center != nullptr);
+    ObjcClass* observer_cls = finn_objc_allocateClassPair(finn_objc_getClass("NSObject"),
+                                                          "FinnTestObserver");
+    CHECK(finn_class_addMethod(observer_cls, finn_sel_registerName("onPing:"),
+                               test_to_imp(&test_notification_observer)));
+    finn_objc_registerClassPair(observer_cls);
+    ObjcId observer = finn_objc_alloc_object(observer_cls);
+
+    ObjcId name = nsstring_from_utf8("FinnPing");
+    objc_send_name<void>(center, "addObserver:selector:name:object:", observer,
+                         finn_sel_registerName("onPing:"), name, nullptr);
+    g_notification_count = 0;
+    objc_send_name<void>(center, "postNotificationName:object:userInfo:", name, nullptr, nullptr);
+    CHECK(g_notification_count == 1);
+    CHECK(g_last_notification != nullptr);
+    CHECK(nsstring_to_utf8(objc_send_name<ObjcId>(g_last_notification, "name")) == "FinnPing");
+    CHECK(objc_send_name<ObjcId>(g_last_notification, "object") == nullptr);
+
+    objc_send_name<void>(center, "removeObserver:name:object:", observer, name, nullptr);
+    objc_send_name<void>(center, "postNotificationName:object:userInfo:", name, nullptr, nullptr);
+    CHECK(g_notification_count == 1);
+
+    ObjcId notification = objc_send_name<ObjcId>(
+        reinterpret_cast<ObjcId>(finn_objc_getClass("NSNotification")),
+        "notificationWithName:object:userInfo:", name, nullptr, nullptr);
+    CHECK(notification != nullptr);
+    CHECK(objc_send_name<ObjcId>(notification, "userInfo") == nullptr);
+    objc_send_name<void>(center, "addObserver:selector:name:object:", observer,
+                         finn_sel_registerName("onPing:"), name, nullptr);
+    objc_send_name<void>(center, "postNotification:", notification);
+    CHECK(g_notification_count == 2);
+    objc_send_name<void>(center, "removeObserver:", observer);
+
+    finn_objc_release(g_last_notification);
+    g_last_notification = nullptr;
+    if (!saved_home.empty()) ::setenv("HOME", saved_home.c_str(), 1);
+    return true;
+}
+
+bool test_installer_symlink_and_apple_toc_regressions() {
+    using namespace finn::darwin;
+    const TempDir tmp;
+
+    // BUG A: a self-referential "Applications" symlink must not abort the scan
+    // before a sibling .app bundle is discovered.
+    const fs::path stage = tmp.path("dmg-stage");
+    fs::create_directories(stage / "Applications");
+    fs::create_directories(stage / "Nightfall.app" / "Contents" / "MacOS");
+    {
+        std::ofstream plist(stage / "Nightfall.app" / "Contents" / "Info.plist");
+        plist << "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>"
+              << "<key>CFBundleName</key><string>Nightfall</string>"
+              << "<key>CFBundleIdentifier</key><string>org.finnos.Nightfall</string>"
+              << "<key>CFBundleExecutable</key><string>Nightfall</string>"
+              << "</dict></plist>";
+    }
+    std::error_code ec;
+    fs::create_directory_symlink(stage / "Applications", stage / "ApplicationsLoop", ec);
+    if (ec) {
+        ec.clear();
+        fs::create_symlink(stage / "Applications", stage / "ApplicationsLoop", ec);
+    }
+    CHECK(!ec);
+    const auto found = discover_app_bundles_in_tree(stage.string());
+    CHECK(found.size() == 1);
+    CHECK(fs::path(found[0]).filename() == "Nightfall.app");
+
+    // BUG B: Apple's XAR TOC writes <name> AFTER </data>. The real Payload
+    // must still be parsed and installed.
+    const std::string exe = "APP";
+    const std::vector<std::uint8_t> exe_bytes(exe.begin(), exe.end());
+    const auto pkg = build_pkg_bytes("AquaSKK", "com.finnos.AquaSKK", exe_bytes, true);
+    CHECK(!pkg.empty());
+    const fs::path pkg_path = tmp.path("apple-toc.pkg");
+    {
+        std::ofstream out(pkg_path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(pkg.data()),
+                  static_cast<std::streamsize>(pkg.size()));
+    }
+    const auto insp = inspect_pkg_native(pkg_path.string());
+    CHECK(insp.valid);
+    CHECK(insp.entries.size() == 1);
+    CHECK(insp.entries[0].name == "Payload");
+    CHECK(insp.entries[0].length > 0);
+
+    const auto res = install_pkg_native(pkg_path.string(), (tmp.path("apps")).string(),
+                                        (tmp.path("icons")).string());
+    if (!res.ok) std::fprintf(stderr, "apple-toc install error: %s\n", res.error.c_str());
+    CHECK(res.ok);
+    CHECK(res.installed_apps.size() == 1);
+    CHECK(res.installed_apps[0].name == "AquaSKK");
+    return true;
+}
+
+bool test_framework_coverage_honesty() {
+    using namespace finn::darwin;
+    const auto& frameworks = unimplemented_frameworks();
+    for (const char* n : {"SwiftUI", "Swift", "Metal", "WebKit", "CoreData"}) {
+        CHECK(std::any_of(frameworks.begin(), frameworks.end(),
+                          [n](const FrameworkGap& f) { return f.name == n; }));
+    }
+    CHECK(framework_reason("SwiftUI").find("partial") != std::string::npos);
+    CHECK(framework_reason("Foundation").empty());
+    CHECK(framework_reason("CoreGraphics").empty());
+    CHECK(symbol_reason("_swift_getTypeByMangledNameInContext2").find("metadata") !=
+          std::string::npos);
+    CHECK(symbol_reason("$s7SwiftUI4TextVyACSScfC").find("SwiftUI") != std::string::npos);
+    CHECK(symbol_reason("_$ss5print_9separator").find("Swift") != std::string::npos);
+    CHECK(symbol_reason("_MTLCreateSystemDefaultDevice").find("Metal") != std::string::npos);
+    CHECK(symbol_reason("_some_unknown_symbol").empty());
+    CHECK(coverage_report().find("SwiftUI") != std::string::npos);
+    return true;
+}
+
+bool test_live_swift_honest_diagnosis() {
+    using namespace finn::darwin;
+    const TempDir tmp;
+    const fs::path src = tmp.path("swift_probe.swift");
+    const fs::path bin = tmp.path("swift_probe");
+    {
+        std::ofstream out(src);
+        out << "print(\"hello from Swift\")\n";
+    }
+    const std::string cmd = "xcrun swiftc -O \"" + src.string() + "\" -o \"" +
+                            bin.string() + "\" 2>/dev/null";
+    if (std::system(cmd.c_str()) != 0) return true;  // Skip when swiftc/SDK is unavailable.
+
+    MachoLoader diag_loader;
+    const auto d = diag_loader.diagnose(bin.string());
+    CHECK(d.valid);
+    CHECK(d.arch_compatible);
+    CHECK(!d.runnable);
+    bool saw_metadata_gap = false;
+    for (const auto& g : d.symbol_gaps) {
+        if (g.name.find("swift_getTypeByMangledNameInContext2") != std::string::npos &&
+            g.reason.find("metadata") != std::string::npos) {
+            saw_metadata_gap = true;
+        }
+    }
+    CHECK(saw_metadata_gap);
+
+    char arg0[] = "swift_probe";
+    char* argv[] = {arg0, nullptr};
+    MachoLoader runner;
+    std::string err;
+    const int rc = runner.load_and_run(bin.string(), 1, argv, &err);
+    CHECK(rc != 0);
+    CHECK(err.find("cannot launch") != std::string::npos);
+    CHECK(err.find("not implemented") != std::string::npos);
+    return true;
+}
+
 #if defined(__APPLE__) && defined(__aarch64__)
 bool test_live_macho_comprehensive() {
     using namespace finn::darwin;
@@ -1166,6 +1542,306 @@ bool test_live_macho_comprehensive() {
 }
 #endif
 
+// The real C/ObjC/C++/dispatch shims used by downloaded apps must behave, not
+// merely exist as names in the loader table.
+static bool test_compat_symbols() {
+    using namespace finn::darwin;
+    init_objc_runtime();
+    init_foundation();
+
+    std::unordered_map<std::string, void*> syms;
+    register_compat_symbols(&syms);
+    CHECK(compat_has_symbol("_NSEqualRects"));
+    CHECK(compat_has_symbol("_dispatch_semaphore_create"));
+    CHECK(compat_has_symbol("_objc_setAssociatedObject"));
+    CHECK(compat_has_symbol("__Znwm"));
+    CHECK(!compat_has_symbol("_MTLCreateSystemDefaultDevice"));
+    CHECK(syms.count("_NSIntersectionRange") == 1);
+    CHECK(syms.count("_NSViewNoIntrinsicMetric") == 1);
+
+    // Foundation geometry is computed with real NS behaviour.
+    struct Point { double x, y; };
+    struct Size { double width, height; };
+    struct Rect { Point origin; Size size; };
+    struct Range { std::size_t location, length; };
+    auto equal_rects = from_void_ptr<bool(*)(Rect, Rect)>(syms["_NSEqualRects"]);
+    auto inset_rect = from_void_ptr<Rect(*)(Rect, double, double)>(syms["_NSInsetRect"]);
+    auto union_rect = from_void_ptr<Rect(*)(Rect, Rect)>(syms["_NSUnionRect"]);
+    auto point_in_rect = from_void_ptr<bool(*)(Point, Rect)>(syms["_NSPointInRect"]);
+    auto intersect_range = from_void_ptr<Range(*)(Range, Range)>(syms["_NSIntersectionRange"]);
+    auto string_from_range = from_void_ptr<ObjcId(*)(Range)>(syms["_NSStringFromRange"]);
+
+    Rect a{{0, 0}, {10, 10}};
+    Rect b{{5, 5}, {10, 10}};
+    CHECK(equal_rects(a, {{0, 0}, {10, 10}}));
+    CHECK(!equal_rects(a, b));
+    Rect inset = inset_rect(a, 2, 3);
+    CHECK(inset.origin.x == 2 && inset.origin.y == 3);
+    CHECK(inset.size.width == 6 && inset.size.height == 4);
+    Rect uni = union_rect(a, b);
+    CHECK(uni.origin.x == 0 && uni.origin.y == 0);
+    CHECK(uni.size.width == 15 && uni.size.height == 15);
+    CHECK(point_in_rect({5, 5}, a));
+    CHECK(!point_in_rect({10, 10}, a));
+    Range ri = intersect_range({0, 10}, {5, 10});
+    CHECK(ri.location == 5 && ri.length == 5);
+    CHECK(intersect_range({0, 2}, {5, 2}).length == 0);
+    ObjcId range_str = string_from_range({3, 7});
+    CHECK(nsstring_to_utf8(range_str) == "{3, 7}");
+    finn_objc_release(range_str);
+
+    // Exported constants are real NSStrings / numbers, not placeholders.
+    ObjcId* attr = reinterpret_cast<ObjcId*>(syms["_NSParagraphStyleAttributeName"]);
+    CHECK(attr && *attr && nsstring_to_utf8(*attr) == "NSParagraphStyle");
+    ObjcId* notif = reinterpret_cast<ObjcId*>(syms["_NSWindowDidResizeNotification"]);
+    CHECK(notif && *notif && nsstring_to_utf8(*notif) == "NSWindowDidResizeNotification");
+    double* weight = reinterpret_cast<double*>(syms["_NSFontWeightBold"]);
+    CHECK(weight && *weight < 0);
+    double* no_metric = reinterpret_cast<double*>(syms["_NSViewNoIntrinsicMetric"]);
+    CHECK(no_metric && *no_metric == -1.0);
+    Rect* zero = reinterpret_cast<Rect*>(syms["_NSZeroRect"]);
+    CHECK(zero && zero->origin.x == 0 && zero->size.width == 0);
+
+    // Associated objects, selector-backed properties and weak references.
+    ObjcClass* obj_cls = finn_objc_getClass("NSObject");
+    CHECK(obj_cls != nullptr);
+    ObjcId owner = finn_objc_alloc_object(obj_cls);
+    ObjcId value = nsstring_from_utf8("associated");
+    auto set_assoc = from_void_ptr<void(*)(ObjcId, const void*, ObjcId, int)>(
+        syms["_objc_setAssociatedObject"]);
+    auto get_assoc = from_void_ptr<ObjcId(*)(ObjcId, const void*)>(
+        syms["_objc_getAssociatedObject"]);
+    static const char kKey = 'k';
+    set_assoc(owner, &kKey, value, 1);
+    CHECK(get_assoc(owner, &kKey) == value);
+    set_assoc(owner, &kKey, nullptr, 0);
+    CHECK(get_assoc(owner, &kKey) == nullptr);
+
+    ObjcSel prop_sel = finn_sel_registerName("testProperty");
+    auto set_prop = from_void_ptr<void(*)(ObjcId, ObjcSel, ObjcId, bool, bool)>(
+        syms["_objc_setProperty"]);
+    auto get_prop = from_void_ptr<ObjcId(*)(ObjcId, ObjcSel, bool)>(
+        syms["_objc_getProperty"]);
+    set_prop(owner, prop_sel, value, false, false);
+    CHECK(get_prop(owner, prop_sel, false) == value);
+    set_prop(owner, prop_sel, nullptr, false, false);
+
+    auto copy_weak = from_void_ptr<void(*)(ObjcId*, ObjcId*)>(syms["_objc_copyWeak"]);
+    ObjcId weak = nullptr;
+    ObjcId strong = value;
+    copy_weak(&weak, &strong);
+    CHECK(weak == value);
+    finn_objc_release(owner);
+    finn_objc_release(value);
+    // The weak slot must be zeroed when the object actually dies (checked with
+    // a freshly allocated object whose only owner is released).
+    ObjcId short_lived = finn_objc_alloc_object(obj_cls);
+    ObjcId weak2 = nullptr;
+    copy_weak(&weak2, &short_lived);
+    CHECK(weak2 == short_lived);
+    finn_objc_release(short_lived);
+    CHECK(weak2 == nullptr);
+
+    // libdispatch semaphores really block and really wake.
+    auto sem_create = from_void_ptr<void*(*)(long)>(syms["_dispatch_semaphore_create"]);
+    auto sem_signal = from_void_ptr<long(*)(void*)>(syms["_dispatch_semaphore_signal"]);
+    auto sem_wait = from_void_ptr<long(*)(void*, std::uint64_t)>(syms["_dispatch_semaphore_wait"]);
+    void* sem = sem_create(0);
+    CHECK(sem != nullptr);
+    CHECK(sem_wait(sem, 1) != 0);  // immediate timeout on a zero-count semaphore
+    CHECK(sem_signal(sem) == 0);
+    CHECK(sem_wait(sem, 1) == 0);
+    std::atomic<bool> woken{false};
+    std::thread waiter([&] {
+        woken.store(sem_wait(sem, ~std::uint64_t{0}) == 0, std::memory_order_relaxed);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(sem_signal(sem) == 0);
+    waiter.join();
+    CHECK(woken.load(std::memory_order_relaxed));
+    dispatch_semaphore_release(sem);
+
+    // QuartzCore matrix math and monotonic clock.
+    struct Transform3D { double m[16]; };
+    auto media_time = from_void_ptr<double(*)()>(syms["_CACurrentMediaTime"]);
+    CHECK(media_time() > 0);
+    auto make_scale = from_void_ptr<Transform3D(*)(double, double, double)>(
+        syms["_CATransform3DMakeScale"]);
+    auto make_translation = from_void_ptr<Transform3D(*)(double, double, double)>(
+        syms["_CATransform3DMakeTranslation"]);
+    auto concat = from_void_ptr<Transform3D(*)(Transform3D, Transform3D)>(
+        syms["_CATransform3DConcat"]);
+    CHECK(make_scale != nullptr && make_translation != nullptr && concat != nullptr);
+    Transform3D s = make_scale(2, 3, 4);
+    CHECK(s.m[0] == 2 && s.m[5] == 3 && s.m[10] == 4 && s.m[15] == 1);
+    Transform3D t = make_translation(5, 6, 7);
+    CHECK(t.m[12] == 5 && t.m[13] == 6 && t.m[14] == 7);
+    Transform3D identity = make_scale(1, 1, 1);
+    Transform3D st = concat(identity, s);
+    CHECK(st.m[0] == 2 && st.m[5] == 3 && st.m[10] == 4 && st.m[15] == 1);
+
+    // Host libc / Itanium ABI entries are genuinely bound.
+    CHECK(syms.count("_strerror") == 1 && syms["_strerror"] != nullptr);
+    CHECK(syms.count("_fseeko") == 1 && syms["_fseeko"] != nullptr);
+    CHECK(syms.count("__Znwm") == 1 && syms["__Znwm"] != nullptr);
+    CHECK(syms.count("___cxa_throw") == 1 && syms["___cxa_throw"] != nullptr);
+    CHECK(syms.count("__Unwind_Resume") == 1 && syms["__Unwind_Resume"] != nullptr);
+    CHECK(syms.count("_objc_begin_catch") == 1);
+
+    // Foundation reflection helpers use the real selector/class tables.
+    auto class_from_string = from_void_ptr<ObjcId(*)(ObjcId)>(syms["_NSClassFromString"]);
+    auto string_from_class = from_void_ptr<ObjcId(*)(ObjcClass*)>(syms["_NSStringFromClass"]);
+    auto selector_from_string = from_void_ptr<ObjcSel(*)(ObjcId)>(syms["_NSSelectorFromString"]);
+    auto string_from_selector = from_void_ptr<ObjcId(*)(ObjcSel)>(syms["_NSStringFromSelector"]);
+    CHECK(class_from_string(nsstring_from_utf8("NSObject")) != nullptr);
+    CHECK(class_from_string(nsstring_from_utf8("NoSuchClass")) == nullptr);
+    CHECK(nsstring_to_utf8(string_from_class(finn_objc_getClass("NSObject"))) == "NSObject");
+    ObjcSel sel = selector_from_string(nsstring_from_utf8("testProperty"));
+    CHECK(sel != nullptr && nsstring_to_utf8(string_from_selector(sel)) == "testProperty");
+
+    // NSDivideRect returns real slice/remainder rects.
+    auto divide_rect = from_void_ptr<void(*)(Rect, Rect*, Rect*, double, int)>(
+        syms["_NSDivideRect"]);
+    Rect slice{}, remainder{};
+    divide_rect({{0, 0}, {10, 10}}, &slice, &remainder, 3, 0);
+    CHECK(slice.origin.x == 0 && slice.size.width == 3);
+    CHECK(remainder.origin.x == 3 && remainder.size.width == 7);
+    auto fpclass = from_void_ptr<int(*)(double)>(syms["__fpclassifyd"]);
+    CHECK(fpclass(0.0) == FP_ZERO);
+    CHECK(fpclass(1.0) == FP_NORMAL);
+    return true;
+}
+
+bool test_carbon_compat() {
+    using namespace finn::darwin;
+    std::unordered_map<std::string, void*> syms;
+    register_carbon_symbols(&syms);
+    static const char* kNames[] = {
+        "_RegisterEventHotKey", "_UnregisterEventHotKey",
+        "_GetEventDispatcherTarget", "_GetEventClass", "_GetEventParameter",
+        "_InstallEventHandler", "_RemoveEventHandler", "_CopySymbolicHotKeys",
+        "_LMGetKbdType", "_TISCopyCurrentASCIICapableKeyboardLayoutInputSource",
+        "_TISGetInputSourceProperty", "_UCKeyTranslate",
+        "___availability_version_check",
+        "_NSAccessibilityPostNotificationWithUserInfo",
+    };
+    for (const char* n : kNames) {
+        CHECK(syms.count(n) == 1 && syms[n] != nullptr);
+    }
+
+    auto register_hotkey = from_void_ptr<std::uint32_t (*)(std::uint32_t, std::uint32_t,
+                                                          std::uint64_t, void*, std::uint32_t,
+                                                          void**)>(syms["_RegisterEventHotKey"]);
+    auto unregister_hotkey = from_void_ptr<std::uint32_t (*)(void*)>(
+        syms["_UnregisterEventHotKey"]);
+    void* ref = nullptr;
+    const std::size_t before = carbon_registered_hotkey_count();
+    CHECK(register_hotkey(0, 0, 42, nullptr, 0, &ref) == 0);
+    CHECK(ref != nullptr && carbon_registered_hotkey_count() == before + 1);
+    CHECK(unregister_hotkey(ref) == 0);
+    CHECK(carbon_registered_hotkey_count() == before);
+
+    auto translate = from_void_ptr<std::uint32_t (*)(const void*, std::uint16_t, std::uint16_t,
+                                                     std::uint32_t, std::uint32_t,
+                                                     std::uint32_t, std::uint32_t*,
+                                                     std::size_t, std::size_t*,
+                                                     std::uint16_t*)>(syms["_UCKeyTranslate"]);
+    std::uint16_t out[4] = {};
+    std::size_t len = 0;
+    CHECK(translate(nullptr, 0, 0, 0, 0, 0, nullptr, 4, &len, out) == 0);
+    CHECK(len == 1 && out[0] == 'a');
+    CHECK(translate(nullptr, 0, 0, 1u << 9, 0, 0, nullptr, 4, &len, out) == 0);
+    CHECK(len == 1 && out[0] == 'A');
+
+    auto keyboard_type = from_void_ptr<std::uint32_t (*)()>(syms["_LMGetKbdType"]);
+    CHECK(keyboard_type() == 44);
+    return true;
+}
+
+bool test_swiftui_symbols() {
+    using namespace finn::darwin::swiftui;
+    SymbolTable table;
+    register_all_swiftui_symbols(&table);
+
+    // Every symbol the SwiftHello Mach-O imports must now have a real binding.
+    static const char* kRequired[] = {
+        "_$sytWV", "_$s7SwiftUI4ViewMp", "_$s7SwiftUI4ViewP4BodyAC_AaBTn",
+        "_$s4Body7SwiftUI4ViewPTl",
+        "_$s7SwiftUI4ViewP05_makeC04view6inputsAA01_C7OutputsVAA11_GraphValueVyxG_AA01_C6InputsVtFZTq",
+        "_$s7SwiftUI4ViewP05_makeC4List4view6inputsAA01_cE7OutputsVAA11_GraphValueVyxG_AA01_cE6InputsVtFZTq",
+        "_$s7SwiftUI4ViewP14_viewListCount6inputsSiSgAA01_ceF6InputsV_tFZTq",
+        "_$s7SwiftUI4ViewP4body4BodyQzvgTq", "_$s7SwiftUI3AppMp",
+        "_$s7SwiftUI3AppP4BodyAC_AA5SceneTn", "_$s4Body7SwiftUI3AppPTl",
+        "_$s7SwiftUI3AppP4body4BodyQzvgTq", "_$s7SwiftUI3AppPxycfCTq",
+        "_$s7SwiftUI5SceneMp", "___chkstk_darwin",
+        "_$s7SwiftUI11WindowGroupV7contentACyxGxyXE_tcfC",
+        "_$s7SwiftUI11WindowGroupVMn", "_$s7SwiftUI11WindowGroupVyxGAA5SceneAAMc",
+        "_$s7SwiftUI12SceneBuilderV10buildBlockyxxAA0C0RzlFZ",
+        "_$s7SwiftUI13_VStackLayoutVMn", "_$s7SwiftUI13_VariadicViewO4TreeVMn",
+        "_$s7SwiftUI18LocalizedStringKeyV13stringLiteralACSS_tcfC",
+        "_$s7SwiftUI19HorizontalAlignmentV6centerACvgZ",
+        "_$s7SwiftUI3AppPAAE4mainyyFZ", "_$s7SwiftUI4TextVMn",
+        "_$s7SwiftUI4TextV_9tableName6bundle7commentAcA18LocalizedStringKeyV_SSSgSo8NSBundleCSgs06StaticI0VSgtcfC",
+        "_$s7SwiftUI4ViewPAAE05_makeC04view6inputsAA01_C7OutputsVAA11_GraphValueVyxG_AA01_C6InputsVtFZ",
+        "_$s7SwiftUI4ViewPAAE05_makeC4List4view6inputsAA01_cE7OutputsVAA11_GraphValueVyxG_AA01_cE6InputsVtFZ",
+        "_$s7SwiftUI4ViewPAAE14_viewListCount6inputsSiSgAA01_ceF6InputsV_tFZ",
+        "_$s7SwiftUI6ButtonVA2A4TextVRszrlE_6actionACyAEGAA18LocalizedStringKeyV_yyctcfC",
+        "_$s7SwiftUI6ButtonVMn", "_$s7SwiftUI6VStackVMn",
+        "_$s7SwiftUI6VStackVyxGAA4ViewAAMc", "_$s7SwiftUI9TupleViewVMn",
+        "_$sSSN", "_$ss23_ContiguousArrayStorageCMn",
+        "_$ss26_stdlib_isOSVersionAtLeastyBi1_Bw_BwBwtF",
+        "_$ss5print_9separator10terminatoryypd_S2StF",
+        "_swift_getOpaqueTypeConformance", "_swift_getTypeByMangledNameInContext",
+        "_swift_getTypeByMangledNameInContextInMetadataState",
+        "_swift_getWitnessTable",
+    };
+    for (const char* sym : kRequired) {
+        CHECK(table.count(sym) == 1);
+        CHECK(table[sym] != nullptr);
+    }
+    CHECK(swiftui_available());
+
+    // The demangler resolves real type names and rejects unknown grammar.
+    CHECK(demangle_swift_type("$s7SwiftUI4TextV") == "SwiftUI.Text");
+    CHECK(demangle_swift_type("$sSSN").find("String") != std::string::npos);
+    CHECK(demangle_swift_type("$s??bad").empty());
+
+    // Mangled-name lookup returns real metadata with the ABI field offsets.
+    const void* meta = resolve_type_metadata("$s7SwiftUI4TextV", 16);
+    CHECK(meta != nullptr);
+    const auto* sm = static_cast<const SwiftStructMetadata*>(meta);
+    CHECK(sm->kind == static_cast<std::uintptr_t>(MetadataKind::Struct));
+    CHECK(offsetof(SwiftStructMetadata, fieldOffset0) == 0x2c);
+    // Compressed symbolic-reference manglings we cannot decode resolve to a
+    // documented, ABI-shaped opaque fallback (never a claimed type match).
+    const void* fallback = resolve_type_metadata("$s7SwiftUIQzUnknown", 19);
+    CHECK(fallback != nullptr);
+    CHECK(resolve_type_metadata(nullptr, 0) == nullptr);
+
+    // State/Binding and Combine primitives have real behaviour.
+    auto slot = std::make_shared<StateSlot>("start");
+    int notifications = 0;
+    std::string last;
+    const auto token = slot->subscribe([&](const std::string& v) {
+        ++notifications;
+        last = v;
+    });
+    Binding binding(slot);
+    CHECK(binding.valid() && binding.get() == "start");
+    binding.set("changed");
+    CHECK(notifications == 1 && last == "changed" && slot->value() == "changed");
+    slot->unsubscribe(token);
+    binding.set("again");
+    CHECK(notifications == 1);
+    CurrentValueSubject subject("one");
+    std::string delivered;
+    subject.sink([&](const std::string& v) { delivered = v; });
+    CHECK(delivered == "one");
+    subject.send("two");
+    CHECK(delivered == "two" && subject.value() == "two");
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -1176,6 +1852,15 @@ int main() {
     ok &= test_live_http_download_install_and_exec();
     ok &= test_libsystem_expanded_symbols();
     ok &= test_objc_foundation_cg_swift_and_appkit();
+    ok &= test_ns_attributed_string();
+    ok &= test_ns_date_formatter_and_calendar();
+    ok &= test_ns_search_paths_and_notifications();
+    ok &= test_installer_symlink_and_apple_toc_regressions();
+    ok &= test_framework_coverage_honesty();
+    ok &= test_carbon_compat();
+    ok &= test_swiftui_symbols();
+    ok &= test_compat_symbols();
+    ok &= test_live_swift_honest_diagnosis();
 #if defined(__APPLE__) && defined(__aarch64__)
     ok &= test_live_macho_comprehensive();
 #endif

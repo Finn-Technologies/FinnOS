@@ -4,16 +4,22 @@
 #ifndef FINN_SHELL_LAYOUT_HPP
 #define FINN_SHELL_LAYOUT_HPP
 
+#include <QByteArray>
 #include <QColor>
+#include <QDataStream>
 #include <QElapsedTimer>
 #include <QGuiApplication>
+#include <QHash>
+#include <QImage>
 #include <QPainter>
+#include <QPixmap>
 #include <QPen>
 #include <QRectF>
 #include <QScreen>
 #include <QSize>
 #include <QTimer>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <utility>
@@ -124,6 +130,120 @@ inline QColor shell_warning(const finn::ui::FinnTokens& t) {
 inline QColor shell_on_accent(const finn::ui::FinnTokens& t) {
     return token_color(t.dark ? finn::ui::colors::fill_dark
                               : finn::ui::colors::fill_light);
+}
+
+// Layer-surface elevation. Figma elevation level 4 is a (0, 4) shadow of
+// #000 at 5% alpha; the blur radius comes from the authoritative blur tokens
+// in ui/_tokens.fui (35 px for glass popovers, 15 px for notification cards).
+// The level is read from finn::ui::elevation so no shadow colour is invented
+// per call site.
+inline constexpr int kLayerShadowAlpha = 13;  // 5% of 255, the Figma 5% shadow.
+// The notification elevation's shadow blur is 25 px in the Figma elevation
+// spec (distinct from its 15 px backdrop-blur token).
+inline constexpr int kNotificationShadowBlur = 25;
+
+static_assert(finn::ui::elevation::elev_popover ==
+              finn::ui::elevation::elev_notification);
+
+constexpr int layer_shadow_pad(int blur) {
+    // ceil(0.4 * blur): one standard deviation carries the visible 5% tail;
+    // beyond that the blur is below one 8-bit alpha step.
+    return blur > 0 ? std::max(6, (blur * 2 + 4) / 5) : 0;
+}
+
+inline constexpr int kPopoverShadowPad =
+    layer_shadow_pad(finn::ui::blur::blur_glass);
+inline constexpr int kNotificationShadowPad =
+    layer_shadow_pad(kNotificationShadowBlur);
+
+// Separable box blur, three passes: a standard real-time approximation of a
+// Gaussian. Operates on the ARGB image in place, so it is a genuine blur of
+// the shadow mask rather than a drawn gradient.
+inline void box_blur_argb(QImage& img, int radius) {
+    if (radius <= 0) return;
+    const int w = img.width();
+    const int h = img.height();
+    QImage tmp(w, h, QImage::Format_ARGB32);
+    tmp.fill(Qt::transparent);
+
+    auto blur_h = [&](const QImage& src, QImage& dst) {
+        for (int y = 0; y < h; ++y) {
+            const QRgb* row = reinterpret_cast<const QRgb*>(src.constScanLine(y));
+            QRgb* out = reinterpret_cast<QRgb*>(dst.scanLine(y));
+            for (int x = 0; x < w; ++x) {
+                int a = 0, r = 0, g = 0, b = 0, n = 0;
+                for (int k = std::max(0, x - radius);
+                     k <= std::min(w - 1, x + radius); ++k) {
+                    const QRgb px = row[k];
+                    a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
+                    ++n;
+                }
+                out[x] = qRgba(r / n, g / n, b / n, a / n);
+            }
+        }
+    };
+    auto blur_v = [&](const QImage& src, QImage& dst) {
+        for (int x = 0; x < w; ++x) {
+            for (int y = 0; y < h; ++y) {
+                int a = 0, r = 0, g = 0, b = 0, n = 0;
+                for (int k = std::max(0, y - radius);
+                     k <= std::min(h - 1, y + radius); ++k) {
+                    const QRgb px = src.pixel(x, k);
+                    a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
+                    ++n;
+                }
+                dst.setPixel(x, y, qRgba(r / n, g / n, b / n, a / n));
+            }
+        }
+    };
+    blur_h(img, tmp);
+    blur_v(tmp, img);
+    blur_h(img, tmp);
+    blur_v(tmp, img);
+    blur_h(img, tmp);
+    blur_v(tmp, img);
+}
+
+inline QPixmap layer_shadow_pixmap(int w, int h, qreal corner, int blur) {
+    static QHash<QByteArray, QPixmap> cache;
+    const int pad = layer_shadow_pad(blur);
+    const int iw = w + 2 * pad;
+    const int ih = h + 2 * pad;
+    QByteArray key;
+    QDataStream stream(&key, QIODevice::WriteOnly);
+    stream << w << h << corner << blur;
+    if (cache.contains(key)) return cache.value(key);
+
+    QImage mask(iw, ih, QImage::Format_ARGB32);
+    mask.fill(Qt::transparent);
+    {
+        QPainter mp(&mask);
+        mp.setRenderHint(QPainter::Antialiasing, true);
+        mp.setPen(Qt::NoPen);
+        mp.setBrush(QColor(0, 0, 0, kLayerShadowAlpha));
+        mp.drawRoundedRect(QRectF(pad, pad, w, h), corner, corner);
+    }
+    // Three box passes at a third of the Figma radius approximate the
+    // Gaussian falloff of the elevation token.
+    box_blur_argb(mask, std::max(1, blur / 3));
+    QPixmap pm = QPixmap::fromImage(mask);
+    cache.insert(key, pm);
+    return pm;
+}
+
+// Draw the elevation shadow for a glass surface whose visible rounded rect is
+// `content` (in surface coordinates). The surface must reserve
+// layer_shadow_pad(blur) transparent pixels around content; callers size and
+// place their layer surface accordingly so Figma geometry is preserved.
+inline void paintLayerShadow(QPainter& p, const QRectF& content, qreal corner,
+                             int blur, int elevation) {
+    if (blur <= 0 || content.isEmpty()) return;
+    const int pad = layer_shadow_pad(blur);
+    const QPixmap pm = layer_shadow_pixmap(
+        static_cast<int>(std::ceil(content.width())),
+        static_cast<int>(std::ceil(content.height())), corner, blur);
+    // Elevation level 4 gives the Figma (0, 4) offset; x offset is zero.
+    p.drawPixmap(QPointF(content.x() - pad, content.y() - pad + elevation), pm);
 }
 
 inline void draw_focus_ring(QPainter& p,

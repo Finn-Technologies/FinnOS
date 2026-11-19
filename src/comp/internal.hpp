@@ -55,6 +55,17 @@ struct Server::ManagedWindow {
     wlr_xwayland_surface* xwayland_surface = nullptr;
     wlr_foreign_toplevel_handle_v1* foreign_handle = nullptr;
 
+    // An xdg_surface is not initialized until the client's first commit.
+    // wlroots asserts in wlr_xdg_surface_schedule_configure() if a configure
+    // (size, maximize, fullscreen) is requested before that point, which a
+    // client that asks for maximize on creation can trigger. Record such
+    // requests and replay them once the surface is ready; never call a
+    // configure helper on an uninitialized surface.
+    bool pending_xdg_configure = false;
+    int pending_xdg_width = 0;
+    int pending_xdg_height = 0;
+    bool pending_xdg_state = false;
+
     bool is_xwayland = false;
     bool override_redirect = false;
     bool mapped = false;
@@ -146,6 +157,8 @@ struct Server::ManagedWindow {
     void update_ssd_layout();
     void apply_ssd_theme(bool dark, bool focused);
     void update_size_from_surface();
+    bool xdg_ready() const;
+    void apply_pending_xdg_state();
     void configure_size(int client_w, int client_h);
     void set_position(int nx, int ny);
     void set_activated(bool active);

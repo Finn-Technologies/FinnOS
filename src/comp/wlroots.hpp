@@ -35,6 +35,7 @@ extern "C" {
 #include <wlr/backend/multi.h>
 #include <wlr/backend/session.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/pixman.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>

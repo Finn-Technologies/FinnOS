@@ -97,6 +97,10 @@ InstallResult install_from_url_or_path(const std::string& url_or_path,
                                        const std::string& apps_dir = {},
                                        const std::string& icons_dir = {});
 
+// Finds .app bundle directories under a tree. Does not follow symlinks, so a
+// self-referential link cannot abort or loop the scan. Callable by tests.
+std::vector<std::string> discover_app_bundles_in_tree(const std::string& root);
+
 // Scans installed macOS .app directories cleanly.
 std::vector<InstalledMacosApp> discover_installed_macos_apps(
     const std::string& apps_dir = {},

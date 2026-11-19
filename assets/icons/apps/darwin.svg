@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="darwin_bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8E9BAB"/>
+      <stop offset="100%" stop-color="#3B4757"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#darwin_bg)"/>
+  <path d="M16 7c-1.1 1.6-1.7 3.5-1.7 5.5 0 2.4.9 4 2.7 5.2 1.8 1.2 2.7 2.8 2.7 5.2 0 2-.6 3.9-1.7 5.5" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  <path d="M10.5 14.2c-1.4.1-2.6.9-3.4 2.1.9.9 2.1 1.4 3.4 1.4.5 0 1-.1 1.5-.2M21.5 14.2c1.4.1 2.6.9 3.4 2.1-.9.9-2.1 1.4-3.4 1.4-.5 0-1-.1-1.5-.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>
+  <circle cx="16" cy="12.5" r="1.2" fill="#fff"/>
+</svg>

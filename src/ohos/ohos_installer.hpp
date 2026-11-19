@@ -31,7 +31,8 @@ struct OhosDiagnosticReport {
     std::size_t abc_method_count = 0;
     std::vector<OhosNativeLibInfo> native_libs;
     std::vector<std::string> supported_kits;
-    std::vector<std::string> unsupported_kits;
+    std::vector<std::string> unsupported_kits;   // known missing hardware/proprietary kits
+    std::vector<std::string> unknown_kits;       // imports finn-ohos cannot classify
     std::vector<std::string> warnings;
     bool api_compatible = false;
     bool runnable = false;

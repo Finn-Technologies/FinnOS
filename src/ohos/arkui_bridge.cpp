@@ -10,6 +10,9 @@
 #include <sstream>
 
 #ifdef FINN_OHOS_QT6
+#include "compat/finn_qt_theme.hpp"
+#include "ui/finn/window.hpp"
+
 #include <QApplication>
 #include <QCheckBox>
 #include <QFont>
@@ -27,6 +30,7 @@
 #include <QScrollArea>
 #include <QSlider>
 #include <QStackedWidget>
+#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QWidget>
 #endif
@@ -129,6 +133,15 @@ void dump_tree_recursive(const ArkUiEngine& eng, const ArkUiNode& node, int dept
             out << node.selected_indices[i];
         }
         out << "]";
+    } else if (node.kind == ArkComponentKind::Image) {
+        const std::string resolved = eng.resolve_image_src(node);
+        if (!resolved.empty()) out << " src=\"" << resolved << "\"";
+        else out << " [Image missing: " << node.image_src << "]";
+    } else if (node.kind == ArkComponentKind::Tabs ||
+               node.kind == ArkComponentKind::Swiper) {
+        out << " pages=" << node.children.size();
+    } else if (node.kind == ArkComponentKind::RelativeContainer) {
+        out << " children=" << node.children.size();
     }
     if (!node.enabled) out << " [disabled]";
     out << "\n";
@@ -149,7 +162,7 @@ struct QtWidgetBinding {
 struct ArkUiEngine::QtState {
 #ifdef FINN_OHOS_QT6
     std::vector<QtWidgetBinding> bindings;
-    QMainWindow* window = nullptr;
+    finn::ui::FinnWindow* window = nullptr;
 #else
     int unused = 0;
 #endif
@@ -176,6 +189,10 @@ ArkComponentKind parse_ark_component_kind(std::string_view name) {
     if (name == "Divider") return ArkComponentKind::Divider;
     if (name == "Blank") return ArkComponentKind::Blank;
     if (name == "AlertDialog") return ArkComponentKind::AlertDialog;
+    if (name == "Tabs") return ArkComponentKind::Tabs;
+    if (name == "TabContent") return ArkComponentKind::TabContent;
+    if (name == "Swiper") return ArkComponentKind::Swiper;
+    if (name == "RelativeContainer") return ArkComponentKind::RelativeContainer;
     return ArkComponentKind::Custom;
 }
 
@@ -201,6 +218,10 @@ std::string ark_component_kind_name(ArkComponentKind kind) {
         case ArkComponentKind::Divider: return "Divider";
         case ArkComponentKind::Blank: return "Blank";
         case ArkComponentKind::AlertDialog: return "AlertDialog";
+        case ArkComponentKind::Tabs: return "Tabs";
+        case ArkComponentKind::TabContent: return "TabContent";
+        case ArkComponentKind::Swiper: return "Swiper";
+        case ArkComponentKind::RelativeContainer: return "RelativeContainer";
         case ArkComponentKind::Custom: break;
     }
     return "Custom";
@@ -236,7 +257,7 @@ void ArkUiEngine::set_title(const std::string& title) {
     title_ = title;
 #ifdef FINN_OHOS_QT6
     if (qt_ && qt_->window) {
-        qt_->window->setWindowTitle(QString::fromStdString(title_));
+        qt_->window->setWindowTitleText(QString::fromStdString(title_));
     }
 #endif
 }
@@ -319,6 +340,83 @@ std::string ArkUiEngine::resolve_text(const ArkUiNode& node) const {
         pos += val.size();
     }
     return s;
+}
+
+std::string ArkUiEngine::resolve_resource_path(const std::string& resource_id) const {
+    if (resource_id.empty() || resource_root_.empty()) return {};
+
+    enum class ResType { Media, Rawfile, Path } type = ResType::Path;
+    std::string name = resource_id;
+
+    if (resource_id.rfind("$media:", 0) == 0) {
+        type = ResType::Media;
+        name = resource_id.substr(7);
+    } else if (resource_id.rfind("$rawfile:", 0) == 0) {
+        type = ResType::Rawfile;
+        name = resource_id.substr(9);
+    } else if (resource_id.rfind("$r(", 0) == 0) {
+        // $r('app.media.icon') / $r("app.rawfile.data.txt")
+        const std::size_t q1 = resource_id.find_first_of("'\"");
+        const std::size_t q2 = (q1 == std::string::npos)
+                                   ? std::string::npos
+                                   : resource_id.find(resource_id[q1], q1 + 1);
+        std::string inner = (q1 != std::string::npos && q2 != std::string::npos)
+                                ? resource_id.substr(q1 + 1, q2 - q1 - 1)
+                                : resource_id.substr(3);
+        const std::size_t last_dot = inner.rfind('.');
+        const std::size_t prev_dot = (last_dot == std::string::npos)
+                                         ? std::string::npos
+                                         : inner.rfind('.', last_dot - 1);
+        if (last_dot != std::string::npos && prev_dot != std::string::npos) {
+            const std::string qualifier = inner.substr(prev_dot + 1, last_dot - prev_dot - 1);
+            name = inner.substr(last_dot + 1);
+            if (qualifier == "rawfile") type = ResType::Rawfile;
+            else if (qualifier == "media") type = ResType::Media;
+        } else {
+            name = inner;
+        }
+    }
+
+    if (name.empty()) return {};
+    const fs::path root(resource_root_);
+    std::error_code ec;
+
+    if (type == ResType::Path) {
+        const fs::path p = fs::path(name).is_absolute() ? fs::path(name) : (root / name);
+        return fs::is_regular_file(p, ec) ? p.string() : std::string();
+    }
+    if (type == ResType::Rawfile) {
+        const fs::path p = root / "resources" / "rawfile" / name;
+        return fs::is_regular_file(p, ec) ? p.string() : std::string();
+    }
+
+    // Media resources are referenced by stem, not by numeric resources.index id.
+    // Search every real resource qualifier directory, deterministically.
+    const fs::path res_root = root / "resources";
+    std::vector<fs::path> media_dirs;
+    if (fs::is_directory(res_root, ec)) {
+        for (fs::directory_iterator it(res_root, ec), end;
+             it != end && !ec; it.increment(ec)) {
+            const fs::path media = it->path() / "media";
+            std::error_code sub_ec;
+            if (fs::is_directory(media, sub_ec)) media_dirs.push_back(media);
+        }
+    }
+    std::sort(media_dirs.begin(), media_dirs.end());
+    for (const auto& dir : media_dirs) {
+        std::error_code walk_ec;
+        for (fs::directory_iterator it(dir, walk_ec), end;
+             it != end && !walk_ec; it.increment(walk_ec)) {
+            if (!fs::is_regular_file(it->path(), walk_ec)) continue;
+            if (it->path().stem() == name) return it->path().string();
+        }
+    }
+    return {};  // missing resource: report absent, never invent a path
+}
+
+std::string ArkUiEngine::resolve_image_src(const ArkUiNode& node) const {
+    if (node.kind != ArkComponentKind::Image || node.image_src.empty()) return {};
+    return resolve_resource_path(node.image_src);
 }
 
 void ArkUiEngine::apply_inline_state_action(std::string_view action) {
@@ -578,19 +676,18 @@ QWidget* build_qt_node(ArkUiEngine* engine,
         }
         case ArkComponentKind::Image: {
             auto* lbl = new QLabel(parent);
-            if (!node.image_src.empty()) {
-                fs::path img_path(node.image_src);
-                if (!img_path.is_absolute() && !engine->resource_root().empty()) {
-                    img_path = fs::path(engine->resource_root()) / img_path;
-                }
-                QPixmap px(QString::fromStdString(img_path.string()));
+            const std::string resolved = engine->resolve_image_src(node);
+            if (!resolved.empty()) {
+                QPixmap px(QString::fromStdString(resolved));
                 if (!px.isNull()) {
                     const int w = node.width > 0 ? static_cast<int>(node.width) : 64;
                     const int h = node.height > 0 ? static_cast<int>(node.height) : 64;
                     lbl->setPixmap(px.scaled(w, h, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                 } else {
-                    lbl->setText(QString::fromStdString("[Image missing: " + node.image_src + "]"));
+                    lbl->setText(QString::fromStdString("[Image decode failed: " + resolved + "]"));
                 }
+            } else if (!node.image_src.empty()) {
+                lbl->setText(QString::fromStdString("[Image missing: " + node.image_src + "]"));
             }
             return lbl;
         }
@@ -667,6 +764,42 @@ QWidget* build_qt_node(ArkUiEngine* engine,
             });
             return btn;
         }
+        case ArkComponentKind::Tabs: {
+            auto* tabs = new QTabWidget(parent);
+            for (const auto& ch : node.children) {
+                QWidget* page = build_qt_node(engine, bindings, ch, tabs);
+                const std::string label =
+                    ch.text.empty() ? ch.type_name : engine->resolve_text(ch);
+                tabs->addTab(page, QString::fromStdString(label));
+            }
+            return tabs;
+        }
+        case ArkComponentKind::TabContent: {
+            auto* w = new QWidget(parent);
+            auto* lay = new QVBoxLayout(w);
+            for (const auto& ch : node.children) {
+                lay->addWidget(build_qt_node(engine, bindings, ch, w));
+            }
+            return w;
+        }
+        case ArkComponentKind::Swiper: {
+            auto* pages = new QStackedWidget(parent);
+            for (const auto& ch : node.children) {
+                pages->addWidget(build_qt_node(engine, bindings, ch, pages));
+            }
+            return pages;
+        }
+        case ArkComponentKind::RelativeContainer: {
+            // ArkUI relative positioning needs constraints the clean-room Qt
+            // bridge does not evaluate; lay children out in declaration order
+            // rather than pretending to honour relative offsets.
+            auto* w = new QWidget(parent);
+            auto* lay = new QVBoxLayout(w);
+            for (const auto& ch : node.children) {
+                lay->addWidget(build_qt_node(engine, bindings, ch, w));
+            }
+            return w;
+        }
         case ArkComponentKind::ListItem:
         case ArkComponentKind::GridItem:
         case ArkComponentKind::Custom:
@@ -694,13 +827,16 @@ int ArkUiEngine::run_window(int argc, char** argv, bool headless) {
             qt_argv = fallback_argv;
         }
         QApplication app(qt_argc, qt_argv);
-        QMainWindow win;
-        win.setWindowTitle(QString::fromStdString(title_));
+        // Use the same application and window chrome as native FinnOS apps so
+        // an ArkUI guest does not look like a generic Qt program.
+        finn::compat::apply_finn_qt_theme(&app);
+        finn::ui::FinnWindow win(QString::fromStdString(title_),
+                                 QStringLiteral("ohos"));
         win.resize(520, 680);
         qt_->window = &win;
         qt_->bindings.clear();
         QWidget* central = build_qt_node(this, &qt_->bindings, root_, &win);
-        win.setCentralWidget(central);
+        win.setContentWidget(central);
         win.show();
         const int rc = app.exec();
         qt_->window = nullptr;

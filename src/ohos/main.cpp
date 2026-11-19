@@ -40,7 +40,7 @@ int cmd_status() {
         << (finn::ohos::ArkUiEngine::qt_backend_available()
                 ? "Qt6/Wayland widget bridge active (declarative ArkUI + @State + API 23 hooks)\n"
                 : "headless CLI build (Qt6/Wayland ArkUI bridge compiles when Qt6::Widgets is present)\n")
-        << "  kits:       @ohos.hilog, UIAbility, window, router, preferences, file.fs, deviceInfo\n"
+        << "  kits:       @ohos.hilog, UIAbility, window, router, preferences, file.fs, deviceInfo, util, bundleManager, app, curves, matrix4\n"
         << "  limits:     ArkWeb, DistributedDataObject, Telephony, NFC, Camera, Sensor, MapKit not bridged\n"
         << "  root_dir:   " << finn::ohos::default_ohos_root_dir() << "\n"
         << "  installed:  " << apps.size() << " OpenHarmony app(s)\n";
@@ -113,8 +113,12 @@ int cmd_diagnose(const std::string& target) {
         for (const auto& k : d.supported_kits) std::cout << "  + " << k << "\n";
     }
     if (!d.unsupported_kits.empty()) {
-        std::cout << "Unsupported kits:" << " " << d.unsupported_kits.size() << "\n";
+        std::cout << "Missing hardware/proprietary kits: " << d.unsupported_kits.size() << "\n";
         for (const auto& k : d.unsupported_kits) std::cout << "  ! " << k << "\n";
+    }
+    if (!d.unknown_kits.empty()) {
+        std::cout << "Unknown kit imports: " << d.unknown_kits.size() << "\n";
+        for (const auto& k : d.unknown_kits) std::cout << "  ? " << k << "\n";
     }
     for (const auto& w : d.warnings) {
         std::cout << "Warning:         " << w << "\n";

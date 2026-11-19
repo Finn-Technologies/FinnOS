@@ -13,10 +13,10 @@ GEN_HDRS = build/xdg-shell-protocol.h \
            build/wlr-layer-shell-unstable-v1-protocol.h \
            build/cursor-shape-v1-protocol.h
 
-CXX_SRCS = main.cpp server.cpp window.cpp layer.cpp
+CXX_SRCS = main.cpp server.cpp window.cpp layer.cpp backdrop_blur.cpp
 C_SRCS   = xwayland_shim.c
 OBJS     = $(CXX_SRCS:.cpp=.o) $(C_SRCS:.c=.o)
-HDRS     = server.hpp internal.hpp wlroots.hpp ../common/paths.hpp $(GEN_HDRS)
+HDRS     = server.hpp internal.hpp wlroots.hpp backdrop_blur.hpp ../common/paths.hpp $(GEN_HDRS)
 BIN      = finn-comp
 
 all: $(BIN)

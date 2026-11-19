@@ -46,6 +46,7 @@ enum class MacosInstallerKind {
     Unknown,
     Dmg,  // Apple UDIF disk image (.dmg)
     Pkg,  // macOS XAR installer package (.pkg / .mpkg)
+    Zip,  // ZIP archive holding a .app bundle (.zip)
 };
 
 struct MacosInstallerInfo {
@@ -102,13 +103,14 @@ MacosAppInfo parse_macos_info_plist(std::string_view xml_content,
                                     const std::string& bundle_path = {});
 MacosAppInfo inspect_macos_app_bundle(const std::string& app_bundle_path);
 
-// Inspects a .dmg (UDIF koly trailer) or .pkg (xar! header) installer file.
+// Inspects a .dmg (UDIF koly trailer), .pkg (xar! header), or .zip (PK magic)
+// installer file.
 MacosInstallerInfo inspect_macos_installer(const std::string& path);
 
 // Probes host for macOS runtimes (reef, darling) and .dmg/.pkg extractors.
 MacosRuntimeStatus probe_macos_runtime();
 
-// Builds an extraction command for .dmg or .pkg into dest_dir when tools exist.
+// Builds an extraction command for .dmg, .pkg, or .zip into dest_dir when tools exist.
 MacosCommandPlan build_macos_extract_plan(const std::string& installer_path,
                                           const std::string& dest_dir);
 

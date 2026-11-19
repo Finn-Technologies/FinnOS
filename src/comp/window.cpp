@@ -209,6 +209,24 @@ void Server::ManagedWindow::update_size_from_surface() {
     update_ssd_layout();
 }
 
+bool Server::ManagedWindow::xdg_ready() const {
+    return !is_xwayland && xdg_toplevel && xdg_toplevel->base &&
+           xdg_toplevel->base->initialized;
+}
+
+void Server::ManagedWindow::apply_pending_xdg_state() {
+    if (!xdg_ready()) return;
+    if (pending_xdg_configure) {
+        pending_xdg_configure = false;
+        wlr_xdg_toplevel_set_size(xdg_toplevel, pending_xdg_width, pending_xdg_height);
+    }
+    if (pending_xdg_state) {
+        pending_xdg_state = false;
+        wlr_xdg_toplevel_set_maximized(xdg_toplevel, maximized);
+        wlr_xdg_toplevel_set_fullscreen(xdg_toplevel, fullscreen);
+    }
+}
+
 void Server::ManagedWindow::configure_size(int client_w, int client_h) {
     client_w = std::max(client_w, 160);
     client_h = std::max(client_h, 80);
@@ -220,7 +238,14 @@ void Server::ManagedWindow::configure_size(int client_w, int client_h) {
                 static_cast<uint16_t>(client_w), static_cast<uint16_t>(client_h));
         }
     } else if (xdg_toplevel) {
-        wlr_xdg_toplevel_set_size(xdg_toplevel, client_w, client_h);
+        if (xdg_ready()) {
+            wlr_xdg_toplevel_set_size(xdg_toplevel, client_w, client_h);
+        } else {
+            // Defer instead of asserting on the not-yet-initialized surface.
+            pending_xdg_configure = true;
+            pending_xdg_width = client_w;
+            pending_xdg_height = client_h;
+        }
     }
     width = client_w;
     height = client_h;
@@ -432,7 +457,11 @@ void Server::ManagedWindow::set_maximized(bool on) {
     if (is_xwayland && xwayland_surface) {
         wlr_xwayland_surface_set_maximized(xwayland_surface, maximized, maximized);
     } else if (xdg_toplevel) {
-        wlr_xdg_toplevel_set_maximized(xdg_toplevel, maximized);
+        if (xdg_ready()) {
+            wlr_xdg_toplevel_set_maximized(xdg_toplevel, maximized);
+        } else {
+            pending_xdg_state = true;
+        }
     }
     sync_foreign_state();
     server->process_cursor_motion(Server::monotonic_msec());
@@ -481,7 +510,11 @@ void Server::ManagedWindow::set_fullscreen(bool on) {
     if (is_xwayland && xwayland_surface) {
         wlr_xwayland_surface_set_fullscreen(xwayland_surface, fullscreen);
     } else if (xdg_toplevel) {
-        wlr_xdg_toplevel_set_fullscreen(xdg_toplevel, fullscreen);
+        if (xdg_ready()) {
+            wlr_xdg_toplevel_set_fullscreen(xdg_toplevel, fullscreen);
+        } else {
+            pending_xdg_state = true;
+        }
     }
     sync_foreign_state();
     if (server) server->process_cursor_motion(Server::monotonic_msec());
@@ -549,7 +582,13 @@ void Server::ManagedWindow::snap_half(bool left) {
         start_spring_animation(old_x, old_y, cur_opacity, 1.0,
                                finn::ui::springs::kSmooth, false);
     }
-    if (!is_xwayland && xdg_toplevel) wlr_xdg_toplevel_set_maximized(xdg_toplevel, false);
+    if (!is_xwayland && xdg_toplevel) {
+        if (xdg_ready()) {
+            wlr_xdg_toplevel_set_maximized(xdg_toplevel, false);
+        } else {
+            pending_xdg_state = true;
+        }
+    }
     sync_foreign_state();
 }
 

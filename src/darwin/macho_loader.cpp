@@ -1,6 +1,10 @@
 #include "darwin/macho_loader.hpp"
 
+#include "darwin/framework_coverage.hpp"
+
 #include "darwin/appkit_bridge.hpp"
+#include "darwin/carbon_compat.hpp"
+#include "darwin/compat_symbols.hpp"
 #include "darwin/coregraphics.hpp"
 #include "darwin/foundation.hpp"
 #include "darwin/libsystem.hpp"
@@ -8,6 +12,7 @@
 #include "darwin/objc_runtime.hpp"
 #include "darwin/plist.hpp"
 #include "darwin/swift_runtime.hpp"
+#include "darwin/swiftui/contract.hpp"
 
 #include <sys/mman.h>
 #include <sys/utsname.h>
@@ -25,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -503,6 +509,91 @@ void parse_exports_trie_node(const std::uint8_t* base, const std::uint8_t* end,
     }
 }
 
+// A real .app loads its bundled @rpath dylibs before binding main's imports.
+// diagnose must look at the same closure, or it reports symbols as missing that
+// load_and_run actually resolves from MASShortcut.framework, Sparkle, etc.
+struct BundledClosure {
+    std::unordered_set<std::string> exports;
+    std::vector<std::string> imports;       // strong imports
+    std::vector<std::string> weak_imports;  // weak imports may stay unresolved
+};
+
+void collect_bundled_closure(const std::string& path, std::set<std::string>* visited,
+                             BundledClosure* out) {
+    std::error_code ec;
+    const std::string abs = fs::absolute(fs::path(path), ec).string();
+    if (!visited->insert(abs).second) return;
+
+    std::vector<std::uint8_t> file;
+    std::string error;
+    if (!read_file_bytes(abs, &file, &error)) return;
+    SliceSpan span{};
+    if (!select_macho_slice(file, nullptr, &span, &error)) return;
+    const std::uint8_t* slice = file.data() + span.offset;
+    ParsedMacho parsed;
+    if (!parse_macho_slice(slice, span.size, &parsed, &error)) return;
+
+    if (parsed.has_exports_trie &&
+        parsed.exports_trie.dataoff + parsed.exports_trie.datasize <= span.size) {
+        const std::uint8_t* eb = slice + parsed.exports_trie.dataoff;
+        std::unordered_map<std::string, void*> ex;
+        parse_exports_trie_node(eb, eb + parsed.exports_trie.datasize, eb, "", 0, &ex);
+        for (const auto& kv : ex) out->exports.insert(kv.first);
+    } else if (parsed.has_dyld_info && parsed.dyld_info.export_size > 0 &&
+               parsed.dyld_info.export_off + parsed.dyld_info.export_size <= span.size) {
+        const std::uint8_t* eb = slice + parsed.dyld_info.export_off;
+        std::unordered_map<std::string, void*> ex;
+        parse_exports_trie_node(eb, eb + parsed.dyld_info.export_size, eb, "", 0, &ex);
+        for (const auto& kv : ex) out->exports.insert(kv.first);
+    }
+
+    if (parsed.has_chained_fixups) {
+        std::vector<ChainedImportEntry> cimps;
+        parse_chained_imports(slice, span.size, parsed.chained_fixups, &cimps);
+        for (const auto& ci : cimps) {
+            if (ci.name.empty()) continue;
+            if (ci.weak) out->weak_imports.push_back(ci.name);
+            else out->imports.push_back(ci.name);
+        }
+    }
+    if (parsed.has_dyld_info) {
+        collect_classic_bind_symbols(slice, span.size, parsed.dyld_info.bind_off,
+                                     parsed.dyld_info.bind_size, &out->imports);
+        collect_classic_bind_symbols(slice, span.size, parsed.dyld_info.lazy_bind_off,
+                                     parsed.dyld_info.lazy_bind_size, &out->imports);
+    }
+
+    const std::string main_dir = fs::path(abs).parent_path().string();
+    for (const auto& lib : parsed.dylibs) {
+        if (is_builtin_darwin_library(lib)) continue;
+        std::string resolved;
+        if (lib.rfind("@executable_path/", 0) == 0) {
+            resolved = (fs::path(main_dir) / lib.substr(17)).string();
+        } else if (lib.rfind("@loader_path/", 0) == 0) {
+            resolved = (fs::path(main_dir) / lib.substr(13)).string();
+        } else if (lib.rfind("@rpath/", 0) == 0) {
+            for (const auto& rp : parsed.rpaths) {
+                std::string base = rp;
+                if (base.rfind("@executable_path", 0) == 0) base = main_dir + base.substr(16);
+                else if (base.rfind("@loader_path", 0) == 0) base = main_dir + base.substr(12);
+                const std::string candidate = (fs::path(base) / lib.substr(7)).string();
+                if (fs::is_regular_file(candidate, ec)) {
+                    resolved = candidate;
+                    break;
+                }
+            }
+        }
+        if (!resolved.empty() && fs::is_regular_file(resolved, ec)) {
+            collect_bundled_closure(resolved, visited, out);
+        }
+    }
+}
+
+std::vector<LoadedMachoImage*>& loaded_images() {
+    static std::vector<LoadedMachoImage*> images;
+    return images;
+}
+
 void shim_missing_symbol_trap() {
     std::fprintf(stderr, "finn-darwin: called an unimplemented macOS symbol (aborting cleanly)\n");
     std::exit(78);
@@ -532,6 +623,16 @@ void MachoLoader::unmap_all() {
         delete img;
     }
     images_.clear();
+    loaded_images().clear();
+}
+
+void* find_loaded_symbol_containing(const std::string& substring) {
+    for (const LoadedMachoImage* img : loaded_images()) {
+        for (const auto& entry : img->symbols) {
+            if (entry.first.find(substring) != std::string::npos) return entry.second;
+        }
+    }
+    return nullptr;
 }
 
 std::string MachoLoader::resolve_target_binary(const std::string& path,
@@ -587,12 +688,16 @@ void MachoLoader::initialize_runtime(int argc, char** argv, const std::string& t
         init_foundation(bundle_root);
         init_coregraphics();
         init_appkit(argc, argv);
+        register_carbon_classes();
         register_libsystem_symbols(&symbols_);
         register_objc_symbols(&symbols_);
         register_foundation_symbols(&symbols_);
         register_coregraphics_symbols(&symbols_);
         register_appkit_symbols(&symbols_);
         register_swift_runtime_symbols(&symbols_);
+        register_compat_symbols(&symbols_);
+        register_carbon_symbols(&symbols_);
+        finn::darwin::swiftui::register_all_swiftui_symbols(&symbols_);
         runtime_initialized_ = true;
     } else {
         init_foundation(bundle_root);
@@ -674,12 +779,15 @@ MachoDiagnosis MachoLoader::diagnose(const std::string& binary_or_app_path) {
 
     // Collect all imported symbols from chained fixups and/or classic dyld info
     std::vector<std::string> raw_imports;
+    std::set<std::string> weak_imports;
     if (parsed.has_chained_fixups) {
         std::vector<ChainedImportEntry> cimps;
         parse_chained_imports(file.data() + slice.offset, slice.size,
                               parsed.chained_fixups, &cimps);
         for (const auto& ci : cimps) {
-            if (!ci.name.empty()) raw_imports.push_back(ci.name);
+            if (ci.name.empty()) continue;
+            if (ci.weak) weak_imports.insert(ci.name);
+            else raw_imports.push_back(ci.name);
         }
     }
     if (parsed.has_dyld_info) {
@@ -689,13 +797,64 @@ MachoDiagnosis MachoLoader::diagnose(const std::string& binary_or_app_path) {
         collect_classic_bind_symbols(file.data() + slice.offset, slice.size,
                                      parsed.dyld_info.lazy_bind_off, parsed.dyld_info.lazy_bind_size,
                                      &raw_imports);
+        std::vector<std::string> weak_binds;
+        collect_classic_bind_symbols(file.data() + slice.offset, slice.size,
+                                     parsed.dyld_info.weak_bind_off, parsed.dyld_info.weak_bind_size,
+                                     &weak_binds);
+        weak_imports.insert(weak_binds.begin(), weak_binds.end());
     }
+
+    // Include the imports of bundled dylibs and treat their exports as
+    // resolvable, exactly as load_and_run does when it maps those frameworks.
+    std::set<std::string> visited;
+    BundledClosure bundled;
+    collect_bundled_closure(bin, &visited, &bundled);
+    raw_imports.insert(raw_imports.end(), bundled.imports.begin(), bundled.imports.end());
+    weak_imports.insert(bundled.weak_imports.begin(), bundled.weak_imports.end());
 
     std::set<std::string> seen;
     for (const auto& sym : raw_imports) {
         if (!seen.insert(sym).second) continue;
         diag.imported_symbols.push_back(sym);
+        if (bundled.exports.count(sym) != 0) continue;
         (void)lookup_symbol(sym, false, &diag.missing_symbols);
+    }
+    for (const auto& sym : weak_imports) {
+        if (!seen.insert(sym).second) continue;
+        diag.imported_symbols.push_back(sym);
+        // A weak import is allowed to stay unresolved; load_image binds it to
+        // null without recording a failure, so diagnose must do the same.
+    }
+
+    // Explain every gap we can name. A framework may link cleanly as a dylib
+    // name yet still be unimplemented — report it by name rather than silently
+    // binding its imports to the missing-symbol trap.
+    for (const auto& lib : parsed.dylibs) {
+        const std::string short_name = framework_short_name(lib);
+        const std::string why = framework_reason(short_name);
+        if (why.empty()) continue;
+        const auto it = std::find_if(diag.framework_gaps.begin(), diag.framework_gaps.end(),
+                                     [&](const MachoDiagnosis::Gap& g) { return g.name == short_name; });
+        // A direct LC_LOAD_DYLIB of an unimplemented framework counts as linked.
+        if (it == diag.framework_gaps.end()) {
+            diag.framework_gaps.push_back({short_name, why});
+            diag.framework_gaps.back().linked = true;
+        } else {
+            it->linked = true;
+        }
+    }
+    for (const auto& name : diag.missing_frameworks) {
+        const std::string why = framework_reason(name);
+        if (why.empty()) continue;
+        const auto it = std::find_if(diag.framework_gaps.begin(), diag.framework_gaps.end(),
+                                     [&](const MachoDiagnosis::Gap& g) { return g.name == name; });
+        if (it == diag.framework_gaps.end()) diag.framework_gaps.push_back({name, why});
+        else it->linked = true;
+    }
+    for (const auto& sym : diag.missing_symbols) {
+        const std::string why = symbol_reason(sym);
+        if (why.empty()) continue;
+        diag.symbol_gaps.push_back({sym, why});
     }
 
     diag.runnable = diag.arch_compatible && diag.missing_symbols.empty();
@@ -711,6 +870,14 @@ MachoDiagnosis MachoLoader::diagnose(const std::string& binary_or_app_path) {
                        " macOS symbol(s) across " +
                        std::to_string(std::max<std::size_t>(1, diag.missing_frameworks.size())) +
                        " unimplemented framework(s) — cannot run cleanly yet.";
+        if (!diag.framework_gaps.empty()) {
+            diag.summary += " Linked but not implemented:";
+            for (const auto& g : diag.framework_gaps) {
+                if (g.linked) diag.summary += " " + g.name + ",";
+            }
+            if (!diag.summary.empty() && diag.summary.back() == ',') diag.summary.pop_back();
+            diag.summary += ".";
+        }
     }
     return diag;
 }
@@ -1137,13 +1304,16 @@ bool MachoLoader::load_image(const std::string& path, bool is_main,
 
     if (!missing_syms.empty() && !allow_missing_symbols) {
         if (error) {
-            *error = "unresolved macOS symbols (" + std::to_string(missing_syms.size()) + "): ";
-            const std::size_t show = std::min<std::size_t>(missing_syms.size(), 6);
-            for (std::size_t i = 0; i < show; ++i) {
+            // Name every unresolved import. A six-symbol sample hid the real
+            // ABI gap and made the diagnosis different from `diagnose`.
+            *error = "cannot launch: unresolved macOS symbols (" +
+                     std::to_string(missing_syms.size()) + "): ";
+            for (std::size_t i = 0; i < missing_syms.size(); ++i) {
                 if (i > 0) *error += ", ";
                 *error += missing_syms[i];
+                const std::string why = symbol_reason(missing_syms[i]);
+                if (!why.empty()) *error += " [" + why + "]";
             }
-            if (missing_syms.size() > show) *error += ", ...";
         }
         ::munmap(img->map_base, img->map_size);
         delete img;
@@ -1213,7 +1383,27 @@ bool MachoLoader::load_image(const std::string& path, bool is_main,
 #endif
     }
 
+    // Index the full symbol table so compat runtimes can locate compiler-
+    // generated entry points (Swift `body` getters) by mangled-name fragment.
+    if (parsed.has_symtab && parsed.symtab.nsyms > 0 &&
+        parsed.symtab.symoff + static_cast<std::uint64_t>(parsed.symtab.nsyms) * sizeof(Nlist64) <=
+            slice_size &&
+        parsed.symtab.stroff + parsed.symtab.strsize <= slice_size) {
+        const auto* nlist = reinterpret_cast<const Nlist64*>(slice + parsed.symtab.symoff);
+        const char* strtab = reinterpret_cast<const char*>(slice + parsed.symtab.stroff);
+        for (std::uint32_t i = 0; i < parsed.symtab.nsyms; ++i) {
+            if (nlist[i].n_strx >= parsed.symtab.strsize) continue;
+            const char* name = strtab + nlist[i].n_strx;
+            if (!*name) continue;
+            const std::uint64_t value = nlist[i].n_value;
+            if (value >= min_vm && value < max_vm) {
+                img->symbols[name] = img->map_base + (value - min_vm);
+            }
+        }
+    }
+
     images_.push_back(img);
+    loaded_images().push_back(img);
     if (out_img) *out_img = img;
     return true;
 }

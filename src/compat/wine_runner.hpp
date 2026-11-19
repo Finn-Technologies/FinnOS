@@ -59,6 +59,19 @@ struct WineLaunchPlan {
     std::vector<std::pair<std::string, std::string>> env;
     bool ok = false;
     std::string error;
+    // Honest notes about the plan: DLL override notes, prefix state and
+    // failure reasons. Empty when nothing needs reporting.
+    std::vector<std::string> diagnostics;
+};
+
+// DLL overrides derived from the runtime probe and the target PE info. Rules
+// follow finn-win's conventions: DXVK present -> "d3d11=n,b"/"dxgi=n,b";
+// VKD3D present -> "d3d12=n,b"/"d3d12core=n,b"; deliberately disabled Mono ->
+// "mscoree,mshtml=". Diagnostics report what is absent honestly; they never
+// claim support that is not installed.
+struct WineDllOverridePlan {
+    std::vector<std::string> overrides;   // e.g. "d3d11=n,b"
+    std::vector<std::string> diagnostics; // honest notes
 };
 
 // Safely parses a PE/PE32+ header from memory or file path.
@@ -74,6 +87,15 @@ WineLaunchPlan build_wine_launch(const std::string& exe_path,
                                  const std::vector<std::string>& extra_args = {},
                                  const std::string& prefix = {},
                                  const std::string& xdisplay = {});
+
+WineDllOverridePlan build_wine_dll_override_plan(const WineRuntimeStatus& runtime,
+                                                 const PeInfo& target,
+                                                 bool mono_present = false,
+                                                 bool mono_disabled = false);
+
+// Read-only report on the target: PE facts, runtime probe, DLL override plan
+// and per-app prefix state. Creates or modifies nothing.
+std::string diagnose_wine_target(const std::string& exe_path);
 
 // Loads and saves user-registered Windows apps in windows.conf (tab/pipe clean format).
 std::vector<WindowsAppEntry> load_windows_apps(const std::string& conf_path);

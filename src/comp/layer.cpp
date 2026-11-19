@@ -1,4 +1,5 @@
 #include "comp/internal.hpp"
+#include "comp/backdrop_blur.hpp"
 
 #include <algorithm>
 #include <array>
@@ -130,6 +131,9 @@ void Server::on_new_layer_surface(wl_listener* listener, void* data) {
     l->current_layer = layer_idx;
     l->scene_layer = wlr_scene_layer_surface_v1_create(
         server->layer_trees_[layer_idx], layer_surface);
+    // Glass layer surfaces are picked up by the CPU backdrop blur pass in
+    // backdrop_blur.cpp; radii are authoritative in backdrop_blur.hpp.
+    comp::backdrop_blur::report_once();
     layer_surface->data = l;
     server->layers_.push_back(std::move(node));
 

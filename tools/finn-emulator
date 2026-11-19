@@ -1,0 +1,841 @@
+#!/usr/bin/env bash
+# tools/finn-emulator — honest emulator/simulator backend probe for FinnOS.
+#
+# This tool NEVER claims a capability it cannot exercise. It reports which
+# emulator backends (Lima, QEMU, headless finn-comp, Qt offscreen) are actually
+# present on this host, prints the exact commands each one supports, and runs a
+# FinnSDK app against the offscreen Qt platform when the toolchain is present.
+#
+# What it cannot emulate, on any host (reported by `help`, `check`, `validate`
+# and `report`):
+#   - ARM64 macOS binaries / Metal / SwiftUI (no Apple SDK or frameworks);
+#   - modem, telephony, SIM, SMS (no ModemManager/ofono stack in v1);
+#   - touch gestures, pinch, virtual keyboard (no zwp_text_input_v3);
+#   - real DRM GPU frame pacing, multi-monitor, Secure Boot / dm-verity / TPM2.
+#
+# It is a dev/probe tool shipped alongside finn-sdk and finn-win in
+# $(PREFIX)/bin/finn-emulator (see the Makefile `install` target). It does not
+# run as part of the FinnOS session, and it never modifies the running VM or
+# any system state beyond launching the app you pass to `simulate`.
+#
+# `report` emits a stable machine-readable JSON capability report; `selftest`
+# re-checks every claim this script makes against the current host.
+set -uo pipefail
+
+PROG="finn-emulator"
+VERSION="1.1.0"
+REPORT_SCHEMA_VERSION=1
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JSON=0
+
+HOST_OS="$(uname -s 2>/dev/null || echo unknown)"
+HOST_ARCH_RAW="$(uname -m 2>/dev/null || echo unknown)"
+case "$HOST_ARCH_RAW" in
+    x86_64|amd64) HOST_ARCH="x86_64" ;;
+    aarch64|arm64) HOST_ARCH="aarch64" ;;
+    *) HOST_ARCH="$HOST_ARCH_RAW" ;;
+esac
+
+CANNOT_LIST=(
+    "ARM64 macOS apps, Metal GPU shaders, SwiftUI (no Apple SDK/frameworks)"
+    "modem / telephony / SIM / SMS (no ModemManager or ofono in v1)"
+    "touch gestures, pinch/zoom, virtual keyboard (no zwp_text_input_v3)"
+    "real DRM GPU frame pacing and multi-monitor layout"
+    "Secure Boot, dm-verity and TPM2 verified boot"
+)
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | tr '\n' ' '
+}
+
+# Records for `check`: name|status|detail. Status: ok|partial|missing.
+RECORDS=()
+record() { RECORDS+=("$1|$2|$3"); }
+
+probe_tools() {
+    RECORDS=()
+    record "host" "ok" "${HOST_OS} ${HOST_ARCH} (raw: ${HOST_ARCH_RAW})"
+
+    if have limactl; then
+        if limactl list 2>/dev/null | grep -qE '(^|[[:space:]])finnos([[:space:]]|$)'; then
+            record "lima (finnos instance)" "ok" "limactl present; 'finnos' instance listed (aarch64 dev VM)"
+        else
+            record "lima (finnos instance)" "partial" "limactl present; no 'finnos' instance — run vm/lima-setup.sh"
+        fi
+    else
+        record "lima / limactl" "missing" "no aarch64 dev VM; install lima and run vm/lima-setup.sh"
+    fi
+
+    if have qemu-system-x86_64; then
+        if [ -r /dev/kvm ]; then
+            record "qemu-system-x86_64" "ok" "present; /dev/kvm available (accelerated x86_64 guest)"
+        else
+            record "qemu-system-x86_64" "partial" "present; no /dev/kvm (TCG emulation, slow)"
+        fi
+    else
+        record "qemu-system-x86_64" "missing" "x86_64 ISO boot backend absent"
+    fi
+
+    if have qemu-system-aarch64; then
+        record "qemu-system-aarch64" "ok" "present; aarch64 guest possible (no aarch64 ISO is built in CI)"
+    else
+        record "qemu-system-aarch64" "missing" "no aarch64 system emulator"
+    fi
+
+    if have qemu-aarch64-static || have qemu-aarch64; then
+        record "qemu user-mode (aarch64)" "ok" "present; runs aarch64 userland only, not a kernel or compositor"
+    else
+        record "qemu user-mode (aarch64)" "missing" "aarch64 userland emulation absent"
+    fi
+
+    if have finn-comp; then
+        record "finn-comp (headless compositor)" "ok" "present; WLR_BACKENDS=headless can composite apps without DRM"
+    else
+        record "finn-comp (headless compositor)" "missing" "install FinnOS runtime for headless compositor simulation"
+    fi
+
+    local sdk=""
+    if have finn-sdk; then
+        sdk="$(command -v finn-sdk)"
+    elif [ -x "$ROOT/tools/finn-sdk" ]; then
+        sdk="$ROOT/tools/finn-sdk"
+    fi
+    if [ -n "$sdk" ]; then
+        record "finn-sdk (app simulator helper)" "ok" "$sdk"
+    else
+        record "finn-sdk (app simulator helper)" "missing" "tools/finn-sdk not found or not executable"
+    fi
+
+    local qmake=""
+    if have qmake6; then qmake="$(command -v qmake6)"; elif have qmake; then qmake="$(command -v qmake)"; fi
+    if [ -n "$qmake" ]; then
+        local plugdir
+        plugdir="$($qmake -query QT_INSTALL_PLUGINS 2>/dev/null || true)"
+        if [ -n "$plugdir" ] && [ -f "$plugdir/platforms/libqoffscreen.so" ]; then
+            record "Qt6 offscreen platform plugin" "ok" "$plugdir/platforms/libqoffscreen.so"
+        else
+            record "Qt6 offscreen platform plugin" "missing" "no libqoffscreen.so under ${plugdir:-<qmake did not report a plugin dir>}"
+        fi
+    else
+        record "Qt6 offscreen platform plugin" "partial" "qmake unavailable to probe; qt6-base normally ships libqoffscreen.so"
+    fi
+
+    for tool in zstd openssl cmake ninja; do
+        if have "$tool"; then
+            record "$tool" "ok" "$(command -v "$tool")"
+        else
+            record "$tool" "missing" "required for packaging/OTA verification paths"
+        fi
+    done
+}
+
+print_cannot() {
+    printf '%s\n' "Cannot emulate here (honest limits, independent of installed tools):"
+    local item
+    for item in "${CANNOT_LIST[@]}"; do
+        printf '  - %s\n' "$item"
+    done
+}
+
+help() {
+    cat <<EOF
+${PROG} ${VERSION} — probe real FinnOS emulator / simulator backends and report honest limits
+
+Usage:
+  ${PROG} [--json] <command> [options]
+
+Commands:
+  help                       Show this help.
+  check                      Probe this host for Lima, QEMU, headless finn-comp,
+                             Qt6 offscreen, and packaging tools; print what is
+                             present, partial, or missing.
+  backends                   Print the backend capability matrix: which guest
+                             each backend can actually run, and what it cannot.
+  validate                   Check the host against the documented capability
+                             claims. Exit 0 only if at least one real backend
+                             can run a FinnOS guest or a FinnSDK app.
+  report                     Write a machine-readable JSON capability report to
+                             stdout (schema_version ${REPORT_SCHEMA_VERSION}). Exit 0 when
+                             a real backend is usable, 1 when none is. JSON is
+                             emitted regardless of --json.
+  selftest                   Verify this script's own claims against the current
+                             host: probe statuses, matrix rows, exit codes and
+                             report JSON. Exit 0 only if no claim is false.
+  boot --arch x86_64|aarch64 [--iso PATH]
+                             Print the exact command to boot a FinnOS ISO with
+                             the detected backend. Refuses (exit 1) when no
+                             suitable backend exists — never prints a fake
+                             success. The aarch64 ISO is not built by CI.
+  simulate --app DIR [--form-factor phone|tablet|desktop]
+           [--headless] [--dry-run] [-- APP_ARGS...]
+                             Build a FinnSDK app with finn-sdk and run it. By
+                             default uses the Qt6 'offscreen' platform (widget
+                             rendering only). With --headless, starts an
+                             isolated finn-comp on WLR_BACKENDS=headless and
+                             runs the app as a Wayland client. --dry-run only
+                             prints the resolved command.
+
+Global options:
+  --json                     Emit JSON for check/backends/validate (report is
+                             always JSON).
+  -h, --help                 Same as 'help'.
+  --version                  Print the tool version and exit.
+
+What this tool does NOT do (on any host):
+EOF
+    local item
+    for item in "${CANNOT_LIST[@]}"; do
+        printf '  - %s\n' "$item"
+    done
+    cat <<EOF
+
+It never starts or modifies the running Lima VM: 'boot' prints a command, and
+'simulate' launches only the app directory you pass it.
+EOF
+}
+
+cmd_check() {
+    probe_tools
+    if [ "$JSON" -eq 1 ]; then
+        printf '{"host":"%s","host_arch":"%s","checks":[' "$(json_escape "$HOST_OS")" "$(json_escape "$HOST_ARCH")"
+        local first=1 rec name status detail
+        for rec in "${RECORDS[@]}"; do
+            IFS='|' read -r name status detail <<< "$rec"
+            [ "$first" -eq 1 ] || printf ','
+            first=0
+            printf '{"name":"%s","status":"%s","detail":"%s"}' \
+                "$(json_escape "$name")" "$(json_escape "$status")" "$(json_escape "$detail")"
+        done
+        printf ']}\n'
+        return 0
+    fi
+    printf 'Host: %s %s\n\n' "$HOST_OS" "$HOST_ARCH"
+    local rec name status detail tag
+    for rec in "${RECORDS[@]}"; do
+        IFS='|' read -r name status detail <<< "$rec"
+        case "$status" in
+            ok) tag="[ok]     " ;;
+            partial) tag="[partial]" ;;
+            *) tag="[missing]" ;;
+        esac
+        printf '%s %-36s %s\n' "$tag" "$name" "$detail"
+    done
+    printf '\n'
+    print_cannot
+    return 0
+}
+
+# Capability rows: backend|status|can|cannot.
+CAPS=()
+build_caps() {
+    CAPS=()
+    if have limactl; then
+        if limactl list 2>/dev/null | grep -qE '(^|[[:space:]])finnos([[:space:]]|$)'; then
+            CAPS+=("lima/qemu (finnos)|ready|aarch64 Linux dev VM, virtio-gpu DRM, seatd, session+shell|no ARM64 macOS apps, no phone/modem hardware")
+        else
+            CAPS+=("lima/qemu (finnos)|installed|aarch64 Linux dev VM once vm/lima-setup.sh creates it|instance not created yet")
+        fi
+    else
+        CAPS+=("lima/qemu (finnos)|absent|aarch64 Linux dev VM on Apple Silicon|limactl not installed")
+    fi
+    if have qemu-system-x86_64; then
+        CAPS+=("qemu-system-x86_64|available|boot the x86_64 FinnOS ISO (BIOS/OVMF), KVM if /dev/kvm|TCG guest only on ARM64 hosts; no real GPU")
+    else
+        CAPS+=("qemu-system-x86_64|absent|boot the x86_64 FinnOS ISO|binary not installed")
+    fi
+    if have qemu-system-aarch64; then
+        CAPS+=("qemu-system-aarch64|available|aarch64 -M virt guest with kernel+initrd|no aarch64 install ISO is built by CI")
+    else
+        CAPS+=("qemu-system-aarch64|absent|aarch64 -M virt guest|binary not installed")
+    fi
+    if have finn-comp; then
+        CAPS+=("headless finn-comp|available|composite Wayland apps without DRM (WLR_BACKENDS=headless)|not a full OS boot; no physical input")
+    else
+        CAPS+=("headless finn-comp|absent|composite Wayland apps without DRM|finn-comp not installed")
+    fi
+    local sdk=""
+    if have finn-sdk; then sdk="$(command -v finn-sdk)"; elif [ -x "$ROOT/tools/finn-sdk" ]; then sdk="$ROOT/tools/finn-sdk"; fi
+    if [ -n "$sdk" ]; then
+        CAPS+=("Qt offscreen app sim|available|render FinnSDK widgets via QT_QPA_PLATFORM=offscreen|no compositor, touch, gestures or IME")
+    else
+        CAPS+=("Qt offscreen app sim|absent|render FinnSDK widgets offscreen|finn-sdk not installed")
+    fi
+}
+
+cmd_backends() {
+    build_caps
+    if [ "$JSON" -eq 1 ]; then
+        printf '{"host_arch":"%s","backends":[' "$(json_escape "$HOST_ARCH")"
+        local first=1 row backend status can cannot
+        for row in "${CAPS[@]}"; do
+            IFS='|' read -r backend status can cannot <<< "$row"
+            [ "$first" -eq 1 ] || printf ','
+            first=0
+            printf '{"backend":"%s","status":"%s","can":"%s","cannot":"%s"}' \
+                "$(json_escape "$backend")" "$(json_escape "$status")" \
+                "$(json_escape "$can")" "$(json_escape "$cannot")"
+        done
+        printf ']}\n'
+        return 0
+    fi
+    printf 'Backend capability matrix (host: %s)\n\n' "$HOST_ARCH"
+    printf '%-26s %-11s %-52s %s\n' "BACKEND" "STATUS" "CAN EMULATE" "CANNOT EMULATE"
+    local row backend status can cannot
+    for row in "${CAPS[@]}"; do
+        IFS='|' read -r backend status can cannot <<< "$row"
+        printf '%-26s %-11s %-52s %s\n' "$backend" "$status" "$can" "$cannot"
+    done
+    printf '\n'
+    print_cannot
+    return 0
+}
+
+cmd_validate() {
+    probe_tools
+    local host_ok=1 guest=0 guest_detail="no QEMU/Lima backend can boot a FinnOS guest here"
+    local sdk_ok=0 offscreen_ok=0 offscreen_state="unconfirmed"
+    case "$HOST_ARCH" in
+        x86_64|aarch64) host_ok=0 ;;
+    esac
+
+    local rec name status detail
+    for rec in "${RECORDS[@]}"; do
+        IFS='|' read -r name status detail <<< "$rec"
+        case "$name" in
+            "qemu-system-x86_64"|"qemu-system-aarch64")
+                if [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
+                    guest=1; guest_detail="QEMU present: $name"
+                fi ;;
+            "lima (finnos instance)")
+                [ "$status" = "ok" ] && { guest=1; guest_detail="Lima finnos aarch64 dev VM present"; } ;;
+            "finn-sdk (app simulator helper)")
+                [ "$status" = "ok" ] && sdk_ok=1 ;;
+            "Qt6 offscreen platform plugin")
+                if [ "$status" = "ok" ]; then offscreen_ok=1; offscreen_state="confirmed"
+                elif [ "$status" = "partial" ]; then offscreen_state="unconfirmed (qmake unavailable to probe)";
+                else offscreen_state="missing"; fi ;;
+        esac
+    done
+    local appsim=0 appsim_detail="finn-sdk or Qt6 offscreen unavailable"
+    if [ "$sdk_ok" -eq 1 ] && [ "$offscreen_ok" -eq 1 ]; then
+        appsim=1; appsim_detail="finn-sdk + Qt6 offscreen plugin present"
+    elif [ "$sdk_ok" -eq 1 ]; then
+        appsim=1; appsim_detail="finn-sdk present; Qt6 offscreen plugin ${offscreen_state} — run finn-sdk check on a Qt6 host"
+    fi
+
+    local host_state="PASS" guest_state="FAIL" appsim_state="FAIL" verdict=1
+    [ "$host_ok" -eq 0 ] || { host_state="WARN"; }
+    [ "$guest" -eq 0 ] && guest_state="FAIL" || guest_state="PASS"
+    [ "$appsim" -eq 0 ] && appsim_state="FAIL" || appsim_state="PASS"
+    if [ "$guest" -eq 1 ] || [ "$appsim" -eq 1 ]; then verdict=0; fi
+
+    if [ "$JSON" -eq 1 ]; then
+        printf '{"valid":%s,"host_arch":"%s","host":"%s","full_os_guest":"%s","full_os_detail":"%s","app_simulator":"%s","app_simulator_detail":"%s"}\n' \
+            "$([ "$verdict" -eq 0 ] && echo true || echo false)" \
+            "$(json_escape "$HOST_ARCH")" "$(json_escape "$host_state")" \
+            "$(json_escape "$guest_state")" "$(json_escape "$guest_detail")" \
+            "$(json_escape "$appsim_state")" "$(json_escape "$appsim_detail")"
+        return "$verdict"
+    fi
+
+    printf 'Validation — %s %s\n\n' "$HOST_OS" "$HOST_ARCH"
+    printf '  [%s] host architecture: %s\n' "$host_state" "$HOST_ARCH"
+    printf '  [%s] full-OS guest backend: %s\n' "$guest_state" "$guest_detail"
+    printf '  [%s] FinnSDK app simulator: %s\n' "$appsim_state" "$appsim_detail"
+    printf '\n'
+    print_cannot
+    if [ "$verdict" -eq 0 ]; then
+        printf '\nRESULT: at least one real backend is usable. No capability is claimed beyond the rows above.\n'
+    else
+        printf '\nRESULT: no usable backend found. This host cannot emulate or simulate FinnOS with the tools present.\n'
+    fi
+    return "$verdict"
+}
+
+# Machine-readable capability report. Always JSON, independent of --json.
+# Exit 0 when at least one real backend is usable, 1 otherwise.
+cmd_report() {
+    probe_tools
+    build_caps
+    local host_ok=1 guest=0 guest_detail="no QEMU/Lima backend can boot a FinnOS guest here"
+    local sdk_ok=0 offscreen_ok=0 offscreen_state="unconfirmed"
+    case "$HOST_ARCH" in
+        x86_64|aarch64) host_ok=0 ;;
+    esac
+    local rec name status detail
+    for rec in "${RECORDS[@]}"; do
+        IFS='|' read -r name status detail <<< "$rec"
+        case "$name" in
+            "qemu-system-x86_64"|"qemu-system-aarch64")
+                if [ "$status" = "ok" ] || [ "$status" = "partial" ]; then
+                    guest=1; guest_detail="QEMU present: $name"
+                fi ;;
+            "lima (finnos instance)")
+                [ "$status" = "ok" ] && { guest=1; guest_detail="Lima finnos aarch64 dev VM present"; } ;;
+            "finn-sdk (app simulator helper)")
+                [ "$status" = "ok" ] && sdk_ok=1 ;;
+            "Qt6 offscreen platform plugin")
+                if [ "$status" = "ok" ]; then offscreen_ok=1; offscreen_state="confirmed"
+                elif [ "$status" = "partial" ]; then offscreen_state="unconfirmed (qmake unavailable to probe)"
+                else offscreen_state="missing"; fi ;;
+        esac
+    done
+    local appsim=0 appsim_detail="finn-sdk or Qt6 offscreen unavailable"
+    if [ "$sdk_ok" -eq 1 ] && [ "$offscreen_ok" -eq 1 ]; then
+        appsim=1; appsim_detail="finn-sdk + Qt6 offscreen plugin present"
+    elif [ "$sdk_ok" -eq 1 ]; then
+        appsim=1; appsim_detail="finn-sdk present; Qt6 offscreen plugin ${offscreen_state} — run finn-sdk check on a Qt6 host"
+    fi
+    local host_state="PASS" guest_state="FAIL" appsim_state="FAIL"
+    [ "$host_ok" -eq 0 ] || host_state="WARN"
+    [ "$guest" -eq 0 ] || guest_state="PASS"
+    [ "$appsim" -eq 0 ] || appsim_state="PASS"
+    local usable=0; if [ "$guest" -eq 1 ] || [ "$appsim" -eq 1 ]; then usable=1; fi
+    local verdict="false"; [ "$usable" -eq 0 ] || verdict="true"
+
+    printf '{"schema_version":%s,"tool":"%s","tool_version":"%s",' \
+        "$REPORT_SCHEMA_VERSION" "$PROG" "$VERSION"
+    printf '"host":{"os":"%s","arch":"%s","arch_raw":"%s"},' \
+        "$(json_escape "$HOST_OS")" "$(json_escape "$HOST_ARCH")" "$(json_escape "$HOST_ARCH_RAW")"
+    printf '"verdict":{"usable":%s,"host":"%s","full_os_guest":"%s","full_os_detail":"%s","app_simulator":"%s","app_simulator_detail":"%s"},' \
+        "$verdict" "$host_state" "$guest_state" "$(json_escape "$guest_detail")" \
+        "$appsim_state" "$(json_escape "$appsim_detail")"
+    printf '"checks":['
+    local first=1
+    for rec in "${RECORDS[@]}"; do
+        IFS='|' read -r name status detail <<< "$rec"
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        printf '{"name":"%s","status":"%s","detail":"%s"}' \
+            "$(json_escape "$name")" "$(json_escape "$status")" "$(json_escape "$detail")"
+    done
+    printf '],"backends":['
+    first=1
+    local row backend can cannot
+    for row in "${CAPS[@]}"; do
+        IFS='|' read -r backend status can cannot <<< "$row"
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        printf '{"backend":"%s","status":"%s","can":"%s","cannot":"%s"}' \
+            "$(json_escape "$backend")" "$(json_escape "$status")" \
+            "$(json_escape "$can")" "$(json_escape "$cannot")"
+    done
+    printf '],"cannot_emulate":['
+    first=1
+    local item
+    for item in "${CANNOT_LIST[@]}"; do
+        [ "$first" -eq 1 ] || printf ','
+        first=0
+        printf '"%s"' "$(json_escape "$item")"
+    done
+    printf ']}\n'
+    if [ "$usable" -eq 1 ]; then return 0; fi
+    return 1
+}
+
+# Verify every claim this tool makes against the current host. Read-only:
+# no emulator is started and no VM state is changed.
+cmd_selftest() {
+    JSON=0
+    local passed=0 failed=0 skipped=0
+    st_pass() { passed=$((passed + 1)); printf '[PASS] %s — %s\n' "$1" "$2"; }
+    st_fail() { failed=$((failed + 1)); printf '[FAIL] %s — %s\n' "$1" "$2"; }
+    st_skip() { skipped=$((skipped + 1)); printf '[SKIP] %s — %s\n' "$1" "$2"; }
+
+    printf 'Self-test — %s %s (tool %s)\n\n' "$HOST_OS" "$HOST_ARCH" "$VERSION"
+
+    if [ -r "$0" ] && bash -n "$0" >/dev/null 2>&1; then
+        st_pass "script syntax" "bash -n $0 succeeded"
+    else
+        st_fail "script syntax" "bash -n $0 failed or the script is unreadable"
+    fi
+
+    local help_out; help_out="$(help)"
+    local c missing=""
+    for c in help check backends validate report selftest boot simulate; do
+        printf '%s\n' "$help_out" | grep -qE "^  ${c}( |$)" || missing="$missing $c"
+    done
+    if [ -z "$missing" ]; then
+        st_pass "help coverage" "all eight commands documented"
+    else
+        st_fail "help coverage" "missing from help:$missing"
+    fi
+    if printf '%s\n' "$help_out" | grep -Fq "$VERSION"; then
+        st_pass "version in help" "$VERSION"
+    else
+        st_fail "version in help" "VERSION constant is not printed"
+    fi
+
+    # Probe rows: an [ok] claim must be verifiable now; [missing] must be absent.
+    probe_tools
+    local before="$failed" rec name status detail bin present detail_nonempty=1
+    for rec in "${RECORDS[@]}"; do
+        IFS='|' read -r name status detail <<< "$rec"
+        [ -n "$detail" ] || detail_nonempty=0
+        case "$name" in
+            host) continue ;;
+            "lima (finnos instance)")
+                if [ "$status" = "ok" ]; then
+                    if have limactl && limactl list 2>/dev/null | grep -qE '(^|[[:space:]])finnos([[:space:]]|$)'; then
+                        :
+                    else
+                        st_fail "probe: $name" "reports ok but no 'finnos' instance is listed"
+                    fi
+                fi
+                continue ;;
+            "Qt6 offscreen platform plugin")
+                if [ "$status" = "ok" ]; then
+                    local plugin_path="${detail%% *}"
+                    if [ -f "$plugin_path" ]; then
+                        :
+                    else
+                        st_fail "probe: $name" "reports ok but $plugin_path is not a file"
+                    fi
+                fi
+                continue ;;
+        esac
+        bin=""
+        case "$name" in
+            "lima / limactl") bin="limactl" ;;
+            "qemu user-mode (aarch64)") bin="qemu-aarch64-static" ;;
+            "finn-sdk (app simulator helper)") bin="$detail" ;;
+            *) bin="$name" ;;
+        esac
+        present=0
+        if [ "$name" = "qemu user-mode (aarch64)" ]; then
+            have qemu-aarch64-static || have qemu-aarch64 && present=1
+        elif [ "$name" = "finn-sdk (app simulator helper)" ]; then
+            [ -x "$detail" ] && present=1
+        else
+            have "$bin" && present=1
+        fi
+        if [ "$status" = "ok" ] && [ "$present" -eq 0 ]; then
+            st_fail "probe: $name" "reports ok but $bin is not usable"
+        elif [ "$status" = "missing" ] && [ "$present" -eq 1 ]; then
+            st_fail "probe: $name" "reports missing but $bin is present"
+        fi
+    done
+    if [ "$detail_nonempty" -eq 1 ]; then
+        st_pass "probe details" "every check explains its status"
+    else
+        st_fail "probe details" "a check has an empty detail field"
+    fi
+    if [ "$failed" -eq "$before" ]; then
+        st_pass "probe claims" "ok/missing statuses match the current host"
+    fi
+
+    # Backend matrix: ready/installed/available rows must have a real binary.
+    build_caps
+    before="$failed"
+    local row backend status can cannot tool
+    for row in "${CAPS[@]}"; do
+        IFS='|' read -r backend status can cannot <<< "$row"
+        case "$backend" in
+            "lima/qemu (finnos)") tool="limactl" ;;
+            qemu-system-x86_64|qemu-system-aarch64) tool="$backend" ;;
+            "headless finn-comp") tool="finn-comp" ;;
+            *) continue ;;  # Qt offscreen app sim is covered by the probe rows
+        esac
+        if [ "$status" = "absent" ] && have "$tool"; then
+            st_fail "backend: $backend" "reports absent but $tool is installed"
+        elif { [ "$status" = "ready" ] || [ "$status" = "installed" ] || [ "$status" = "available" ]; } && ! have "$tool"; then
+            st_fail "backend: $backend" "reports $status but $tool is not installed"
+        fi
+    done
+    if [ "$failed" -eq "$before" ]; then
+        st_pass "backend matrix" "every non-absent row has a real backend"
+    fi
+
+    # validate: printed RESULT must agree with its exit code.
+    local vout vrc=0 expected=1
+    vout="$(cmd_validate 2>/dev/null)" || vrc=$?
+    printf '%s\n' "$vout" | grep -q 'RESULT: at least one real backend is usable' && expected=0
+    if [ "$vrc" -eq "$expected" ]; then
+        st_pass "validate exit code" "exit $vrc matches the printed result"
+    else
+        st_fail "validate exit code" "printed result expects $expected, got $vrc"
+    fi
+
+    # report: JSON must parse, and verdict/exit code must match the probes.
+    if have python3; then
+        local rout rrc=0 rtmp
+        rout="$(cmd_report 2>/dev/null)" || rrc=$?
+        rtmp="$(mktemp "${TMPDIR:-/tmp}/finn-emulator-report.XXXXXX")"
+        printf '%s\n' "$rout" > "$rtmp"
+        if python3 - "$rtmp" "$rrc" <<'PY'
+import json, sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+rc = int(sys.argv[2])
+assert report["schema_version"] == 1
+assert report["tool"] == "finn-emulator"
+assert report["verdict"]["usable"] in (True, False)
+assert (rc == 0) == report["verdict"]["usable"], "exit code disagrees with verdict.usable"
+checks = {c["name"]: c["status"] for c in report["checks"]}
+assert checks and report["backends"] and report["cannot_emulate"]
+guest = (checks.get("lima (finnos instance)") == "ok"
+         or checks.get("qemu-system-x86_64") in ("ok", "partial")
+         or checks.get("qemu-system-aarch64") in ("ok", "partial"))
+assert report["verdict"]["full_os_guest"] == ("PASS" if guest else "FAIL")
+appsim = checks.get("finn-sdk (app simulator helper)") == "ok"
+assert report["verdict"]["app_simulator"] == ("PASS" if appsim else "FAIL")
+PY
+        then
+            st_pass "report JSON" "valid JSON; exit code and verdicts agree with probes"
+        else
+            st_fail "report JSON" "python3 rejected the report or a verdict disagreed"
+        fi
+        rm -f "$rtmp"
+        if [ "$rrc" -eq "$vrc" ]; then
+            st_pass "report/validate parity" "both exited $vrc"
+        else
+            st_fail "report/validate parity" "report exited $rrc, validate exited $vrc"
+        fi
+    else
+        st_skip "report JSON" "python3 not installed; parse check skipped"
+    fi
+
+    local item cov=1
+    for item in "${CANNOT_LIST[@]}"; do
+        printf '%s\n' "$help_out" | grep -Fq -- "$item" || cov=0
+    done
+    if [ "$cov" -eq 1 ]; then
+        st_pass "honest limits" "help and report list the same non-emulatable items"
+    else
+        st_fail "honest limits" "help is missing at least one CANNOT_LIST item"
+    fi
+
+    if cmd_check >/dev/null 2>&1; then
+        st_pass "check command" "exits 0"
+    else
+        st_fail "check command" "exited non-zero"
+    fi
+
+    local sdkbin=""
+    if have finn-sdk; then sdkbin="$(command -v finn-sdk)"
+    elif [ -x "$ROOT/tools/finn-sdk" ]; then sdkbin="$ROOT/tools/finn-sdk"; fi
+    if [ -n "$sdkbin" ] && [ -f "$ROOT/sdk/template/finn-app.json" ]; then
+        local sout src=0
+        sout="$(cmd_simulate --app "$ROOT/sdk/template" --form-factor phone --dry-run 2>/dev/null)" || src=$?
+        if [ "$src" -eq 0 ] && printf '%s\n' "$sout" | grep -q 'QT_QPA_PLATFORM=offscreen'; then
+            st_pass "simulate --dry-run" "resolves the offscreen app plan without launching"
+        else
+            st_fail "simulate --dry-run" "exited $src or did not set QT_QPA_PLATFORM=offscreen"
+        fi
+    else
+        st_skip "simulate --dry-run" "finn-sdk or sdk/template not present on this host"
+    fi
+
+    local btmp bout brc=0
+    btmp="$(mktemp "${TMPDIR:-/tmp}/finn-emulator-iso.XXXXXX")"
+    bout="$(cmd_boot --arch aarch64 --iso "$btmp" 2>&1)" || brc=$?
+    rm -f "$btmp"
+    if [ "$brc" -eq 0 ]; then
+        if printf '%s\n' "$bout" | grep -qE 'limactl start|qemu-system-aarch64'; then
+            st_pass "boot honesty" "printed a real aarch64 command (backend present)"
+        else
+            st_fail "boot honesty" "exited 0 without printing a usable command"
+        fi
+    elif [ "$brc" -eq 1 ]; then
+        if printf '%s\n' "$bout" | grep -q 'refusing to fake'; then
+            st_pass "boot honesty" "refused instead of claiming a missing backend"
+        else
+            st_fail "boot honesty" "exited 1 without an honest refusal message"
+        fi
+    else
+        st_fail "boot honesty" "unexpected exit $brc"
+    fi
+
+    printf '\nSelf-test summary: %d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
+    if [ "$failed" -eq 0 ]; then
+        printf 'RESULT: selftest PASS — every checked claim holds on this host.\n'
+        return 0
+    fi
+    printf 'RESULT: selftest FAIL — do not trust this tool on this host.\n' >&2
+    return 1
+}
+
+cmd_boot() {
+    local arch="" iso="$ROOT/finnos.iso"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --arch) arch="${2:-}"; shift 2 ;;
+            --iso) iso="${2:-}"; shift 2 ;;
+            *) printf '%s: boot: unknown option %s\n' "$PROG" "$1" >&2; return 2 ;;
+        esac
+    done
+    case "$arch" in
+        x86_64|aarch64) ;;
+        *) printf '%s: boot: --arch must be x86_64 or aarch64\n' "$PROG" >&2; return 2 ;;
+    esac
+    if [ ! -f "$iso" ]; then
+        printf '%s: boot: ISO not found: %s (build it with base/mkfinniso)\n' "$PROG" "$iso" >&2
+        return 1
+    fi
+    if [ "$arch" = "x86_64" ]; then
+        if ! have qemu-system-x86_64; then
+            printf '%s: boot: qemu-system-x86_64 is not installed; refusing to claim an x86_64 boot.\n' "$PROG" >&2
+            return 1
+        fi
+        local ovmf="/usr/share/ovmf/x64/OVMF.fd"
+        [ -f "$ovmf" ] || ovmf="/usr/share/edk2-ovmf/x64/OVMF.fd"
+        printf '# x86_64 FinnOS ISO boot (KVM when /dev/kvm exists, otherwise TCG):\n'
+        printf 'qemu-system-x86_64 -m 4096 -smp 2 %s \\\n' "$([ -r /dev/kvm ] && echo '-accel kvm' || echo '-accel tcg')"
+        printf '  -cdrom %q -netdev user,id=n0 -device e1000,netdev=n0 \\\n' "$iso"
+        if [ -f "$ovmf" ]; then
+            printf '  -drive if=pflash,format=raw,readonly=on,file=%q\n' "$ovmf"
+        else
+            printf '  # OVMF not found; omit -drive if=pflash to boot the BIOS/syslinux path.\n'
+        fi
+        return 0
+    fi
+    if have limactl && limactl list 2>/dev/null | grep -qE '(^|[[:space:]])finnos([[:space:]]|$)'; then
+        printf '# aarch64 FinnOS dev VM (the supported ARM64 path):\n'
+        printf 'limactl start finnos\n'
+        printf 'limactl shell finnos\n'
+        printf '# QEMU/HVF + virtio-gpu DRM; see vm/lima.yaml and vm/README.md.\n'
+        printf '# NOTE: CI builds and boot-tests only the x86_64 ISO; no aarch64 ISO is published.\n'
+        return 0
+    fi
+    if have qemu-system-aarch64; then
+        printf '# qemu-system-aarch64 needs an aarch64 kernel+initrd (no install ISO in CI):\n'
+        printf 'qemu-system-aarch64 -M virt -cpu cortex-a57 -m 4096 -smp 4 \\\n'
+        printf '  -kernel <aarch64-Image.gz> -initrd <initramfs.img> \\\n'
+        printf '  -append "console=ttyAMA0 quiet splash vt.global_cursor_default=0" \\\n'
+        printf '  -device virtio-gpu-pci -nographic\n'
+        printf '# No aarch64 ISO is produced by .github/workflows/iso.yml; supply kernel+initrd yourself.\n'
+        return 0
+    fi
+    printf '%s: boot: no Lima finnos instance and no qemu-system-aarch64; refusing to fake an aarch64 boot.\n' "$PROG" >&2
+    return 1
+}
+
+cmd_simulate() {
+    local app_dir="" form="desktop" headless=0 dry=0 sdk=""
+    local -a app_args=()
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --app) app_dir="${2:-}"; shift 2 ;;
+            --form-factor) form="${2:-}"; shift 2 ;;
+            --headless) headless=1; shift ;;
+            --dry-run) dry=1; shift ;;
+            --) shift; app_args+=("$@"); break ;;
+            *) printf '%s: simulate: unknown option %s\n' "$PROG" "$1" >&2; return 2 ;;
+        esac
+    done
+    case "$form" in
+        phone|tablet|desktop) ;;
+        *) printf '%s: simulate: --form-factor must be phone|tablet|desktop\n' "$PROG" >&2; return 2 ;;
+    esac
+    if [ -z "$app_dir" ] || [ ! -d "$app_dir" ]; then
+        printf '%s: simulate: --app DIR must be an existing FinnSDK project directory\n' "$PROG" >&2
+        return 2
+    fi
+    if have finn-sdk; then sdk="$(command -v finn-sdk)"; elif [ -x "$ROOT/tools/finn-sdk" ]; then sdk="$ROOT/tools/finn-sdk"; fi
+    if [ -z "$sdk" ]; then
+        printf '%s: simulate: finn-sdk not found; cannot build the app.\n' "$PROG" >&2
+        return 1
+    fi
+
+    local w h scale
+    case "$form" in
+        phone) w=390; h=844; scale=2 ;;
+        tablet) w=768; h=1024; scale=2 ;;
+        desktop) w=1440; h=900; scale=1 ;;
+    esac
+    local -a envvars=(
+        "FINN_FORM_FACTOR=$form"
+        "FINN_SIM_WIDTH=$w"
+        "FINN_SIM_HEIGHT=$h"
+        "FINN_SIM_SCALE=$scale"
+        "QT_QPA_PLATFORMTHEME=finn"
+        "QT_STYLE_OVERRIDE=finn"
+    )
+    if [ "$headless" -eq 1 ]; then
+        envvars+=("QT_QPA_PLATFORM=wayland")
+    else
+        envvars+=("QT_QPA_PLATFORM=offscreen")
+    fi
+
+    local exe=""
+    if [ "$dry" -eq 0 ]; then
+        "$sdk" build "$app_dir" || return $?
+        exe="$(find "$app_dir/build" -maxdepth 2 -type f -perm -u+x -name 'finn-*' 2>/dev/null | head -n 1)"
+        if [ -z "$exe" ]; then
+            printf '%s: simulate: no built finn-* executable under %s/build\n' "$PROG" "$app_dir" >&2
+            return 1
+        fi
+    else
+        exe="$app_dir/build/finn-<app> (after finn-sdk build)"
+    fi
+
+    if [ "$dry" -eq 1 ]; then
+        printf '# simulation plan: %s %sx%s @ %sx (headless=%s)\n' "$form" "$w" "$h" "$scale" "$headless"
+        local e
+        for e in "${envvars[@]}"; do printf 'export %q\n' "$e"; done
+        printf '%q' "$exe"
+        local a
+        for a in ${app_args[@]+"${app_args[@]}"}; do printf ' %q' "$a"; done
+        printf '\n'
+        return 0
+    fi
+
+    if [ "$headless" -eq 1 ]; then
+        if ! have finn-comp; then
+            printf '%s: simulate --headless: finn-comp not found in PATH.\n' "$PROG" >&2
+            return 1
+        fi
+        local runtime sock
+        runtime="$(mktemp -d "${TMPDIR:-/tmp}/finn-sim.XXXXXX")"
+        sock="finn-sim-$$"
+        envvars+=("XDG_RUNTIME_DIR=$runtime" "WAYLAND_DISPLAY=$runtime/$sock")
+        WLR_BACKENDS=headless FINN_WAYLAND_SOCKET="$sock" XDG_RUNTIME_DIR="$runtime" \
+            finn-comp >"$runtime/finn-comp.log" 2>&1 &
+        local comp_pid=$!
+        local waited=0
+        while [ ! -S "$runtime/$sock" ]; do
+            if ! kill -0 "$comp_pid" 2>/dev/null || [ "$waited" -ge 50 ]; then
+                printf '%s: simulate: headless finn-comp did not expose %s (see %s)\n' \
+                    "$PROG" "$sock" "$runtime/finn-comp.log" >&2
+                kill "$comp_pid" 2>/dev/null || true
+                return 1
+            fi
+            waited=$((waited + 1))
+            sleep 0.1
+        done
+        env "${envvars[@]}" "$exe" ${app_args[@]+"${app_args[@]}"}
+        local rc=$?
+        kill "$comp_pid" 2>/dev/null || true
+        wait "$comp_pid" 2>/dev/null || true
+        return "$rc"
+    fi
+
+    printf '%s: offscreen simulation renders widgets only — no compositor, touch, gestures or IME.\n' "$PROG" >&2
+    env "${envvars[@]}" "$exe" ${app_args[@]+"${app_args[@]}"}
+}
+
+main() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --json) JSON=1; shift ;;
+            --version) printf '%s %s\n' "$PROG" "$VERSION"; return 0 ;;
+            -h|--help|help) help; return 0 ;;
+            *) break ;;
+        esac
+    done
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        check) cmd_check "$@" ;;
+        backends) cmd_backends "$@" ;;
+        validate) cmd_validate "$@" ;;
+        report) cmd_report "$@" ;;
+        selftest) cmd_selftest "$@" ;;
+        boot) cmd_boot "$@" ;;
+        simulate) cmd_simulate "$@" ;;
+        *) printf '%s: unknown command %q (try --help)\n' "$PROG" "$cmd" >&2; return 2 ;;
+    esac
+}
+
+main "$@"

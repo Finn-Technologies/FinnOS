@@ -170,8 +170,9 @@ public:
                      std::function<void()> on_dismiss, QWidget* parent)
         : QWidget(parent) {
         setAttribute(Qt::WA_TranslucentBackground);
-        setFixedWidth(card_width);
-        setMinimumHeight(76);
+        // Transparent rim around the glass card for its elevation shadow.
+        setFixedWidth(card_width + 2 * kNotificationShadowPad);
+        setMinimumHeight(76 + 2 * kNotificationShadowPad);
         setAccessibleName(n.app_name.isEmpty()
                               ? n.summary
                               : QStringLiteral("%1: %2").arg(n.app_name, n.summary));
@@ -191,7 +192,10 @@ public:
         enter_anim_->retarget(1.0);
 
         auto* row = new QHBoxLayout(this);
-        row->setContentsMargins(12, 12, 12, 12);
+        row->setContentsMargins(12 + kNotificationShadowPad,
+                                12 + kNotificationShadowPad,
+                                12 + kNotificationShadowPad,
+                                12 + kNotificationShadowPad);
         row->setSpacing(12);
 
         icon_tile_ = new NotificationIconTile(n.app_icon, this);
@@ -260,7 +264,12 @@ protected:
         // macOS notification banner glide from top-right.
         p.translate((1.0 - enter_progress_) * 26.0, (1.0 - enter_progress_) * -4.0);
 
-        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const QRectF outer = QRectF(rect());
+        const QRectF r = outer.adjusted(
+            kNotificationShadowPad + 0.5, kNotificationShadowPad + 0.5,
+            -kNotificationShadowPad - 0.5, -kNotificationShadowPad - 0.5);
+        paintLayerShadow(p, r, finn::ui::radii::r_xl, kNotificationShadowBlur,
+                         finn::ui::elevation::elev_notification);
         p.setBrush(shell_glass_fill(t));
         p.setPen(QPen(t.hair, 1.0));
         p.drawRoundedRect(r, finn::ui::radii::r_xl, finn::ui::radii::r_xl);
@@ -291,7 +300,10 @@ public:
         applyResponsiveGeometry(10);
 
         layout_ = new QVBoxLayout(this);
-        layout_->setContentsMargins(0, 0, 0, 0);
+        layout_->setContentsMargins(kNotificationShadowPad,
+                                    kNotificationShadowPad,
+                                    kNotificationShadowPad,
+                                    kNotificationShadowPad);
         layout_->setSpacing(8);
 
         connect(&finn::ui::FinnThemeManager::instance(),
@@ -321,7 +333,8 @@ public:
                 this);
             cards_.push_back(card);
             layout_->addWidget(card);
-            const int card_h = std::max(76, card->sizeHint().height());
+            const int card_h = std::max(
+                76, card->sizeHint().height() - 2 * kNotificationShadowPad);
             total_h += card_h;
             if (i + 1 < popups.size()) total_h += 8;
         }
@@ -348,13 +361,20 @@ private:
         const int card_w = popupWidth();
         if (ff == FormFactor::Phone) {
             setAnchors(AnchorTop);
-            setLayerMargins(QMargins(12, 44, 12, 0));
+            setLayerMargins(QMargins(
+                std::max(0, 12 - kNotificationShadowPad),
+                std::max(0, 44 - kNotificationShadowPad),
+                std::max(0, 12 - kNotificationShadowPad), 0));
         } else {
             setAnchors(AnchorTop | AnchorRight);
-            setLayerMargins(QMargins(0, 14, 14, 0));
+            setLayerMargins(QMargins(
+                0, std::max(0, 14 - kNotificationShadowPad),
+                std::max(0, 14 - kNotificationShadowPad), 0));
         }
-        setDesiredSize(QSize(card_w, target_h));
-        resize(card_w, target_h);
+        setDesiredSize(QSize(card_w + 2 * kNotificationShadowPad,
+                             target_h + 2 * kNotificationShadowPad));
+        resize(card_w + 2 * kNotificationShadowPad,
+               target_h + 2 * kNotificationShadowPad);
     }
 
 protected:

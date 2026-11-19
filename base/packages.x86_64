@@ -123,9 +123,14 @@ curl
 # release image. Flatpak GUI apps require Wayland surfaces hosted by
 # finn-comp. wine-mono and wine-gecko are the two runtimes Wine downloads
 # on first run on a machine with a network; carrying them means a machine
-# without one still runs a .NET or Gecko-based installer. winetricks is
-# the verb list the Windows page of the Store drives.
+# without one still runs a .NET or Gecko-based installer. The Windows page of
+# Finn Store launches .exe and .msi through finn-win; winetricks is present for
+# manual DLL/verb setup but is not driven automatically.
 flatpak
+# fuse3 gives AppImages a real FUSE runtime (/dev/fuse + fusermount3). The
+# launcher probes it at runtime and uses extract-and-run when it is absent;
+# it never assumes FUSE from this package list alone.
+fuse3
 wine
 winetricks
 wine-mono

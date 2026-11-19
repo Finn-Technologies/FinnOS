@@ -176,7 +176,7 @@ class DynamicIconWidget final : public QWidget {
             const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
             p.setBrush(has_badge ? badge_color_ : t.surface_input);
             p.setPen(QPen(t.hair, 1.0));
-            p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+            p.drawPath(finn_rounded_path(r, kRadiusMd));
         }
 
         const QColor tint =
@@ -228,6 +228,35 @@ int touch_target_height(int desktop_height, FinnFormFactor ff) {
             return desktop_height;
     }
     return desktop_height;
+}
+
+QPainterPath finn_rounded_path(const QRectF& r, qreal radius) {
+    QPainterPath path;
+    const qreal rad =
+        std::clamp<qreal>(radius, 0.0, std::min(r.width(), r.height()) / 2.0);
+    if (rad <= 0.0) {
+        path.addRect(r);
+        return path;
+    }
+    // 0.5522847498 gives an exact quarter circle. Figma's cornerSmoothing
+    // of 0.6 makes the tangent join fuller (roughly a superellipse of order
+    // 3.2), so extend each cubic control by 0.3 * smoothing * radius.
+    const qreal kd = (0.5522847498 + 0.3 * radii::corner_smoothing) * rad;
+    path.moveTo(r.left() + rad, r.top());
+    path.lineTo(r.right() - rad, r.top());
+    path.cubicTo(r.right() - rad + kd, r.top(), r.right(), r.top() + rad - kd,
+                 r.right(), r.top() + rad);
+    path.lineTo(r.right(), r.bottom() - rad);
+    path.cubicTo(r.right(), r.bottom() - rad + kd, r.right() - rad + kd,
+                 r.bottom(), r.right() - rad, r.bottom());
+    path.lineTo(r.left() + rad, r.bottom());
+    path.cubicTo(r.left() + rad - kd, r.bottom(), r.left(),
+                 r.bottom() - rad + kd, r.left(), r.bottom() - rad);
+    path.lineTo(r.left(), r.top() + rad);
+    path.cubicTo(r.left(), r.top() + rad - kd, r.left() + rad - kd, r.top(),
+                 r.left() + rad, r.top());
+    path.closeSubpath();
+    return path;
 }
 
 void FinnSpringDriver::init(QWidget* owner, const SpringParams& params,
@@ -339,7 +368,7 @@ void FinnSurface::paintEvent(QPaintEvent*) {
     const QColor fill = role_background(role_, t);
     p.setBrush(fill == Qt::transparent ? Qt::NoBrush : QBrush(fill));
     p.setPen(bordered_ ? QPen(t.hair, 1.0) : Qt::NoPen);
-    p.drawRoundedRect(r, radius_, radius_);
+    p.drawPath(finn_rounded_path(r, radius_));
 }
 
 // ---- FinnCard ----
@@ -396,7 +425,7 @@ void FinnCard::paintEvent(QPaintEvent*) {
 
     p.setBrush(bg);
     p.setPen(QPen(border, selected_ ? 1.4 : 1.0));
-    p.drawRoundedRect(r, radius_, radius_);
+    p.drawPath(finn_rounded_path(r, radius_));
 
     if (!selected_) {
         p.setBrush(Qt::NoBrush);
@@ -482,7 +511,7 @@ void FinnGlassPanel::paintEvent(QPaintEvent*) {
     if (alpha_ >= 0) bg.setAlpha(alpha_);
     p.setBrush(bg);
     p.setPen(QPen(t.hair, 1.0));
-    p.drawRoundedRect(r, radius_, radius_);
+    p.drawPath(finn_rounded_path(r, radius_));
 
     // A hairline of light on the top edge is enough; a bright inner rim made
     // every glass surface look like a glossy card.
@@ -522,7 +551,9 @@ void FinnLabel::applyTypographyAndColor() {
             setFont(finn_font_px(18, QFont::Medium));
             break;
         case Role::Title:
-            setFont(finn_font_px(16, QFont::Medium));
+            // Figma 20:64 / 21:118: 16 px Regular. Selection and hierarchy
+            // come from size and ink, not from a heavier cut of the face.
+            setFont(finn_font_px(16, QFont::Normal));
             break;
         case Role::Headline:
             setFont(finn_font_px(14, QFont::Medium));
@@ -675,7 +706,7 @@ void FinnButton::paintEvent(QPaintEvent*) {
         p.setBrush(Qt::NoBrush);
     }
     p.setPen(border == Qt::transparent ? Qt::NoPen : QPen(border, 1.0));
-    p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+    p.drawPath(finn_rounded_path(r, kRadiusMd));
 
     if (en && (variant_ == Variant::Primary || variant_ == Variant::Danger)) {
         p.setBrush(Qt::NoBrush);
@@ -1384,8 +1415,8 @@ FinnNavItem::FinnNavItem(const QString& icon_name, const QString& label,
     setAttribute(Qt::WA_Hover, true);
     setFocusPolicy(Qt::TabFocus);
     setAccessibleName(label);
-    setFixedHeight(touch_target_height(28, resolve_form_factor()));
-    setFont(finn_font(10.0, QFont::Medium));
+    setFixedHeight(touch_target_height(36, resolve_form_factor()));
+    setFont(finn_font_px(14, QFont::Normal));
     hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
         hover_progress_ = v;
         update();
@@ -1427,7 +1458,7 @@ void FinnNavItem::setSelected(bool selected) {
 }
 
 QSize FinnNavItem::sizeHint() const {
-    return QSize(200, touch_target_height(28, resolve_form_factor()));
+    return QSize(226, touch_target_height(36, resolve_form_factor()));
 }
 
 void FinnNavItem::paintEvent(QPaintEvent*) {
@@ -1437,27 +1468,45 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
     apply_press_scale(p, this, press_scale_);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    const qreal radius = 6.0;
+    const qreal radius = radii::r_nav;  // Figma 21:131: 5 px rows, not 6 px cards.
     if (selected_) {
         p.setBrush(t.nav_sel);
         p.setPen(Qt::NoPen);
-        p.drawRoundedRect(r, radius, radius);
+        p.drawPath(finn_rounded_path(r, radius));
     } else if (hover_progress_ > 0.001) {
         p.setBrush(lerp_color(Qt::transparent, t.surface_hover, hover_progress_));
         p.setPen(Qt::NoPen);
-        p.drawRoundedRect(r, radius, radius);
+        p.drawPath(finn_rounded_path(r, radius));
     }
 
     const QColor text_fg = t.ink;
-    const QColor icon_fg = selected_ ? t.accent : t.dim;
     int text_left = 10;
     if (!icon_name_.isEmpty()) {
-        FinnThemeManager::instance().paintIcon(
-            &p, QRectF(8, (height() - 16) / 2.0, 16, 16), icon_name_, icon_fg);
-        text_left = 30;
+        // Figma 21:131: a 26x26 coloured circle at x=5 holding a 21x21 white
+        // glyph, with the label at x=41. Apps pass the circle colour through
+        // setBadgeColor (nav_accent_* / nav_neutral_*); items without one keep
+        // the compact flat glyph used by the other sidebars.
+        if (badge_color_.isValid()) {
+            QColor circle = badge_color_;
+            if (t.dark && badge_dark_color_.isValid()) circle = badge_dark_color_;
+            const QRectF box(5, (height() - 26) / 2.0, 26, 26);
+            p.setBrush(circle);
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(box);
+            FinnThemeManager::instance().paintIcon(
+                &p, box.adjusted(2.5, 2.5, -2.5, -2.5), icon_name_, Qt::white);
+            text_left = 41;
+        } else {
+            FinnThemeManager::instance().paintIcon(
+                &p, QRectF(8, (height() - 16) / 2.0, 16, 16), icon_name_,
+                selected_ ? t.accent : t.dim);
+            text_left = 30;
+        }
     }
 
-    p.setFont(finn_font_px(13, selected_ ? QFont::Medium : QFont::Normal));
+    // Figma 21:131 sidebar rows: 14 px Regular for every row; the selected
+    // row is marked by its #505050@10% fill, never by a heavier weight.
+    p.setFont(finn_font_px(14, QFont::Normal));
     p.setPen(text_fg);
     const int badge_reserve = badge_.isEmpty() ? 8 : 42;
     const int avail_w = std::max(0, width() - text_left - badge_reserve);
@@ -1516,8 +1565,9 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
       form_factor_(resolve_form_factor()) {
     setFormFactor(form_factor_);
     root_layout_ = new QVBoxLayout(this);
-    root_layout_->setContentsMargins(10, 10, 10, 10);
-    root_layout_->setSpacing(6);
+    // Figma 21:131: 250 px sidebar, 12 px inset, 5 px section gap.
+    root_layout_->setContentsMargins(12, 12, 12, 12);
+    root_layout_->setSpacing(5);
 
     header_label_ = new FinnLabel(QString(), FinnLabel::Role::Title,
                                   FinnLabel::Tone::Ink, this);
@@ -1533,7 +1583,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
     root_layout_->addWidget(header_label_);
 
     search_field_ = new FinnSearchField(QStringLiteral("Search"), this);
-    search_field_->setFixedHeight(28);
+    search_field_->setFixedHeight(30);  // Figma 21:132: 226x30 pill.
     search_field_->setPillMode(true);
     search_field_->setVisible(false);
     connect(search_field_, &FinnSearchField::textChanged,
@@ -1542,7 +1592,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
 
     pinned_layout_ = new QVBoxLayout();
     pinned_layout_->setContentsMargins(0, 0, 0, 0);
-    pinned_layout_->setSpacing(2);
+    pinned_layout_->setSpacing(5);
     root_layout_->addLayout(pinned_layout_);
 
     auto* scroll = new QScrollArea(this);
@@ -1559,7 +1609,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
     container->setStyleSheet(QStringLiteral("background: transparent;"));
     items_layout_ = new QVBoxLayout(container);
     items_layout_->setContentsMargins(0, 0, 0, 0);
-    items_layout_->setSpacing(2);
+    items_layout_->setSpacing(5);  // Figma 21:131 sections: 5 px row gap.
 
     scroll->setWidget(container);
     install_overscroll_physics(scroll);
@@ -1568,14 +1618,14 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
 
 void FinnSidebar::setFormFactor(FinnFormFactor form_factor) {
     form_factor_ = form_factor;
-    int target_w = std::min(desktop_width_, 216);
+    int target_w = std::min(desktop_width_, 250);  // Figma 21:131.
     if (form_factor_ == FinnFormFactor::Tablet) {
         target_w = std::min(desktop_width_, 200);
     } else if (form_factor_ == FinnFormFactor::Phone) {
         target_w = std::min(desktop_width_, 240);
     }
     setFixedWidth(target_w);
-    const int item_h = touch_target_height(28, form_factor_);
+    const int item_h = touch_target_height(36, form_factor_);  // Figma 21:131.
     for (const auto& pair : pinned_items_) {
         if (pair.second) pair.second->setFixedHeight(item_h);
     }
@@ -1734,7 +1784,7 @@ void FinnStatCard::paintEvent(QPaintEvent*) {
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     p.setBrush(t.tile);
     p.setPen(QPen(t.hair, 1.0));
-    p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+    p.drawPath(finn_rounded_path(r, kRadiusMd));
 
     const QColor muted_half = t.dim;
 
@@ -1817,7 +1867,7 @@ void FinnHeroCard::paintEvent(QPaintEvent*) {
     // solid: a white-to-green gradient made the chrome look like a landing page.
     p.setBrush(t.hero_tint);
     p.setPen(QPen(t.hair, 1.0));
-    p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+    p.drawPath(finn_rounded_path(r, kRadiusMd));
 
     QFont f = finn_font(12.0, QFont::Normal);
     f.setPixelSize(16);
@@ -1889,13 +1939,13 @@ protected:
         if (isChecked()) {
             p.setBrush(t.tile_on);
             p.setPen(Qt::NoPen);
-            p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+            p.drawPath(finn_rounded_path(r, kRadiusMd));
             p.setBrush(t.accent);
             p.drawRoundedRect(QRectF(2, 13, 3, height() - 26), 1.5, 1.5);
         } else if (underMouse()) {
             p.setBrush(t.surface_hover);
             p.setPen(Qt::NoPen);
-            p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+            p.drawPath(finn_rounded_path(r, kRadiusMd));
         }
         const QColor fg = isChecked() ? t.on : t.dim;
         FinnThemeManager::instance().paintIcon(

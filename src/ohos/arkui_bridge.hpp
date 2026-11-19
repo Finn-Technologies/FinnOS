@@ -39,6 +39,10 @@ enum class ArkComponentKind {
     Divider,
     Blank,
     AlertDialog,
+    Tabs,
+    TabContent,
+    Swiper,
+    RelativeContainer,
     Custom,
 };
 
@@ -123,6 +127,14 @@ public:
 
     // Expands {{key}} templates in node.text against reactive @State values.
     std::string resolve_text(const ArkUiNode& node) const;
+
+    // Resolves an OpenHarmony resource reference ($media:name, $rawfile:name,
+    // $r('app.media.name')) against real files under resource_root(). Name-based
+    // lookup is used; numeric resources.index IDs are not decoded. Returns an
+    // empty string when no real file exists — never a fabricated path.
+    std::string resolve_resource_path(const std::string& resource_id) const;
+    // Resolves an Image node's src to an existing file, or "" when missing.
+    std::string resolve_image_src(const ArkUiNode& node) const;
 
     void set_event_handler(EventHandler handler) { event_handler_ = std::move(handler); }
     void set_lifecycle_handler(LifecycleHandler handler) {

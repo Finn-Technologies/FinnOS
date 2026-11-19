@@ -14,8 +14,10 @@ add_executable(finn-settings
     main.cpp
     ../../src/system/desktop_services.cpp
     ../../src/system/desktop_services.hpp
+    ../../src/compat/android_runner.cpp
     ../../src/compat/desktop_entry.cpp
     ../../src/compat/wine_runner.cpp
+    ../../src/compat/wine_prefix.cpp
 )
 target_include_directories(finn-settings PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src

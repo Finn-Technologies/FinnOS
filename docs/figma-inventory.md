@@ -2,6 +2,7 @@
 
 > **Figma file reference:** `FinnOS - Abhi` (`fileKey: null`, Audit finding **M8**; cited by `Page / Name <nodeId>`).
 > **Codebase verified on branch:** `audit-and-ota`.
+> **Re-verified 2026-11-19:** the focus rings listed as missing below are now implemented — `draw_focus_ring()` is called by `FinnCard`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider` and `FinnNavItem` in `src/ui/finn/components.cpp`. The `Settings` sidebar in the live Figma file (`21:131`) uses the correct glyphs (`cog`, `swatch-book`, `sun-dim`, `volume-02`, `globe`, `bluetooth`) and a single selected row; only `About` (`24:74`) still uses a `wifi` placeholder. The `250/12/5/36` sidebar grid, `r=5` rows, `26 px` coloured icon circles, `14 px` Regular labels, `0.5 px` `hair_soft` window-control border and Figma-name icon aliases are all implemented and verified on the VM against `get_screenshot` of `20:98`. See [`docs/figma-audit.md`](figma-audit.md) "Live re-verification".
 
 ---
 

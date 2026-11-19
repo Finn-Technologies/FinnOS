@@ -1,6 +1,12 @@
-<svg width="21" height="21" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M5.5 10.5C5.5 7.73858 7.73858 5.5 10.5 5.5C13.2614 5.5 15.5 7.73858 15.5 10.5V15.5C15.5 16.3284 14.8284 17 14 17H7C6.17157 17 5.5 16.3284 5.5 15.5V10.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M7.5 5.75L6 3.5M13.5 5.75L15 3.5M5.5 10.5H15.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-<circle cx="8.5" cy="8.25" r="0.75" fill="currentColor"/>
-<circle cx="12.5" cy="8.25" r="0.75" fill="currentColor"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="android_bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3DDC84"/>
+      <stop offset="100%" stop-color="#0A8F4E"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#android_bg)"/>
+  <path d="M9 12.5 16 8.5l7 4v7L16 23.5l-7-4v-7Z" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="m9.4 12.8 6.6 3.8 6.6-3.8M16 16.6v6.6" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle cx="16" cy="16.6" r="1.8" fill="#fff"/>
 </svg>

@@ -50,7 +50,7 @@ Qt6 platform customization (src/qtplugin)
 Compat & system helpers (src/compat, src/system)
   desktop_entry.*  XDG .desktop & Flatpak discovery + launch line building
   wine_runner.*    PE header inspection & per-app Wine prefix execution
-  android_runner.* Waydroid runtime probe and launcher helper
+  android_runner.* Clean-room Android 17 (finn-android) probe and launcher helper
   sys_files.*      settings, users, mounts, /proc memory & CPU helpers
   desktop_services.* real NetworkManager/BlueZ/UPower/PipeWire probes + secure nmcli connect
 

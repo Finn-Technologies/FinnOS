@@ -44,7 +44,7 @@ FinnWindowControls::FinnWindowControls(QWidget* parent) : QWidget(parent) {
     max_btn_->setAccessibleName(QStringLiteral("Maximize window"));
     max_btn_->setAccessibleDescription(QStringLiteral("Maximize or restore the active window"));
 
-    min_btn_ = new FinnIconButton(QStringLiteral("minus-sign"), 20, 14, this);
+    min_btn_ = new FinnIconButton(QStringLiteral("minimise"), 20, 14, this);
     min_btn_->setFocusPolicy(Qt::NoFocus);
     min_btn_->setFixedSize(20, 20);
     min_btn_->setCornerRadius(4.0);
@@ -95,10 +95,16 @@ void FinnWindowControls::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    p.setBrush(t.glass);
-    p.setPen(QPen(t.hair, 1.0));
-    p.drawRoundedRect(r, kRadiusMd, kRadiusMd);
+    // Figma 20:106 (Settings App / Window Options): 88x28, r=6, an opaque
+    // #FFFFFF fill and a #000000@5% 0.5 px inside stroke. `tile` is the
+    // opaque surface token (light #FFFFFF / dark #161922) and `hair_soft`
+    // is the Figma-measured 5% hairline, so neither is a rounded guess.
+    const QRectF r = QRectF(rect()).adjusted(0.25, 0.25, -0.25, -0.25);
+    p.setBrush(t.tile);
+    p.setPen(QPen(QColor::fromRgba(t.dark ? colors::hair_soft_dark
+                                          : colors::hair_soft_light),
+                  0.5));
+    p.drawPath(finn_rounded_path(r, kRadiusMd));
 }
 
 // ---- FinnWindow ----
@@ -415,19 +421,12 @@ void FinnWindow::updateFrameMask() {
         frame_root_->clearMask();
         return;
     }
-    const QRect r = frame_root_->rect();
-    if (r.isEmpty()) return;
-    const int d = 2 * kRadiusXl;
-    QRegion mask(QRect(r.left() + kRadiusXl, r.top(),
-                       r.width() - d, r.height()));
-    mask |= QRegion(QRect(r.left(), r.top() + kRadiusXl,
-                          r.width(), r.height() - d));
-    mask |= QRegion(QRect(r.left(), r.top(), d, d), QRegion::Ellipse);
-    mask |= QRegion(QRect(r.right() - d + 1, r.top(), d, d), QRegion::Ellipse);
-    mask |= QRegion(QRect(r.left(), r.bottom() - d + 1, d, d), QRegion::Ellipse);
-    mask |= QRegion(QRect(r.right() - d + 1, r.bottom() - d + 1, d, d),
-                    QRegion::Ellipse);
-    frame_root_->setMask(mask);
+    const QRectF rf = QRectF(frame_root_->rect());
+    if (rf.isEmpty()) return;
+    // Use the same smooth-corner path the frame paints, so child widgets can
+    // never paint square pixels over a circular (mis)match at the corners.
+    frame_root_->setMask(QRegion(
+        finn_rounded_path(rf, kRadiusXl).toFillPolygon().toPolygon()));
 }
 
 void FinnWindow::positionToast() {
@@ -603,8 +602,7 @@ void FinnWindow::paintEvent(QPaintEvent*) {
         }
     }
 
-    QPainterPath clip;
-    clip.addRoundedRect(fr, rad, rad);
+    QPainterPath clip = finn_rounded_path(fr, rad);
     p.save();
     p.setClipPath(clip);
     p.fillRect(fr, t.bone);
@@ -625,10 +623,10 @@ void FinnWindow::paintEvent(QPaintEvent*) {
         QColor spec = QColor::fromRgba(colors::fill_light);
         spec.setAlpha(t.dark ? 18 : 190);
         p.setPen(QPen(spec, 1.0));
-        p.drawRoundedRect(fr.adjusted(1.5, 1.5, -1.5, -1.5),
-                          std::max(1.0, rad - 1.0), std::max(1.0, rad - 1.0));
+        p.drawPath(finn_rounded_path(fr.adjusted(1.5, 1.5, -1.5, -1.5),
+                                     std::max(1.0, rad - 1.0)));
         p.setPen(QPen(t.hair, 1.0));
-        p.drawRoundedRect(fr.adjusted(0.5, 0.5, -0.5, -0.5), rad, rad);
+        p.drawPath(finn_rounded_path(fr.adjusted(0.5, 0.5, -0.5, -0.5), rad));
     }
 }
 

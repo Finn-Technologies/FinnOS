@@ -84,6 +84,39 @@ struct NSDateObj {
     double since_1970;
 };
 
+// Each byte of the backing UTF-8 string carries its own (retained) attributes
+// dictionary. This makes range edits and effective ranges straightforward and
+// correct; the trade-off is O(length) attribute slots, which is fine for text.
+struct NSAttributedStringObj {
+    ObjcObject base;
+    std::string* text;
+    std::vector<ObjcId>* attributes;
+};
+
+struct NSDateFormatterObj {
+    ObjcObject base;
+    std::string* format;
+};
+
+// Instances are calloc-zeroed by the ObjC allocator; no C++ constructor runs.
+struct NSDateComponentsObj {
+    ObjcObject base;
+    std::int64_t era;
+    std::int64_t year;
+    std::int64_t month;
+    std::int64_t day;
+    std::int64_t hour;
+    std::int64_t minute;
+    std::int64_t second;
+    std::int64_t nanosecond;
+    std::int64_t weekday;
+};
+
+struct NSCalendarObj {
+    ObjcObject base;
+    std::string* identifier;
+};
+
 struct NSErrorObj {
     ObjcObject base;
     ObjcId domain;
@@ -168,6 +201,11 @@ ObjcClass* g_cls_nsconstfloat = nullptr;
 ObjcClass* g_cls_nsdata = nullptr;
 ObjcClass* g_cls_nsmutabledata = nullptr;
 ObjcClass* g_cls_nsdate = nullptr;
+ObjcClass* g_cls_nsattributedstring = nullptr;
+ObjcClass* g_cls_nsmutableattributedstring = nullptr;
+ObjcClass* g_cls_nsdateformatter = nullptr;
+ObjcClass* g_cls_nscalendar = nullptr;
+ObjcClass* g_cls_nsdatecomponents = nullptr;
 ObjcClass* g_cls_nserror = nullptr;
 ObjcClass* g_cls_nsnull = nullptr;
 ObjcClass* g_cls_nsjson = nullptr;
@@ -212,6 +250,12 @@ ObjcId g_const_localized_desc_key = nullptr;
 ObjcId g_const_underlying_error_key = nullptr;
 ObjcId g_const_default_runloop_mode = nullptr;
 ObjcId g_const_common_runloop_modes = nullptr;
+ObjcId g_const_nsfont_attribute = nullptr;
+ObjcId g_const_nsforeground_attribute = nullptr;
+ObjcId g_const_nsbackground_attribute = nullptr;
+ObjcId g_const_nsunderline_attribute = nullptr;
+ObjcId g_const_nscalendar_gregorian = nullptr;
+ObjcId g_gregorian_calendar = nullptr;
 
 void* g_cf_allocator_default = nullptr;
 std::uintptr_t g_cf_array_callbacks[6] = {};
@@ -1464,6 +1508,476 @@ ObjcId nsdate_description(ObjcId self, ObjcSel) {
     return make_nsstring(buf);
 }
 
+// --- NSAttributedString / NSMutableAttributedString ---
+// Ranges are UTF-8 byte offsets, matching NSString.length in this runtime.
+// The string is the source of truth; attribute slots follow its size exactly.
+static void attributed_dtor(ObjcId obj) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(obj);
+    if (a->attributes) {
+        for (ObjcId d : *a->attributes) finn_objc_release(d);
+        delete a->attributes;
+        a->attributes = nullptr;
+    }
+    delete a->text;
+    a->text = nullptr;
+}
+
+static ObjcId attributed_alloc(bool mut) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(finn_objc_alloc_object(
+        mut ? g_cls_nsmutableattributedstring : g_cls_nsattributedstring,
+        sizeof(NSAttributedStringObj)));
+    a->text = new std::string();
+    a->attributes = new std::vector<ObjcId>();
+    return reinterpret_cast<ObjcId>(a);
+}
+
+static DarwinRange attributed_clamp(const std::string& text, DarwinRange r) {
+    DarwinRange out{};
+    out.location = std::min(r.location, text.size());
+    out.length = std::min(r.length, text.size() - out.location);
+    return out;
+}
+
+static ObjcId attributed_init_with(ObjcId self, ObjcSel, ObjcId str, ObjcId attrs) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    if (!a->text) a->text = new std::string();
+    if (!a->attributes) a->attributes = new std::vector<ObjcId>();
+    *a->text = nsstring_to_utf8(str);
+    for (ObjcId d : *a->attributes) finn_objc_release(d);
+    a->attributes->assign(a->text->size(), nullptr);
+    if (attrs && is_nsdict_obj(attrs) && nsdict_count(attrs, nullptr) > 0) {
+        for (ObjcId& slot : *a->attributes) slot = finn_objc_retain(attrs);
+    }
+    return self;
+}
+
+static ObjcId attributed_init_string(ObjcId self, ObjcSel sel, ObjcId str) {
+    return attributed_init_with(self, sel, str, nullptr);
+}
+
+static ObjcId attributed_string(ObjcId self, ObjcSel) {
+    const auto* a = reinterpret_cast<const NSAttributedStringObj*>(self);
+    return make_nsstring(a->text ? *a->text : std::string{});
+}
+
+static std::size_t attributed_length(ObjcId self, ObjcSel) {
+    const auto* a = reinterpret_cast<const NSAttributedStringObj*>(self);
+    return a->text ? a->text->size() : 0;
+}
+
+static bool attr_value_equal(ObjcId a, ObjcId b) {
+    if (a == b) return true;
+    if (!a || !b) return false;
+    if (is_nsstring_obj(a) && is_nsstring_obj(b)) return nsstring_to_utf8(a) == nsstring_to_utf8(b);
+    if (a->isa == g_cls_nsnumber && b->isa == g_cls_nsnumber) {
+        const auto* na = reinterpret_cast<const NSNumberObj*>(a);
+        const auto* nb = reinterpret_cast<const NSNumberObj*>(b);
+        if (na->is_float != nb->is_float || na->is_bool != nb->is_bool) return false;
+        return na->is_float ? (na->dval == nb->dval) : (na->ival == nb->ival);
+    }
+    return false;
+}
+
+static bool attr_dict_equal(ObjcId a, ObjcId b) {
+    if (a == b) return true;
+    if (!a || !b || !is_nsdict_obj(a) || !is_nsdict_obj(b)) return false;
+    const std::size_t ca = nsdict_count(a, nullptr);
+    if (ca != nsdict_count(b, nullptr)) return false;
+    ObjcId keys = nsdict_allKeys(a, nullptr);
+    bool equal = true;
+    for (std::size_t i = 0; i < ca && equal; ++i) {
+        ObjcId key = nsarray_objectAtIndex(keys, nullptr, i);
+        equal = attr_value_equal(nsdict_objectForKey(a, nullptr, key),
+                                 nsdict_objectForKey(b, nullptr, key));
+    }
+    finn_objc_release(keys);
+    return equal;
+}
+
+static ObjcId attributed_attributes_at(ObjcId self, ObjcSel, std::size_t index,
+                                        DarwinRange* effective) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const std::size_t n = a->text->size();
+    if (index >= n) {
+        if (effective) *effective = {n, 0};
+        return make_nsdict(false);
+    }
+    const ObjcId cur = (*a->attributes)[index];
+    std::size_t start = index;
+    std::size_t end = index + 1;
+    while (start > 0 && attr_dict_equal((*a->attributes)[start - 1], cur)) --start;
+    while (end < n && attr_dict_equal((*a->attributes)[end], cur)) ++end;
+    if (effective) *effective = {start, end - start};
+    return cur ? finn_objc_retain(cur) : make_nsdict(false);
+}
+
+static ObjcId attributed_substring(ObjcId self, ObjcSel, DarwinRange range) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const DarwinRange r = attributed_clamp(*a->text, range);
+    ObjcId sub = attributed_alloc(self->isa == g_cls_nsmutableattributedstring);
+    auto* s = reinterpret_cast<NSAttributedStringObj*>(sub);
+    *s->text = a->text->substr(r.location, r.length);
+    s->attributes->assign(r.length, nullptr);
+    for (std::size_t i = 0; i < r.length; ++i) {
+        (*s->attributes)[i] = finn_objc_retain((*a->attributes)[r.location + i]);
+    }
+    return sub;
+}
+
+static signed char attributed_is_equal(ObjcId self, ObjcSel, ObjcId other) {
+    if (!other || (other->isa != g_cls_nsattributedstring &&
+                   other->isa != g_cls_nsmutableattributedstring)) {
+        return 0;
+    }
+    const auto* a = reinterpret_cast<const NSAttributedStringObj*>(self);
+    const auto* b = reinterpret_cast<const NSAttributedStringObj*>(other);
+    if (*a->text != *b->text || a->attributes->size() != b->attributes->size()) return 0;
+    for (std::size_t i = 0; i < a->attributes->size(); ++i) {
+        if (!attr_dict_equal((*a->attributes)[i], (*b->attributes)[i])) return 0;
+    }
+    return 1;
+}
+
+static ObjcId attributed_description(ObjcId self, ObjcSel) {
+    return attributed_string(self, nullptr);
+}
+
+static ObjcId attr_mutable_copy(ObjcId src) {
+    ObjcId out = make_nsdict(true);
+    if (!src || !is_nsdict_obj(src)) return out;
+    ObjcId keys = nsdict_allKeys(src, nullptr);
+    const std::size_t count = nsarray_count(keys, nullptr);
+    for (std::size_t i = 0; i < count; ++i) {
+        ObjcId key = nsarray_objectAtIndex(keys, nullptr, i);
+        nsdict_setObjectForKey(out, nullptr, nsdict_objectForKey(src, nullptr, key), key);
+    }
+    finn_objc_release(keys);
+    return out;
+}
+
+static void attributed_replace_slots(NSAttributedStringObj* a, DarwinRange r, ObjcId attrs) {
+    r = attributed_clamp(*a->text, r);
+    for (std::size_t i = r.location; i < r.location + r.length; ++i) {
+        finn_objc_release((*a->attributes)[i]);
+        (*a->attributes)[i] = attrs ? finn_objc_retain(attrs) : nullptr;
+    }
+}
+
+static void attributed_set_attributes(ObjcId self, ObjcSel, ObjcId attrs, DarwinRange range) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    ObjcId stored = nullptr;
+    if (attrs && is_nsdict_obj(attrs) && nsdict_count(attrs, nullptr) > 0) stored = attrs;
+    attributed_replace_slots(a, range, stored);
+}
+
+static void attributed_add_attribute(ObjcId self, ObjcSel, ObjcId key, ObjcId value,
+                                     DarwinRange range) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const std::string k = nsstring_to_utf8(key);
+    if (k.empty()) return;
+    const DarwinRange r = attributed_clamp(*a->text, range);
+    for (std::size_t i = r.location; i < r.location + r.length; ++i) {
+        ObjcId cur = (*a->attributes)[i];
+        ObjcId dict = attr_mutable_copy(cur);
+        finn_objc_release(cur);
+        ObjcId key_obj = make_nsstring(k);
+        if (value) nsdict_setObjectForKey(dict, nullptr, value, key_obj);
+        else nsdict_removeObjectForKey(dict, nullptr, key_obj);
+        finn_objc_release(key_obj);
+        (*a->attributes)[i] = nsdict_count(dict, nullptr) ? finn_objc_retain(dict) : nullptr;
+        finn_objc_release(dict);
+    }
+}
+
+static void attributed_add_attributes(ObjcId self, ObjcSel, ObjcId attrs, DarwinRange range) {
+    if (!attrs || !is_nsdict_obj(attrs)) return;
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const DarwinRange r = attributed_clamp(*a->text, range);
+    ObjcId keys = nsdict_allKeys(attrs, nullptr);
+    const std::size_t count = nsarray_count(keys, nullptr);
+    for (std::size_t i = r.location; i < r.location + r.length; ++i) {
+        ObjcId cur = (*a->attributes)[i];
+        ObjcId dict = attr_mutable_copy(cur);
+        finn_objc_release(cur);
+        for (std::size_t j = 0; j < count; ++j) {
+            ObjcId key = nsarray_objectAtIndex(keys, nullptr, j);
+            nsdict_setObjectForKey(dict, nullptr, nsdict_objectForKey(attrs, nullptr, key), key);
+        }
+        (*a->attributes)[i] = nsdict_count(dict, nullptr) ? finn_objc_retain(dict) : nullptr;
+        finn_objc_release(dict);
+    }
+    finn_objc_release(keys);
+}
+
+static void attributed_remove_attribute(ObjcId self, ObjcSel, ObjcId key, DarwinRange range) {
+    attributed_add_attribute(self, nullptr, key, nullptr, range);
+}
+
+static void attributed_replace_characters(ObjcId self, ObjcSel, DarwinRange range, ObjcId str) {
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const DarwinRange r = attributed_clamp(*a->text, range);
+    const std::string replacement = nsstring_to_utf8(str);
+    a->text->replace(r.location, r.length, replacement);
+    a->attributes->erase(a->attributes->begin() + static_cast<std::ptrdiff_t>(r.location),
+                         a->attributes->begin() + static_cast<std::ptrdiff_t>(r.location + r.length));
+    a->attributes->insert(a->attributes->begin() + static_cast<std::ptrdiff_t>(r.location),
+                          replacement.size(), nullptr);
+}
+
+static void attributed_delete_characters(ObjcId self, ObjcSel, DarwinRange range) {
+    attributed_replace_characters(self, nullptr, range, nsstring_from_utf8(""));
+}
+
+static void attributed_append(ObjcId self, ObjcSel, ObjcId other) {
+    if (!other || (other->isa != g_cls_nsattributedstring &&
+                      other->isa != g_cls_nsmutableattributedstring)) {
+        return;
+    }
+    auto* a = reinterpret_cast<NSAttributedStringObj*>(self);
+    const auto* b = reinterpret_cast<const NSAttributedStringObj*>(other);
+    *a->text += *b->text;
+    for (ObjcId d : *b->attributes) a->attributes->push_back(finn_objc_retain(d));
+}
+
+// --- NSDateFormatter / NSCalendar / NSDateComponents ---
+// The formatter supports the common strftime-compatible date-format tokens
+// below and formats in UTC. Unsupported tokens are passed through literally;
+// named time zones and locale-sensitive ordering are not implemented.
+static std::string date_format_to_strftime(std::string_view fmt) {
+    static const struct {
+        const char* token;
+        const char* spec;
+    } kTokens[] = {
+        {"yyyy", "%Y"}, {"yy", "%y"}, {"MMMM", "%B"}, {"MMM", "%b"}, {"MM", "%m"},
+        {"dd", "%d"}, {"HH", "%H"}, {"hh", "%I"}, {"mm", "%M"}, {"ss", "%S"},
+        {"EEEE", "%A"}, {"EEE", "%a"}, {"a", "%p"}, {"M", "%m"}, {"d", "%d"},
+        {"H", "%H"}, {"h", "%I"}, {"m", "%M"}, {"s", "%S"}, {"Y", "%Y"},
+    };
+    std::string out;
+    for (std::size_t i = 0; i < fmt.size();) {
+        bool matched = false;
+        for (const auto& t : kTokens) {
+            const std::size_t len = std::strlen(t.token);
+            if (fmt.compare(i, len, t.token) == 0) {
+                out += t.spec;
+                i += len;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) out.push_back(fmt[i++]);
+    }
+    return out;
+}
+
+static ObjcId dateformatter_init(ObjcId self, ObjcSel) {
+    auto* f = reinterpret_cast<NSDateFormatterObj*>(self);
+    if (!f->format) f->format = new std::string("yyyy-MM-dd HH:mm:ss");
+    return self;
+}
+
+static ObjcId dateformatter_set_format(ObjcId self, ObjcSel, ObjcId fmt) {
+    auto* f = reinterpret_cast<NSDateFormatterObj*>(self);
+    if (!f->format) f->format = new std::string();
+    *f->format = nsstring_to_utf8(fmt);
+    return self;
+}
+
+static ObjcId dateformatter_format(ObjcId self, ObjcSel) {
+    const auto* f = reinterpret_cast<const NSDateFormatterObj*>(self);
+    return make_nsstring(f->format ? *f->format : std::string{});
+}
+
+static ObjcId dateformatter_string_from_date(ObjcId self, ObjcSel, ObjcId date) {
+    if (!date || date->isa != g_cls_nsdate) return nullptr;
+    const auto* f = reinterpret_cast<const NSDateFormatterObj*>(self);
+    const auto t = static_cast<std::time_t>(
+        reinterpret_cast<const NSDateObj*>(date)->since_1970);
+    struct tm tm_utc{};
+    if (!::gmtime_r(&t, &tm_utc)) return nullptr;
+    const std::string spec = date_format_to_strftime(f->format ? *f->format : std::string{});
+    char buf[512] = {};
+    const std::size_t written = ::strftime(buf, sizeof(buf), spec.c_str(), &tm_utc);
+    return written ? make_nsstring(buf) : nullptr;
+}
+
+static ObjcId dateformatter_date_from_string(ObjcId self, ObjcSel, ObjcId str) {
+    if (!str || !is_nsstring_obj(str)) return nullptr;
+    const auto* f = reinterpret_cast<const NSDateFormatterObj*>(self);
+    const std::string spec = date_format_to_strftime(f->format ? *f->format : std::string{});
+    struct tm tm_val{};
+    tm_val.tm_mday = 1;
+    tm_val.tm_year = 70;
+    const std::string input = nsstring_to_utf8(str);
+    if (!::strptime(input.c_str(), spec.c_str(), &tm_val)) return nullptr;
+    const std::time_t t = ::timegm(&tm_val);
+    auto* d = reinterpret_cast<NSDateObj*>(
+        finn_objc_alloc_object(g_cls_nsdate, sizeof(NSDateObj)));
+    d->since_1970 = static_cast<double>(t);
+    return reinterpret_cast<ObjcId>(d);
+}
+
+static ObjcId datecomponents_init(ObjcId self, ObjcSel) { return self; }
+
+static ObjcId datecomponents_new() {
+    return finn_objc_alloc_object(g_cls_nsdatecomponents, sizeof(NSDateComponentsObj));
+}
+
+static const std::int64_t* components_field(ObjcId obj, std::uintptr_t unit) {
+    auto* c = reinterpret_cast<const NSDateComponentsObj*>(obj);
+    switch (unit) {
+        case 1u << 1: return &c->era;
+        case 1u << 2: return &c->year;
+        case 1u << 3: return &c->month;
+        case 1u << 4: return &c->day;
+        case 1u << 5: return &c->hour;
+        case 1u << 6: return &c->minute;
+        case 1u << 7: return &c->second;
+        case 1u << 8: return &c->weekday;
+        case 1u << 14: return &c->nanosecond;
+        default: return nullptr;
+    }
+}
+
+static std::int64_t components_get(ObjcId self, ObjcSel, std::uintptr_t unit) {
+    const std::int64_t* p = components_field(self, unit);
+    return p ? *p : 0;
+}
+
+// One tiny setter per NSCalendarUnit; each writes exactly one field.
+#define FINN_COMPONENT_SETTER(name, field)                                     \
+    static void components_set_##name(ObjcId self, ObjcSel, std::int64_t v) {  \
+        reinterpret_cast<NSDateComponentsObj*>(self)->field = v;               \
+    }
+FINN_COMPONENT_SETTER(era, era)
+FINN_COMPONENT_SETTER(year, year)
+FINN_COMPONENT_SETTER(month, month)
+FINN_COMPONENT_SETTER(day, day)
+FINN_COMPONENT_SETTER(hour, hour)
+FINN_COMPONENT_SETTER(minute, minute)
+FINN_COMPONENT_SETTER(second, second)
+FINN_COMPONENT_SETTER(nanosecond, nanosecond)
+FINN_COMPONENT_SETTER(weekday, weekday)
+#undef FINN_COMPONENT_SETTER
+
+#define FINN_COMPONENT_GETTER(name, field)                                     \
+    static std::int64_t components_get_##name(ObjcId self, ObjcSel) {          \
+        return reinterpret_cast<const NSDateComponentsObj*>(self)->field;      \
+    }
+FINN_COMPONENT_GETTER(era, era)
+FINN_COMPONENT_GETTER(year, year)
+FINN_COMPONENT_GETTER(month, month)
+FINN_COMPONENT_GETTER(day, day)
+FINN_COMPONENT_GETTER(hour, hour)
+FINN_COMPONENT_GETTER(minute, minute)
+FINN_COMPONENT_GETTER(second, second)
+FINN_COMPONENT_GETTER(nanosecond, nanosecond)
+FINN_COMPONENT_GETTER(weekday, weekday)
+#undef FINN_COMPONENT_GETTER
+
+static ObjcId calendar_current(ObjcId, ObjcSel) {
+    if (!g_gregorian_calendar) {
+        auto* c = reinterpret_cast<NSCalendarObj*>(
+            finn_objc_alloc_object(g_cls_nscalendar, sizeof(NSCalendarObj)));
+        c->identifier = new std::string("NSGregorianCalendar");
+        g_gregorian_calendar = reinterpret_cast<ObjcId>(c);
+    }
+    return g_gregorian_calendar;
+}
+
+static ObjcId calendar_with_identifier(ObjcId, ObjcSel, ObjcId ident) {
+    const std::string id = nsstring_to_utf8(ident);
+    // Only the Gregorian calendar is implemented. Anything else returns nil
+    // rather than silently behaving like a Gregorian calendar.
+    if (id != "NSGregorianCalendar" && id != "gregory" && id != "NSCalendarIdentifierGregorian") {
+        return nullptr;
+    }
+    return calendar_current(nullptr, nullptr);
+}
+
+static ObjcId calendar_identifier(ObjcId self, ObjcSel) {
+    const auto* c = reinterpret_cast<const NSCalendarObj*>(self);
+    return make_nsstring(c->identifier ? *c->identifier : std::string{});
+}
+
+static void date_to_tm(ObjcId date, struct tm* out) {
+    const auto t = static_cast<std::time_t>(
+        reinterpret_cast<const NSDateObj*>(date)->since_1970);
+    if (!::gmtime_r(&t, out)) *out = {};
+}
+
+static std::int64_t calendar_component(ObjcId, ObjcSel, std::uintptr_t unit, ObjcId date) {
+    if (!date || date->isa != g_cls_nsdate) return 0;
+    struct tm t{};
+    date_to_tm(date, &t);
+    switch (unit) {
+        case 1u << 1: return t.tm_year / 100 + 1;                 // era
+        case 1u << 2: return t.tm_year + 1900;                    // year
+        case 1u << 3: return t.tm_mon + 1;                        // month
+        case 1u << 4: return t.tm_mday;                           // day
+        case 1u << 5: return t.tm_hour;                           // hour
+        case 1u << 6: return t.tm_min;                            // minute
+        case 1u << 7: return t.tm_sec;                            // second
+        case 1u << 8: return t.tm_wday + 1;                       // weekday (Sunday = 1)
+        default: return 0;  // weeks, quarters, nanoseconds not implemented
+    }
+}
+
+static ObjcId calendar_components(ObjcId self, ObjcSel, std::uintptr_t units, ObjcId date) {
+    ObjcId comps = datecomponents_new();
+    static constexpr std::uintptr_t kUnits[] = {
+        1u << 1, 1u << 2, 1u << 3, 1u << 4, 1u << 5, 1u << 6, 1u << 7, 1u << 8,
+    };
+    for (std::uintptr_t unit : kUnits) {
+        if ((units & unit) != 0) {
+            const std::int64_t v = calendar_component(self, nullptr, unit, date);
+            std::int64_t* field = const_cast<std::int64_t*>(
+                components_field(comps, unit));
+            if (field) *field = v;
+        }
+    }
+    return comps;
+}
+
+static ObjcId calendar_date_from_components(ObjcId, ObjcSel, ObjcId comps) {
+    if (!comps || comps->isa != g_cls_nsdatecomponents) return nullptr;
+    const auto* c = reinterpret_cast<const NSDateComponentsObj*>(comps);
+    struct tm t{};
+    t.tm_year = static_cast<int>(c->year ? c->year - 1900 : 70);
+    t.tm_mon = static_cast<int>(c->month ? c->month - 1 : 0);
+    t.tm_mday = static_cast<int>(c->day ? c->day : 1);
+    t.tm_hour = static_cast<int>(c->hour);
+    t.tm_min = static_cast<int>(c->minute);
+    t.tm_sec = static_cast<int>(c->second);
+    const std::time_t epoch = ::timegm(&t);
+    auto* d = reinterpret_cast<NSDateObj*>(
+        finn_objc_alloc_object(g_cls_nsdate, sizeof(NSDateObj)));
+    d->since_1970 = static_cast<double>(epoch) + c->nanosecond / 1e9;
+    return reinterpret_cast<ObjcId>(d);
+}
+
+static ObjcId calendar_add_unit(ObjcId self, ObjcSel, std::uintptr_t unit,
+                                std::int64_t value, ObjcId date, std::uintptr_t) {
+    (void)self;
+    if (!date || date->isa != g_cls_nsdate) return nullptr;
+    struct tm t{};
+    date_to_tm(date, &t);
+    switch (unit) {
+        case 1u << 2: t.tm_year += static_cast<int>(value); break;  // year
+        case 1u << 3: t.tm_mon += static_cast<int>(value); break;   // month
+        case 1u << 4: t.tm_mday += static_cast<int>(value); break;  // day
+        case 1u << 5: t.tm_hour += static_cast<int>(value); break;  // hour
+        case 1u << 6: t.tm_min += static_cast<int>(value); break;   // minute
+        case 1u << 7: t.tm_sec += static_cast<int>(value); break;   // second
+        default: return nullptr;  // unsupported unit: report, do not fake
+    }
+    const std::time_t epoch = ::timegm(&t);
+    auto* d = reinterpret_cast<NSDateObj*>(
+        finn_objc_alloc_object(g_cls_nsdate, sizeof(NSDateObj)));
+    d->since_1970 = static_cast<double>(epoch);
+    return reinterpret_cast<ObjcId>(d);
+}
+
 // --- NSJSONSerialization (RFC 8259 parser & serializer) ---
 class JsonParser {
 public:
@@ -2445,28 +2959,93 @@ ObjcId nsnotifcenter_default(ObjcId, ObjcSel) {
 }
 void nsnotifcenter_addObserver(ObjcId, ObjcSel, ObjcId obs, ObjcSel sel,
                                ObjcId name, ObjcId obj) {
-    g_observers.push_back({obs, sel, nsstring_to_utf8(name), obj});
+    if (!obs) return;
+    // A registration owns its observer and observed object. Without these
+    // retains an autorelease-pool drain can free either one while it is still
+    // in the table, and posting would then dispatch through a dangling IMP.
+    g_observers.push_back(
+        {finn_objc_retain(obs), sel, nsstring_to_utf8(name), finn_objc_retain(obj)});
 }
 void nsnotifcenter_removeObserver(ObjcId, ObjcSel, ObjcId obs) {
-    g_observers.erase(
-        std::remove_if(g_observers.begin(), g_observers.end(),
-                       [obs](const NotificationObserver& o) { return o.observer == obs; }),
-        g_observers.end());
+    const auto first = std::remove_if(
+        g_observers.begin(), g_observers.end(),
+        [obs](const NotificationObserver& o) { return o.observer == obs; });
+    for (auto it = first; it != g_observers.end(); ++it) {
+        finn_objc_release(it->observer);
+        finn_objc_release(it->object);
+    }
+    g_observers.erase(first, g_observers.end());
+}
+void nsnotifcenter_removeObserverNameObject(ObjcId, ObjcSel, ObjcId obs, ObjcId name,
+                                            ObjcId obj) {
+    const std::string n = nsstring_to_utf8(name);
+    const bool has_name = (name != nullptr);
+    const auto first = std::remove_if(
+        g_observers.begin(), g_observers.end(),
+        [obs, &n, has_name, obj](const NotificationObserver& o) {
+            if (o.observer != obs) return false;
+            if (has_name && o.name != n) return false;
+            if (obj && o.object != obj) return false;
+            return true;
+        });
+    for (auto it = first; it != g_observers.end(); ++it) {
+        finn_objc_release(it->observer);
+        finn_objc_release(it->object);
+    }
+    g_observers.erase(first, g_observers.end());
+}
+static void nsnotification_dtor(ObjcId obj) {
+    auto* n = reinterpret_cast<NSNotificationObj*>(obj);
+    finn_objc_release(n->name);
+    finn_objc_release(n->object);
+    finn_objc_release(n->user_info);
+}
+
+static ObjcId nsnotification_with_name(ObjcId, ObjcSel, ObjcId name, ObjcId obj,
+                                       ObjcId user_info) {
+    auto* n = reinterpret_cast<NSNotificationObj*>(
+        finn_objc_alloc_object(g_cls_nsnotification, sizeof(NSNotificationObj)));
+    n->name = finn_objc_retain(name);
+    n->object = finn_objc_retain(obj);
+    n->user_info = finn_objc_retain(user_info);
+    return reinterpret_cast<ObjcId>(n);
+}
+
+ObjcId nsnotification_name(ObjcId self, ObjcSel) {
+    return reinterpret_cast<const NSNotificationObj*>(self)->name;
+}
+ObjcId nsnotification_object(ObjcId self, ObjcSel) {
+    return reinterpret_cast<const NSNotificationObj*>(self)->object;
+}
+ObjcId nsnotification_userinfo(ObjcId self, ObjcSel) {
+    return reinterpret_cast<const NSNotificationObj*>(self)->user_info;
+}
+void nsnotifcenter_post_notification(ObjcId, ObjcSel, ObjcId notification) {
+    if (!notification || notification->isa != g_cls_nsnotification) return;
+    auto* notif = reinterpret_cast<NSNotificationObj*>(notification);
+    const std::string n = nsstring_to_utf8(notif->name);
+    const auto snapshot = g_observers;
+    for (const auto& o : snapshot) {
+        if ((o.name.empty() || o.name == n) && (!o.object || o.object == notif->object)) {
+            objc_send<void>(o.observer, o.selector, notification);
+        }
+    }
 }
 void nsnotifcenter_post(ObjcId, ObjcSel, ObjcId name, ObjcId obj, ObjcId user_info) {
     const std::string n = nsstring_to_utf8(name);
     auto* notif = reinterpret_cast<NSNotificationObj*>(
         finn_objc_alloc_object(g_cls_nsnotification, sizeof(NSNotificationObj)));
-    notif->name = name;
-    notif->object = obj;
-    notif->user_info = user_info;
+    notif->name = finn_objc_retain(name);
+    notif->object = finn_objc_retain(obj);
+    notif->user_info = finn_objc_retain(user_info);
     const auto snapshot = g_observers;
     for (const auto& o : snapshot) {
         if ((o.name.empty() || o.name == n) && (!o.object || o.object == obj)) {
             objc_send<void>(o.observer, o.selector, reinterpret_cast<ObjcId>(notif));
         }
     }
-    finn_objc_release(reinterpret_cast<ObjcId>(notif));
+    // Foundation posts an autoreleased notification; observers may retain it.
+    finn_objc_autorelease(reinterpret_cast<ObjcId>(notif));
 }
 
 ObjcId nsrunloop_main(ObjcId, ObjcSel) {
@@ -2513,6 +3092,111 @@ void shim_NSLog(ObjcId fmt_obj, ...) {
     std::fprintf(stderr, "%s\n", msg.c_str());
 }
 #endif
+
+// --- NSPathUtilities ---
+// NSSearchPathDirectory values from NSPathUtilities.h. Only the directories
+// below are mapped onto the host filesystem; every other constant yields an
+// empty array rather than an invented path.
+static std::string path_home() {
+    const char* h = std::getenv("HOME");
+    return h ? h : std::string{};
+}
+
+static std::string path_temp() {
+    const char* t = std::getenv("TMPDIR");
+    return (t && *t) ? t : std::string("/tmp");
+}
+
+static ObjcId make_path_array(const std::vector<std::string>& paths) {
+    ObjcId arr = make_nsarray(false);
+    for (const auto& p : paths) {
+        ObjcId s = make_nsstring(p);
+        nsarray_addObject(arr, nullptr, s);
+        finn_objc_release(s);
+    }
+    return arr;
+}
+
+ObjcId shim_NSSearchPathForDirectoriesInDomains(std::uintptr_t directory,
+                                                std::uintptr_t domain_mask,
+                                                signed char /*expand_tilde*/) {
+    const bool user = (domain_mask & (1u << 0)) != 0;   // NSUserDomainMask
+    const bool local = (domain_mask & (1u << 1)) != 0;  // NSLocalDomainMask
+    const bool system = (domain_mask & (1u << 2)) != 0; // NSSystemDomainMask
+    const bool all = (domain_mask & 0xffffu) == 0xffffu; // NSAllDomainsMask
+    const std::string home = path_home();
+    std::vector<std::string> out;
+
+    auto join = [&home](const char* suffix) { return home + suffix; };
+    switch (directory) {
+        case 1:  // NSApplicationDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Applications"));
+            if (local || system || all) out.push_back("/Applications");
+            break;
+        case 5:  // NSLibraryDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Library"));
+            if (local || system || all) out.push_back("/Library");
+            break;
+        case 7:  // NSUserDirectory
+            if ((user || all) && !home.empty()) out.push_back(home);
+            break;
+        case 9:  // NSDocumentDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Documents"));
+            break;
+        case 12: // NSDesktopDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Desktop"));
+            break;
+        case 13: // NSCachesDirectory
+            if (user || all) {
+                const char* xdg = std::getenv("XDG_CACHE_HOME");
+                if (xdg && *xdg) out.push_back(std::string(xdg));
+                else if (!home.empty()) out.push_back(join("/.cache"));
+            }
+            if (local || system) out.push_back("/Library/Caches");
+            break;
+        case 14: // NSApplicationSupportDirectory
+            if (user || all) {
+                const char* xdg = std::getenv("XDG_DATA_HOME");
+                if (xdg && *xdg) out.push_back(std::string(xdg));
+                else if (!home.empty()) out.push_back(join("/.local/share"));
+            }
+            if (local || system) out.push_back("/Library/Application Support");
+            break;
+        case 15: // NSDownloadsDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Downloads"));
+            break;
+        case 17: // NSMoviesDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Movies"));
+            break;
+        case 18: // NSMusicDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Music"));
+            break;
+        case 19: // NSPicturesDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Pictures"));
+            break;
+        case 21: // NSSharedPublicDirectory
+            if ((user || all) && !home.empty()) out.push_back(join("/Public"));
+            break;
+        case 99: // NSItemReplacementDirectory
+            if (user || all || local || system) out.push_back(path_temp());
+            break;
+        default:
+            break;  // honestly unsupported: no paths invented
+    }
+    return make_path_array(out);
+}
+
+const char* shim_NSHomeDirectory() {
+    static std::string value;
+    value = path_home();
+    return value.c_str();
+}
+
+const char* shim_NSTemporaryDirectory() {
+    static std::string value;
+    value = path_temp();
+    return value.c_str();
+}
 
 // CFString
 ObjcId shim_CFStringCreateWithCString(void*, const char* cstr, std::uint32_t) {
@@ -2788,6 +3472,8 @@ ObjcId nserror_create(std::string_view domain, std::intptr_t code, std::string_v
     return err;
 }
 
+std::string main_bundle_path() { return g_main_bundle_path; }
+
 void init_foundation(const std::string& bundle_path) {
     if (bundle_path != g_main_bundle_path) {
         g_main_bundle_path = bundle_path;
@@ -3028,6 +3714,144 @@ void init_foundation(const std::string& bundle_path) {
     finn_class_addMethod(g_cls_nsdate, finn_sel_registerName("description"), to_imp(&nsdate_description));
     finn_objc_registerClassPair(g_cls_nsdate);
 
+    // NSAttributedString / NSMutableAttributedString
+    g_cls_nsattributedstring = finn_objc_allocateClassPair(
+        g_cls_nsobject, "NSAttributedString", sizeof(NSAttributedStringObj));
+    g_cls_nsattributedstring->cpp_destructor = &attributed_dtor;
+    finn_class_addMethod(g_cls_nsattributedstring,
+                         finn_sel_registerName("initWithString:"),
+                         to_imp(&attributed_init_string));
+    finn_class_addMethod(g_cls_nsattributedstring,
+                         finn_sel_registerName("initWithString:attributes:"),
+                         to_imp(&attributed_init_with));
+    finn_class_addMethod(g_cls_nsattributedstring, finn_sel_registerName("string"),
+                         to_imp(&attributed_string));
+    finn_class_addMethod(g_cls_nsattributedstring, finn_sel_registerName("length"),
+                         to_imp(&attributed_length));
+    finn_class_addMethod(g_cls_nsattributedstring,
+                         finn_sel_registerName("attributesAtIndex:effectiveRange:"),
+                         to_imp(&attributed_attributes_at));
+    finn_class_addMethod(g_cls_nsattributedstring,
+                         finn_sel_registerName("attributedSubstringFromRange:"),
+                         to_imp(&attributed_substring));
+    finn_class_addMethod(g_cls_nsattributedstring,
+                         finn_sel_registerName("isEqualToAttributedString:"),
+                         to_imp(&attributed_is_equal));
+    finn_class_addMethod(g_cls_nsattributedstring, finn_sel_registerName("description"),
+                         to_imp(&attributed_description));
+    finn_objc_registerClassPair(g_cls_nsattributedstring);
+
+    g_cls_nsmutableattributedstring = finn_objc_allocateClassPair(
+        g_cls_nsattributedstring, "NSMutableAttributedString", sizeof(NSAttributedStringObj));
+    g_cls_nsmutableattributedstring->cpp_destructor = &attributed_dtor;
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("setAttributes:range:"),
+                         to_imp(&attributed_set_attributes));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("addAttribute:value:range:"),
+                         to_imp(&attributed_add_attribute));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("addAttributes:range:"),
+                         to_imp(&attributed_add_attributes));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("removeAttribute:range:"),
+                         to_imp(&attributed_remove_attribute));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("replaceCharactersInRange:withString:"),
+                         to_imp(&attributed_replace_characters));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("deleteCharactersInRange:"),
+                         to_imp(&attributed_delete_characters));
+    finn_class_addMethod(g_cls_nsmutableattributedstring,
+                         finn_sel_registerName("appendAttributedString:"),
+                         to_imp(&attributed_append));
+    finn_objc_registerClassPair(g_cls_nsmutableattributedstring);
+
+    // NSDateFormatter
+    g_cls_nsdateformatter = finn_objc_allocateClassPair(
+        g_cls_nsobject, "NSDateFormatter", sizeof(NSDateFormatterObj));
+    g_cls_nsdateformatter->cpp_destructor = [](ObjcId obj) {
+        delete reinterpret_cast<NSDateFormatterObj*>(obj)->format;
+    };
+    finn_class_addMethod(g_cls_nsdateformatter, finn_sel_registerName("init"),
+                         to_imp(&dateformatter_init));
+    finn_class_addMethod(g_cls_nsdateformatter, finn_sel_registerName("setDateFormat:"),
+                         to_imp(&dateformatter_set_format));
+    finn_class_addMethod(g_cls_nsdateformatter, finn_sel_registerName("dateFormat"),
+                         to_imp(&dateformatter_format));
+    finn_class_addMethod(g_cls_nsdateformatter, finn_sel_registerName("stringFromDate:"),
+                         to_imp(&dateformatter_string_from_date));
+    finn_class_addMethod(g_cls_nsdateformatter, finn_sel_registerName("dateFromString:"),
+                         to_imp(&dateformatter_date_from_string));
+    finn_objc_registerClassPair(g_cls_nsdateformatter);
+
+    // NSCalendar / NSDateComponents (Gregorian, UTC only)
+    g_cls_nsdatecomponents = finn_objc_allocateClassPair(
+        g_cls_nsobject, "NSDateComponents", sizeof(NSDateComponentsObj));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("init"),
+                         to_imp(&datecomponents_init));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("valueForComponent:"),
+                         to_imp(&components_get));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("era"),
+                         to_imp(&components_get_era));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("year"),
+                         to_imp(&components_get_year));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("month"),
+                         to_imp(&components_get_month));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("day"),
+                         to_imp(&components_get_day));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("hour"),
+                         to_imp(&components_get_hour));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("minute"),
+                         to_imp(&components_get_minute));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("second"),
+                         to_imp(&components_get_second));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("nanosecond"),
+                         to_imp(&components_get_nanosecond));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("weekday"),
+                         to_imp(&components_get_weekday));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setEra:"),
+                         to_imp(&components_set_era));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setYear:"),
+                         to_imp(&components_set_year));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setMonth:"),
+                         to_imp(&components_set_month));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setDay:"),
+                         to_imp(&components_set_day));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setHour:"),
+                         to_imp(&components_set_hour));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setMinute:"),
+                         to_imp(&components_set_minute));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setSecond:"),
+                         to_imp(&components_set_second));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setNanosecond:"),
+                         to_imp(&components_set_nanosecond));
+    finn_class_addMethod(g_cls_nsdatecomponents, finn_sel_registerName("setWeekday:"),
+                         to_imp(&components_set_weekday));
+    finn_objc_registerClassPair(g_cls_nsdatecomponents);
+
+    g_cls_nscalendar = finn_objc_allocateClassPair(
+        g_cls_nsobject, "NSCalendar", sizeof(NSCalendarObj));
+    g_cls_nscalendar->cpp_destructor = [](ObjcId obj) {
+        delete reinterpret_cast<NSCalendarObj*>(obj)->identifier;
+    };
+    finn_class_addClassMethod(g_cls_nscalendar, finn_sel_registerName("currentCalendar"),
+                              to_imp(&calendar_current));
+    finn_class_addClassMethod(g_cls_nscalendar, finn_sel_registerName("calendarWithIdentifier:"),
+                              to_imp(&calendar_with_identifier));
+    finn_class_addMethod(g_cls_nscalendar, finn_sel_registerName("calendarIdentifier"),
+                         to_imp(&calendar_identifier));
+    finn_class_addMethod(g_cls_nscalendar, finn_sel_registerName("component:fromDate:"),
+                         to_imp(&calendar_component));
+    finn_class_addMethod(g_cls_nscalendar, finn_sel_registerName("components:fromDate:"),
+                         to_imp(&calendar_components));
+    finn_class_addMethod(g_cls_nscalendar, finn_sel_registerName("dateFromComponents:"),
+                         to_imp(&calendar_date_from_components));
+    finn_class_addMethod(g_cls_nscalendar,
+                         finn_sel_registerName("dateByAddingUnit:value:toDate:options:"),
+                         to_imp(&calendar_add_unit));
+    finn_objc_registerClassPair(g_cls_nscalendar);
+
     // NSJSONSerialization
     g_cls_nsjson = finn_objc_allocateClassPair(g_cls_nsobject, "NSJSONSerialization");
     finn_class_addClassMethod(g_cls_nsjson, finn_sel_registerName("JSONObjectWithData:options:error:"), to_imp(&nsjson_objectWithData));
@@ -3108,13 +3932,25 @@ void init_foundation(const std::string& bundle_path) {
 
     // NSNotification / NSNotificationCenter
     g_cls_nsnotification = finn_objc_allocateClassPair(g_cls_nsobject, "NSNotification", sizeof(NSNotificationObj));
+    g_cls_nsnotification->cpp_destructor = &nsnotification_dtor;
+    finn_class_addClassMethod(g_cls_nsnotification,
+                              finn_sel_registerName("notificationWithName:object:userInfo:"),
+                              to_imp(&nsnotification_with_name));
+    finn_class_addMethod(g_cls_nsnotification, finn_sel_registerName("name"),
+                         to_imp(&nsnotification_name));
+    finn_class_addMethod(g_cls_nsnotification, finn_sel_registerName("object"),
+                         to_imp(&nsnotification_object));
+    finn_class_addMethod(g_cls_nsnotification, finn_sel_registerName("userInfo"),
+                         to_imp(&nsnotification_userinfo));
     finn_objc_registerClassPair(g_cls_nsnotification);
 
     g_cls_nsnotificationcenter = finn_objc_allocateClassPair(g_cls_nsobject, "NSNotificationCenter");
     finn_class_addClassMethod(g_cls_nsnotificationcenter, finn_sel_registerName("defaultCenter"), to_imp(&nsnotifcenter_default));
     finn_class_addMethod(g_cls_nsnotificationcenter, finn_sel_registerName("addObserver:selector:name:object:"), to_imp(&nsnotifcenter_addObserver));
     finn_class_addMethod(g_cls_nsnotificationcenter, finn_sel_registerName("removeObserver:"), to_imp(&nsnotifcenter_removeObserver));
+    finn_class_addMethod(g_cls_nsnotificationcenter, finn_sel_registerName("removeObserver:name:object:"), to_imp(&nsnotifcenter_removeObserverNameObject));
     finn_class_addMethod(g_cls_nsnotificationcenter, finn_sel_registerName("postNotificationName:object:userInfo:"), to_imp(&nsnotifcenter_post));
+    finn_class_addMethod(g_cls_nsnotificationcenter, finn_sel_registerName("postNotification:"), to_imp(&nsnotifcenter_post_notification));
     finn_objc_registerClassPair(g_cls_nsnotificationcenter);
 
     // NSRunLoop
@@ -3158,6 +3994,11 @@ void init_foundation(const std::string& bundle_path) {
     g_const_underlying_error_key = make_nsstring("NSUnderlyingError");
     g_const_default_runloop_mode = make_nsstring("kCFRunLoopDefaultMode");
     g_const_common_runloop_modes = make_nsstring("kCFRunLoopCommonModes");
+    g_const_nsfont_attribute = make_nsstring("NSFont");
+    g_const_nsforeground_attribute = make_nsstring("NSColor");
+    g_const_nsbackground_attribute = make_nsstring("NSBackgroundColor");
+    g_const_nsunderline_attribute = make_nsstring("NSUnderline");
+    g_const_nscalendar_gregorian = make_nsstring("NSGregorianCalendar");
 }
 
 void register_foundation_symbols(std::unordered_map<std::string, void*>* table) {
@@ -3173,6 +4014,11 @@ void register_foundation_symbols(std::unordered_map<std::string, void*>* table) 
     (*table)["_NSUnderlyingErrorKey"] = &g_const_underlying_error_key;
     (*table)["_NSDefaultRunLoopMode"] = &g_const_default_runloop_mode;
     (*table)["_NSRunLoopCommonModes"] = &g_const_common_runloop_modes;
+    (*table)["_NSFontAttributeName"] = &g_const_nsfont_attribute;
+    (*table)["_NSForegroundColorAttributeName"] = &g_const_nsforeground_attribute;
+    (*table)["_NSBackgroundColorAttributeName"] = &g_const_nsbackground_attribute;
+    (*table)["_NSUnderlineStyleAttributeName"] = &g_const_nsunderline_attribute;
+    (*table)["_NSCalendarIdentifierGregorian"] = &g_const_nscalendar_gregorian;
     (*table)["_kCFAllocatorDefault"] = &g_cf_allocator_default;
     (*table)["_kCFBooleanTrue"] = &g_cf_bool_true;
     (*table)["_kCFBooleanFalse"] = &g_cf_bool_false;
@@ -3185,6 +4031,10 @@ void register_foundation_symbols(std::unordered_map<std::string, void*>* table) 
 
     // Foundation & CoreFoundation C APIs
     (*table)["_NSLog"] = to_ptr(&shim_NSLog);
+    (*table)["_NSSearchPathForDirectoriesInDomains"] =
+        to_ptr(&shim_NSSearchPathForDirectoriesInDomains);
+    (*table)["_NSHomeDirectory"] = to_ptr(&shim_NSHomeDirectory);
+    (*table)["_NSTemporaryDirectory"] = to_ptr(&shim_NSTemporaryDirectory);
     (*table)["_CFRetain"] = to_ptr(&shim_CFRetain);
     (*table)["_CFRelease"] = to_ptr(&shim_CFRelease);
     (*table)["_CFEqual"] = to_ptr(&shim_CFEqual);

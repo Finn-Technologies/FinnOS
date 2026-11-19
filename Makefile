@@ -4,7 +4,7 @@ DESTDIR   ?=
 VM        ?= finn@10.211.55.6
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 
-.PHONY: all configure ui qtplugin compositor session darwin ohos shell apps tools \
+.PHONY: all configure ui qtplugin compositor session darwin ohos android shell apps tools \
         test test-unit check lint install clean deploy help
 
 all: compositor session configure
@@ -13,7 +13,7 @@ all: compositor session configure
 configure: $(BUILD_DIR)/CMakeCache.txt
 
 $(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt src/ui/CMakeLists.txt src/qtplugin/CMakeLists.txt \
-		src/shell/CMakeLists.txt apps/CMakeLists.txt tools/CMakeLists.txt
+		src/shell/CMakeLists.txt src/android/CMakeLists.txt apps/CMakeLists.txt tools/CMakeLists.txt
 	cmake -S . -B $(BUILD_DIR) -G Ninja -DCMAKE_INSTALL_PREFIX=$(PREFIX) $(CMAKE_FLAGS)
 
 ui: configure
@@ -33,6 +33,9 @@ darwin:
 
 ohos:
 	$(MAKE) -C src/ohos
+
+android:
+	$(MAKE) -C src/android
 
 shell: configure
 	cmake --build $(BUILD_DIR) --target finn-shell
@@ -91,6 +94,7 @@ install: all
 	install -m644 assets/finn-flatpak.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-flatpak.desktop
 	install -m644 assets/finn-darwin.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-darwin.desktop
 	install -m644 assets/finn-ohos.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-ohos.desktop
+	install -m644 assets/finn-android.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-android.desktop
 	install -m755 src/ota/finn-update $(DESTDIR)$(PREFIX)/bin/finn-update
 	install -d $(DESTDIR)$(PREFIX)/bin/finn_ota
 	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/
@@ -111,6 +115,7 @@ install: all
 	ln -sf $(PREFIX)/bin/finn-win $(DESTDIR)/usr/bin/finn-win
 	ln -sf $(PREFIX)/bin/finn-darwin $(DESTDIR)/usr/bin/finn-darwin
 	ln -sf $(PREFIX)/bin/finn-ohos $(DESTDIR)/usr/bin/finn-ohos
+	ln -sf $(PREFIX)/bin/finn-android $(DESTDIR)/usr/bin/finn-android
 	@if [ -z "$(DESTDIR)" ] && [ -w /etc/ld.so.conf.d ]; then \
 		printf '%s\n' "$(PREFIX)/lib" > /etc/ld.so.conf.d/finn.conf; \
 		ldconfig 2>/dev/null || true; \
@@ -125,8 +130,9 @@ clean:
 	$(MAKE) -C src/session clean
 	$(MAKE) -C src/darwin clean
 	$(MAKE) -C src/ohos clean
+	$(MAKE) -C src/android clean
 	$(MAKE) -C tests/unit clean
 	rm -rf tests/__pycache__ tools/__pycache__
 
 help:
-	@echo "targets: all ui qtplugin compositor session shell apps tools test test-unit lint install deploy clean"
+	@echo "targets: all ui qtplugin compositor session darwin ohos android shell apps tools test test-unit lint install deploy clean"

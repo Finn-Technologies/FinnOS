@@ -16,6 +16,10 @@
 
 namespace finn::darwin {
 
+// The .app bundle root passed to init_foundation(), used by bridges that need
+// to label a window with the guest app's own name.
+std::string main_bundle_path();
+
 // Registers all Foundation & CoreFoundation Objective-C classes and C symbols.
 void init_foundation(const std::string& bundle_path = {});
 void register_foundation_symbols(std::unordered_map<std::string, void*>* table);

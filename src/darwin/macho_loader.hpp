@@ -25,6 +25,16 @@ struct MachoDiagnosis {
     std::vector<std::string> imported_symbols;
     std::vector<std::string> missing_symbols;
     std::vector<std::string> missing_frameworks;
+
+    // Honest, explained gaps. These are derived from framework_coverage.cpp and
+    // never turn an unimplemented capability into a plausible stub.
+    struct Gap {
+        std::string name;
+        std::string reason;
+        bool linked = false;
+    };
+    std::vector<Gap> framework_gaps;   // linked frameworks finn-darwin cannot provide
+    std::vector<Gap> symbol_gaps;      // imported symbols with a known explanation
     std::size_t objc_class_count = 0;
     std::string summary;
     std::string error;
@@ -39,8 +49,14 @@ struct LoadedMachoImage {
     std::uint64_t entry_offset = 0;
     std::vector<std::uint64_t> mod_init_addrs;
     std::unordered_map<std::string, void*> exports;
+    std::unordered_map<std::string, void*> symbols;  // all LC_SYMTAB symbols, including local
     bool mapped_segments_separately = false;
 };
+
+// Finds a symbol in the images loaded by the most recent MachoLoader whose name
+// contains `substring`.  Used by compat runtimes to locate compiler-generated
+// entry points (e.g. a Swift app's `body` getter) without hardcoding addresses.
+void* find_loaded_symbol_containing(const std::string& substring);
 
 class MachoLoader {
 public:

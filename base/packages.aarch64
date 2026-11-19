@@ -89,6 +89,10 @@ curl
 
 # Linux desktop apps use Flatpak; setup.sh initializes the system Flathub.
 flatpak
+# fuse3 gives AppImages a real FUSE runtime. The launcher probes /dev/fuse and
+# fusermount3 before using it and falls back to extract-and-run for Type 2
+# images; it never claims FUSE from this package list alone.
+fuse3
 
 # jq and zstd, as on x86_64: zstd is what pacman and the live squashfs use.
 jq

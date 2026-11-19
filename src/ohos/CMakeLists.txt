@@ -30,7 +30,7 @@ target_link_libraries(finn-ohos PRIVATE
 
 if(Qt6Widgets_FOUND)
     target_compile_definitions(finn-ohos PRIVATE FINN_OHOS_QT6)
-    target_link_libraries(finn-ohos PRIVATE Qt6::Widgets)
+    target_link_libraries(finn-ohos PRIVATE Qt6::Widgets FinnSDK::FinnUI)
 endif()
 
 include(GNUInstallDirs)

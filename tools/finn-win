@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""finn-win: FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D + Wayland)."""
+"""finn-win: FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D + Wayland,
+MSI install/uninstall, package detect/diagnose)."""
 
 from __future__ import annotations
 
@@ -372,19 +373,545 @@ def launch_target(rt: Dict[str, object], target: str, extra_args: List[str]) -> 
     return proc.returncode
 
 
+_WINDOWS_PACKAGE_KINDS = {
+    ".msi": "MSI",
+    ".exe": "EXE",
+    ".msix": "MSIX",
+    ".bat": "BAT",
+    ".cmd": "CMD",
+}
+
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
+def _windows_package_kind(path: str) -> str:
+    # Mirrors finn::compat::detect_windows_package_kind (src/compat/msi_installer.cpp).
+    return _WINDOWS_PACKAGE_KINDS.get(os.path.splitext(path or "")[1].lower(), "Unknown")
+
+
+def _is_product_code(target: str) -> bool:
+    # Mirrors finn::compat::is_product_code (src/compat/msi_installer.cpp): the
+    # braced {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} and 32-hex forms.
+    g = target
+    if len(g) == 38 and g.startswith("{") and g.endswith("}"):
+        g = g[1:-1]
+    if len(g) == 32:
+        return all(ch in _HEX_DIGITS for ch in g)
+    if len(g) == 36:
+        if g[8] != "-" or g[13] != "-" or g[18] != "-" or g[23] != "-":
+            return False
+        return all(ch in _HEX_DIGITS for i, ch in enumerate(g) if i not in (8, 13, 18, 23))
+    return False
+
+
+def _exe_silent_guess(name_lower: str) -> Tuple[List[str], str]:
+    # Mirrors exe_silent_guess in src/compat/msi_installer.cpp: guesses from the
+    # file name only; the note stays honest that other installers are unknown.
+    if "nsis" in name_lower or name_lower.endswith("_setup.exe"):
+        return ["/S"], (
+            "NSIS detected from the filename; its silent switch is /S - verify the installer honors it"
+        )
+    if "inno" in name_lower:
+        return ["/VERYSILENT", "/NORESTART"], (
+            "Inno Setup detected from the filename; its silent switch is /VERYSILENT /NORESTART - "
+            "verify the installer honors it"
+        )
+    return [], ""
+
+
+def _build_install_plan(
+    path: str,
+    prefix: str = "",
+    silent: bool = True,
+    log_path: str = "",
+    extra_args: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    # Mirror of finn::compat::build_install_plan (src/compat/msi_installer.cpp):
+    # same kind detection, argv and honest notes. Data only; nothing runs here.
+    extras = list(extra_args or [])
+    kind = _windows_package_kind(path)
+    plan: Dict[str, object] = {
+        "kind": kind,
+        "argv": [],
+        "env": [],
+        "ok": False,
+        "silent": silent,
+        "error": "",
+        "notes": [],
+    }
+    if prefix:
+        plan["env"].append(("WINEPREFIX", prefix))
+
+    if kind == "MSI":
+        if not os.path.isfile(path):
+            plan["error"] = f"installer file not found: {path}"
+        else:
+            plan["argv"] = ["msiexec", "/i", path]
+            if silent:
+                plan["argv"] += ["/qn", "/norestart"]
+            if log_path:
+                plan["argv"] += ["/L*v", log_path]
+            plan["argv"] += extras
+            if prefix:
+                # MSI has no universal prefix property; the plan does not guess one.
+                plan["notes"].append(
+                    f"prefix '{prefix}' has no universal MSI property; the plan does not guess one "
+                    "(verify INSTALLDIR/TARGETDIR)"
+                )
+            plan["ok"] = True
+    elif kind == "EXE":
+        if not os.path.isfile(path):
+            plan["error"] = f"installer file not found: {path}"
+        else:
+            plan["argv"] = [path]
+            if silent:
+                base = os.path.basename(path)
+                switches, note = _exe_silent_guess(base.lower())
+                if switches:
+                    plan["argv"] += switches
+                    plan["notes"].append(note)
+                else:
+                    plan["notes"].append(
+                        "silent install requested but no silent switch was identified "
+                        f"for '{base}'; the installer's own switch is unknown"
+                    )
+            plan["argv"] += extras
+            plan["ok"] = True
+    elif kind in ("BAT", "CMD"):
+        if not os.path.isfile(path):
+            plan["error"] = f"installer file not found: {path}"
+        else:
+            plan["argv"] = ["cmd", "/c", path] + extras
+            plan["ok"] = True
+    elif kind == "MSIX":
+        plan["error"] = (
+            "MSIX packages cannot be installed by Wine here: AppX/App Installer is not "
+            "implemented in FinnOS; install it natively or use Finn Store"
+        )
+    else:
+        plan["error"] = (
+            f"unrecognized package extension for '{path}' "
+            "(expected .msi/.exe/.msix/.bat/.cmd)"
+        )
+    return plan
+
+
+def _build_uninstall_plan(
+    target: str,
+    prefix: str = "",
+    silent: bool = True,
+    log_path: str = "",
+    extra_args: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    # Mirror of finn::compat::build_uninstall_plan (src/compat/msi_installer.cpp).
+    extras = list(extra_args or [])
+    plan: Dict[str, object] = {
+        "kind": _windows_package_kind(target),
+        "argv": [],
+        "env": [],
+        "ok": False,
+        "silent": silent,
+        "error": "",
+        "notes": [],
+    }
+    if prefix:
+        plan["env"].append(("WINEPREFIX", prefix))
+    if not target:
+        plan["error"] = "nothing to uninstall: no target given"
+        return plan
+    if _is_product_code(target):
+        plan["kind"] = "MSI"
+        plan["argv"] = ["msiexec", "/x", target]
+        if silent:
+            plan["argv"].append("/qn")
+        plan["argv"].append("/norestart")
+        if log_path:
+            plan["argv"] += ["/L*v", log_path]
+        plan["argv"] += extras
+        plan["ok"] = True
+        return plan
+    kind = str(plan["kind"])
+    if kind == "MSI":
+        if not os.path.isfile(target):
+            plan["error"] = f"msi package not found: {target}"
+        else:
+            plan["argv"] = ["msiexec", "/x", target, "/qn", "/norestart"]
+            if log_path:
+                plan["argv"] += ["/L*v", log_path]
+            plan["argv"] += extras
+            plan["ok"] = True
+    elif kind in ("EXE", "BAT", "CMD", "MSIX"):
+        plan["error"] = (
+            f"cannot uninstall a {kind} package through msiexec here; "
+            "pass an .msi path or an MSI product code"
+        )
+    else:
+        plan["error"] = (
+            f"nothing sensible to uninstall: '{target}' is not an .msi path "
+            "or an MSI product code"
+        )
+    return plan
+
+
+def _inspect_pe(path: str) -> Dict[str, object]:
+    # Mirrors finn::compat::inspect_pe_file (src/compat/wine_runner.cpp).
+    info: Dict[str, object] = {
+        "valid": False,
+        "arch": "Unknown",
+        "is_gui": False,
+        "is_console": False,
+        "is_dotnet": False,
+        "error": "",
+    }
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        info["error"] = "cannot open file"
+        return info
+    if len(head) < 64:
+        info["error"] = "file too short for DOS header"
+        return info
+    if head[:2] != b"MZ":
+        info["error"] = "missing MZ signature"
+        return info
+    pe_off = int.from_bytes(head[60:64], "little")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0)
+            # The C++ reader extends its buffer to pe_off+512 when the MZ
+            # signature is present (inspect_pe_file, wine_runner.cpp); mirror it.
+            buf = f.read(min(pe_off + 512, 1024 * 1024))
+    except OSError:
+        buf = head
+    if pe_off > len(buf) or len(buf) - pe_off < 24:
+        info["error"] = "PE header offset out of bounds"
+        return info
+    if buf[pe_off:pe_off + 4] != b"PE\x00\x00":
+        info["error"] = "missing PE signature"
+        return info
+
+    coff = pe_off + 4
+    machine = int.from_bytes(buf[coff:coff + 2], "little")
+    info["arch"] = {
+        0x014C: "x86 (32-bit)",
+        0x8664: "x86_64 (64-bit)",
+        0xAA64: "ARM64",
+    }.get(machine, "Unknown")
+
+    opt = coff + 20
+    if int.from_bytes(buf[coff + 16:coff + 18], "little") >= 70 and len(buf) >= opt + 70:
+        magic = int.from_bytes(buf[opt:opt + 2], "little")
+        subsystem = int.from_bytes(buf[opt + 68:opt + 70], "little")
+        info["is_gui"] = subsystem == 2
+        info["is_console"] = subsystem == 3
+        # CLR Runtime Header is DataDirectory[14]: offset 208 (PE32) or 224 (PE32+).
+        rva_count_off = opt + 108 if magic == 0x020B else opt + 92
+        clr_dir_off = opt + 224 if magic == 0x020B else opt + 208
+        if len(buf) >= rva_count_off + 4 and len(buf) >= clr_dir_off + 8:
+            num_rvas = int.from_bytes(buf[rva_count_off:rva_count_off + 4], "little")
+            if num_rvas > 14 and int.from_bytes(buf[clr_dir_off:clr_dir_off + 4], "little") != 0:
+                info["is_dotnet"] = True
+    info["valid"] = True
+    return info
+
+
+def _first_positional(rest: List[str]) -> Optional[str]:
+    for a in rest:
+        if not a.startswith("-"):
+            return a
+    return None
+
+
+def _parse_install_args(rest: List[str]) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    opts: Dict[str, object] = {
+        "path": None,
+        "prefix": "",
+        "mode": "silent",
+        "log": "",
+        "extras": [],
+    }
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in ("--silent", "--interactive"):
+            opts["mode"] = a[2:]
+        elif a.startswith("--prefix="):
+            opts["prefix"] = a[len("--prefix="):]
+        elif a == "--prefix":
+            i += 1
+            if i >= len(rest):
+                return None, "install: --prefix requires a value"
+            opts["prefix"] = rest[i]
+        elif a.startswith("--log="):
+            opts["log"] = a[len("--log="):]
+        elif a == "--log":
+            i += 1
+            if i >= len(rest):
+                return None, "install: --log requires a value"
+            opts["log"] = rest[i]
+        elif a.startswith("-") and a != "-":
+            return None, f"install: unknown option '{a}'"
+        elif opts["path"] is None:
+            opts["path"] = a
+        else:
+            opts["extras"].append(a)
+        i += 1
+    if not opts["path"]:
+        return None, "install: a target package path is required"
+    return opts, None
+
+
+def _parse_uninstall_args(rest: List[str]) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    opts: Dict[str, object] = {
+        "target": None,
+        "prefix": "",
+        "mode": "silent",
+        "log": "",
+    }
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in ("--silent", "--interactive"):
+            opts["mode"] = a[2:]
+        elif a.startswith("--prefix="):
+            opts["prefix"] = a[len("--prefix="):]
+        elif a == "--prefix":
+            i += 1
+            if i >= len(rest):
+                return None, "uninstall: --prefix requires a value"
+            opts["prefix"] = rest[i]
+        elif a.startswith("--log="):
+            opts["log"] = a[len("--log="):]
+        elif a == "--log":
+            i += 1
+            if i >= len(rest):
+                return None, "uninstall: --log requires a value"
+            opts["log"] = rest[i]
+        elif a.startswith("-") and a != "-":
+            return None, f"uninstall: unknown option '{a}'"
+        elif opts["target"] is None:
+            opts["target"] = a
+        else:
+            return None, f"uninstall: unexpected argument '{a}'"
+        i += 1
+    if not opts["target"]:
+        return None, "uninstall: a target is required (an .msi path or an MSI product code)"
+    return opts, None
+
+
+def _cmd_install(rt: Dict[str, object], rest: List[str], json_out: bool) -> int:
+    opts, err = _parse_install_args(rest)
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+    plan = _build_install_plan(
+        str(opts["path"]),
+        prefix=str(opts["prefix"]),
+        silent=str(opts["mode"]) == "silent",
+        log_path=str(opts["log"]),
+        extra_args=[str(a) for a in opts["extras"]],
+    )
+    result: Dict[str, object] = {
+        "verb": "install",
+        "kind": plan["kind"],
+        "ok": plan["ok"],
+        "argv": plan["argv"],
+        "env": dict(plan["env"]),
+        "silent": plan["silent"],
+        "error": plan["error"],
+        "notes": plan["notes"],
+    }
+    if not plan["ok"]:
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(f"error: {plan['error']}", file=sys.stderr)
+        return 1
+
+    if not json_out:
+        for note in plan["notes"]:
+            print(f"note: {note}", file=sys.stderr)
+
+    rc = init_prefix(rt, force=False)
+    if rc != 0:
+        result["returncode"] = rc
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return rc
+
+    wine_bin = rt.get("selected_bin")
+    if not wine_bin:
+        result["returncode"] = 1
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("error: Windows runtime is not available", file=sys.stderr)
+        return 1
+
+    env = _build_env(rt)
+    env.update(dict(plan["env"]))
+    proc = subprocess.run(_wrap_cmd(rt, [str(wine_bin), *plan["argv"]]), env=env)
+    result["returncode"] = proc.returncode
+    if json_out:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(f"install: {plan['kind']} {str(opts['path'])} exit {proc.returncode}")
+    return proc.returncode
+
+
+def _cmd_uninstall(rt: Dict[str, object], rest: List[str], json_out: bool) -> int:
+    opts, err = _parse_uninstall_args(rest)
+    if err:
+        print(f"error: {err}", file=sys.stderr)
+        return 2
+    plan = _build_uninstall_plan(
+        str(opts["target"]),
+        prefix=str(opts["prefix"]),
+        silent=str(opts["mode"]) == "silent",
+        log_path=str(opts["log"]),
+    )
+    result: Dict[str, object] = {
+        "verb": "uninstall",
+        "kind": plan["kind"],
+        "ok": plan["ok"],
+        "argv": plan["argv"],
+        "env": dict(plan["env"]),
+        "silent": plan["silent"],
+        "error": plan["error"],
+        "notes": plan["notes"],
+    }
+    if not plan["ok"]:
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(f"error: {plan['error']}", file=sys.stderr)
+        return 1
+
+    rc = init_prefix(rt, force=False)
+    if rc != 0:
+        result["returncode"] = rc
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return rc
+
+    wine_bin = rt.get("selected_bin")
+    if not wine_bin:
+        result["returncode"] = 1
+        if json_out:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("error: Windows runtime is not available", file=sys.stderr)
+        return 1
+
+    env = _build_env(rt)
+    env.update(dict(plan["env"]))
+    proc = subprocess.run(_wrap_cmd(rt, [str(wine_bin), *plan["argv"]]), env=env)
+    result["returncode"] = proc.returncode
+    if json_out:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(f"uninstall: {plan['kind']} {str(opts['target'])} exit {proc.returncode}")
+    return proc.returncode
+
+
+def _cmd_detect(rest: List[str], json_out: bool) -> int:
+    target = _first_positional(rest)
+    if not target:
+        print("error: detect: a target package path is required", file=sys.stderr)
+        return 2
+    kind = _windows_package_kind(target)
+    if json_out:
+        print(json.dumps({"kind": kind, "path": target}, indent=2, sort_keys=True))
+    else:
+        print(kind)
+    return 0
+
+
+def _cmd_diagnose(rt: Dict[str, object], rest: List[str], json_out: bool) -> int:
+    target = _first_positional(rest)
+    if not target:
+        print("error: diagnose: a target package path is required", file=sys.stderr)
+        return 2
+    kind = _windows_package_kind(target)
+    pe = _inspect_pe(target)
+    unsupported: List[str] = []
+    if not rt["ready"]:
+        unsupported.append(
+            "Windows runtime unavailable: no Proton/Wine or aarch64 translator (box64/fex-emu) found on this host"
+        )
+    if kind == "MSIX":
+        unsupported.append(
+            "MSIX: AppX/App Installer is not implemented in FinnOS; install it natively or use Finn Store"
+        )
+    if kind == "EXE" and not pe["valid"]:
+        unsupported.append(f"PE inspection failed: {pe['error']}")
+
+    diag = {
+        "path": target,
+        "kind": kind,
+        "pe": pe,
+        "runtime": {
+            "engine": rt["engine"],
+            "host_arch": rt["host_arch"],
+            "ready": rt["ready"],
+            "selected_bin": rt["selected_bin"],
+        },
+        "prefix": {
+            "path": rt["prefix"],
+            "initialized": rt["prefix_initialized"],
+            "win11_configured": rt["win11_configured"],
+        },
+        "unsupported": unsupported,
+    }
+    if json_out:
+        print(json.dumps(diag, indent=2, sort_keys=True))
+    else:
+        pe_text = (
+            f"valid - arch={pe['arch']}, subsystem={'GUI' if pe['is_gui'] else ('Console' if pe['is_console'] else 'other')}, "
+            f"dotnet={'yes' if pe['is_dotnet'] else 'no'}"
+        ) if pe["valid"] else f"invalid - {pe['error']}"
+        print(f"path:             {target}")
+        print(f"kind:             {kind}")
+        print(f"pe:               {pe_text}")
+        print(f"runtime:          engine={rt['engine']}, host_arch={rt['host_arch']}, ready={rt['ready']}")
+        print(f"prefix:           {rt['prefix']}, initialized={rt['prefix_initialized']}, win11={rt['win11_configured']}")
+        print(f"unsupported:      {'; '.join(unsupported) if unsupported else '(none)'}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Lift --json out before parsing: the REMAINDER positional can swallow it,
+    # and the verb parsers below expect clean verb arguments.
+    json_out = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+
     p = argparse.ArgumentParser(
         prog="finn-win",
-        description="FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D)",
+        description="FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D + Wayland, "
+                    "MSI install/uninstall, package detect/diagnose)",
     )
-    p.add_argument("--json", action="store_true", help="emit JSON for status")
-    p.add_argument("target", nargs="?", help="status | init | path/to/app.exe|.msi")
-    p.add_argument("args", nargs=argparse.REMAINDER, help="arguments forwarded to the Windows app")
+    p.add_argument(
+        "verb",
+        nargs="?",
+        default=None,
+        help="status | init | install <path> | uninstall <msi-or-product-code> | "
+             "detect <path> | diagnose <path> | path/to/app.exe|.msi",
+    )
+    p.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="verb arguments (options, or arguments forwarded to the Windows app)",
+    )
     ns = p.parse_args(argv)
 
     rt = _detect_runtime()
-    if not ns.target or ns.target == "status":
-        if ns.json:
+    verb = ns.verb
+    rest = list(ns.args)
+
+    if verb in (None, "status"):
+        if json_out:
             print(json.dumps(rt, indent=2, sort_keys=True))
         else:
             print(
@@ -397,10 +924,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         return 0
 
-    if ns.target == "init":
+    if verb == "init":
         return init_prefix(rt, force=True)
-
-    return launch_target(rt, ns.target, ns.args)
+    if verb == "install":
+        return _cmd_install(rt, rest, json_out)
+    if verb == "uninstall":
+        return _cmd_uninstall(rt, rest, json_out)
+    if verb == "detect":
+        return _cmd_detect(rest, json_out)
+    if verb == "diagnose":
+        return _cmd_diagnose(rt, rest, json_out)
+    return launch_target(rt, verb, rest)
 
 
 if __name__ == "__main__":

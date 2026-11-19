@@ -555,6 +555,15 @@ void inspect_hap_zip_into_report(const ZipReader& zip, OhosDiagnosticReport* rep
     const KitAudit kits = audit_ohos_kits(kit_scan_strings);
     rep->supported_kits = kits.supported;
     rep->unsupported_kits = kits.unsupported;
+    rep->unknown_kits = kits.unknown;
+    if (!kits.unknown.empty()) {
+        rep->warnings.push_back(
+            "unrecognised kit import(s) reported as unknown, not implemented: " +
+            kits.unknown.front() +
+            (kits.unknown.size() > 1
+                 ? " (+" + std::to_string(kits.unknown.size() - 1) + " more)"
+                 : ""));
+    }
 
     // API compatibility check (OpenHarmony 6.1 LTS = API 23)
     const int min_api = rep->manifest.min_api_version;
@@ -590,6 +599,17 @@ void inspect_hap_zip_into_report(const ZipReader& zip, OhosDiagnosticReport* rep
     }
 }
 
+// Shared pre-flight: a package that imports a known hardware/proprietary kit
+// is refused rather than installed or launched with the kit silently missing.
+std::string missing_kit_error(const std::vector<std::string>& kit_scan_strings) {
+    const KitAudit audit = audit_ohos_kits(kit_scan_strings);
+    if (audit.unsupported.empty()) return {};
+    return "requires unimplemented system kit(s): " + audit.unsupported.front() +
+           (audit.unsupported.size() > 1
+                ? " (+" + std::to_string(audit.unsupported.size() - 1) + " more)"
+                : "");
+}
+
 OhosInstallResult install_single_hap_zip(const ZipReader& zip,
                                          const std::string& src_hap_path,
                                          const std::string& ohos_root) {
@@ -602,6 +622,17 @@ OhosInstallResult install_single_hap_zip(const ZipReader& zip,
     const OhosModuleManifest m = parse_module_json(mjson);
     if (!m.valid) {
         res.error = m.error;
+        return res;
+    }
+
+    std::vector<std::string> kit_strings{mjson};
+    std::vector<std::uint8_t> abc_bytes;
+    if (zip.read_entry("ets/modules.abc", &abc_bytes)) {
+        kit_strings.emplace_back(abc_bytes.begin(), abc_bytes.end());
+    }
+    if (const std::string kit_err = missing_kit_error(kit_strings); !kit_err.empty()) {
+        res.log.push_back("Refusing install: " + kit_err);
+        res.error = kit_err;
         return res;
     }
 
@@ -1439,6 +1470,7 @@ int run_ohos_target(const std::string& target, int argc, char** argv,
         if (error_out) *error_out = manifest.error;
         return 1;
     }
+    std::vector<std::string> kit_strings{mss.str()};
 
     if (manifest.min_api_version > kOhosSupportedApiLevel) {
         cleanup();
@@ -1462,12 +1494,19 @@ int run_ohos_target(const std::string& target, int argc, char** argv,
     const fs::path abc_path = app_dir / "ets" / "modules.abc";
     if (fs::is_regular_file(abc_path, ec)) {
         AbcFile abc = parse_abc_file(abc_path.string());
+        kit_strings.emplace_back(abc.raw_bytes.begin(), abc.raw_bytes.end());
         std::string aerr;
         if (!runtime.load_abc(std::move(abc), &aerr)) {
             cleanup();
             if (error_out) *error_out = "failed to load ets/modules.abc: " + aerr;
             return 1;
         }
+    }
+
+    if (const std::string kit_err = missing_kit_error(kit_strings); !kit_err.empty()) {
+        cleanup();
+        if (error_out) *error_out = kit_err;
+        return 2;
     }
 
     // Attempt to load host-compatible native NAPI .so modules if present

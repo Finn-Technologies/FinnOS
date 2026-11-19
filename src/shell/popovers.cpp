@@ -174,6 +174,8 @@ QString source_label(finn::AppSource src) {
             return QStringLiteral("macOS");
         case finn::AppSource::kOhos:
             return QStringLiteral("OpenHarmony");
+        case finn::AppSource::kAndroid:
+            return QStringLiteral("Android");
         case finn::AppSource::kUnknown:
             return QStringLiteral("App");
     }
@@ -289,9 +291,17 @@ void HomeMenuPopover::applyResponsiveLayout() {
         target_h = std::min(460, std::max(360, screen.height() - 88));
         bottom_margin = 62;
     }
-    setLayerMargins(QMargins(0, 0, 0, bottom_margin));
-    setDesiredSize(QSize(target_w, target_h));
-    setFixedSize(target_w, target_h);
+    // Reserve a transparent rim for the elevation shadow. The visible card
+    // keeps its Figma size and screen position: the surface grows by 2*pad and
+    // the layer margin shrinks by pad.
+    setLayerMargins(QMargins(0, 0, 0, std::max(0, bottom_margin - kPopoverShadowPad)));
+    setDesiredSize(QSize(target_w + 2 * kPopoverShadowPad,
+                         target_h + 2 * kPopoverShadowPad));
+    setFixedSize(target_w + 2 * kPopoverShadowPad,
+                 target_h + 2 * kPopoverShadowPad);
+    // No mask: like the original popover, the whole surface accepts input so
+    // the painted shadow rim is not clipped away by QWidget's mask.
+    clearInputRegions();
 }
 
 void HomeMenuPopover::openMenu() {
@@ -379,8 +389,8 @@ void HomeMenuPopover::rebuildHits() {
     hovered_hit_ = -1;
     focused_hit_ = -1;
 
-    const int w = std::max(320, width());
-    const int h = std::max(340, height());
+    const int w = std::max(320, width() - 2 * kPopoverShadowPad);
+    const int h = std::max(340, height() - 2 * kPopoverShadowPad);
     const bool compact = w < 520;
     const int footer_y = h - 50;
 
@@ -454,7 +464,8 @@ void HomeMenuPopover::rebuildHits() {
 }
 
 void HomeMenuPopover::mouseMoveEvent(QMouseEvent* event) {
-    const QPoint pt = event->position().toPoint();
+    const QPoint pt = event->position().toPoint() -
+                      QPoint(kPopoverShadowPad, kPopoverShadowPad);
     int next = -1;
     for (int i = 0; i < hits_.size(); ++i) {
         if (hits_[i].rect.contains(pt)) {
@@ -522,7 +533,8 @@ void HomeMenuPopover::activateHit(const HitItem& hit) {
 
 void HomeMenuPopover::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
-        const QPoint pt = event->position().toPoint();
+        const QPoint pt = event->position().toPoint() -
+                          QPoint(kPopoverShadowPad, kPopoverShadowPad);
         for (int i = 0; i < hits_.size(); ++i) {
             if (!hits_[i].rect.contains(pt)) continue;
             focused_hit_ = i;
@@ -536,8 +548,8 @@ void HomeMenuPopover::mousePressEvent(QMouseEvent* event) {
 void HomeMenuPopover::paintEvent(QPaintEvent*) {
     const auto& t = finn::ui::FinnThemeManager::instance().tokens();
     const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
-    const int w = std::max(320, width());
-    const int h = std::max(340, height());
+    const int w = std::max(320, width() - 2 * kPopoverShadowPad);
+    const int h = std::max(340, height() - 2 * kPopoverShadowPad);
     const bool compact = w < 520;
     const int footer_y = h - 50;
 
@@ -547,6 +559,10 @@ void HomeMenuPopover::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.setOpacity(std::clamp(open_progress_, 0.0, 1.0));
     p.translate(0.0, (1.0 - open_progress_) * 10.0);
+    paintLayerShadow(p, QRectF(kPopoverShadowPad, kPopoverShadowPad, w, h),
+                     finn::ui::radii::r_lg, finn::ui::blur::blur_glass,
+                     finn::ui::elevation::elev_popover);
+    p.translate(kPopoverShadowPad, kPopoverShadowPad);
 
     p.setPen(QPen(t.hair, 1.0));
     p.setBrush(shell_glass_fill(t));
@@ -895,10 +911,12 @@ SpotlightPopover::SpotlightPopover(const std::vector<finn::App>* apps,
         this, finn::ui::springs::kSnappy, 1.0, [this](double val) {
             open_progress_ = std::clamp(val, 0.0, 1.0);
             if (query_edit_) {
-                const int pill_x = std::max(12, (width() - 300) / 2);
+                const int pill_x = std::max(
+                    12, (width() - 2 * kPopoverShadowPad - 300) / 2);
                 const int dy =
                     static_cast<int>(std::lround((1.0 - open_progress_) * 10.0));
-                query_edit_->move(pill_x + 46, dy);
+                query_edit_->move(pill_x + 46 + kPopoverShadowPad,
+                                  dy + kPopoverShadowPad);
             }
             update();
         });
@@ -912,21 +930,33 @@ void SpotlightPopover::applyResponsiveLayout() {
     const FormFactor ff = current_form_factor();
     const QSize screen = primary_screen_size();
     int w = 350;
+    int bottom_margin = 74;
     if (ff == FormFactor::Phone) {
         w = std::clamp(screen.width() - 16, 320, 400);
         setAnchors(AnchorTop);
         setLayerMargins(QMargins(8, 44, 8, 0));
     } else {
         setAnchors(AnchorBottom);
-        setLayerMargins(
-            QMargins(0, 0, 0, ff == FormFactor::Tablet ? 62 : 74));
+        bottom_margin = ff == FormFactor::Tablet ? 62 : 74;
     }
-    setDesiredSize(QSize(w, 287));
-    setFixedSize(w, 287);
+    // Keep the visible card size/position; the surface carries the shadow rim.
+    if (ff == FormFactor::Phone) {
+        setLayerMargins(QMargins(
+            std::max(0, 8 - kPopoverShadowPad),
+            std::max(0, 44 - kPopoverShadowPad),
+            std::max(0, 8 - kPopoverShadowPad), 0));
+    } else {
+        setLayerMargins(QMargins(
+            0, 0, 0, std::max(0, bottom_margin - kPopoverShadowPad)));
+    }
+    setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
+                         287 + 2 * kPopoverShadowPad));
+    setFixedSize(w + 2 * kPopoverShadowPad, 287 + 2 * kPopoverShadowPad);
     if (query_edit_) {
         const int pill_w = std::min(300, w - 24);
         const int pill_x = (w - pill_w) / 2;
-        query_edit_->setGeometry(pill_x + 46, 0, pill_w - 60, 44);
+        query_edit_->setGeometry(pill_x + 46 + kPopoverShadowPad,
+                                 kPopoverShadowPad, pill_w - 60, 44);
     }
 }
 
@@ -936,10 +966,19 @@ void SpotlightPopover::applyQueryEditTheme() {
 }
 
 void SpotlightPopover::updatePopoverInputRegions() {
-    const int w = std::max(320, width());
+    const int w = std::max(320, width() - 2 * kPopoverShadowPad);
     const int pill_w = std::min(300, w - 24);
     const int pill_x = (w - pill_w) / 2;
-    setInputRegions({QRect(pill_x, 0, pill_w, 44), QRect(0, 59, w, 228)});
+    // QWidget's mask clips painting too; grow each region by the shadow rim so
+    // the blurred elevation is not cut off at the glass rect's edge.
+    setInputRegions({
+        QRect(pill_x, 0, pill_w, 44)
+            .adjusted(-kPopoverShadowPad, -kPopoverShadowPad,
+                      kPopoverShadowPad, kPopoverShadowPad),
+        QRect(0, 59, w, 228)
+            .adjusted(-kPopoverShadowPad, -kPopoverShadowPad,
+                      kPopoverShadowPad, kPopoverShadowPad),
+    });
 }
 
 void SpotlightPopover::openSearch() {
@@ -950,14 +989,18 @@ void SpotlightPopover::openSearch() {
     hovered_hit_ = -1;
     query_edit_->clear();
     updateResults({});
-    const int pill_w = std::min(300, width() - 24);
-    const int pill_x = (width() - pill_w) / 2;
+    const int pill_w = std::min(300, width() - 2 * kPopoverShadowPad - 24);
+    const int pill_x = (width() - 2 * kPopoverShadowPad - pill_w) / 2;
     if (finn::ui::FinnThemeManager::instance().reducedMotion()) {
         open_anim_->set(1.0);
-        if (query_edit_) query_edit_->move(pill_x + 46, 0);
+        if (query_edit_)
+            query_edit_->move(pill_x + 46 + kPopoverShadowPad,
+                              kPopoverShadowPad);
     } else {
         open_anim_->set(0.0);
-        if (query_edit_) query_edit_->move(pill_x + 46, 10);
+        if (query_edit_)
+            query_edit_->move(pill_x + 46 + kPopoverShadowPad,
+                              10 + kPopoverShadowPad);
         open_anim_->retarget(1.0);
     }
     show();
@@ -1132,7 +1175,7 @@ void SpotlightPopover::updateResults(const QString& query) {
     }
 
     if (hits_.size() > 5) hits_.resize(5);
-    const int hit_w = std::max(280, width() - 24);
+    const int hit_w = std::max(280, width() - 2 * kPopoverShadowPad - 24);
     for (int i = 0; i < hits_.size(); ++i) {
         hits_[i].rect = QRect(12, 59 + 12 + i * 41, hit_w, 38);
     }
@@ -1149,7 +1192,8 @@ void SpotlightPopover::activateSelected() {
 }
 
 void SpotlightPopover::mouseMoveEvent(QMouseEvent* event) {
-    const QPoint pt = event->position().toPoint();
+    const QPoint pt = event->position().toPoint() -
+                      QPoint(kPopoverShadowPad, kPopoverShadowPad);
     int app_idx = -1;
     int query_idx = -1;
     int hit_idx = -1;
@@ -1204,7 +1248,8 @@ void SpotlightPopover::leaveEvent(QEvent* event) {
 
 void SpotlightPopover::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
-        const QPoint pt = event->position().toPoint();
+        const QPoint pt = event->position().toPoint() -
+                          QPoint(kPopoverShadowPad, kPopoverShadowPad);
         if (query_edit_->text().trimmed().isEmpty()) {
             for (const auto& item : empty_app_hits_) {
                 if (item.rect.contains(pt) && item.activate) {
@@ -1240,7 +1285,7 @@ void SpotlightPopover::mousePressEvent(QMouseEvent* event) {
 void SpotlightPopover::paintEvent(QPaintEvent*) {
     const auto& t = finn::ui::FinnThemeManager::instance().tokens();
     const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
-    const qreal w = std::max<qreal>(320.0, width());
+    const qreal w = std::max<qreal>(320.0, width() - 2 * kPopoverShadowPad);
     const qreal pill_w = std::min<qreal>(300.0, w - 24.0);
     const qreal pill_x = (w - pill_w) * 0.5;
 
@@ -1250,6 +1295,16 @@ void SpotlightPopover::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.setOpacity(std::clamp(open_progress_, 0.0, 1.0));
     p.translate(0.0, (1.0 - open_progress_) * 10.0);
+    paintLayerShadow(
+        p,
+        QRectF(pill_x + kPopoverShadowPad, kPopoverShadowPad, pill_w, 43.0),
+        21.5, finn::ui::blur::blur_glass,
+        finn::ui::elevation::elev_popover);
+    paintLayerShadow(
+        p, QRectF(kPopoverShadowPad, 59.0 + kPopoverShadowPad, w, 227.0),
+        finn::ui::radii::r_lg, finn::ui::blur::blur_glass,
+        finn::ui::elevation::elev_popover);
+    p.translate(kPopoverShadowPad, kPopoverShadowPad);
 
     const QColor glass = shell_glass_fill(t);
     const QColor dim = t.dim;
@@ -1481,8 +1536,12 @@ ControlCenterPopover::ControlCenterPopover(NotificationServer* notifications,
             open_progress_ = std::clamp(val, 0.0, 1.0);
             const int dy =
                 static_cast<int>(std::lround((1.0 - open_progress_) * 10.0));
-            if (brightness_slider_) brightness_slider_->move(6, 110 + dy);
-            if (volume_slider_) volume_slider_->move(6, 156 + dy);
+            if (brightness_slider_)
+                brightness_slider_->move(6 + kPopoverShadowPad,
+                                         110 + kPopoverShadowPad + dy);
+            if (volume_slider_)
+                volume_slider_->move(6 + kPopoverShadowPad,
+                                     156 + kPopoverShadowPad + dy);
             update();
         });
 
@@ -1497,23 +1556,52 @@ void ControlCenterPopover::applyResponsiveLayout() {
     if (ff == FormFactor::Phone) {
         w = std::clamp(screen.width() - 16, 320, 420);
         setAnchors(AnchorTop);
-        setLayerMargins(QMargins(8, 44, 8, 0));
     } else if (ff == FormFactor::Tablet) {
         w = std::min(444, std::max(340, screen.width() - 24));
         setAnchors(AnchorBottom | AnchorRight);
-        setLayerMargins(QMargins(0, 0, 12, 62));
     } else {
         // Figma 11:19: the panel's right edge lines up with the dock group's
         // right edge (254 + 130 + 130 + 154 + 3x15 = 713), 74px above bottom.
         constexpr int kDockGroupWidth = 254 + 130 + 130 + 154 + 3 * 15;
-        const int right_margin = std::max(0, (screen.width() - kDockGroupWidth) / 2);
         setAnchors(AnchorBottom | AnchorRight);
-        setLayerMargins(QMargins(0, 0, right_margin, 74));
+        const int right_margin =
+            std::max(0, (screen.width() - kDockGroupWidth) / 2);
+        // The visible card keeps its Figma position; the surface carries the
+        // transparent shadow rim.
+        setLayerMargins(QMargins(
+            0, 0, std::max(0, right_margin - kPopoverShadowPad),
+            std::max(0, 74 - kPopoverShadowPad)));
+        setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
+                             254 + 2 * kPopoverShadowPad));
+        setFixedSize(w + 2 * kPopoverShadowPad, 254 + 2 * kPopoverShadowPad);
+        if (brightness_slider_)
+            brightness_slider_->setGeometry(6 + kPopoverShadowPad,
+                                            110 + kPopoverShadowPad, w - 12, 36);
+        if (volume_slider_)
+            volume_slider_->setGeometry(6 + kPopoverShadowPad,
+                                        156 + kPopoverShadowPad, w - 12, 36);
+        clearInputRegions();
+        return;
     }
-    setDesiredSize(QSize(w, 254));
-    setFixedSize(w, 254);
-    if (brightness_slider_) brightness_slider_->setGeometry(6, 110, w - 12, 36);
-    if (volume_slider_) volume_slider_->setGeometry(6, 156, w - 12, 36);
+    if (ff == FormFactor::Phone) {
+        setLayerMargins(QMargins(std::max(0, 8 - kPopoverShadowPad),
+                                 std::max(0, 44 - kPopoverShadowPad),
+                                 std::max(0, 8 - kPopoverShadowPad), 0));
+    } else {
+        setLayerMargins(QMargins(0, 0,
+                                 std::max(0, 12 - kPopoverShadowPad),
+                                 std::max(0, 62 - kPopoverShadowPad)));
+    }
+    setDesiredSize(QSize(w + 2 * kPopoverShadowPad,
+                         254 + 2 * kPopoverShadowPad));
+    setFixedSize(w + 2 * kPopoverShadowPad, 254 + 2 * kPopoverShadowPad);
+    if (brightness_slider_)
+        brightness_slider_->setGeometry(6 + kPopoverShadowPad,
+                                        110 + kPopoverShadowPad, w - 12, 36);
+    if (volume_slider_)
+        volume_slider_->setGeometry(6 + kPopoverShadowPad,
+                                    156 + kPopoverShadowPad, w - 12, 36);
+    clearInputRegions();
 }
 
 void ControlCenterPopover::openDrawer() {
@@ -1524,12 +1612,20 @@ void ControlCenterPopover::openDrawer() {
     syncSystemState();
     if (finn::ui::FinnThemeManager::instance().reducedMotion()) {
         open_anim_->set(1.0);
-        if (brightness_slider_) brightness_slider_->move(6, 110);
-        if (volume_slider_) volume_slider_->move(6, 156);
+        if (brightness_slider_)
+            brightness_slider_->move(6 + kPopoverShadowPad,
+                                     110 + kPopoverShadowPad);
+        if (volume_slider_)
+            volume_slider_->move(6 + kPopoverShadowPad,
+                                 156 + kPopoverShadowPad);
     } else {
         open_anim_->set(0.0);
-        if (brightness_slider_) brightness_slider_->move(6, 120);
-        if (volume_slider_) volume_slider_->move(6, 166);
+        if (brightness_slider_)
+            brightness_slider_->move(6 + kPopoverShadowPad,
+                                     120 + kPopoverShadowPad);
+        if (volume_slider_)
+            volume_slider_->move(6 + kPopoverShadowPad,
+                                 166 + kPopoverShadowPad);
         open_anim_->retarget(1.0);
     }
     show();
@@ -1563,8 +1659,9 @@ void ControlCenterPopover::syncSystemState() {
 
 ControlCenterPopover::ControlTarget ControlCenterPopover::targetAt(
     const QPointF& pos) const {
-    const QPoint pt = pos.toPoint();
-    const int w = std::max(320, width());
+    const QPoint pt = pos.toPoint() -
+                      QPoint(kPopoverShadowPad, kPopoverShadowPad);
+    const int w = std::max(320, width() - 2 * kPopoverShadowPad);
     const int half_w = (w - 22) / 2;
     const int col2_x = 6 + half_w + 10;
     const int media_btn_x = col2_x + half_w - 104;
@@ -1702,7 +1799,7 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
     const auto& t = finn::ui::FinnThemeManager::instance().tokens();
     const auto& svc = finn::sys::FinnDesktopServices::instance();
     const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
-    const qreal w = std::max<qreal>(320.0, width());
+    const qreal w = std::max<qreal>(320.0, width() - 2 * kPopoverShadowPad);
     const qreal half_w = (w - 22.0) * 0.5;
     const qreal col2_x = 6.0 + half_w + 10.0;
     const qreal media_btn_x = col2_x + half_w - 104.0;
@@ -1713,6 +1810,11 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.setOpacity(std::clamp(open_progress_, 0.0, 1.0));
     p.translate(0.0, (1.0 - open_progress_) * 10.0);
+    paintLayerShadow(
+        p, QRectF(kPopoverShadowPad, kPopoverShadowPad, w, 299.0),
+        finn::ui::radii::r_lg, finn::ui::blur::blur_glass,
+        finn::ui::elevation::elev_popover);
+    p.translate(kPopoverShadowPad, kPopoverShadowPad);
 
     p.setPen(QPen(t.hair, 1.0));
     p.setBrush(shell_glass_fill(t));

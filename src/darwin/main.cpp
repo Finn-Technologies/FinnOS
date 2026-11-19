@@ -4,6 +4,7 @@
 // FinnOS, and installs from HTTP(S) URLs, .dmg, .pkg, .zip, or .app bundles.
 
 #include "darwin/appkit_bridge.hpp"
+#include "darwin/framework_coverage.hpp"
 #include "darwin/installer.hpp"
 #include "darwin/macho_loader.hpp"
 
@@ -44,7 +45,8 @@ int cmd_status() {
                       ? "Qt6/Wayland bridge active (NSWindow/NSMenu/NSButton/NSTextView/NSScrollView/NSSlider/NSOpenPanel/NSTimer)\n"
                       : "headless CLI build (AppKit Qt6 bridge compiles on Linux target)\n")
               << "  installer:  HTTP(S) direct download, .dmg (UDIF), .pkg (XAR+cpio), .zip (zlib), .app\n"
-              << "  limits:     SwiftUI, full Swift stdlib, Metal, WebKit, CoreData, App Store/iCloud not implemented\n"
+              << "  limits:     the following are reported honestly, never faked:\n"
+               << finn::darwin::coverage_report()
               << "  apps_dir:   " << finn::darwin::default_macos_apps_dir() << "\n"
               << "  installed:  " << apps.size() << " .app bundle(s)\n";
     for (const auto& a : apps) {
@@ -88,12 +90,27 @@ int cmd_diagnose(const std::string& target) {
     }
     std::cout << "Imported syms:   " << d.imported_symbols.size() << "\n"
               << "Missing syms:    " << d.missing_symbols.size() << "\n";
-    const std::size_t show = std::min<std::size_t>(d.missing_symbols.size(), 25);
-    for (std::size_t i = 0; i < show; ++i) {
-        std::cout << "  ! " << d.missing_symbols[i] << "\n";
+
+    if (!d.framework_gaps.empty()) {
+        std::cout << "Unimplemented frameworks linked by this binary:\n";
+        for (const auto& g : d.framework_gaps) {
+            std::cout << "  ! " << g.name << (g.linked ? " (linked)" : " (imported)")
+                      << " — " << g.reason << "\n";
+        }
     }
-    if (d.missing_symbols.size() > show) {
-        std::cout << "  ... and " << (d.missing_symbols.size() - show) << " more\n";
+    if (!d.symbol_gaps.empty()) {
+        std::cout << "Explained missing symbols:\n";
+        for (const auto& g : d.symbol_gaps) {
+            std::cout << "  ! " << g.name << " — " << g.reason << "\n";
+        }
+    }
+
+    // diagnose is the pre-flight authority: it must print every missing symbol,
+    // not a sample. Truncating here contradicted the documented contract and hid
+    // the exact ABI gap the caller needs to see.
+    std::cout << "All missing symbols:\n";
+    for (const auto& sym : d.missing_symbols) {
+        std::cout << "  ! " << sym << "\n";
     }
     std::cout << "Verdict:         " << d.summary << "\n";
     return d.runnable ? 0 : 2;

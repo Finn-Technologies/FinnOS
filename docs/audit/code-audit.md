@@ -200,9 +200,9 @@
 - **Where**: `src/shell/popovers.cpp:2319-2412`; `apps/wallpaper/main.cpp:37-42, 151-155`
 - **Evidence**: `BootSplashWindow` is dead code unused since splash moved to Plymouth (`src/shell/main.cpp:237-240`). `finn-wallpaper` polls theme every 1s (`37-42`) and invokes `clearMask()` for `50ms` (`151-155`) before restoring an empty input region on resize/reload.
 
-### `m10` — `probe_android_runtime()` omits `binder_present`; `inspect_pe_file()` reads only 4096 bytes
-- **Where**: `src/compat/android_runner.cpp:41-47`; `src/compat/wine_runner.cpp:131`
-- **Evidence**: `st.binder_present` is probed at `android_runner.cpp:41` (`!st.binder_present` gives an error hint at `47`) but is omitted from `st.ready` (`43`), so `waydroid` can report ready without `/dev/binder*`. `inspect_pe_file` (`wine_runner.cpp:131`) reads only the first `4096` bytes, failing on PE headers/metadata beyond 4 KB.
+### `m10` — `probe_android_runtime()` omits `binder_present`; `inspect_pe_file()` 4 KB read (PE read fixed)
+- **Where**: `src/compat/android_runner.cpp:41-47`; `src/compat/wine_runner.cpp` (`inspect_pe_file`)
+- **Evidence**: `st.binder_present` is probed at `android_runner.cpp:41` (`!st.binder_present` gives an error hint at `47`) but is omitted from `st.ready` (`43`), so `waydroid` can report ready without `/dev/binder*`. `inspect_pe_file` used to read only the first `4096` bytes, failing on PE headers/metadata beyond 4 KB. It now reads up to 1 MB when the DOS header points past the first page, and `test_pe_inspection_and_bounds` in `tests/unit/test_compat.cpp` covers a PE header at `0x2000`.
 
 ### `m11` — Miscellaneous edge bugs & hardcoded limits
 - `FinnThemeManager::reload()` (`src/ui/finn/theme.cpp:179-196`) omits `lock_wallpaper` from change detection.

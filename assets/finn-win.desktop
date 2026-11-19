@@ -6,4 +6,5 @@ Exec=/usr/local/bin/finn-win %f
 Icon=window
 NoDisplay=true
 Terminal=false
-MimeType=application/x-ms-dos-executable;application/x-msi;application/x-msdos-program;application/vnd.microsoft.portable-executable;
+MimeType=application/x-ms-dos-executable;application/x-msi;application/x-msdos-program;application/vnd.microsoft.portable-executable;application/x-msix;application/vnd.ms-appx;
+Categories=Utility;System;

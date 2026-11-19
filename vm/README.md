@@ -74,9 +74,12 @@ sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --list
 sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --launch files
 ```
 
-Input injection is not implemented; pointer and keyboard paths are verified
-only by the fact that the device is opened and the seat exists. Treat an
-input change as unverified until a test drives it.
+Input injection is available for verification (`tools/vm-input/`). It creates
+a properly tagged uinput pointer so libinput and `finn-comp` deliver clicks to
+native and compatibility-runtime windows; keyboard input uses `ydotool`.
+Both have been used to drive clicks and typing in macOS and OpenHarmony guest
+apps on the dev VM. This is dev-VM tooling only — it is not shipped in the
+FinnOS image, and it does not replace physical-device testing.
 
 ## Installing a fresh VM
 

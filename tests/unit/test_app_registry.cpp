@@ -1,6 +1,7 @@
 #include "session/app_registry.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -192,6 +193,58 @@ bool test_source_names() {
     return true;
 }
 
+bool test_windows_uninstall_and_args_are_merged() {
+    namespace fs = std::filesystem;
+    const TempDir dir;
+    const std::string catalogue = dir.write(
+        "apps.registry",
+        "settings | Settings | s.svg | /usr/local/bin/finn-settings | System\n");
+    const std::string installed = dir.write("installed", "settings\n");
+    const std::string home = dir.path("home");
+    std::error_code ec;
+    fs::create_directories(home, ec);
+
+    const fs::path prefix = fs::path(home) / ".local/share/finn/wine";
+    const fs::path install_dir = prefix / "drive_c" / "Program Files" / "FinnApp";
+    fs::create_directories(install_dir, ec);
+    const fs::path exe = install_dir / "finnapp.exe";
+    { std::ofstream out(exe, std::ios::binary); out << "MZ"; }
+    {
+        std::ofstream out(prefix / "system.reg");
+        out << "Windows Registry Editor Version 5.00\n\n"
+            << "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+               "Uninstall\\FinnApp]\n"
+            << "\"DisplayName\"=\"Finn App\"\n"
+            << "\"DisplayVersion\"=\"1.5\"\n"
+            << "\"Publisher\"=\"FinnOS Tests\"\n"
+            << "\"DisplayIcon\"=\"C:\\\\Program Files\\\\FinnApp\\\\finnapp.exe,0\"\n"
+            << "\"InstallLocation\"=\"C:\\\\Program Files\\\\FinnApp\"\n";
+    }
+    const fs::path conf = fs::path(home) / ".local/share/finn/windows.conf";
+    fs::create_directories(conf.parent_path(), ec);
+    {
+        std::ofstream out(conf);
+        out << "win:portable|Portable Tool|/opt/portable.exe||--flag \"two words\"\n";
+    }
+
+    const char* old_home = std::getenv("HOME");
+    const std::string saved_home = old_home ? old_home : "";
+    ::setenv("HOME", home.c_str(), 1);
+    const auto reg = finn::AppRegistry::load_all(catalogue, installed);
+    if (saved_home.empty()) ::unsetenv("HOME");
+    else ::setenv("HOME", saved_home.c_str(), 1);
+
+    const finn::App* discovered = reg.find("win:finn-app");
+    CHECK(discovered != nullptr);
+    CHECK(discovered->command == exe.string());
+    CHECK(discovered->source == finn::AppSource::kWindows);
+    CHECK(discovered->installed);
+    const finn::App* portable = reg.find("win:portable");
+    CHECK(portable != nullptr);
+    CHECK(portable->launch_args == "--flag \"two words\"");
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -203,6 +256,7 @@ int main() {
     ok &= test_overlong_line_is_skipped();
     ok &= test_unknown_source_is_not_native();
     ok &= test_source_names();
+    ok &= test_windows_uninstall_and_args_are_merged();
     if (!ok) return 1;
     std::puts("test_app_registry: ok");
     return 0;

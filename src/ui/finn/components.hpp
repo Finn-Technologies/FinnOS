@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPoint>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QSlider>
 #include <QStackedWidget>
@@ -35,6 +36,11 @@ enum class FinnFormFactor { Desktop, Tablet, Phone };
 
 FinnFormFactor resolve_form_factor(int width_dp = -1);
 int touch_target_height(int desktop_height, FinnFormFactor ff);
+
+// Figma smooth corners: one cubic-Bezier path shared by every painted Finn
+// surface (and by FinnWindow's clip/mask) so cornerSmoothing = 0.6 is applied
+// consistently instead of approximating it with a circular arc per surface.
+QPainterPath finn_rounded_path(const QRectF& rect, qreal radius);
 
 /* Lightweight QTimer-backed driver connecting SpringAnimator (and <=100ms
  * ReducedCrossfade fallback) to a QWidget. */
