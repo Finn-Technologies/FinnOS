@@ -526,6 +526,42 @@ void Server::exit_overview(ManagedWindow* focus_target) {
     process_cursor_motion(monotonic_msec());
 }
 
+void Server::tile_all_windows() {
+    std::vector<ManagedWindow*> visible;
+    for (auto& w : windows_) {
+        if (w->mapped && !w->minimized && !w->override_redirect && !w->fullscreen) {
+            visible.push_back(w.get());
+        }
+    }
+    if (visible.empty()) return;
+    if (overview_active_) overview_active_ = false;
+
+    const wlr_box area = usable_area_for();
+    const int n = static_cast<int>(visible.size());
+    const int gap = 10;
+    const int cols = (n <= 1) ? 1 : (n <= 2 ? 2 : (n <= 4 ? 2 : 3));
+    const int rows = (n + cols - 1) / cols;
+    const int cell_w = std::max(260, (area.width - gap * (cols + 1)) / cols);
+    const int cell_h = std::max(200, (area.height - gap * (rows + 1)) / rows);
+
+    for (int i = 0; i < n; ++i) {
+        ManagedWindow* w = visible[static_cast<std::size_t>(i)];
+        const double old_x = w->anim_timer ? w->spring_x.value() : static_cast<double>(w->x);
+        const double old_y = w->anim_timer ? w->spring_y.value() : static_cast<double>(w->y);
+        w->maximized = false;
+        const int col = i % cols;
+        const int row = i / cols;
+        const int nx = area.x + gap + col * (cell_w + gap);
+        const int ny = area.y + gap + row * (cell_h + gap);
+        w->set_position(nx, ny);
+        w->configure_size(cell_w, std::max(160, cell_h - w->title_offset()));
+        w->start_spring_animation(old_x, old_y, w->cur_opacity, 1.0,
+                                  finn::ui::springs::kSmooth, false);
+        w->sync_foreign_state();
+    }
+    process_cursor_motion(monotonic_msec());
+}
+
 void Server::minimize_all_toggle() {
     bool any_visible = false;
     for (auto& w : windows_) {
@@ -895,6 +931,11 @@ void Server::on_new_input(wl_listener* listener, void* data) {
                                         }
                                         if (sym == XKB_KEY_d || sym == XKB_KEY_D) {
                                             s->minimize_all_toggle();
+                                            handled = true;
+                                            break;
+                                        }
+                                        if (sym == XKB_KEY_t || sym == XKB_KEY_T) {
+                                            s->tile_all_windows();
                                             handled = true;
                                             break;
                                         }

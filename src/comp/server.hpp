@@ -60,6 +60,7 @@ public:
     void minimize_all_toggle();
     void toggle_overview();
     void exit_overview(ManagedWindow* focus_target = nullptr);
+    void tile_all_windows();
     bool overview_active() const { return overview_active_; }
     ManagedWindow* find_xdg_toplevel(const wlr_xdg_toplevel* top) const;
 

@@ -209,12 +209,54 @@ void AppRegistry::merge_windows_entries(const std::string& windows_conf_path) {
         app.icon = w.icon.empty() ? "windows.svg" : w.icon;
         app.command = w.exe_path;
         app.desktop_file = w.prefix;  // Stores optional prefix cleanly
-        app.note = w.args.empty() ? "Windows application (Wine)" : w.args;
+        app.note = w.args.empty() ? "Windows 11 application" : w.args;
         app.category = "Windows";
         app.source = AppSource::kWindows;
         std::error_code ec;
         app.installed = fs::is_regular_file(w.exe_path, ec);
         apps_.push_back(std::move(app));
+    }
+
+    // Auto-discover installed Windows 11 apps from the finn-win prefix when initialized.
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        const fs::path prefix = fs::path(home) / ".local" / "share" / "finn" / "wine";
+        const fs::path sys32 = prefix / "drive_c" / "windows" / "system32";
+        std::error_code ec;
+        if (fs::is_directory(sys32, ec)) {
+            struct BuiltinWinApp {
+                const char* id;
+                const char* name;
+                const char* exe;
+                const char* icon;
+                const char* note;
+            };
+            static constexpr BuiltinWinApp kBuiltins[] = {
+                {"win11-notepad", "Notepad (Win11)", "notepad.exe", "win-notepad.svg",
+                 "Windows 11 Notepad via finn-win"},
+                {"win11-winecfg", "Windows Settings", "winecfg.exe", "win-settings.svg",
+                 "Windows 11 compatibility configuration"},
+                {"win11-explorer", "Windows Explorer", "explorer.exe", "windows.svg",
+                 "Windows 11 file explorer"},
+                {"win11-cmd", "Command Prompt", "cmd.exe", "windows.svg",
+                 "Windows 11 command interpreter"},
+            };
+            for (const auto& b : kBuiltins) {
+                if (find(b.id) != nullptr) continue;
+                const fs::path exe_path = sys32 / b.exe;
+                if (!fs::is_regular_file(exe_path, ec)) continue;
+                App app;
+                app.id = b.id;
+                app.name = b.name;
+                app.icon = b.icon;
+                app.command = exe_path.string();
+                app.desktop_file = prefix.string();
+                app.note = b.note;
+                app.category = "Windows";
+                app.source = AppSource::kWindows;
+                app.installed = true;
+                apps_.push_back(std::move(app));
+            }
+        }
     }
 }
 

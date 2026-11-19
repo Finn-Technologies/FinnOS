@@ -163,8 +163,15 @@ protected:
         p.setClipPath(clip);
 
         const qreal dpr = std::max<qreal>(1.0, devicePixelRatioF());
-        const QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
+        QPixmap pm = finn::ui::FinnThemeManager::instance().iconPixmap(
             icon_name_, QSize(32, 32), QColor(), dpr);
+        if (pm.isNull()) {
+            const bool is_win = app_id_.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive) ||
+                                app_id_.contains(QStringLiteral("wine"), Qt::CaseInsensitive);
+            pm = finn::ui::FinnThemeManager::instance().iconPixmap(
+                is_win ? QStringLiteral("windows") : QStringLiteral("linux-app"),
+                QSize(32, 32), QColor(), dpr);
+        }
         if (!pm.isNull()) {
             p.drawPixmap(QRect(0, 0, 32, 32), pm);
         }
@@ -226,15 +233,33 @@ protected:
 
 QString normalize_icon_for_app_id(const std::string& id,
                                     const std::vector<finn::App>* apps) {
+    const QString qid = QString::fromStdString(id);
+    const QString low = qid.toLower();
+
+    // Dedicated FinnOS-styled icons for Windows 11 apps running under finn-win / Wine.
+    if (low == QLatin1String("notepad.exe") || low == QLatin1String("notepad")) {
+        return QStringLiteral("win-notepad");
+    }
+    if (low == QLatin1String("winecfg.exe") || low == QLatin1String("control.exe")) {
+        return QStringLiteral("win-settings");
+    }
+    if (low.endsWith(QLatin1String(".exe")) || low.startsWith(QLatin1String("wine"))) {
+        return QStringLiteral("windows");
+    }
+
     if (apps) {
         for (const auto& a : *apps) {
-            if (a.id == id && !a.icon.empty()) {
+            const QString aid = QString::fromStdString(a.id);
+            const QString aname = QString::fromStdString(a.name);
+            if ((aid.compare(qid, Qt::CaseInsensitive) == 0 ||
+                 aname.compare(qid, Qt::CaseInsensitive) == 0) &&
+                !a.icon.empty()) {
                 return QString::fromStdString(a.icon);
             }
         }
     }
-    if (id == "settings") return QStringLiteral("settings-app");
-    return QString::fromStdString(id);
+    if (low == QLatin1String("settings")) return QStringLiteral("settings-app");
+    return qid;
 }
 
 }  // namespace

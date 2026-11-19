@@ -424,8 +424,50 @@ QPixmap FinnThemeManager::iconPixmap(const QString& name_or_path,
     const qreal effective_dpr = std::max<qreal>(1.0, dpr);
     const int pw = std::max(1, qRound(logical_size.width() * effective_dpr));
     const int ph = std::max(1, qRound(logical_size.height() * effective_dpr));
-    const QString path = resolve_icon_path(name_or_path);
-    if (path.isEmpty()) return {};
+    QString path = resolve_icon_path(name_or_path);
+    if (path.isEmpty()) {
+        // Search freedesktop hicolor/Adwaita/pixmaps/Flatpak icon themes for third-party Linux apps.
+        const QString base = name_or_path.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive) ||
+                                     name_or_path.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive)
+                                 ? name_or_path.left(name_or_path.lastIndexOf(QLatin1Char('.')))
+                                 : name_or_path;
+        const QString home = QDir::homePath();
+        const QStringList search_dirs = {
+            QStringLiteral("/usr/share/icons/hicolor/scalable/apps"),
+            QStringLiteral("/usr/share/icons/hicolor/256x256/apps"),
+            QStringLiteral("/usr/share/icons/hicolor/128x128/apps"),
+            QStringLiteral("/usr/share/icons/hicolor/64x64/apps"),
+            QStringLiteral("/usr/share/icons/hicolor/48x48/apps"),
+            QStringLiteral("/usr/share/icons/Adwaita/scalable/apps"),
+            QStringLiteral("/usr/share/pixmaps"),
+            home + QStringLiteral("/.local/share/flatpak/exports/share/icons/hicolor/scalable/apps"),
+            home + QStringLiteral("/.local/share/flatpak/exports/share/icons/hicolor/128x128/apps"),
+            QStringLiteral("/var/lib/flatpak/exports/share/icons/hicolor/scalable/apps"),
+            QStringLiteral("/var/lib/flatpak/exports/share/icons/hicolor/128x128/apps"),
+        };
+        const QStringList exts = {QStringLiteral(".svg"), QStringLiteral(".png")};
+        const QStringList names = {base, base.toLower()};
+        for (const QString& dir : search_dirs) {
+            for (const QString& nm : names) {
+                for (const QString& ext : exts) {
+                    const QString cand = dir + QLatin1Char('/') + nm + ext;
+                    if (QFileInfo::exists(cand)) {
+                        path = cand;
+                        break;
+                    }
+                }
+                if (!path.isEmpty()) break;
+            }
+            if (!path.isEmpty()) break;
+        }
+    }
+    if (path.isEmpty()) {
+        const QIcon themed = QIcon::fromTheme(name_or_path);
+        if (!themed.isNull()) {
+            return themed.pixmap(logical_size, effective_dpr);
+        }
+        return {};
+    }
 
     // A multi-colour SVG without currentColor is never flattened, even when a
     // tint is passed; monochrome glyphs and two-tone currentColor shell icons

@@ -201,7 +201,7 @@ QString source_label(finn::AppSource src) {
         case finn::AppSource::kNative:  return QStringLiteral("FinnSDK");
         case finn::AppSource::kFlatpak: return QStringLiteral("Flatpak");
         case finn::AppSource::kDesktop: return QStringLiteral("Linux");
-        case finn::AppSource::kWindows: return QStringLiteral("Wine");
+        case finn::AppSource::kWindows: return QStringLiteral("Windows 11");
         case finn::AppSource::kWinget:  return QStringLiteral("Windows");
         case finn::AppSource::kUnknown: return QStringLiteral("App");
     }
