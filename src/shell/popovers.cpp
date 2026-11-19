@@ -1506,8 +1506,8 @@ void ControlCenterPopover::applyResponsiveLayout() {
         setAnchors(AnchorBottom | AnchorRight);
         setLayerMargins(QMargins(0, 0, right_margin, 74));
     }
-    setDesiredSize(QSize(w, 300));
-    setFixedSize(w, 300);
+    setDesiredSize(QSize(w, 254));
+    setFixedSize(w, 254);
     if (brightness_slider_) brightness_slider_->setGeometry(6, 110, w - 12, 36);
     if (volume_slider_) volume_slider_->setGeometry(6, 156, w - 12, 36);
 }
@@ -1573,8 +1573,8 @@ ControlCenterPopover::ControlTarget ControlCenterPopover::targetAt(
     if (QRect(media_btn_x + 66, 70, 26, 26).contains(pt)) {
         return ControlTarget::MediaNext;
     }
-    if (QRect(w - 80, 258, 34, 34).contains(pt)) return ControlTarget::ThemeToggle;
-    if (QRect(w - 43, 258, 34, 34).contains(pt)) return ControlTarget::OpenSettings;
+    if (QRect(w - 80, 212, 34, 34).contains(pt)) return ControlTarget::ThemeToggle;
+    if (QRect(w - 43, 212, 34, 34).contains(pt)) return ControlTarget::OpenSettings;
     return ControlTarget::None;
 }
 
@@ -1871,20 +1871,20 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
                         QStringLiteral("forward"), media_tint, dpr);
 
     // Bottom bar
-    paintGlassFooter(p, w, 250.0, 50.0, finn::ui::radii::r_lg, t);
+    paintGlassFooter(p, w, 204.0, 50.0, finn::ui::radii::r_lg, t);
 
     if (hovered_ == ControlTarget::ThemeToggle) {
-        paintHoverFill(p, QRectF(w - 80.0, 258.0, 34.0, 34.0),
+        paintHoverFill(p, QRectF(w - 80.0, 212.0, 34.0, 34.0),
                        finn::ui::radii::r_md, t);
     }
-    paintMonochromeIcon(p, QRectF(w - 74.0, 264.0, 22.0, 22.0),
+    paintMonochromeIcon(p, QRectF(w - 74.0, 218.0, 22.0, 22.0),
                         QStringLiteral("edit-01"), ink, dpr);
 
     if (hovered_ == ControlTarget::OpenSettings) {
-        paintHoverFill(p, QRectF(w - 43.0, 258.0, 34.0, 34.0),
+        paintHoverFill(p, QRectF(w - 43.0, 212.0, 34.0, 34.0),
                        finn::ui::radii::r_md, t);
     }
-    paintMonochromeIcon(p, QRectF(w - 37.0, 264.0, 22.0, 22.0),
+    paintMonochromeIcon(p, QRectF(w - 37.0, 218.0, 22.0, 22.0),
                         QStringLiteral("settings-02"), ink, dpr);
 
     const QRectF focus_rects[7] = {
@@ -1893,8 +1893,8 @@ void ControlCenterPopover::paintEvent(QPaintEvent*) {
         QRectF(media_btn_x, 70.0, 26.0, 26.0),
         QRectF(media_btn_x + 33.0, 70.0, 26.0, 26.0),
         QRectF(media_btn_x + 66.0, 70.0, 26.0, 26.0),
-        QRectF(w - 80.0, 258.0, 34.0, 34.0),
-        QRectF(w - 43.0, 258.0, 34.0, 34.0),
+        QRectF(w - 80.0, 212.0, 34.0, 34.0),
+        QRectF(w - 43.0, 212.0, 34.0, 34.0),
     };
     if (focused_target_idx_ >= 0 && focused_target_idx_ < 7) {
         draw_focus_ring(p, focus_rects[focused_target_idx_],
@@ -2242,8 +2242,13 @@ LockScreenWindow::LockScreenWindow(QWidget* parent)
     bottom->addLayout(users_row_);
     bottom->addStretch(1);
 
+    auto* power_pill = new QFrame(this);
+    power_pill->setObjectName(QStringLiteral("lockPowerPill"));
+    auto* pill_lay = new QHBoxLayout(power_pill);
+    pill_lay->setContentsMargins(6, 4, 6, 4);
+    pill_lay->setSpacing(4);
     restart_btn_ = new finn::ui::FinnIconButton(
-        QStringLiteral("refresh"), 36, 18, this);
+        QStringLiteral("refresh"), 36, 18, power_pill);
     restart_btn_->setCornerRadius(18.0);
     restart_btn_->setAccessibleName(QStringLiteral("Restart"));
     restart_btn_->setToolTip(QStringLiteral("Restart"));
@@ -2251,15 +2256,16 @@ LockScreenWindow::LockScreenWindow(QWidget* parent)
         QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("reboot")});
     });
     power_btn_ = new finn::ui::FinnIconButton(
-        QStringLiteral("power"), 36, 18, this);
+        QStringLiteral("power"), 36, 18, power_pill);
     power_btn_->setCornerRadius(18.0);
     power_btn_->setAccessibleName(QStringLiteral("Shut Down"));
     power_btn_->setToolTip(QStringLiteral("Shut Down"));
     connect(power_btn_, &QAbstractButton::clicked, this, []() {
         QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("poweroff")});
     });
-    bottom->addWidget(restart_btn_);
-    bottom->addWidget(power_btn_);
+    pill_lay->addWidget(restart_btn_);
+    pill_lay->addWidget(power_btn_);
+    bottom->addWidget(power_pill);
     root->addLayout(bottom);
 
     shake_anim_ = std::make_unique<ShellSpringDriver>(
@@ -2320,23 +2326,26 @@ void LockScreenWindow::refreshTheme() {
         clock_dark_bg_ ? finn::ui::colors::ink_dark : finn::ui::colors::ink_light);
     const QColor auth_fg = token_color(
         auth_dark_bg_ ? finn::ui::colors::ink_dark : finn::ui::colors::ink_light);
-    const QColor actions_fg = token_color(
-        actions_dark_bg_ ? finn::ui::colors::ink_dark : finn::ui::colors::ink_light);
-    const QColor actions_hover_bg = token_color(
-        actions_dark_bg_ ? finn::ui::colors::surface_hover_dark
-                         : finn::ui::colors::surface_hover_light);
 
     apply_fg(date_lbl_, clock_fg);
     apply_fg(time_lbl_, clock_fg);
     apply_fg(user_name_lbl_, auth_fg);
 
+    const auto& t = finn::ui::FinnThemeManager::instance().tokens();
+    if (auto* pill = findChild<QFrame*>(QStringLiteral("lockPowerPill"))) {
+        QColor bg = t.glass;
+        bg.setAlpha(205);
+        pill->setStyleSheet(
+            QStringLiteral("#lockPowerPill { background: %1; border: 1px solid %2; border-radius: 22px; }")
+                .arg(bg.name(QColor::HexArgb), t.hair.name(QColor::HexArgb)));
+    }
     if (restart_btn_) {
-        restart_btn_->setIconTint(actions_fg);
-        restart_btn_->setCustomHoverColor(actions_hover_bg, actions_fg);
+        restart_btn_->setIconTint(t.ink);
+        restart_btn_->setCustomHoverColor(t.surface_hover, t.ink);
     }
     if (power_btn_) {
-        power_btn_->setIconTint(actions_fg);
-        power_btn_->setCustomHoverColor(actions_hover_bg, actions_fg);
+        power_btn_->setIconTint(t.ink);
+        power_btn_->setCustomHoverColor(t.surface_hover, t.ink);
     }
     if (avatar_lbl_) {
         avatar_lbl_->setPixmap(finn::ui::FinnThemeManager::instance().avatarPixmap(

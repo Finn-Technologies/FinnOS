@@ -77,9 +77,40 @@ void apply_press_scale(QPainter& p, const QWidget* w, qreal scale) {
     p.translate(-c);
 }
 
+class KeyboardFocusTracker : public QObject {
+  public:
+    explicit KeyboardFocusTracker(QObject* parent = nullptr) : QObject(parent) {}
+    bool kbd_focus = false;
+
+  protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        if (ev->type() == QEvent::FocusIn) {
+            auto* fe = static_cast<QFocusEvent*>(ev);
+            const Qt::FocusReason r = fe->reason();
+            kbd_focus = (r == Qt::TabFocusReason ||
+                         r == Qt::BacktabFocusReason ||
+                         r == Qt::ShortcutFocusReason);
+        } else if (ev->type() == QEvent::MouseButtonPress) {
+            kbd_focus = false;
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+};
+
+bool is_keyboard_focus_active() {
+    static KeyboardFocusTracker* tracker = nullptr;
+    if (!tracker && qApp) {
+        tracker = new KeyboardFocusTracker(qApp);
+        qApp->installEventFilter(tracker);
+    }
+    return tracker ? tracker->kbd_focus : false;
+}
+
 void draw_focus_ring(QPainter& p, const QWidget* w, qreal radius,
                      const FinnTokens& t) {
-    if (!w || !w->hasFocus() || !w->isEnabled()) return;
+    if (!w || !w->hasFocus() || !w->isEnabled() || !is_keyboard_focus_active()) {
+        return;
+    }
     p.save();
     p.setBrush(Qt::NoBrush);
     QColor ring = t.accent;

@@ -265,7 +265,7 @@ public:
                           QStringLiteral("Bluetooth"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("network"), QStringLiteral("internet"),
                           QStringLiteral("Network"), accent_light, accent_dark);
-        sidebar_->addSectionSpacer(20);
+        sidebar_->addSectionSpacer(12);
 
         sidebar_->addItem(QStringLiteral("general"), QStringLiteral("settings-02"),
                           QStringLiteral("General"), neutral_light, neutral_dark);
@@ -1575,12 +1575,17 @@ private:
                 const QString ver_b =
                     slots_obj.value(QStringLiteral("b")).toObject().value(QStringLiteral("version")).toString();
 
+                const QString gh_repo = obj.value(QStringLiteral("github_repo")).toString();
+                const QString feed_label = gh_repo.isEmpty()
+                    ? QStringLiteral("GitHub Releases")
+                    : QStringLiteral("%1 (GitHub Releases)").arg(gh_repo);
+
                 if (layout == QLatin1String("single")) {
                     ota_slot_badge_->setTone(finn::ui::FinnBadge::Tone::Warning);
                     ota_slot_badge_->setText(QStringLiteral("Single Slot"));
                     ota_status_row_->setSubtitle(
-                        QStringLiteral("FinnOS %1 (%2 · %3) — Last check: %4")
-                            .arg(cur_ver, ch, backend,
+                        QStringLiteral("FinnOS %1 (%2 · %3) · %4 — Last check: %5")
+                            .arg(cur_ver, ch, backend, feed_label,
                                  last_chk.isEmpty() ? QStringLiteral("never") : last_chk));
                     setOtaBanner(
                         finn::ui::FinnBadge::Tone::Warning, QStringLiteral("Single-Slot"),

@@ -49,9 +49,15 @@ ota/publish \
   --rollout 10 \
   --notes-file /build/RELEASE_NOTES.md \
   --key /secure/offline/finnos-ota-keys/finnos-release-private.pem \
-  --base-url https://ota.finnos.org \
-  --out-dir /srv/finnos-ota-staging
+  --github-repo Finn-Technologies/FinnOS \
+  --out-dir /srv/finnos-ota-staging \
+  --upload-github
 ```
+
+For automated publishing from GitHub Actions, trigger
+`.github/workflows/ota-release.yml` (`workflow_dispatch`) with the
+`FINN_OTA_SIGNING_KEY` repository secret configured. Custom static HTTPS
+mirrors remain supported via `--base-url https://mirror.example.org`.
 
 What `ota/publish` does:
 
@@ -59,13 +65,15 @@ What `ota/publish` does:
    `.img.zst` to record `uncompressed_size` and `uncompressed_sha256`).
 2. If `--prev-image` and `--prev-version` are supplied, generates a binary
    delta via `zstd -19 --patch-from=<prev_image>`.
-3. Builds the manifest JSON (`schema_version: 1`) with SHA-256 digests and
-   exact byte sizes for both compressed and uncompressed payloads.
+3. Builds the manifest JSON (`schema_version: 1`) with SHA-256 digests, exact
+   byte sizes, and GitHub Release asset URLs (`https://github.com/Finn-Technologies/FinnOS/releases/download/v<version>/<file>`).
 4. Signs canonical manifest JSON bytes with the Ed25519 private key and
    verifies the resulting signature immediately against the derived public key.
-5. Writes `<version>/manifest.json` and updates `<channel>/<arch>/latest.json`
-   atomically (omit `--no-latest` to stage a release without promoting it to
-   `latest.json` yet).
+5. Writes `<version>/manifest-<arch>.json` and updates the rolling channel
+   pointer `ota-<channel>/latest-<arch>.json` (and `<channel>/<arch>/latest.json`
+   for custom mirrors). With `--upload-github`, uploads the versioned assets to
+   release tag `v<version>` first and then updates the `ota-<channel>` release
+   asset `latest-<arch>.json` atomically via `gh release upload --clobber`.
 
 ---
 

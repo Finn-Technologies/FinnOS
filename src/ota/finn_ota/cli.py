@@ -14,6 +14,7 @@ from .backend import BackendError, BootBackend, SlotStatus, select_backend
 from .config import (
     DEFAULT_CONFIG_PATH,
     OtaConfig,
+    github_releases_base_url,
     load_config,
     save_config,
 )
@@ -102,6 +103,9 @@ def _status_payload(
         "current_version": cur_ver,
         "channel": cfg.channel,
         "arch": cfg.arch,
+        "github_repo": cfg.github_repo,
+        "base_url": cfg.base_url,
+        "manifest_url": cfg.effective_manifest_url(),
         "auto_check": cfg.auto_check,
         "auto_download": cfg.auto_download,
         "machine_id_bucket": bucket,
@@ -461,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cfg_cmd = sub.add_parser("config", parents=[common_sub], help="show or update OTA configuration")
     cfg_cmd.add_argument("--channel", choices=("stable", "beta", "dev"), default=None)
+    cfg_cmd.add_argument("--github-repo", default=None, help="GitHub OWNER/REPO for Releases OTA")
     cfg_cmd.add_argument("--base-url", default=None)
     cfg_cmd.add_argument("--manifest-url", default=None)
     cfg_cmd.add_argument("--auto-check", choices=("true", "false"), default=None)
@@ -493,6 +498,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             if args.channel is not None:
                 cfg.channel = validate_channel(args.channel)
                 changed = True
+            if args.github_repo is not None:
+                cfg.base_url = github_releases_base_url(args.github_repo)
+                cfg.github_repo = args.github_repo.strip().strip("/")
+                changed = True
             if args.base_url is not None:
                 cfg.base_url = args.base_url
                 changed = True
@@ -511,8 +520,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 {
                     "status": "ok",
                     "channel": cfg.channel,
+                    "github_repo": cfg.github_repo,
                     "base_url": cfg.base_url,
                     "manifest_url": cfg.manifest_url,
+                    "effective_manifest_url": cfg.effective_manifest_url(),
                     "auto_check": cfg.auto_check,
                     "auto_download": cfg.auto_download,
                     "arch": cfg.arch,

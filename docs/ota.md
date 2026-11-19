@@ -186,7 +186,7 @@ automatically falls back to downloading and verifying the `full` artifact.
     {
       "kind": "full",
       "compression": "zstd",
-      "url": "https://ota.finnos.org/stable/x86_64/0.3.0/finnos-0.3.0-x86_64.img.zst",
+      "url": "https://github.com/Finn-Technologies/FinnOS/releases/download/v0.3.0/finnos-0.3.0-x86_64.img.zst",
       "sha256": "<64-hex>",
       "size": 524288000,
       "uncompressed_sha256": "<64-hex>",
@@ -196,7 +196,7 @@ automatically falls back to downloading and verifying the `full` artifact.
     {
       "kind": "delta",
       "compression": "zstd",
-      "url": "https://ota.finnos.org/stable/x86_64/0.3.0/finnos-0.2.0-to-0.3.0-x86_64.zstd-delta",
+      "url": "https://github.com/Finn-Technologies/FinnOS/releases/download/v0.3.0/finnos-0.2.0-to-0.3.0-x86_64.zstd-delta",
       "sha256": "<64-hex>",
       "size": 18432000,
       "uncompressed_sha256": "<64-hex>",

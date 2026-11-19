@@ -702,6 +702,69 @@ class BootBackendsAndUnitsTest(unittest.TestCase):
         self.assertIn("finn_tries_left", grub_cfg)
         self.assertIn("finn_pending_slot", grub_cfg)
 
+    def test_github_releases_default_urls_and_publish_layout(self):
+        from finn_ota.config import DEFAULT_GITHUB_REPO, OtaConfig
+
+        cfg = OtaConfig(arch="x86_64")
+        self.assertEqual(cfg.github_repo, DEFAULT_GITHUB_REPO)
+        self.assertEqual(
+            cfg.effective_manifest_url(),
+            f"https://github.com/{DEFAULT_GITHUB_REPO}/releases/download/ota-stable/latest-x86_64.json",
+        )
+        self.assertEqual(
+            cfg.effective_manifest_url(channel_override="beta"),
+            f"https://github.com/{DEFAULT_GITHUB_REPO}/releases/download/ota-beta/latest-x86_64.json",
+        )
+
+        with tempfile.TemporaryDirectory() as d:
+            seed, pub = ed25519.generate_keypair()
+            priv_pem = os.path.join(d, "priv.pem")
+            pub_pem = os.path.join(d, "pub.pem")
+            img_path = os.path.join(d, "root.img")
+            out_dir = os.path.join(d, "out")
+            with open(priv_pem, "w", encoding="utf-8") as f:
+                f.write(ed25519.encode_private_pem(seed))
+            with open(pub_pem, "w", encoding="utf-8") as f:
+                f.write(ed25519.encode_public_pem(pub))
+            with open(img_path, "wb") as f:
+                f.write(b"FINNOS_GITHUB_OTA_TEST" * 1024)
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    OTA_PUBLISH,
+                    "--version",
+                    "0.3.0",
+                    "--channel",
+                    "stable",
+                    "--arch",
+                    "x86_64",
+                    "--image",
+                    img_path,
+                    "--key",
+                    priv_pem,
+                    "--github-repo",
+                    "Finn-Technologies/FinnOS",
+                    "--out-dir",
+                    out_dir,
+                    "--notes",
+                    "GitHub Releases OTA test",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn("published FinnOS 0.3.0", proc.stdout)
+            gh_latest = os.path.join(out_dir, "ota-stable", "latest-x86_64.json")
+            self.assertTrue(os.path.isfile(gh_latest))
+            with open(gh_latest, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            verify_manifest(manifest, [pub])
+            self.assertEqual(
+                manifest["artifacts"][0]["url"],
+                "https://github.com/Finn-Technologies/FinnOS/releases/download/v0.3.0/finnos-0.3.0-x86_64.img.zst",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

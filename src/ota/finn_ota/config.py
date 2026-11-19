@@ -14,8 +14,22 @@ DEFAULT_CONFIG_PATH = "/etc/finn/ota.conf"
 DEFAULT_STATE_DIR = "/var/lib/finn/ota"
 DEFAULT_PUBKEY_PATH = "/etc/finn/ota/pubkey.pem"
 DEFAULT_VERSION_PATH = "/usr/share/finn/version"
-DEFAULT_BASE_URL = "https://ota.finnos.org"
+DEFAULT_GITHUB_REPO = "Finn-Technologies/FinnOS"
+DEFAULT_BASE_URL = f"https://github.com/{DEFAULT_GITHUB_REPO}/releases/download"
 DEFAULT_TRIES = 3
+
+
+def is_github_releases_url(url: str) -> bool:
+    """Return True if url points to a GitHub Releases download base."""
+    stripped = url.rstrip("/")
+    return stripped.endswith("/releases/download")
+
+
+def github_releases_base_url(repo: str) -> str:
+    clean = repo.strip().strip("/")
+    if "/" not in clean or len(clean.split("/")) != 2:
+        raise ValueError(f"invalid GitHub repo slug {repo!r}; expected OWNER/REPO")
+    return f"https://github.com/{clean}/releases/download"
 
 
 def detect_arch() -> str:
@@ -30,6 +44,7 @@ def detect_arch() -> str:
 @dataclass
 class OtaConfig:
     channel: str = "stable"
+    github_repo: str = DEFAULT_GITHUB_REPO
     base_url: str = DEFAULT_BASE_URL
     manifest_url: Optional[str] = None
     auto_check: bool = True
@@ -52,6 +67,8 @@ class OtaConfig:
         if self.manifest_url and channel_override is None:
             return self.manifest_url
         base = self.base_url.rstrip("/")
+        if is_github_releases_url(base):
+            return f"{base}/ota-{ch}/latest-{self.arch}.json"
         return f"{base}/{ch}/{self.arch}/latest.json"
 
 

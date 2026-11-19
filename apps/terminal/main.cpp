@@ -894,7 +894,10 @@ private:
                                                      ? QStringLiteral("Session %1").arg(i + 1)
                                                      : osc_title.trimmed();
                             if (static_cast<int>(i) == current_idx_) {
-                                shell_title_->setText(sessions_[i].title);
+                                const QString elided = shell_title_->fontMetrics().elidedText(
+                                    sessions_[i].title, Qt::ElideMiddle, 220);
+                                shell_title_->setText(elided);
+                                shell_title_->setToolTip(sessions_[i].title);
                                 setWindowTitleText(sessions_[i].title);
                             }
                             rebuildSidebarList();
@@ -915,7 +918,10 @@ private:
         current_idx_ = idx;
         const auto& s = sessions_[static_cast<std::size_t>(idx)];
         stack_->setCurrentWidget(s.widget);
-        shell_title_->setText(s.title);
+        const QString elided = shell_title_->fontMetrics().elidedText(
+            s.title, Qt::ElideMiddle, 220);
+        shell_title_->setText(elided);
+        shell_title_->setToolTip(s.title);
         setWindowTitleText(s.title);
         rebuildSidebarList();
         s.widget->setFocus();

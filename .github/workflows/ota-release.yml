@@ -1,0 +1,123 @@
+name: FinnOS OTA Release (GitHub Releases)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release SemVer (e.g. 0.3.0)"
+        required: true
+        type: string
+      channel:
+        description: "OTA release channel"
+        required: true
+        default: "stable"
+        type: choice
+        options:
+          - stable
+          - beta
+          - dev
+      arch:
+        description: "Target architecture"
+        required: true
+        default: "x86_64"
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+      rollout:
+        description: "Staged rollout percentage (0-100)"
+        required: true
+        default: "100"
+        type: string
+      min_version:
+        description: "Minimum supported current version"
+        required: true
+        default: "0.1.0"
+        type: string
+      image_url:
+        description: "URL or path to root slot image (.img or .img.zst)"
+        required: true
+        type: string
+      prev_image_url:
+        description: "Optional previous version image URL for zstd delta generation"
+        required: false
+        default: ""
+        type: string
+      prev_version:
+        description: "Optional previous version SemVer (required if prev_image_url is set)"
+        required: false
+        default: ""
+        type: string
+      notes:
+        description: "Release notes / changelog summary"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-ota:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout FinnOS
+        uses: actions/checkout@v4
+
+      - name: Install publishing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd openssl curl
+
+      - name: Run OTA unit tests before publishing
+        run: python3 -m unittest -v tests/test_ota.py
+
+      - name: Fetch root slot image(s)
+        env:
+          IMAGE_URL: ${{ inputs.image_url }}
+          PREV_IMAGE_URL: ${{ inputs.prev_image_url }}
+        run: |
+          mkdir -p /tmp/ota-inputs /tmp/ota-out
+          curl -fL "$IMAGE_URL" -o /tmp/ota-inputs/target.img.zst
+          if [ -n "$PREV_IMAGE_URL" ]; then
+            curl -fL "$PREV_IMAGE_URL" -o /tmp/ota-inputs/prev.img.zst
+          fi
+
+      - name: Build, sign, and upload OTA release to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FINN_OTA_SIGNING_KEY: ${{ secrets.FINN_OTA_SIGNING_KEY }}
+          OTA_VERSION: ${{ inputs.version }}
+          OTA_CHANNEL: ${{ inputs.channel }}
+          OTA_ARCH: ${{ inputs.arch }}
+          OTA_ROLLOUT: ${{ inputs.rollout }}
+          OTA_MIN_VERSION: ${{ inputs.min_version }}
+          OTA_PREV_VERSION: ${{ inputs.prev_version }}
+          OTA_NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -z "$FINN_OTA_SIGNING_KEY" ]; then
+            echo "error: secret FINN_OTA_SIGNING_KEY is not configured" >&2
+            exit 1
+          fi
+          KEY_PATH="$(mktemp /tmp/finn-ota-key.XXXXXX.pem)"
+          trap 'rm -f "$KEY_PATH"' EXIT
+          chmod 600 "$KEY_PATH"
+          printf '%s\n' "$FINN_OTA_SIGNING_KEY" > "$KEY_PATH"
+
+          ARGS=(
+            --version "$OTA_VERSION"
+            --channel "$OTA_CHANNEL"
+            --arch "$OTA_ARCH"
+            --image /tmp/ota-inputs/target.img.zst
+            --key "$KEY_PATH"
+            --github-repo "${{ github.repository }}"
+            --out-dir /tmp/ota-out
+            --min-version "$OTA_MIN_VERSION"
+            --rollout "$OTA_ROLLOUT"
+            --notes "$OTA_NOTES"
+            --upload-github
+          )
+          if [ -f /tmp/ota-inputs/prev.img.zst ] && [ -n "$OTA_PREV_VERSION" ]; then
+            ARGS+=(--prev-image /tmp/ota-inputs/prev.img.zst --prev-version "$OTA_PREV_VERSION")
+          fi
+          python3 ota/publish "${ARGS[@]}"

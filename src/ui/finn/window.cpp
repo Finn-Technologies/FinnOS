@@ -37,6 +37,7 @@ FinnWindowControls::FinnWindowControls(QWidget* parent) : QWidget(parent) {
     lay->setSpacing(10);
 
     max_btn_ = new FinnIconButton(QStringLiteral("expand"), 20, 14, this);
+    max_btn_->setFocusPolicy(Qt::NoFocus);
     max_btn_->setFixedSize(20, 20);
     max_btn_->setCornerRadius(4.0);
     max_btn_->setToolTip(QStringLiteral("Maximize"));
@@ -44,6 +45,7 @@ FinnWindowControls::FinnWindowControls(QWidget* parent) : QWidget(parent) {
     max_btn_->setAccessibleDescription(QStringLiteral("Maximize or restore the active window"));
 
     min_btn_ = new FinnIconButton(QStringLiteral("minus-sign"), 20, 14, this);
+    min_btn_->setFocusPolicy(Qt::NoFocus);
     min_btn_->setFixedSize(20, 20);
     min_btn_->setCornerRadius(4.0);
     min_btn_->setToolTip(QStringLiteral("Minimize"));
@@ -51,6 +53,7 @@ FinnWindowControls::FinnWindowControls(QWidget* parent) : QWidget(parent) {
     min_btn_->setAccessibleDescription(QStringLiteral("Minimize the active window"));
 
     close_btn_ = new FinnIconButton(QStringLiteral("x"), 20, 13, this);
+    close_btn_->setFocusPolicy(Qt::NoFocus);
     close_btn_->setFixedSize(20, 20);
     close_btn_->setCornerRadius(4.0);
     auto sync_close_hover = [this]() {
