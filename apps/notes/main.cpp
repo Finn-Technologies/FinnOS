@@ -196,10 +196,10 @@ private:
     void setupSidebar() {
         // Left 250px frosted sidebar matching Figma Settings (20:64)
         sidebar_ = new QWidget(this);
-        sidebar_->setFixedWidth(250);
+        sidebar_->setFixedWidth(216);
         auto* side_root = new QVBoxLayout(sidebar_);
-        side_root->setContentsMargins(12, 24, 12, 12);
-        side_root->setSpacing(10);
+        side_root->setContentsMargins(10, 10, 10, 10);
+        side_root->setSpacing(6);
 
         auto* hdr_lbl = new FinnLabel(
             QStringLiteral("Notes"), FinnLabel::Role::Title,
@@ -235,7 +235,7 @@ private:
         list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         notes_list_layout_ = new QVBoxLayout(list_host);
         notes_list_layout_->setContentsMargins(0, 2, 0, 4);
-        notes_list_layout_->setSpacing(4);
+        notes_list_layout_->setSpacing(2);
         side_scroll_->setWidget(list_host);
         side_root->addWidget(side_scroll_, 1);
 
@@ -245,15 +245,12 @@ private:
     void setupContent() {
         auto* content = new QWidget(this);
         auto* root = new QVBoxLayout(content);
-        root->setContentsMargins(12, 24, 12, 14);
-        root->setSpacing(10);
+        root->setContentsMargins(12, 8, 12, 10);
+        root->setSpacing(8);
 
-        // Top header row (with 96px right margin for floating FinnWindowControls):
-        // editable document title (16px Regular), subtle status caption, and
-        // compact pill buttons (Save, Open..., Preview, Find).
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(6);
+        header_row->setSpacing(4);
 
         title_edit_ = new QLineEdit(content);
         title_edit_->setAccessibleName(QStringLiteral("Note title"));
@@ -281,27 +278,34 @@ private:
             FinnLabel::Role::Caption, FinnLabel::Tone::Mute, content);
 
         save_btn_ = new FinnButton(
-            QStringLiteral("Save"), FinnButton::Variant::Primary, {}, content);
+            QString(), FinnButton::Variant::Primary,
+            QStringLiteral("save"), content);
+        save_btn_->setToolTip(QStringLiteral("Save"));
         save_btn_->setAccessibleName(QStringLiteral("Save note"));
-        save_btn_->setFixedHeight(28);
+        save_btn_->setFixedSize(28, 28);
 
         auto* open_btn = new FinnButton(
-            QStringLiteral("Open..."), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost,
+            QStringLiteral("folder"), content);
+        open_btn->setToolTip(QStringLiteral("Open"));
         open_btn->setAccessibleName(QStringLiteral("Open note file"));
-        open_btn->setFixedHeight(28);
+        open_btn->setFixedSize(28, 28);
 
         preview_btn_ = new FinnButton(
-            QStringLiteral("Preview"), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost,
+            QStringLiteral("eye"), content);
+        preview_btn_->setToolTip(QStringLiteral("Preview Markdown"));
         preview_btn_->setAccessibleName(QStringLiteral("Toggle markdown preview"));
         preview_btn_->setCheckable(true);
-        preview_btn_->setFixedHeight(28);
+        preview_btn_->setFixedSize(28, 28);
 
         find_btn_ = new FinnButton(
-            QStringLiteral("Find"), FinnButton::Variant::Secondary,
+            QString(), FinnButton::Variant::Ghost,
             QStringLiteral("search-01"), content);
+        find_btn_->setToolTip(QStringLiteral("Find"));
         find_btn_->setAccessibleName(QStringLiteral("Find in note"));
         find_btn_->setCheckable(true);
-        find_btn_->setFixedHeight(28);
+        find_btn_->setFixedSize(28, 28);
 
         header_row->addWidget(title_edit_, 1);
         header_row->addWidget(status_caption_);

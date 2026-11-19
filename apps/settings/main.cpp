@@ -265,7 +265,7 @@ public:
                           QStringLiteral("Bluetooth"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("network"), QStringLiteral("internet"),
                           QStringLiteral("Network"), accent_light, accent_dark);
-        sidebar_->addSectionSpacer(12);
+        sidebar_->addSectionSpacer(8);
 
         sidebar_->addItem(QStringLiteral("general"), QStringLiteral("sliders"),
                           QStringLiteral("General"), neutral_light, neutral_dark);
@@ -275,7 +275,7 @@ public:
                           QStringLiteral("Display"), accent_light, accent_dark);
         sidebar_->addItem(QStringLiteral("sound"), QStringLiteral("volume-02"),
                           QStringLiteral("Sound"), accent_light, accent_dark);
-        sidebar_->addSectionSpacer(12);
+        sidebar_->addSectionSpacer(8);
 
         sidebar_->addItem(QStringLiteral("accessibility"), QStringLiteral("accessibility"),
                           QStringLiteral("Accessibility"), neutral_light, neutral_dark);
@@ -364,7 +364,7 @@ private:
     QWidget* buildWifiPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Wi-Fi"), page));
 
@@ -395,7 +395,7 @@ private:
     QWidget* buildBluetoothPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Bluetooth"), page));
 
@@ -418,7 +418,7 @@ private:
     QWidget* buildNetworkPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Network"), page));
 
@@ -442,7 +442,7 @@ private:
     QWidget* buildGeneralPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("General"), page));
 
@@ -497,7 +497,7 @@ private:
     QWidget* buildAppearancePage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Appearance"), page));
 
@@ -601,7 +601,7 @@ private:
     QWidget* buildDisplaysPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Display"), page));
 
@@ -648,7 +648,7 @@ private:
     QWidget* buildSoundPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Sound"), page));
 
@@ -682,7 +682,7 @@ private:
     QWidget* buildAccessibilityPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Accessibility"), page));
 
@@ -815,7 +815,7 @@ private:
     QWidget* buildAccountsPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Accounts & Multi-User"), page));
 
@@ -860,7 +860,7 @@ private:
     QWidget* buildPrivacyPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Privacy & Security"), page));
 
@@ -887,7 +887,7 @@ private:
     QWidget* buildUpdatesPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("System Updates"), page));
 
@@ -1103,7 +1103,7 @@ private:
     QWidget* buildCompatPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(10);
         root->addWidget(makePageHeader(QStringLiteral("Compatibility"), page));
 
@@ -1151,7 +1151,7 @@ private:
         // 1:1 Figma Settings - About (20:64, 550x500 content pane)
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 20);
+        root->setContentsMargins(12, 8, 12, 14);
         root->setSpacing(0);
 
         auto* header = new finn::ui::FinnLabel(

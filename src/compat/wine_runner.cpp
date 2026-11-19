@@ -155,6 +155,33 @@ WineRuntimeStatus probe_wine_runtime() {
     if (::uname(&u) == 0) status.host_arch = u.machine;
     else status.host_arch = "unknown";
 
+    std::error_code ec;
+    // Detect Proton (GE-Proton / Steam Proton) before plain Wine
+    const char* home_env = std::getenv("HOME");
+    std::vector<fs::path> proton_roots = {
+        "/usr/share/steam/compatibilitytools.d",
+    };
+    if (home_env && *home_env) {
+        proton_roots.push_back(fs::path(home_env) / ".local/share/Steam/compatibilitytools.d");
+        proton_roots.push_back(fs::path(home_env) / ".local/share/Steam/steamapps/common");
+    }
+    for (const auto& root : proton_roots) {
+        if (!fs::is_directory(root, ec)) continue;
+        for (const auto& entry : fs::directory_iterator(root, ec)) {
+            if (!entry.is_directory(ec)) continue;
+            for (const char* rel : {"files/bin/wine64", "files/bin/wine"}) {
+                const fs::path cand = entry.path() / rel;
+                if (fs::is_regular_file(cand, ec)) {
+                    status.proton_installed = true;
+                    status.proton_bin = cand.string();
+                    break;
+                }
+            }
+            if (status.proton_installed) break;
+        }
+        if (status.proton_installed) break;
+    }
+
     if (executable_exists("wine")) {
         status.wine_installed = true;
         status.wine_bin = "wine";
@@ -163,31 +190,48 @@ WineRuntimeStatus probe_wine_runtime() {
         status.wine_bin = "wine64";
     }
 
+    status.dxvk_available = fs::is_directory("/usr/share/dxvk/x64", ec) ||
+                            fs::is_directory("/usr/lib/dxvk/x64", ec) ||
+                            fs::is_directory("/usr/share/wine/dxvk/x64", ec);
+    status.vkd3d_available = fs::is_directory("/usr/share/vkd3d-proton/x64", ec) ||
+                             fs::is_directory("/usr/lib/vkd3d-proton/x64", ec);
+    if (fs::is_regular_file("/usr/local/bin/finn-win", ec)) {
+        status.finn_win_installed = true;
+        status.finn_win_bin = "/usr/local/bin/finn-win";
+    } else if (executable_exists("finn-win")) {
+        status.finn_win_installed = true;
+        status.finn_win_bin = "finn-win";
+    }
+
     if (executable_exists("box64")) {
         status.emulator_installed = true;
         status.emulator_bin = "box64";
-    } else if (executable_exists("FEXBash")) {
+    } else if (executable_exists("FEXInterpreter") || executable_exists("FEXBash")) {
         status.emulator_installed = true;
-        status.emulator_bin = "FEXBash";
+        status.emulator_bin = executable_exists("FEXInterpreter") ? "FEXInterpreter" : "FEXBash";
     }
 
-    std::error_code ec;
     status.xwayland_available = executable_exists("Xwayland") ||
                                 fs::exists(kXwaylandDisplayFile, ec);
     status.default_prefix = default_wine_prefix_path();
     status.prefix_initialized = fs::is_directory(fs::path(status.default_prefix) / "drive_c", ec);
 
-    if (status.wine_installed) {
+    const bool has_engine = status.proton_installed || status.wine_installed;
+    if (has_engine) {
         status.ready = true;
-        status.summary = "Wine ready (" + status.wine_bin + " on " + status.host_arch + ")";
+        const std::string engine = status.proton_installed ? "Proton" : ("Wine (" + status.wine_bin + ")");
+        status.summary = "Windows 11 ready via " + engine +
+                         (status.dxvk_available ? " + DXVK" : "") +
+                         (status.vkd3d_available ? " + VKD3D" : "") +
+                         " on " + status.host_arch;
     } else if (status.host_arch == "aarch64" || status.host_arch == "arm64") {
         status.ready = false;
         status.summary =
-            "Windows (.exe) runtime requires x86_64 Wine or an x86_64 compatibility "
+            "Windows (.exe) runtime requires x86_64 Proton/Wine or an x86_64 compatibility "
             "translator (box64/fex-emu) on aarch64; not installed on this host.";
     } else {
         status.ready = false;
-        status.summary = "Wine is not installed on this system (install wine package on x86_64).";
+        status.summary = "Proton/Wine is not installed on this system (install wine or GE-Proton on x86_64).";
     }
     return status;
 }
@@ -220,14 +264,23 @@ WineLaunchPlan build_wine_launch(const std::string& exe_path,
 
     const std::string resolved_prefix = prefix.empty() ? runtime.default_prefix : prefix;
     plan.env.emplace_back("WINEPREFIX", resolved_prefix);
+    plan.env.emplace_back("FINN_WIN_PREFIX", resolved_prefix);
     plan.env.emplace_back("WINEARCH", "win64");
+    plan.env.emplace_back("WINEESYNC", "1");
+    plan.env.emplace_back("WINEFSYNC", "1");
+    plan.env.emplace_back("PROTON_ENABLE_WAYLAND", "1");
     plan.env.emplace_back("WINEDEBUG", "-all");
     if (!xdisplay.empty()) plan.env.emplace_back("DISPLAY", xdisplay);
 
-    if (is_msi) {
-        plan.argv = {runtime.wine_bin, "msiexec", "/i", exe_path};
+    if (runtime.finn_win_installed) {
+        plan.argv = {runtime.finn_win_bin, exe_path};
     } else {
-        plan.argv = {runtime.wine_bin, exe_path};
+        const std::string runner = runtime.proton_installed ? runtime.proton_bin : runtime.wine_bin;
+        if (is_msi) {
+            plan.argv = {runner, "msiexec", "/i", exe_path};
+        } else {
+            plan.argv = {runner, exe_path};
+        }
     }
     for (const std::string& arg : extra_args) plan.argv.push_back(arg);
     plan.ok = true;

@@ -730,10 +730,10 @@ private:
 
     void setupSidebar() {
         sidebar_ = new QWidget(this);
-        sidebar_->setFixedWidth(250);
+        sidebar_->setFixedWidth(216);
         auto* side_root = new QVBoxLayout(sidebar_);
-        side_root->setContentsMargins(12, 24, 12, 12);
-        side_root->setSpacing(10);
+        side_root->setContentsMargins(10, 10, 10, 10);
+        side_root->setSpacing(6);
 
         auto* hdr_lbl = new FinnLabel(
             QStringLiteral("Terminal"), FinnLabel::Role::Title,
@@ -772,7 +772,7 @@ private:
         list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         side_list_layout_ = new QVBoxLayout(list_host);
         side_list_layout_->setContentsMargins(0, 2, 0, 4);
-        side_list_layout_->setSpacing(4);
+        side_list_layout_->setSpacing(2);
         side_scroll->setWidget(list_host);
         side_root->addWidget(side_scroll, 1);
 
@@ -782,14 +782,12 @@ private:
     void setupContent() {
         auto* content = new QWidget(this);
         auto* root = new QVBoxLayout(content);
-        root->setContentsMargins(12, 24, 12, 14);
-        root->setSpacing(10);
+        root->setContentsMargins(12, 8, 12, 10);
+        root->setSpacing(8);
 
-        // Sleek top bar with 16px Regular shell title, session +, Clear, Copy, Paste
-        // pills to the left of FinnWindowControls (96px right margin reserve)
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(6);
+        header_row->setSpacing(4);
 
         auto* toggle_side_btn = new FinnIconButton(
             QStringLiteral("sidebar-toggle"), 28, 16, content);
@@ -805,34 +803,39 @@ private:
         apply_header_16px_regular(shell_title_);
 
         auto* new_tab_btn = new FinnButton(
-            QStringLiteral("+"), FinnButton::Variant::Secondary, {}, content);
-        new_tab_btn->setFixedSize(32, 28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("plus"), content);
+        new_tab_btn->setFixedSize(28, 28);
         new_tab_btn->setToolTip(QStringLiteral("New Terminal Session"));
         new_tab_btn->setAccessibleName(QStringLiteral("New Terminal Session"));
 
         auto* zoom_out = new FinnButton(
-            QStringLiteral("A-"), FinnButton::Variant::Ghost, {}, content);
-        zoom_out->setFixedSize(36, 28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("zoom-out"), content);
+        zoom_out->setFixedSize(28, 28);
+        zoom_out->setToolTip(QStringLiteral("Decrease Font Size"));
         zoom_out->setAccessibleName(QStringLiteral("Decrease font size"));
 
         auto* zoom_in = new FinnButton(
-            QStringLiteral("A+"), FinnButton::Variant::Ghost, {}, content);
-        zoom_in->setFixedSize(36, 28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("zoom-in"), content);
+        zoom_in->setFixedSize(28, 28);
+        zoom_in->setToolTip(QStringLiteral("Increase Font Size"));
         zoom_in->setAccessibleName(QStringLiteral("Increase font size"));
 
         auto* copy_btn = new FinnButton(
-            QStringLiteral("Copy"), FinnButton::Variant::Secondary, {}, content);
-        copy_btn->setFixedHeight(28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("copy"), content);
+        copy_btn->setFixedSize(28, 28);
+        copy_btn->setToolTip(QStringLiteral("Copy"));
         copy_btn->setAccessibleName(QStringLiteral("Copy selection or screen"));
 
         auto* paste_btn = new FinnButton(
-            QStringLiteral("Paste"), FinnButton::Variant::Secondary, {}, content);
-        paste_btn->setFixedHeight(28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("clipboard"), content);
+        paste_btn->setFixedSize(28, 28);
+        paste_btn->setToolTip(QStringLiteral("Paste"));
         paste_btn->setAccessibleName(QStringLiteral("Paste from clipboard"));
 
         auto* clear_btn = new FinnButton(
-            QStringLiteral("Clear"), FinnButton::Variant::Secondary, {}, content);
-        clear_btn->setFixedHeight(28);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("trash"), content);
+        clear_btn->setFixedSize(28, 28);
+        clear_btn->setToolTip(QStringLiteral("Clear Scrollback"));
         clear_btn->setAccessibleName(QStringLiteral("Clear scrollback"));
 
         header_row->addWidget(toggle_side_btn);

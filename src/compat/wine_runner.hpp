@@ -27,9 +27,15 @@ struct PeInfo {
 };
 
 struct WineRuntimeStatus {
-    std::string host_arch;         // "x86_64", "aarch64", etc.
+    std::string host_arch;           // "x86_64", "aarch64", etc.
+    bool proton_installed = false;
+    std::string proton_bin;          // GE-Proton / Steam Proton wine64
     bool wine_installed = false;
-    std::string wine_bin;          // "wine" or "wine64"
+    std::string wine_bin;            // "wine" or "wine64"
+    bool dxvk_available = false;
+    bool vkd3d_available = false;
+    bool finn_win_installed = false;
+    std::string finn_win_bin;
     bool emulator_installed = false; // box64 / fex-emu on aarch64
     std::string emulator_bin;
     bool xwayland_available = false;

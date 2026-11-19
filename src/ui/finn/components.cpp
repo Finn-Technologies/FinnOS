@@ -206,26 +206,24 @@ FinnFormFactor resolve_form_factor(int width_dp) {
         if (val == QStringLiteral("tablet")) return FinnFormFactor::Tablet;
         if (val == QStringLiteral("desktop")) return FinnFormFactor::Desktop;
     }
-    int w = width_dp;
-    if (w <= 0) {
-        if (const char* sim_w = std::getenv("FINN_SIM_WIDTH"); sim_w && *sim_w) {
-            const int parsed = std::atoi(sim_w);
-            if (parsed > 0) w = parsed;
+    if (const char* sim_w = std::getenv("FINN_SIM_WIDTH"); sim_w && *sim_w) {
+        const int parsed = std::atoi(sim_w);
+        if (parsed > 0) {
+            if (parsed <= breakpoints::bp_phone_max) return FinnFormFactor::Phone;
+            if (parsed <= breakpoints::bp_tablet_max) return FinnFormFactor::Tablet;
+            return FinnFormFactor::Desktop;
         }
     }
-    if (w > 0) {
-        if (w <= breakpoints::bp_phone_max) return FinnFormFactor::Phone;
-        if (w <= breakpoints::bp_tablet_max) return FinnFormFactor::Tablet;
-    }
+    (void)width_dp;
     return FinnFormFactor::Desktop;
 }
 
 int touch_target_height(int desktop_height, FinnFormFactor ff) {
     switch (ff) {
         case FinnFormFactor::Phone:
-            return std::max(desktop_height, 48);
-        case FinnFormFactor::Tablet:
             return std::max(desktop_height, 44);
+        case FinnFormFactor::Tablet:
+            return std::max(desktop_height, 36);
         case FinnFormFactor::Desktop:
             return desktop_height;
     }
@@ -1386,7 +1384,7 @@ FinnNavItem::FinnNavItem(const QString& icon_name, const QString& label,
     setAttribute(Qt::WA_Hover, true);
     setFocusPolicy(Qt::TabFocus);
     setAccessibleName(label);
-    setFixedHeight(touch_target_height(34, resolve_form_factor()));
+    setFixedHeight(touch_target_height(28, resolve_form_factor()));
     setFont(finn_font(10.0, QFont::Medium));
     hover_spring_.init(this, springs::kSnappy, 0.0, [this](double v) {
         hover_progress_ = v;
@@ -1429,7 +1427,7 @@ void FinnNavItem::setSelected(bool selected) {
 }
 
 QSize FinnNavItem::sizeHint() const {
-    return QSize(226, touch_target_height(36, resolve_form_factor()));
+    return QSize(200, touch_target_height(28, resolve_form_factor()));
 }
 
 void FinnNavItem::paintEvent(QPaintEvent*) {
@@ -1439,7 +1437,7 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
     apply_press_scale(p, this, press_scale_);
 
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-    const qreal radius = kRadiusMd;
+    const qreal radius = 6.0;
     if (selected_) {
         p.setBrush(t.nav_sel);
         p.setPen(Qt::NoPen);
@@ -1450,13 +1448,13 @@ void FinnNavItem::paintEvent(QPaintEvent*) {
         p.drawRoundedRect(r, radius, radius);
     }
 
-    const QColor text_fg = selected_ ? t.ink : t.ink;
+    const QColor text_fg = t.ink;
     const QColor icon_fg = selected_ ? t.accent : t.dim;
-    int text_left = 12;
+    int text_left = 10;
     if (!icon_name_.isEmpty()) {
         FinnThemeManager::instance().paintIcon(
-            &p, QRectF(10, (height() - 18) / 2.0, 18, 18), icon_name_, icon_fg);
-        text_left = 36;
+            &p, QRectF(8, (height() - 16) / 2.0, 16, 16), icon_name_, icon_fg);
+        text_left = 30;
     }
 
     p.setFont(finn_font_px(13, selected_ ? QFont::Medium : QFont::Normal));
@@ -1518,15 +1516,15 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
       form_factor_(resolve_form_factor()) {
     setFormFactor(form_factor_);
     root_layout_ = new QVBoxLayout(this);
-    root_layout_->setContentsMargins(12, 20, 12, 12);
-    root_layout_->setSpacing(8);
+    root_layout_->setContentsMargins(10, 10, 10, 10);
+    root_layout_->setSpacing(6);
 
     header_label_ = new FinnLabel(QString(), FinnLabel::Role::Title,
                                   FinnLabel::Tone::Ink, this);
     header_label_->setVisible(false);
     auto sync_header_font = [this]() {
-        QFont f = finn_font(12.0, QFont::Normal);
-        f.setPixelSize(16);
+        QFont f = finn_font(12.0, QFont::Medium);
+        f.setPixelSize(15);
         header_label_->setFont(f);
     };
     sync_header_font();
@@ -1535,7 +1533,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
     root_layout_->addWidget(header_label_);
 
     search_field_ = new FinnSearchField(QStringLiteral("Search"), this);
-    search_field_->setFixedHeight(30);
+    search_field_->setFixedHeight(28);
     search_field_->setPillMode(true);
     search_field_->setVisible(false);
     connect(search_field_, &FinnSearchField::textChanged,
@@ -1544,7 +1542,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
 
     pinned_layout_ = new QVBoxLayout();
     pinned_layout_->setContentsMargins(0, 0, 0, 0);
-    pinned_layout_->setSpacing(4);
+    pinned_layout_->setSpacing(2);
     root_layout_->addLayout(pinned_layout_);
 
     auto* scroll = new QScrollArea(this);
@@ -1561,7 +1559,7 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
     container->setStyleSheet(QStringLiteral("background: transparent;"));
     items_layout_ = new QVBoxLayout(container);
     items_layout_->setContentsMargins(0, 0, 0, 0);
-    items_layout_->setSpacing(4);
+    items_layout_->setSpacing(2);
 
     scroll->setWidget(container);
     install_overscroll_physics(scroll);
@@ -1570,14 +1568,14 @@ FinnSidebar::FinnSidebar(int width_px, QWidget* parent)
 
 void FinnSidebar::setFormFactor(FinnFormFactor form_factor) {
     form_factor_ = form_factor;
-    int target_w = desktop_width_;
+    int target_w = std::min(desktop_width_, 216);
     if (form_factor_ == FinnFormFactor::Tablet) {
-        target_w = std::min(desktop_width_, 210);
+        target_w = std::min(desktop_width_, 200);
     } else if (form_factor_ == FinnFormFactor::Phone) {
-        target_w = std::min(desktop_width_, 260);
+        target_w = std::min(desktop_width_, 240);
     }
     setFixedWidth(target_w);
-    const int item_h = touch_target_height(34, form_factor_);
+    const int item_h = touch_target_height(28, form_factor_);
     for (const auto& pair : pinned_items_) {
         if (pair.second) pair.second->setFixedHeight(item_h);
     }

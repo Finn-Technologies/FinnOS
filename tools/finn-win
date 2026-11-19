@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""finn-win: FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D + Wayland)."""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+DEFAULT_PREFIX = os.path.join(os.path.expanduser("~"), ".local", "share", "finn", "wine")
+
+WIN11_REG = """Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion]
+"ProductName"="Windows 11 Pro"
+"CurrentVersion"="10.0"
+"CurrentBuild"="22631"
+"CurrentBuildNumber"="22631"
+"DisplayVersion"="23H2"
+"CSDVersion"=""
+"CurrentMajorVersionNumber"=dword:0000000a
+"CurrentMinorVersionNumber"=dword:00000000
+
+[HKEY_CURRENT_USER\\Control Panel\\Desktop]
+"FontSmoothing"="2"
+"FontSmoothingType"=dword:00000002
+"FontSmoothingOrientation"=dword:00000001
+"FontSmoothingGamma"=dword:00000578
+
+[HKEY_CURRENT_USER\\Software\\Wine\\Drivers]
+"Graphics"="wayland,x11"
+"""
+
+
+def _find_proton_wine() -> Optional[str]:
+    home = os.path.expanduser("~")
+    patterns = [
+        os.path.join(home, ".local/share/Steam/compatibilitytools.d/*/files/bin/wine64"),
+        os.path.join(home, ".local/share/Steam/compatibilitytools.d/*/files/bin/wine"),
+        "/usr/share/steam/compatibilitytools.d/*/files/bin/wine64",
+        "/usr/share/steam/compatibilitytools.d/*/files/bin/wine",
+        os.path.join(home, ".local/share/Steam/steamapps/common/Proton*/files/bin/wine64"),
+        os.path.join(home, ".local/share/Steam/steamapps/common/Proton*/files/bin/wine"),
+    ]
+    for pat in patterns:
+        matches = sorted(glob.glob(pat), reverse=True)
+        for m in matches:
+            if os.access(m, os.X_OK):
+                return m
+    return None
+
+
+def _detect_runtime() -> Dict[str, object]:
+    arch = platform.machine().lower()
+    override = os.environ.get("FINN_WIN_RUNTIME", "").strip()
+    proton_bin = _find_proton_wine()
+    wine_bin = shutil.which("wine") or shutil.which("wine64")
+    emu_bin = shutil.which("FEXInterpreter") or shutil.which("box64")
+
+    selected_bin = None
+    engine = "none"
+    if override and os.access(override, os.X_OK):
+        selected_bin = override
+        engine = "custom"
+    elif proton_bin:
+        selected_bin = proton_bin
+        engine = "proton"
+    elif wine_bin:
+        selected_bin = wine_bin
+        engine = "wine"
+
+    dxvk_dirs = [
+        "/usr/share/dxvk/x64",
+        "/usr/lib/dxvk/x64",
+        "/usr/share/wine/dxvk/x64",
+    ]
+    dxvk_path = next((d for d in dxvk_dirs if os.path.isdir(d)), None)
+
+    vkd3d_dirs = [
+        "/usr/share/vkd3d-proton/x64",
+        "/usr/lib/vkd3d-proton/x64",
+    ]
+    vkd3d_path = next((d for d in vkd3d_dirs if os.path.isdir(d)), None)
+
+    prefix = os.environ.get("FINN_WIN_PREFIX") or os.environ.get("WINEPREFIX") or DEFAULT_PREFIX
+    prefix_ready = os.path.isfile(os.path.join(prefix, "system.reg"))
+    win11_stamp = os.path.isfile(os.path.join(prefix, ".finn-win11-ready"))
+
+    ready = bool(selected_bin) and (arch in ("x86_64", "amd64") or bool(emu_bin))
+    return {
+        "host_arch": arch,
+        "engine": engine,
+        "selected_bin": selected_bin,
+        "proton_bin": proton_bin,
+        "wine_bin": wine_bin,
+        "emulator_bin": emu_bin,
+        "dxvk_path": dxvk_path,
+        "vkd3d_path": vkd3d_path,
+        "prefix": prefix,
+        "prefix_initialized": prefix_ready,
+        "win11_configured": win11_stamp,
+        "wayland": bool(os.environ.get("WAYLAND_DISPLAY")),
+        "xdisplay": os.environ.get("DISPLAY") or "",
+        "ready": ready,
+    }
+
+
+def _build_env(rt: Dict[str, object]) -> Dict[str, str]:
+    env = dict(os.environ)
+    env["WINEPREFIX"] = str(rt["prefix"])
+    env["WINEARCH"] = "win64"
+    env["WINEESYNC"] = "1"
+    env["WINEFSYNC"] = "1"
+    env["PROTON_ENABLE_WAYLAND"] = "1"
+    if not env.get("FINN_WIN_DEBUG"):
+        env.setdefault("WINEDEBUG", "-all")
+
+    # Detect Xwayland display written by finn-comp if DISPLAY is unset
+    if not env.get("DISPLAY") and os.path.isfile("/run/finn/xdisplay"):
+        try:
+            disp = Path("/run/finn/xdisplay").read_text(encoding="utf-8").strip()
+            if disp:
+                env["DISPLAY"] = disp
+        except OSError:
+            pass
+
+    overrides = []
+    if rt.get("dxvk_path"):
+        overrides.append("d3d9,d3d10core,d3d11,dxgi=n,b")
+    if rt.get("vkd3d_path"):
+        overrides.append("d3d12,d3d12core=n,b")
+    if overrides:
+        existing = env.get("WINEDLLOVERRIDES", "")
+        joined = ";".join(overrides)
+        env["WINEDLLOVERRIDES"] = f"{existing};{joined}" if existing else joined
+    return env
+
+
+def _install_dll_dir(src_dir: str, dst_dir: str) -> None:
+    if not os.path.isdir(src_dir) or not os.path.isdir(dst_dir):
+        return
+    for dll in glob.glob(os.path.join(src_dir, "*.dll")):
+        target = os.path.join(dst_dir, os.path.basename(dll))
+        if not os.path.exists(target):
+            try:
+                os.symlink(dll, target)
+            except OSError:
+                shutil.copy2(dll, target)
+
+
+def _wrap_cmd(rt: Dict[str, object], cmd: List[str]) -> List[str]:
+    arch = str(rt["host_arch"])
+    if arch not in ("x86_64", "amd64") and rt.get("emulator_bin"):
+        return [str(rt["emulator_bin"]), *cmd]
+    return cmd
+
+
+def init_prefix(rt: Dict[str, object], force: bool = False) -> int:
+    if not rt["ready"]:
+        print(
+            f"error: Windows runtime unavailable on {rt['host_arch']} "
+            f"(engine={rt['engine']}, emulator={rt['emulator_bin'] or 'none'})",
+            file=sys.stderr,
+        )
+        return 1
+
+    prefix = str(rt["prefix"])
+    stamp = os.path.join(prefix, ".finn-win11-ready")
+    if not force and os.path.isfile(stamp) and os.path.isfile(os.path.join(prefix, "system.reg")):
+        return 0
+
+    os.makedirs(prefix, exist_ok=True)
+    env = _build_env(rt)
+    wine_bin = str(rt["selected_bin"])
+
+    # Initialize or update prefix silently
+    subprocess.run(_wrap_cmd(rt, [wine_bin, "wineboot", "-u"]), env=env, check=False)
+
+    # Apply Windows 11 Pro + ClearType + Wayland driver registry keys
+    reg_path = os.path.join(prefix, ".finn-win11.reg")
+    Path(reg_path).write_text(WIN11_REG, encoding="utf-8")
+    try:
+        subprocess.run(_wrap_cmd(rt, [wine_bin, "regedit", "/S", reg_path]), env=env, check=False)
+    finally:
+        try:
+            os.remove(reg_path)
+        except OSError:
+            pass
+
+    # Link DXVK / VKD3D-Proton DLLs into system32 when installed on the host
+    sys32 = os.path.join(prefix, "drive_c", "windows", "system32")
+    if rt.get("dxvk_path"):
+        _install_dll_dir(str(rt["dxvk_path"]), sys32)
+    if rt.get("vkd3d_path"):
+        _install_dll_dir(str(rt["vkd3d_path"]), sys32)
+
+    Path(stamp).write_text("win11\n", encoding="utf-8")
+    return 0
+
+
+def launch_target(rt: Dict[str, object], target: str, extra_args: List[str]) -> int:
+    if not rt["ready"]:
+        print(
+            f"error: Windows 11 compatibility runtime unavailable on {rt['host_arch']}. "
+            "Install wine (and proton/dxvk for Direct3D) on x86_64, or wine + box64/fex-emu on aarch64.",
+            file=sys.stderr,
+        )
+        return 1
+
+    abs_target = os.path.abspath(target)
+    if not os.path.isfile(abs_target):
+        print(f"error: file not found: {abs_target}", file=sys.stderr)
+        return 1
+
+    rc = init_prefix(rt, force=False)
+    if rc != 0:
+        return rc
+
+    env = _build_env(rt)
+    wine_bin = str(rt["selected_bin"])
+    low = abs_target.lower()
+    if low.endswith(".msi"):
+        cmd = [wine_bin, "msiexec", "/i", abs_target, *extra_args]
+    elif low.endswith(".bat") or low.endswith(".cmd"):
+        cmd = [wine_bin, "cmd", "/c", abs_target, *extra_args]
+    else:
+        cmd = [wine_bin, abs_target, *extra_args]
+
+    cwd = os.path.dirname(abs_target) or None
+    proc = subprocess.run(_wrap_cmd(rt, cmd), env=env, cwd=cwd)
+    return proc.returncode
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="finn-win",
+        description="FinnOS Windows 11 compatibility runner (Proton / Wine + DXVK/VKD3D)",
+    )
+    p.add_argument("--json", action="store_true", help="emit JSON for status")
+    p.add_argument("target", nargs="?", help="status | init | path/to/app.exe|.msi")
+    p.add_argument("args", nargs=argparse.REMAINDER, help="arguments forwarded to the Windows app")
+    ns = p.parse_args(argv)
+
+    rt = _detect_runtime()
+    if not ns.target or ns.target == "status":
+        if ns.json:
+            print(json.dumps(rt, indent=2, sort_keys=True))
+        else:
+            print(
+                f"finn-win ({rt['host_arch']})\n"
+                f"  engine:  {rt['engine']} ({rt['selected_bin'] or 'not installed'})\n"
+                f"  prefix:  {rt['prefix']} (win11={rt['win11_configured']})\n"
+                f"  dxvk:    {rt['dxvk_path'] or 'not installed'}\n"
+                f"  vkd3d:   {rt['vkd3d_path'] or 'not installed'}\n"
+                f"  ready:   {rt['ready']}"
+            )
+        return 0
+
+    if ns.target == "init":
+        return init_prefix(rt, force=True)
+
+    return launch_target(rt, ns.target, ns.args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

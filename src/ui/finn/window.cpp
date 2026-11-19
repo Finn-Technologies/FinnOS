@@ -250,7 +250,7 @@ void FinnWindow::setChromeMode(ChromeMode mode) {
         controls_->setParent(frame_root_);
         controls_->show();
         controls_->raise();
-        controls_->move(std::max(0, frame_root_->width() - controls_->width() - 6), 6);
+        controls_->move(std::max(0, frame_root_->width() - controls_->width() - 8), 8);
     } else {
         controls_->setParent(title_bar_);
         if (auto* tb = qobject_cast<QHBoxLayout*>(title_bar_->layout())) {
@@ -563,7 +563,7 @@ void FinnWindow::resizeEvent(QResizeEvent* event) {
     }
     updateFrameMask();
     if (chrome_mode_ == ChromeMode::FigmaSplit && controls_) {
-        controls_->move(std::max(0, frame_root_->width() - controls_->width() - 6), 6);
+        controls_->move(std::max(0, frame_root_->width() - controls_->width() - 8), 8);
         controls_->raise();
     }
     positionToast();

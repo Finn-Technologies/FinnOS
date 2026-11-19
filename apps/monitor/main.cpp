@@ -240,17 +240,15 @@ private:
     void setupContent() {
         auto* content = new QWidget(this);
         auto* root = new QVBoxLayout(content);
-        root->setContentsMargins(12, 24, 12, 14);
-        root->setSpacing(10);
+        root->setContentsMargins(12, 8, 12, 10);
+        root->setSpacing(8);
 
-        // Top header row (16px Regular title + quiet mono CPU/RAM summary +
-        // Refresh / End Process button to the left of the 96px floating FinnWindowControls reserve)
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(8);
+        header_row->setSpacing(4);
 
         page_title_ = new FinnLabel(
-            QStringLiteral("System Overview"), FinnLabel::Role::Title,
+            QStringLiteral("Overview"), FinnLabel::Role::Title,
             FinnLabel::Tone::Ink, content);
         apply_header_16px_regular(page_title_);
 
@@ -260,16 +258,18 @@ private:
         summary_pill_->setVisible(false);
 
         auto* refresh_btn = new FinnButton(
-            QStringLiteral("Refresh"), FinnButton::Variant::Secondary,
+            QString(), FinnButton::Variant::Ghost,
             QStringLiteral("refresh"), content);
+        refresh_btn->setToolTip(QStringLiteral("Refresh"));
         refresh_btn->setAccessibleName(QStringLiteral("Refresh system monitor"));
-        refresh_btn->setFixedHeight(28);
+        refresh_btn->setFixedSize(28, 28);
 
         end_btn_ = new FinnButton(
-            QStringLiteral("End Process"), FinnButton::Variant::Danger,
-            {}, content);
+            QString(), FinnButton::Variant::Ghost,
+            QStringLiteral("stop-circle"), content);
+        end_btn_->setToolTip(QStringLiteral("End Selected Process"));
         end_btn_->setAccessibleName(QStringLiteral("End selected process"));
-        end_btn_->setFixedHeight(28);
+        end_btn_->setFixedSize(28, 28);
         end_btn_->setEnabled(false);
 
         header_row->addWidget(page_title_);

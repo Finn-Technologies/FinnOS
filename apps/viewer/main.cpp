@@ -357,10 +357,10 @@ private:
         // Left 250px sidebar matching Figma Settings (20:64) with quick presets
         // and scrollable list of images in the current folder.
         sidebar_ = new QWidget(this);
-        sidebar_->setFixedWidth(250);
+        sidebar_->setFixedWidth(216);
         auto* side_root = new QVBoxLayout(sidebar_);
-        side_root->setContentsMargins(12, 24, 12, 12);
-        side_root->setSpacing(10);
+        side_root->setContentsMargins(10, 10, 10, 10);
+        side_root->setSpacing(6);
 
         auto* hdr_lbl = new FinnLabel(
             QStringLiteral("Viewer"), FinnLabel::Role::Title,
@@ -378,7 +378,7 @@ private:
 
         auto* presets_col = new QVBoxLayout();
         presets_col->setContentsMargins(0, 0, 0, 2);
-        presets_col->setSpacing(4);
+        presets_col->setSpacing(2);
 
         auto add_preset = [&](const QString& id, const QString& icon,
                               const QString& label, bool accent = false) {
@@ -425,7 +425,7 @@ private:
         list_host->setStyleSheet(QStringLiteral("background: transparent;"));
         images_list_layout_ = new QVBoxLayout(list_host);
         images_list_layout_->setContentsMargins(0, 0, 0, 4);
-        images_list_layout_->setSpacing(4);
+        images_list_layout_->setSpacing(2);
         side_scroll_->setWidget(list_host);
         side_root->addWidget(side_scroll_, 1);
 
@@ -446,14 +446,12 @@ private:
     void setupContent() {
         auto* content = new QWidget(this);
         auto* root = new QVBoxLayout(content);
-        root->setContentsMargins(12, 24, 12, 14);
-        root->setSpacing(10);
+        root->setContentsMargins(12, 8, 12, 10);
+        root->setSpacing(8);
 
-        // Clean header row (16px Regular filename + Zoom Out, 100%, Fit, Zoom In,
-        // Rotate, Checkerboard pills to the left of FinnWindowControls)
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(6);
+        header_row->setSpacing(4);
 
         title_label_ = new FinnLabel(
             QStringLiteral("Viewer"), FinnLabel::Role::Title,
@@ -462,37 +460,42 @@ private:
         header_row->addWidget(title_label_, 1);
 
         zoom_out_btn_ = new FinnButton(
-            QStringLiteral("Zoom -"), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("zoom-out"), content);
+        zoom_out_btn_->setToolTip(QStringLiteral("Zoom Out"));
         zoom_out_btn_->setAccessibleName(QStringLiteral("Zoom out"));
-        zoom_out_btn_->setFixedHeight(28);
+        zoom_out_btn_->setFixedSize(28, 28);
 
         actual_btn_ = new FinnButton(
-            QStringLiteral("100%"), FinnButton::Variant::Secondary, {}, content);
+            QStringLiteral("1:1"), FinnButton::Variant::Ghost, {}, content);
+        actual_btn_->setToolTip(QStringLiteral("Actual Size (100%)"));
         actual_btn_->setAccessibleName(QStringLiteral("Actual size 100 percent"));
-        actual_btn_->setFixedHeight(28);
+        actual_btn_->setFixedSize(34, 28);
 
         fit_btn_ = new FinnButton(
-            QStringLiteral("Fit"), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("maximize"), content);
+        fit_btn_->setToolTip(QStringLiteral("Fit to Window"));
         fit_btn_->setAccessibleName(QStringLiteral("Fit image to window"));
-        fit_btn_->setFixedHeight(28);
+        fit_btn_->setFixedSize(28, 28);
 
         zoom_in_btn_ = new FinnButton(
-            QStringLiteral("Zoom +"), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("zoom-in"), content);
+        zoom_in_btn_->setToolTip(QStringLiteral("Zoom In"));
         zoom_in_btn_->setAccessibleName(QStringLiteral("Zoom in"));
-        zoom_in_btn_->setFixedHeight(28);
+        zoom_in_btn_->setFixedSize(28, 28);
 
         rotate_btn_ = new FinnButton(
-            QStringLiteral("Rotate"), FinnButton::Variant::Secondary,
-            QStringLiteral("refresh"), content);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("rotate-cw"), content);
+        rotate_btn_->setToolTip(QStringLiteral("Rotate 90°"));
         rotate_btn_->setAccessibleName(QStringLiteral("Rotate 90 degrees"));
-        rotate_btn_->setFixedHeight(28);
+        rotate_btn_->setFixedSize(28, 28);
 
         checker_btn_ = new FinnButton(
-            QStringLiteral("Grid"), FinnButton::Variant::Secondary, {}, content);
+            QString(), FinnButton::Variant::Ghost, QStringLiteral("grid"), content);
+        checker_btn_->setToolTip(QStringLiteral("Toggle Transparency Grid"));
         checker_btn_->setAccessibleName(QStringLiteral("Toggle transparency checkerboard"));
         checker_btn_->setCheckable(true);
         checker_btn_->setChecked(true);
-        checker_btn_->setFixedHeight(28);
+        checker_btn_->setFixedSize(28, 28);
 
         header_row->addWidget(zoom_out_btn_);
         header_row->addWidget(actual_btn_);

@@ -79,6 +79,9 @@ install: all
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m755 tools/finn-display $(DESTDIR)$(PREFIX)/bin/finn-display
 	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
+	install -m755 tools/finn-win $(DESTDIR)$(PREFIX)/bin/finn-win
+	install -d $(DESTDIR)$(PREFIX)/share/applications
+	install -m644 assets/finn-win.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-win.desktop
 	install -m755 src/ota/finn-update $(DESTDIR)$(PREFIX)/bin/finn-update
 	install -d $(DESTDIR)$(PREFIX)/bin/finn_ota
 	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/
@@ -96,6 +99,7 @@ install: all
 	ln -sf $(PREFIX)/bin/finn-sdk $(DESTDIR)/usr/bin/finn-sdk
 	ln -sf $(PREFIX)/bin/finn-open $(DESTDIR)/usr/bin/finn-open
 	ln -sf $(PREFIX)/bin/finn-cursors $(DESTDIR)/usr/bin/finn-cursors
+	ln -sf $(PREFIX)/bin/finn-win $(DESTDIR)/usr/bin/finn-win
 	@if [ -z "$(DESTDIR)" ] && [ -w /etc/ld.so.conf.d ]; then \
 		printf '%s\n' "$(PREFIX)/lib" > /etc/ld.so.conf.d/finn.conf; \
 		ldconfig 2>/dev/null || true; \

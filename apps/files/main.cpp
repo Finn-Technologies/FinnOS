@@ -395,13 +395,13 @@ private:
     void setupContent() {
         auto* page = new QWidget(this);
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(12, 24, 12, 14);
-        root->setSpacing(10);
+        root->setContentsMargins(12, 8, 12, 10);
+        root->setSpacing(8);
 
-        // Top header row (y=24..32, leaving 96px right margin for floating FinnWindowControls)
+        // Top header row aligned with FinnWindowControls (y=8, height=28)
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(6);
+        header_row->setSpacing(4);
 
         back_btn_ = new finn::ui::FinnIconButton(QStringLiteral("chevron-left"), 28, 15, page);
         back_btn_->setToolTip(QStringLiteral("Back"));
@@ -418,22 +418,24 @@ private:
         breadcrumbs_ = new finn::ui::FinnBreadcrumbs(page);
 
         auto* new_folder_btn = new finn::ui::FinnButton(
-            QStringLiteral("New Folder"), finn::ui::FinnButton::Variant::Secondary,
-            QStringLiteral("folder"), page);
+            QString(), finn::ui::FinnButton::Variant::Ghost,
+            QStringLiteral("folder-plus"), page);
+        new_folder_btn->setToolTip(QStringLiteral("New Folder"));
         new_folder_btn->setAccessibleName(QStringLiteral("New Folder"));
-        new_folder_btn->setFixedHeight(28);
+        new_folder_btn->setFixedSize(28, 28);
 
         auto* term_btn = new finn::ui::FinnButton(
-            QStringLiteral("Terminal"), finn::ui::FinnButton::Variant::Secondary,
-            {}, page);
+            QString(), finn::ui::FinnButton::Variant::Ghost,
+            QStringLiteral("terminal-square"), page);
+        term_btn->setToolTip(QStringLiteral("Open Terminal Here"));
         term_btn->setAccessibleName(QStringLiteral("Open Terminal here"));
-        term_btn->setFixedHeight(28);
+        term_btn->setFixedSize(28, 28);
 
         view_toggle_btn_ = new finn::ui::FinnButton(
-            QStringLiteral("List"), finn::ui::FinnButton::Variant::Secondary,
-            QStringLiteral("app-grid"), page);
+            QString(), finn::ui::FinnButton::Variant::Ghost,
+            QStringLiteral("list"), page);
         view_toggle_btn_->setAccessibleName(QStringLiteral("Switch between Grid and List view"));
-        view_toggle_btn_->setFixedHeight(28);
+        view_toggle_btn_->setFixedSize(28, 28);
         view_toggle_btn_->setToolTip(QStringLiteral("Switch between Grid and List view"));
 
         header_row->addWidget(back_btn_);
@@ -574,8 +576,10 @@ private:
         });
         connect(view_toggle_btn_, &QAbstractButton::clicked, this, [this]() {
             grid_mode_ = !grid_mode_;
-            view_toggle_btn_->setText(grid_mode_ ? QStringLiteral("List")
-                                                 : QStringLiteral("Grid"));
+            view_toggle_btn_->setIconName(grid_mode_ ? QStringLiteral("list")
+                                                     : QStringLiteral("grid"));
+            view_toggle_btn_->setToolTip(grid_mode_ ? QStringLiteral("Switch to List View")
+                                                    : QStringLiteral("Switch to Grid View"));
             refreshListing();
         });
         connect(open_btn_, &QAbstractButton::clicked, this, [this]() {

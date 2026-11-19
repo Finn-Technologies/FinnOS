@@ -31,6 +31,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSet>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QVBoxLayout>
@@ -244,19 +245,13 @@ public:
                     });
         }
 
-        // The glyph says what the source is; colour is not a category here.
         sidebar_->addItem(QStringLiteral("discover"), QStringLiteral("compass"),
                           QStringLiteral("Discover"), nav_accent_light(), nav_accent_dark());
         sidebar_->addItem(QStringLiteral("all"), QStringLiteral("layers"),
                           QStringLiteral("All Apps"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addSectionSpacer(12);
+        sidebar_->addSectionSpacer(8);
         sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("package"),
-                          QStringLiteral("Linux & Flatpak"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("window"),
-                          QStringLiteral("Windows (Wine)"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addItem(QStringLiteral("android"), QStringLiteral("smartphone"),
-                          QStringLiteral("Android"), nav_neutral_light(), nav_neutral_dark());
-        sidebar_->addSectionSpacer(12);
+                          QStringLiteral("Flathub"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
                           QStringLiteral("Updates"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal-square"),
@@ -264,15 +259,15 @@ public:
         sidebar_->addStretch();
         setSidebarWidget(sidebar_);
 
-        // Right content pane (12, 24, 12, 14 margins, with 96px top-right reserve for floating controls)
+        // Right content pane aligned with FinnWindowControls (y=8, height=28)
         right_host_ = new QWidget(this);
         auto* right_col = new QVBoxLayout(right_host_);
-        right_col->setContentsMargins(12, 24, 12, 14);
-        right_col->setSpacing(12);
+        right_col->setContentsMargins(12, 8, 12, 10);
+        right_col->setSpacing(8);
 
         auto* header_row = new QHBoxLayout();
         header_row->setContentsMargins(0, 0, 96, 0);
-        header_row->setSpacing(8);
+        header_row->setSpacing(4);
 
         page_title_ = new FinnLabel(
             QStringLiteral("Discover"), FinnLabel::Role::Title,
@@ -282,12 +277,14 @@ public:
         header_row->addStretch(1);
 
         auto* refresh_btn = new FinnButton(
-            QStringLiteral("Refresh"), FinnButton::Variant::Secondary,
+            QString(), FinnButton::Variant::Ghost,
             QStringLiteral("refresh"), right_host_);
-        refresh_btn->setFixedHeight(28);
+        refresh_btn->setFixedSize(28, 28);
+        refresh_btn->setToolTip(QStringLiteral("Refresh Catalogue"));
         refresh_btn->setAccessibleName(QStringLiteral("Refresh catalogue"));
         connect(refresh_btn, &QAbstractButton::clicked, this, [this]() {
             reloadCatalogue();
+            refreshFlathubCatalog();
             showToast(QStringLiteral("Catalogue refreshed"));
         });
         header_row->addWidget(refresh_btn);
@@ -315,6 +312,13 @@ public:
         sidebar_->setCurrentId(QStringLiteral("discover"));
         applyTheme();
         reloadCatalogue();
+    }
+
+public:
+    void openPage(const QString& id) {
+        const QString key = (id == QLatin1String("flathub")) ? QStringLiteral("linux") : id;
+        sidebar_->setCurrentId(key);
+        switchPage(key);
     }
 
 private:
@@ -355,8 +359,10 @@ private:
             populateAppsGrid(currentSearchQuery());
             stack_->setCurrentIndex(1);
         } else if (id == QLatin1String("linux")) {
-            page_title_->setText(QStringLiteral("Linux & Flatpak"));
+            last_list_page_ = QStringLiteral("linux");
+            page_title_->setText(QStringLiteral("Flathub"));
             stack_->setCurrentIndex(2);
+            if (!flathub_loaded_) refreshFlathubCatalog();
         } else if (id == QLatin1String("windows")) {
             page_title_->setText(QStringLiteral("Windows (Wine)"));
             refreshWindowsPage();
@@ -624,84 +630,304 @@ private:
         }
     }
 
+    struct FlathubEntry {
+        QString app_id;
+        QString name;
+        QString summary;
+        QString version;
+        bool installed = false;
+    };
+
     QWidget* buildLinuxPage() {
         auto* page = new QWidget();
         auto* root = new QVBoxLayout(page);
-        root->setContentsMargins(0, 4, 2, 16);
-        root->setSpacing(10);
+        root->setContentsMargins(0, 4, 2, 12);
+        root->setSpacing(8);
 
         const bool has_flatpak = !QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty();
-        root->addWidget(new FinnSettingRow(
-            QStringLiteral("Flatpak Runtime"),
-            has_flatpak ? QStringLiteral("Flatpak CLI ready — install Flathub applications or .flatpakref bundles")
-                        : QStringLiteral("flatpak binary not installed (pacman -S flatpak)"),
-            QStringLiteral("linux"),
-            new FinnBadge(has_flatpak ? QStringLiteral("Ready") : QStringLiteral("Unavailable"),
-                          has_flatpak ? FinnBadge::Tone::Success : FinnBadge::Tone::Neutral, page),
-            page));
+        flathub_enable_btn_ = new FinnButton(
+            QStringLiteral("Enable Flathub"), FinnButton::Variant::Primary,
+            QStringLiteral("download"), page);
+        flathub_enable_btn_->setFixedHeight(28);
+        flathub_enable_btn_->setVisible(false);
+        connect(flathub_enable_btn_, &QAbstractButton::clicked, this, [this]() {
+            flathub_enable_btn_->setEnabled(false);
+            flathub_status_row_->setSubtitle(QStringLiteral("Adding Flathub remote..."));
+            auto* proc = new QProcess(this);
+            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                    [this, proc](int code, QProcess::ExitStatus) {
+                        flathub_enable_btn_->setEnabled(true);
+                        if (code == 0) {
+                            showToast(QStringLiteral("Flathub enabled"), FinnToast::Severity::Success);
+                            refreshFlathubCatalog();
+                        } else {
+                            showToast(QStringLiteral("Failed to add Flathub remote"), FinnToast::Severity::Error);
+                        }
+                        proc->deleteLater();
+                    });
+            proc->start(QStringLiteral("flatpak"),
+                        {QStringLiteral("remote-add"), QStringLiteral("--user"),
+                         QStringLiteral("--if-not-exists"), QStringLiteral("flathub"),
+                         QStringLiteral("https://dl.flathub.org/repo/flathub.flatpakrepo")});
+        });
+
+        flathub_status_row_ = new FinnSettingRow(
+            QStringLiteral("Flathub"),
+            has_flatpak ? QStringLiteral("Loading Flathub apps...")
+                        : QStringLiteral("flatpak not installed"),
+            QStringLiteral("package"), flathub_enable_btn_, page);
+        root->addWidget(flathub_status_row_);
 
         auto* bar = new QHBoxLayout();
-        bar->setSpacing(8);
+        bar->setSpacing(6);
         flatpak_input_ = new FinnTextField(
-            QStringLiteral("Flatpak App ID (e.g. org.mozilla.firefox)"),
+            QStringLiteral("Search Flathub or enter App ID (e.g. org.mozilla.firefox)"),
             page);
+        flatpak_input_->setAccessibleName(QStringLiteral("Search Flathub or enter Flatpak App ID"));
+        connect(flatpak_input_, &QLineEdit::textChanged, this,
+                [this](const QString& q) { populateFlathubGrid(q); });
         auto* install_btn = new FinnButton(
-            QStringLiteral("Install Flatpak"), FinnButton::Variant::Primary,
+            QString(), FinnButton::Variant::Primary,
             QStringLiteral("download"), page);
+        install_btn->setFixedSize(28, 28);
+        install_btn->setToolTip(QStringLiteral("Install Flatpak by App ID"));
+        install_btn->setAccessibleName(QStringLiteral("Install Flatpak"));
         install_btn->setEnabled(has_flatpak);
         connect(install_btn, &QAbstractButton::clicked, this, [this]() {
             const QString id = flatpak_input_->text().trimmed();
             if (id.isEmpty()) return;
-            runCommandIntoLog(QStringLiteral("flatpak"),
-                              {QStringLiteral("install"), QStringLiteral("-y"),
-                               QStringLiteral("flathub"), id},
-                              linux_log_);
+            installFlatpakApp(id, id);
         });
-
-        auto* appimg_btn = new FinnButton(
-            QStringLiteral("Run AppImage"), FinnButton::Variant::Secondary,
-            QStringLiteral("folder"), page);
-        appimg_btn->setAccessibleName(QStringLiteral("Run AppImage"));
-        install_btn->setAccessibleName(QStringLiteral("Install Flatpak"));
-        flatpak_input_->setAccessibleName(QStringLiteral("Flatpak App ID"));
-        connect(appimg_btn, &QAbstractButton::clicked, this, [this]() {
-            const QString path = QFileDialog::getOpenFileName(
-                this, QStringLiteral("Select AppImage"), QDir::homePath(),
-                QStringLiteral("AppImage (*.AppImage *.appimage);;All Files (*)"));
-            if (path.isEmpty()) return;
-            const QString fname = QFileInfo(path).fileName();
-            if (!FinnDialog::confirm(
-                    this, QStringLiteral("Run AppImage?"),
-                    QStringLiteral("Grant executable permission (+x) and launch '%1'?\n\n"
-                                   "Only run AppImages from sources you trust.\nPath: %2")
-                        .arg(fname, path),
-                    QStringLiteral("Run AppImage"), false)) {
-                return;
-            }
-            if (!QFile::setPermissions(path, QFile::permissions(path) | QFile::ExeUser)) {
-                showToast(QStringLiteral("Failed to mark AppImage executable"),
-                          FinnToast::Severity::Error);
-                return;
-            }
-            if (!QProcess::startDetached(path, {})) {
-                showToast(QStringLiteral("Failed to launch AppImage"),
-                          FinnToast::Severity::Error);
-                return;
-            }
-            showToast(QStringLiteral("Launched AppImage"), FinnToast::Severity::Success);
-        });
-
         bar->addWidget(flatpak_input_, 1);
         bar->addWidget(install_btn);
-        bar->addWidget(appimg_btn);
         root->addLayout(bar);
+
+        flathub_grid_ = new QGridLayout();
+        flathub_grid_->setContentsMargins(0, 0, 0, 0);
+        flathub_grid_->setHorizontalSpacing(8);
+        flathub_grid_->setVerticalSpacing(8);
+        flathub_grid_->setColumnStretch(0, 1);
+        flathub_grid_->setColumnStretch(1, 1);
+        root->addLayout(flathub_grid_);
 
         linux_log_ = new QPlainTextEdit(page);
         linux_log_->setReadOnly(true);
-        linux_log_->setMinimumHeight(200);
-        linux_log_->setPlaceholderText(QStringLiteral("Package manager output appears here."));
-        root->addWidget(linux_log_, 1);
+        linux_log_->setMaximumHeight(110);
+        linux_log_->setVisible(false);
+        root->addWidget(linux_log_);
+        root->addStretch(1);
         return page;
+    }
+
+    void installFlatpakApp(const QString& app_id, const QString& display_name) {
+        if (linux_log_) {
+            linux_log_->setVisible(true);
+            linux_log_->clear();
+        }
+        showToast(QStringLiteral("Installing %1...").arg(display_name));
+        runCommandIntoLog(QStringLiteral("flatpak"),
+                          {QStringLiteral("install"), QStringLiteral("-y"),
+                           QStringLiteral("--user"), QStringLiteral("flathub"), app_id},
+                          linux_log_);
+    }
+
+    void uninstallFlatpakApp(const QString& app_id, const QString& display_name) {
+        if (!FinnDialog::confirm(
+                this, QStringLiteral("Uninstall %1?").arg(display_name),
+                QStringLiteral("Remove Flatpak package %1?").arg(app_id),
+                QStringLiteral("Uninstall"), true)) {
+            return;
+        }
+        if (linux_log_) {
+            linux_log_->setVisible(true);
+            linux_log_->clear();
+        }
+        showToast(QStringLiteral("Uninstalling %1...").arg(display_name));
+        runCommandIntoLog(QStringLiteral("flatpak"),
+                          {QStringLiteral("uninstall"), QStringLiteral("-y"), app_id},
+                          linux_log_);
+    }
+
+    void refreshFlathubCatalog() {
+        const QString fp_bin = QStandardPaths::findExecutable(QStringLiteral("flatpak"));
+        if (fp_bin.isEmpty()) {
+            if (flathub_status_row_) {
+                flathub_status_row_->setSubtitle(QStringLiteral("flatpak not installed"));
+            }
+            return;
+        }
+        flathub_loaded_ = true;
+
+        // 1. Query installed flatpak app IDs
+        auto* list_proc = new QProcess(this);
+        connect(list_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                [this, list_proc](int, QProcess::ExitStatus) {
+                    flathub_installed_.clear();
+                    const QString out = QString::fromUtf8(list_proc->readAllStandardOutput());
+                    for (const QString& line : out.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                        const QString id = line.trimmed();
+                        if (!id.isEmpty()) flathub_installed_.insert(id);
+                    }
+                    list_proc->deleteLater();
+
+                    // 2. Check remotes & fetch Flathub catalog
+                    auto* rem_proc = new QProcess(this);
+                    connect(rem_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                            [this, rem_proc](int, QProcess::ExitStatus) {
+                                const QString rout = QString::fromUtf8(rem_proc->readAllStandardOutput());
+                                rem_proc->deleteLater();
+                                const bool has_flathub = rout.contains(QStringLiteral("flathub"));
+                                if (flathub_enable_btn_) flathub_enable_btn_->setVisible(!has_flathub);
+                                if (!has_flathub) {
+                                    if (flathub_status_row_) {
+                                        flathub_status_row_->setSubtitle(
+                                            QStringLiteral("Flathub remote not configured"));
+                                    }
+                                    flathub_apps_.clear();
+                                    populateFlathubGrid(flatpak_input_ ? flatpak_input_->text() : QString());
+                                    return;
+                                }
+
+                                if (flathub_status_row_) {
+                                    flathub_status_row_->setSubtitle(QStringLiteral("Fetching Flathub apps..."));
+                                }
+                                auto* cat_proc = new QProcess(this);
+                                connect(cat_proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                                        [this, cat_proc](int code, QProcess::ExitStatus) {
+                                            flathub_apps_.clear();
+                                            const QString cout = QString::fromUtf8(cat_proc->readAllStandardOutput());
+                                            cat_proc->deleteLater();
+                                            for (const QString& line : cout.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                                                const QStringList cols = line.split(QLatin1Char('\t'));
+                                                if (cols.size() < 2) continue;
+                                                FlathubEntry e;
+                                                e.app_id = cols[0].trimmed();
+                                                e.name = cols[1].trimmed();
+                                                e.summary = cols.size() > 2 ? cols[2].trimmed() : QString();
+                                                e.version = cols.size() > 3 ? cols[3].trimmed() : QString();
+                                                e.installed = flathub_installed_.contains(e.app_id);
+                                                if (!e.app_id.isEmpty() && !e.name.isEmpty()) {
+                                                    flathub_apps_.push_back(std::move(e));
+                                                }
+                                            }
+                                            if (flathub_status_row_) {
+                                                flathub_status_row_->setSubtitle(
+                                                    code == 0
+                                                        ? QStringLiteral("%1 apps available · %2 installed")
+                                                              .arg(flathub_apps_.size())
+                                                              .arg(flathub_installed_.size())
+                                                        : QStringLiteral("Offline or unable to reach Flathub"));
+                                            }
+                                            populateFlathubGrid(flatpak_input_ ? flatpak_input_->text() : QString());
+                                        });
+                                cat_proc->start(QStringLiteral("flatpak"),
+                                                {QStringLiteral("remote-ls"), QStringLiteral("--app"),
+                                                 QStringLiteral("--columns=application,name,description,version"),
+                                                 QStringLiteral("flathub")});
+                            });
+                    rem_proc->start(QStringLiteral("flatpak"),
+                                    {QStringLiteral("remotes"), QStringLiteral("--columns=name")});
+                });
+        list_proc->start(QStringLiteral("flatpak"),
+                         {QStringLiteral("list"), QStringLiteral("--app"),
+                          QStringLiteral("--columns=application")});
+    }
+
+    void populateFlathubGrid(const QString& query) {
+        if (!flathub_grid_) return;
+        clear_layout(flathub_grid_);
+        const QString q = query.trimmed();
+        int row = 0;
+        int col = 0;
+        int shown = 0;
+        constexpr int kMaxCards = 30;
+        for (const auto& entry : flathub_apps_) {
+            if (!q.isEmpty() &&
+                !entry.name.contains(q, Qt::CaseInsensitive) &&
+                !entry.app_id.contains(q, Qt::CaseInsensitive) &&
+                !entry.summary.contains(q, Qt::CaseInsensitive)) {
+                continue;
+            }
+            auto* card = new FinnCard(kRadiusLg, true, flathub_grid_->parentWidget());
+            card->setFixedHeight(64);
+            auto* lay = new QHBoxLayout(card);
+            lay->setContentsMargins(12, 8, 12, 8);
+            lay->setSpacing(10);
+
+            auto* ico = new StoreIconWidget(32, 20, true, true, card);
+            ico->setIconName(QStringLiteral("package"));
+            lay->addWidget(ico, 0, Qt::AlignVCenter);
+
+            auto* tcol = new QVBoxLayout();
+            tcol->setContentsMargins(0, 0, 0, 0);
+            tcol->setSpacing(2);
+            auto* name_lbl = new ElidedFinnLabel(
+                entry.name, FinnLabel::Role::Body, FinnLabel::Tone::Ink, card);
+            name_lbl->setFont(finn_font_px(13, QFont::Medium));
+            auto* sub_lbl = new ElidedFinnLabel(
+                entry.summary.isEmpty() ? entry.app_id : entry.summary,
+                FinnLabel::Role::Caption, FinnLabel::Tone::Dim, card);
+            tcol->addWidget(name_lbl);
+            tcol->addWidget(sub_lbl);
+            lay->addLayout(tcol, 1);
+
+            const FlathubEntry copy = entry;
+            auto* btn = new FinnButton(
+                entry.installed ? QStringLiteral("Open") : QStringLiteral("Install"),
+                entry.installed ? FinnButton::Variant::Secondary : FinnButton::Variant::Primary,
+                {}, card);
+            btn->setFixedHeight(26);
+            btn->setMinimumWidth(56);
+            connect(btn, &QAbstractButton::clicked, this, [this, copy]() {
+                if (copy.installed) {
+                    QProcess::startDetached(QStringLiteral("flatpak"),
+                                            {QStringLiteral("run"), copy.app_id});
+                    showToast(QStringLiteral("Launching %1").arg(copy.name));
+                } else {
+                    installFlatpakApp(copy.app_id, copy.name);
+                }
+            });
+            lay->addWidget(btn, 0, Qt::AlignVCenter);
+
+            if (entry.installed) {
+                auto* rm = new FinnButton(
+                    QString(), FinnButton::Variant::Ghost, QStringLiteral("trash"), card);
+                rm->setFixedSize(26, 26);
+                rm->setToolTip(QStringLiteral("Uninstall"));
+                connect(rm, &QAbstractButton::clicked, this, [this, copy]() {
+                    uninstallFlatpakApp(copy.app_id, copy.name);
+                });
+                lay->addWidget(rm, 0, Qt::AlignVCenter);
+            }
+
+            connect(card, &FinnCard::clicked, this, [this, copy]() {
+                finn::App app{};
+                app.id = copy.app_id.toStdString();
+                app.name = copy.name.toStdString();
+                app.note = copy.summary.isEmpty() ? copy.app_id.toStdString()
+                                                  : copy.summary.toStdString();
+                app.command = "flatpak run " + copy.app_id.toStdString();
+                app.icon = "package";
+                app.source = finn::AppSource::kFlatpak;
+                app.installed = copy.installed;
+                openDetail(app);
+            });
+
+            flathub_grid_->addWidget(card, row, col);
+            if (++col >= 2) {
+                col = 0;
+                ++row;
+            }
+            if (++shown >= kMaxCards) break;
+        }
+        if (shown == 0 && flathub_apps_.isEmpty()) {
+            flathub_grid_->addWidget(
+                new FinnEmptyState(QStringLiteral("package"),
+                                   QStringLiteral("No Flathub apps loaded"),
+                                   QStringLiteral("Enable Flathub above or check network connectivity."),
+                                   QString(), flathub_grid_->parentWidget()),
+                0, 0, 1, 2);
+        }
     }
 
     QWidget* buildWindowsPage() {
@@ -1183,10 +1409,7 @@ private:
                 }
                 sidebar_->setCurrentId(QStringLiteral("linux"));
                 switchPage(QStringLiteral("linux"));
-                runCommandIntoLog(QStringLiteral("flatpak"),
-                                  {QStringLiteral("install"), QStringLiteral("-y"),
-                                   QStringLiteral("flathub"), fp_id},
-                                  linux_log_);
+                installFlatpakApp(fp_id, QString::fromStdString(selected_app_.name));
                 return;
             }
             const QString app_name = QString::fromStdString(selected_app_.name);
@@ -1233,6 +1456,7 @@ private:
                 [this, proc, log](int code, QProcess::ExitStatus) {
                     if (log) log->appendPlainText(QStringLiteral("Exited with code %1").arg(code));
                     reloadCatalogue();
+                    if (flathub_loaded_) refreshFlathubCatalog();
                     proc->deleteLater();
                 });
         proc->start(bin, args);
@@ -1250,6 +1474,12 @@ private:
     QGridLayout* spotlight_grid_ = nullptr;
     QGridLayout* apps_grid_ = nullptr;
     FinnTextField* flatpak_input_ = nullptr;
+    FinnSettingRow* flathub_status_row_ = nullptr;
+    FinnButton* flathub_enable_btn_ = nullptr;
+    QGridLayout* flathub_grid_ = nullptr;
+    QVector<FlathubEntry> flathub_apps_;
+    QSet<QString> flathub_installed_;
+    bool flathub_loaded_ = false;
     QPlainTextEdit* linux_log_ = nullptr;
     FinnSettingRow* win_status_row_ = nullptr;
     QVBoxLayout* win_list_layout_ = nullptr;
@@ -1279,19 +1509,24 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
+    QString start_page;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
             std::puts("finn-store 0.2.0");
             return 0;
         }
         if (std::strcmp(argv[i], "--help") == 0) {
-            std::puts("Usage: finn-store");
+            std::puts("Usage: finn-store [--page discover|all|flathub|updates|sdk]");
             return 0;
+        }
+        if (std::strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
+            start_page = QString::fromUtf8(argv[++i]);
         }
     }
     finn::ui::FinnApplication app(argc, argv, QStringLiteral("store"),
                                   QStringLiteral("Finn Store"));
     StoreWindow w;
+    if (!start_page.isEmpty()) w.openPage(start_page);
     w.show();
     return app.exec();
 }
