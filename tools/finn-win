@@ -18,21 +18,95 @@ DEFAULT_PREFIX = os.path.join(os.path.expanduser("~"), ".local", "share", "finn"
 
 WIN11_REG = """Windows Registry Editor Version 5.00
 
+[HKEY_CURRENT_USER\\Software\\Wine]
+"Version"="win11"
+
 [HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion]
 "ProductName"="Windows 11 Pro"
 "CurrentVersion"="10.0"
 "CurrentBuild"="22631"
 "CurrentBuildNumber"="22631"
 "DisplayVersion"="23H2"
+"EditionID"="Professional"
 "CSDVersion"=""
 "CurrentMajorVersionNumber"=dword:0000000a
 "CurrentMinorVersionNumber"=dword:00000000
+
+[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize]
+"AppsUseLightTheme"=dword:00000001
+"SystemUsesLightTheme"=dword:00000001
+"EnableTransparency"=dword:00000001
+
+[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\DWM]
+"ColorPrevalence"=dword:00000000
+"EnableWindowColorization"=dword:00000001
+"AccentColor"=dword:ffc06700
+"ColorizationColor"=dword:ffc06700
+
+[HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager]
+"ThemeActive"="1"
+"DllName"="C:\\\\windows\\\\resources\\\\themes\\\\aero\\\\aero.msstyles"
+"ColorName"="Blue"
+"SizeName"="NormalSize"
 
 [HKEY_CURRENT_USER\\Control Panel\\Desktop]
 "FontSmoothing"="2"
 "FontSmoothingType"=dword:00000002
 "FontSmoothingOrientation"=dword:00000001
 "FontSmoothingGamma"=dword:00000578
+"UserPreferencesMask"=hex:9e,1e,07,80,12,00,00,00
+
+[HKEY_CURRENT_USER\\Control Panel\\Desktop\\WindowMetrics]
+"BorderWidth"="-15"
+"PaddedBorderWidth"="-15"
+"CaptionHeight"="-420"
+"CaptionWidth"="-510"
+"SmCaptionHeight"="-360"
+"SmCaptionWidth"="-360"
+"MenuHeight"="-330"
+"ScrollWidth"="-210"
+"ScrollHeight"="-210"
+
+[HKEY_CURRENT_USER\\Control Panel\\Colors]
+"ActiveBorder"="229 229 229"
+"ActiveTitle"="243 243 243"
+"AppWorkSpace"="243 243 243"
+"Background"="243 243 243"
+"ButtonAlternateFace"="249 249 249"
+"ButtonDkShadow"="214 214 214"
+"ButtonFace"="243 243 243"
+"ButtonHilight"="255 255 255"
+"ButtonLight"="249 249 249"
+"ButtonShadow"="229 229 229"
+"ButtonText"="26 26 26"
+"GradientActiveTitle"="243 243 243"
+"GradientInactiveTitle"="249 249 249"
+"GrayText"="138 138 138"
+"Hilight"="0 103 192"
+"HilightText"="255 255 255"
+"HotTrackingColor"="0 103 192"
+"InactiveBorder"="235 235 235"
+"InactiveTitle"="249 249 249"
+"InactiveTitleText"="115 115 115"
+"InfoText"="26 26 26"
+"InfoWindow"="255 255 255"
+"Menu"="249 249 249"
+"MenuBar"="249 249 249"
+"MenuHilight"="0 103 192"
+"MenuText"="26 26 26"
+"Scrollbar"="243 243 243"
+"TitleText"="26 26 26"
+"Window"="255 255 255"
+"WindowFrame"="229 229 229"
+"WindowText"="26 26 26"
+
+[HKEY_CURRENT_USER\\Software\\Wine\\Fonts\\Replacements]
+"Segoe UI"="Noto Sans"
+"MS Shell Dlg"="Noto Sans"
+"MS Shell Dlg 2"="Noto Sans"
+"Tahoma"="Noto Sans"
+"MS Sans Serif"="Noto Sans"
+"Arial"="Noto Sans"
 
 [HKEY_CURRENT_USER\\Software\\Wine\\Drivers]
 "Graphics"="wayland,x11"
@@ -214,7 +288,23 @@ def init_prefix(rt: Dict[str, object], force: bool = False) -> int:
     except subprocess.TimeoutExpired:
         pass
 
-    # Apply Windows 11 Pro + ClearType + Wayland driver registry keys
+    # Ensure modern visual style (aero.msstyles) is installed in the prefix
+    theme_dst = os.path.join(prefix, "drive_c", "windows", "resources", "themes", "aero", "aero.msstyles")
+    if not os.path.isfile(theme_dst):
+        theme_candidates = [
+            "/opt/hangover/usr/lib/wine/aarch64-windows/aero.msstyles",
+            "/opt/hangover/usr/lib/wine/x86_64-windows/aero.msstyles",
+            "/usr/lib/wine/x86_64-windows/aero.msstyles",
+            "/usr/lib/wine/aarch64-windows/aero.msstyles",
+            "/usr/lib64/wine/x86_64-windows/aero.msstyles",
+        ]
+        for cand in theme_candidates:
+            if os.path.isfile(cand):
+                os.makedirs(os.path.dirname(theme_dst), exist_ok=True)
+                shutil.copy2(cand, theme_dst)
+                break
+
+    # Apply Windows 11 Pro + Modern Fluent/Aero Theme + ClearType + Wayland driver registry keys
     reg_path = os.path.join(prefix, ".finn-win11.reg")
     Path(reg_path).write_text(WIN11_REG, encoding="utf-8")
     try:
