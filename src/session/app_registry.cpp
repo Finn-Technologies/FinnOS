@@ -2,6 +2,7 @@
 
 #include "common/paths.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/macos_runner.hpp"
 #include "compat/wine_runner.hpp"
 
 #include <cstdlib>
@@ -56,6 +57,7 @@ const char* app_source_name(AppSource source) {
         case AppSource::kWinget: return "winget";
         case AppSource::kDesktop: return "desktop";
         case AppSource::kWindows: return "windows";
+        case AppSource::kMacos: return "macos";
         case AppSource::kUnknown:
         default: return "unknown";
     }
@@ -67,13 +69,15 @@ AppSource parse_app_source(std::string_view text) {
     if (text == "winget") return AppSource::kWinget;
     if (text == "desktop" || text == "linux") return AppSource::kDesktop;
     if (text == "windows" || text == "wine") return AppSource::kWindows;
+    if (text == "macos" || text == "darwin") return AppSource::kMacos;
     return AppSource::kUnknown;
 }
 
 bool App::launchable() const {
     if (command.empty()) return false;
     return source == AppSource::kNative || source == AppSource::kDesktop ||
-           source == AppSource::kFlatpak || source == AppSource::kWindows;
+           source == AppSource::kFlatpak || source == AppSource::kWindows ||
+           source == AppSource::kMacos;
 }
 
 std::optional<AppRegistry> AppRegistry::load(const std::string& catalogue_path,
@@ -127,6 +131,7 @@ AppRegistry AppRegistry::load_all(const std::string& catalogue_path,
     reg.merge_user_manifests();
     reg.merge_desktop_entries(true);
     reg.merge_windows_entries();
+    reg.merge_macos_entries();
     return reg;
 }
 
@@ -257,6 +262,24 @@ void AppRegistry::merge_windows_entries(const std::string& windows_conf_path) {
                 apps_.push_back(std::move(app));
             }
         }
+    }
+}
+
+void AppRegistry::merge_macos_entries(const std::string& macos_apps_dir) {
+    const auto bundles = compat::discover_macos_bundles(macos_apps_dir);
+    for (const auto& b : bundles) {
+        if (find(b.id) != nullptr) continue;
+        App app;
+        app.id = b.id;
+        app.name = b.name;
+        app.icon = b.icon_path.empty() ? "laptop.svg" : b.icon_path;
+        app.command = b.bundle_path;
+        app.note = b.version.empty() ? "macOS application via finn-darwin"
+                                     : ("macOS application v" + b.version + " via finn-darwin");
+        app.category = "macOS";
+        app.source = AppSource::kMacos;
+        app.installed = !b.executable_path.empty();
+        apps_.push_back(std::move(app));
     }
 }
 

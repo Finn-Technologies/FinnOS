@@ -120,11 +120,12 @@ A developer restarts the compositor deliberately with `systemctl restart finn-co
 
 An app in FinnOS is a program opening an `xdg_toplevel` (Wayland) or Xwayland surface bridged into the scene. Nothing under `src/comp` knows any app id (`make lint` enforces this).
 
-`finn-session` aggregates four real sources into one launcher model:
+`finn-session` aggregates five real sources into one launcher model:
 1. **First-party native apps** from `/usr/share/finn/apps.registry` + `/var/lib/finn/installed`.
 2. **Third-party `FinnSDK` apps** registered in `~/.local/share/finn/apps/`.
-3. **Linux applications** discovered from Freedesktop `.desktop` directories and Flatpak exports.
-4. **Windows executables** registered in `~/.local/share/finn/windows.conf` and launched via Wine when available on `x86_64`.
+3. **Linux applications** discovered recursively from Freedesktop `.desktop` directories (including Wine `winemenubuilder` shortcuts under `~/.local/share/applications/wine/`) and Flatpak exports. `Finn Store`, `Finn Files`, and `finn-session` also handle Flatpak installer formats directly (`.flatpakref`, `.flatpak` bundles, and `.flatpakrepo` remotes via `flatpak --user`).
+4. **Windows executables** (`.exe` / `.msi`) launched via `finn-win` / Wine when available on `x86_64`, plus portable apps registered in `~/.local/share/finn/windows.conf`.
+5. **macOS applications** (`.app` bundles installed in `~/.local/share/finn/macos/Applications` or `~/Applications`) launched via **`finn-darwin`** (`src/darwin/`): a clean-room 64-bit Mach-O / Universal dynamic loader (`LC_DYLD_CHAINED_FIXUPS`, `LC_DYLD_INFO_ONLY`, bundled `@rpath` dylibs), Darwin `libSystem.B.dylib` ABI shim, Objective-C 2.0 runtime (`objc_msgsend.S` for `aarch64` and `x86_64`, ABI v2 realization, `_objc_msgSend$<sel>` stubs), CoreFoundation/Foundation, basic AppKit-on-Qt6 bridge, and native XML/`bplist00` plist, `.icns` PNG icon, `.pkg` (XAR + gzip/cpio), and `.dmg` (UDIF `koly`/`blkx`) handling. `finn-darwin diagnose` reports exact missing frameworks/symbols before launch so unsupported apps never fail silently.
 
 ## Custom Qt6 stack, tokens & motion
 
@@ -142,3 +143,4 @@ FinnOS does not leave Qt6 with stock desktop widgets. Both `FinnSDK` apps and un
 - **Display, input & localization limits.** Single global output scale/layout (`outputs_.front()`), no per-display arrangement editor or mixed per-output HiDPI, no compositor GPU shader backdrop blur, no Wayland IME (`zwp_text_input_v3`), no `QTranslator` localization bundles, and no cellular modem/telephony stack (`ModemManager`).
 - **Partial runtime accessibility enforcement.** High Contrast and Reduced Motion apply live; `text_scale`, `color_filter`, `sticky_keys`, `filter_keys`, and packaged `orca` screen reader integration remain incomplete.
 - **ARM64 Wine runtime**: `base/packages.aarch64` does not invent unavailable upstream `wine` packages; `probe_wine_runtime()` inspects binaries/prefixes honestly and keeps launch buttons disabled until a compatible runtime (`wine` + optional translator) exists on the machine.
+- **Incomplete macOS framework coverage (`finn-darwin`)**: `finn-darwin` runs unmodified 64-bit Mach-O C, Objective-C, Foundation, and basic AppKit-on-Qt6 apps natively on matching CPU architecture (`arm64` on `aarch64`, `x86_64` on `x86_64`) and natively installs `.app`/`.pkg` (gzip+cpio) packages (with `7z` used for HFS+/APFS `.dmg` extraction). Complex macOS frameworks — Swift runtime / SwiftUI, Metal / CoreGraphics rendering, QuartzCore, WebKit, CoreData, Network framework, Security/Keychain, and Apple App Store / iCloud — are not yet implemented; `finn-darwin diagnose` lists every missing framework/symbol honestly before launch.

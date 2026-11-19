@@ -5,6 +5,9 @@
 
 #include <FinnSDK/FinnSDK.hpp>
 
+#include "compat/flatpak_installer.hpp"
+#include "compat/macos_runner.hpp"
+
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -722,14 +725,32 @@ private:
             const QString ext = fi.suffix().toLower();
             if (fi.isDir()) {
                 ++dirs;
-                d.kind = QString();
-                d.icon_name = QStringLiteral("folder");
+                if (ext == QStringLiteral("app") &&
+                    QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/Contents/Info.plist"))) {
+                    d.kind = QStringLiteral("macOS App");
+                    d.icon_name = QStringLiteral("laptop");
+                } else {
+                    d.kind = QString();
+                    d.icon_name = QStringLiteral("folder");
+                }
             } else {
                 ++files;
                 total_bytes += fi.size();
                 if (ext == QStringLiteral("exe") || ext == QStringLiteral("msi")) {
                     d.kind = QStringLiteral("Windows App");
                     d.icon_name = QStringLiteral("window");
+                } else if (ext == QStringLiteral("flatpakref") ||
+                           ext == QStringLiteral("flatpak") ||
+                           ext == QStringLiteral("flatpakrepo")) {
+                    d.kind = QString::fromStdString(finn::compat::flatpak_kind_label(
+                        finn::compat::detect_flatpak_file_kind(fi.fileName().toStdString())));
+                    d.icon_name = QStringLiteral("package");
+                } else if (ext == QStringLiteral("dmg")) {
+                    d.kind = QStringLiteral("macOS Disk Image");
+                    d.icon_name = QStringLiteral("laptop");
+                } else if (ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
+                    d.kind = QStringLiteral("macOS Installer");
+                    d.icon_name = QStringLiteral("laptop");
                 } else if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg") ||
                            ext == QStringLiteral("jpeg") || ext == QStringLiteral("webp") ||
                            ext == QStringLiteral("svg")) {
@@ -828,12 +849,15 @@ private:
 
         const QFileInfo fi(selected_path_);
         selection_lbl_->setText(fi.fileName());
+        const QString ext = fi.suffix().toLower();
         const bool is_pe =
             fi.isFile() &&
-            (fi.suffix().compare(QStringLiteral("exe"), Qt::CaseInsensitive) == 0 ||
-             fi.suffix().compare(QStringLiteral("msi"), Qt::CaseInsensitive) == 0);
+            (ext == QStringLiteral("exe") || ext == QStringLiteral("msi"));
         wine_btn_->setVisible(is_pe);
         if (is_pe) {
+            const auto rt = finn::compat::probe_wine_runtime();
+            wine_btn_->setEnabled(rt.ready);
+            wine_btn_->setToolTip(QString::fromStdString(rt.summary));
             const auto pe = finn::compat::inspect_pe_file(
                 fi.absoluteFilePath().toStdString());
             if (pe.valid) {
@@ -843,6 +867,39 @@ private:
                              pe.is_gui ? QStringLiteral("GUI") : QStringLiteral("Console")));
                 return;
             }
+        }
+        if (fi.isFile() &&
+            finn::compat::detect_flatpak_file_kind(fi.fileName().toStdString()) !=
+                finn::compat::FlatpakFileKind::Unknown) {
+            const auto fp = finn::compat::inspect_flatpak_file(
+                fi.absoluteFilePath().toStdString());
+            if (fp.valid) {
+                detail_label_->setText(
+                    QStringLiteral("%1: %2")
+                        .arg(QString::fromStdString(finn::compat::flatpak_kind_label(fp.kind)),
+                             QString::fromStdString(fp.title.empty() ? fp.name : fp.title)));
+                return;
+            }
+        }
+        if (fi.isDir() && ext == QStringLiteral("app")) {
+            const auto app = finn::compat::inspect_macos_app_bundle(
+                fi.absoluteFilePath().toStdString());
+            if (app.valid) {
+                detail_label_->setText(
+                    QStringLiteral("macOS App: %1 (%2)")
+                        .arg(QString::fromStdString(app.name),
+                             QString::fromStdString(finn::compat::macho_arches_summary(app.binary))));
+                return;
+            }
+        }
+        if (fi.isFile() && (ext == QStringLiteral("dmg") || ext == QStringLiteral("pkg") ||
+                            ext == QStringLiteral("mpkg"))) {
+            const auto inst = finn::compat::inspect_macos_installer(
+                fi.absoluteFilePath().toStdString());
+            detail_label_->setText(
+                inst.valid ? QString::fromStdString(inst.format_detail)
+                           : QString::fromStdString(inst.error));
+            return;
         }
         detail_label_->setText(fi.isDir() ? QStringLiteral("Directory")
                                           : format_bytes(fi.size()));
@@ -864,14 +921,29 @@ private:
 
     void openEntry(const QString& path) {
         const QFileInfo fi(path);
+        const QString ext = fi.suffix().toLower();
         if (fi.isDir()) {
+            if (ext == QStringLiteral("app") &&
+                QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/Contents/Info.plist"))) {
+                if (QProcess::startDetached(QStringLiteral("finn-store"),
+                                            {QStringLiteral("--install"), fi.absoluteFilePath()})) {
+                    return;
+                }
+            }
             navigateTo(fi.absoluteFilePath(), true);
             return;
         }
-        const QString ext = fi.suffix().toLower();
         if (ext == QStringLiteral("exe") || ext == QStringLiteral("msi")) {
             launchSelectedWine(path);
             return;
+        }
+        if (ext == QStringLiteral("flatpakref") || ext == QStringLiteral("flatpak") ||
+            ext == QStringLiteral("flatpakrepo") || ext == QStringLiteral("dmg") ||
+            ext == QStringLiteral("pkg") || ext == QStringLiteral("mpkg")) {
+            if (QProcess::startDetached(QStringLiteral("finn-store"),
+                                        {QStringLiteral("--install"), fi.absoluteFilePath()})) {
+                return;
+            }
         }
         if (ext == QStringLiteral("png") || ext == QStringLiteral("jpg") ||
             ext == QStringLiteral("jpeg") || ext == QStringLiteral("webp") ||

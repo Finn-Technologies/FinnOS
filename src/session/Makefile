@@ -5,9 +5,11 @@ CXXFLAGS += -I..
 LDLIBS   +=
 
 SRCS = main.cpp client.cpp app_registry.cpp \
-       ../compat/desktop_entry.cpp ../compat/wine_runner.cpp ../system/sys_files.cpp
+       ../compat/desktop_entry.cpp ../compat/flatpak_installer.cpp \
+       ../compat/macos_runner.cpp ../compat/wine_runner.cpp ../system/sys_files.cpp
 HDRS = client.hpp app_registry.hpp ../common/paths.hpp \
-       ../compat/desktop_entry.hpp ../compat/wine_runner.hpp ../system/sys_files.hpp
+       ../compat/desktop_entry.hpp ../compat/flatpak_installer.hpp \
+       ../compat/macos_runner.hpp ../compat/wine_runner.hpp ../system/sys_files.hpp
 BIN  = finn-session
 
 PREFIX ?= /usr/local

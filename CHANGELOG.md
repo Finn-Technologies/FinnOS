@@ -5,6 +5,12 @@ and the changes to it are worth reading.
 
 ## Unreleased
 
+### Flatpak Installers, Easy Windows `.exe` Installation & Clean-Room macOS Runtime (`finn-darwin`)
+
+- **Flatpak installer file formats (`src/compat/flatpak_installer.{hpp,cpp}`, `assets/finn-flatpak.desktop`)**: Added native `.flatpakref`, `.flatpak` bundle, and `.flatpakrepo` parsing and `--user` installation across `Finn Store` (`Install File...` + `--install <file>`), `Finn Files`, `finn-session`, and MIME handlers.
+- **Easy Windows `.exe` / `.msi` installation & discovery (`apps/store/main.cpp`, `src/compat/desktop_entry.cpp`)**: Exposed the **Windows** tab in `Finn Store`'s sidebar with `Install / Run .exe`, `Add to Launcher`, and per-app removal; switched `.desktop` scanning to recursive traversal so Wine `winemenubuilder` shortcuts under `~/.local/share/applications/wine/Programs/` auto-register in Home Menu and Spotlight, and added user Flatpak/Wine icon lookup paths.
+- **Clean-room macOS compatibility runtime (`src/darwin/` -> `finn-darwin`)**: Implemented a 64-bit Mach-O / Universal loader (`LC_DYLD_CHAINED_FIXUPS`, `LC_DYLD_INFO_ONLY`, bundled `@rpath` dylibs, pre-flight `diagnose`), Darwin `libSystem.B.dylib` ABI shim, Objective-C 2.0 runtime (`objc_msgsend.S` for `aarch64`/`x86_64`, ABI v2 realization, `_objc_msgSend$<sel>` stubs), CoreFoundation/Foundation, basic AppKit-on-Qt6 bridge, XML/`bplist00` plist parser, `.icns` PNG extractor, and native `.pkg` (XAR+gzip/cpio), `.dmg` (UDIF), and `.app` bundle installer integrated into `AppSource::kMacos`, `finn-session`, `finn-shell`, `Finn Store`, and `Finn Files` (`tests/unit/test_darwin.cpp`).
+
 ### Audit, Security & Daily-Driver Fixes (`B6..B12`, `M9..M19`, `m5..m11`)
 
 - **Lock screen & session security (`B6`, `B7`, `B12`, `M11`)**: Wired `ext-session-lock-v1` listener + WM shortcut gating while locked in `finn-comp`; restricted empty-password unlock in `LockScreenWindow` to `passwd -S` `NP` accounts only (blocking `L` locked accounts), made unlock verification async (`M13`), and fixed `loginctl activate <session-id>` user switching. Hardened `vm/finn-chroot.sh` to lock `root` (`passwd -l root`) instead of sharing `finn`'s password, and gated `NOPASSWD` sudo in `base/setup.sh` on `FINN_DEV_VM=1`. Set `FD_CLOEXEC`, `SO_RCVTIMEO`, `0600` socket permissions, and cached registry loading in `finn-session`.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FinnOS macOS Installer
+Comment=Inspect and install macOS .dmg and .pkg packages via finn-darwin
+Exec=/usr/local/bin/finn-store --install %f
+Icon=laptop
+NoDisplay=true
+Terminal=false
+MimeType=application/x-apple-diskimage;application/x-xar;

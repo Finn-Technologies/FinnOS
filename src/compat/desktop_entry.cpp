@@ -302,8 +302,13 @@ std::vector<DesktopEntry> scan_desktop_dirs(
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
         std::vector<fs::path> files;
-        for (const auto& entry : fs::directory_iterator(dir, ec)) {
-            if (entry.path().extension() == ".desktop") files.push_back(entry.path());
+        for (const auto& entry :
+             fs::recursive_directory_iterator(
+                 dir, fs::directory_options::skip_permission_denied, ec)) {
+            if (ec) break;
+            if (entry.is_regular_file(ec) && entry.path().extension() == ".desktop") {
+                files.push_back(entry.path());
+            }
         }
         std::sort(files.begin(), files.end());
         for (const fs::path& file : files) {
@@ -337,6 +342,22 @@ std::string resolve_icon_path(std::string_view icon_name,
         if (const std::string hit = probe_icon_dir(finn_icons / sub, icon_name);
             !hit.empty()) {
             return hit;
+        }
+    }
+
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        const fs::path h(home);
+        for (const char* rel : {
+                 ".local/share/flatpak/exports/share/icons/hicolor/scalable/apps",
+                 ".local/share/flatpak/exports/share/icons/hicolor/128x128/apps",
+                 ".local/share/icons/hicolor/scalable/apps",
+                 ".local/share/icons/hicolor/256x256/apps",
+                 ".local/share/icons/hicolor/128x128/apps",
+                 ".local/share/icons/hicolor/48x48/apps",
+             }) {
+            if (const std::string hit = probe_icon_dir(h / rel, icon_name); !hit.empty()) {
+                return hit;
+            }
         }
     }
 

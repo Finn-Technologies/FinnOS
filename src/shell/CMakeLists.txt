@@ -45,6 +45,7 @@ add_executable(finn-shell
     search.hpp
     ../session/app_registry.cpp
     ../compat/desktop_entry.cpp
+    ../compat/macos_runner.cpp
     ../compat/wine_runner.cpp
     ../system/desktop_services.cpp
     ../system/desktop_services.hpp

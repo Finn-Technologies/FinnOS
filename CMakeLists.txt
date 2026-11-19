@@ -37,6 +37,7 @@ endif()
 
 if(FINN_BUILD_TOOLS)
     add_subdirectory(tools)
+    add_subdirectory(src/darwin)
 endif()
 
 install(FILES assets/apps.registry

@@ -34,6 +34,8 @@ inline constexpr const char* kSessionSocket = "session.sock";
 inline constexpr const char* kUserSettingsRel = ".config/finn/settings";
 inline constexpr const char* kUserAppsRel = ".local/share/finn/apps";
 inline constexpr const char* kUserWindowsConfRel = ".local/share/finn/windows.conf";
+inline constexpr const char* kUserMacosAppsRel = ".local/share/finn/macos/Applications";
+inline constexpr const char* kUserMacosIconsRel = ".local/share/finn/macos/icons";
 inline constexpr const char* kRecentAppsRel = ".local/state/finn/recent-apps";
 inline constexpr const char* kWinePrefixRel = ".local/share/finn/wine/default";
 inline constexpr const char* kOobeCompleteRel = ".config/finn/oobe_complete";
@@ -41,6 +43,7 @@ inline constexpr const char* kOobeBinPath = "/usr/local/bin/finn-oobe";
 inline constexpr const char* kFinnTerminalBin = "/usr/local/bin/finn-terminal";
 inline constexpr const char* kFinnInstallBin = "/usr/local/bin/finn-install";
 inline constexpr const char* kFinnUpdateBin = "/usr/local/bin/finn-update";
+inline constexpr const char* kFinnDarwinBin = "/usr/local/bin/finn-darwin";
 
 /// Resolves the active user settings file path via FINN_SETTINGS_PATH, $HOME, or /home/finn.
 inline std::string user_settings_path() {

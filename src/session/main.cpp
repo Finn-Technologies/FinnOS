@@ -5,6 +5,8 @@
 
 #include "common/paths.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/flatpak_installer.hpp"
+#include "compat/macos_runner.hpp"
 #include "compat/wine_runner.hpp"
 #include "session/app_registry.hpp"
 #include "session/client.hpp"
@@ -292,6 +294,19 @@ bool spawn_app(const finn::App& app, std::string_view arg, std::string* error) {
         return true;
     }
 
+    if (app.source == finn::AppSource::kMacos) {
+        const auto plan = finn::compat::build_macos_launch_plan(app.command);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        auto argv = plan.argv;
+        if (!arg.empty()) argv.emplace_back(arg);
+        if (!spawn_argv(argv, {}, error)) return false;
+        finn::sys::record_recent_app(app.id);
+        return true;
+    }
+
     std::vector<std::string> argv;
     if (app.source == finn::AppSource::kDesktop ||
         app.source == finn::AppSource::kFlatpak) {
@@ -327,7 +342,29 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
 
     std::error_code ec;
     if (fs::is_directory(t, ec)) {
+        if (ends_with_ci(t, ".app") &&
+            fs::is_regular_file(fs::path(t) / "Contents" / "Info.plist", ec)) {
+            if (const finn::App* store = reg.find("store")) {
+                return spawn_argv({store->command, "--install", t}, {}, error);
+            }
+        }
         if (const finn::App* files = reg.find("files")) return spawn_app(*files, t, error);
+    }
+    if (finn::compat::detect_flatpak_file_kind(t) != finn::compat::FlatpakFileKind::Unknown) {
+        if (const finn::App* store = reg.find("store")) {
+            return spawn_argv({store->command, "--install", t}, {}, error);
+        }
+        const auto plan = finn::compat::build_flatpak_install_plan(t);
+        if (!plan.ok) {
+            if (error) *error = plan.error;
+            return false;
+        }
+        return spawn_argv(plan.argv, {}, error);
+    }
+    if (ends_with_ci(t, ".dmg") || ends_with_ci(t, ".pkg") || ends_with_ci(t, ".mpkg")) {
+        if (const finn::App* store = reg.find("store")) {
+            return spawn_argv({store->command, "--install", t}, {}, error);
+        }
     }
     if (ends_with_ci(t, ".exe") || ends_with_ci(t, ".msi")) {
         const auto plan =

@@ -9,6 +9,8 @@
 #include "common/paths.hpp"
 #include "compat/android_runner.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/flatpak_installer.hpp"
+#include "compat/macos_runner.hpp"
 #include "compat/wine_runner.hpp"
 #include "session/app_registry.hpp"
 
@@ -203,6 +205,7 @@ QString source_label(finn::AppSource src) {
         case finn::AppSource::kDesktop: return QStringLiteral("Linux");
         case finn::AppSource::kWindows: return QStringLiteral("Windows 11");
         case finn::AppSource::kWinget:  return QStringLiteral("Windows");
+        case finn::AppSource::kMacos:   return QStringLiteral("macOS");
         case finn::AppSource::kUnknown: return QStringLiteral("App");
     }
     return QStringLiteral("App");
@@ -252,6 +255,10 @@ public:
         sidebar_->addSectionSpacer(8);
         sidebar_->addItem(QStringLiteral("linux"), QStringLiteral("package"),
                           QStringLiteral("Flathub"), nav_neutral_light(), nav_neutral_dark());
+        sidebar_->addItem(QStringLiteral("windows"), QStringLiteral("view-open-windows"),
+                          QStringLiteral("Windows"), nav_neutral_light(), nav_neutral_dark());
+        sidebar_->addItem(QStringLiteral("macos"), QStringLiteral("laptop"),
+                          QStringLiteral("macOS"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("updates"), QStringLiteral("download"),
                           QStringLiteral("Updates"), nav_neutral_light(), nav_neutral_dark());
         sidebar_->addItem(QStringLiteral("sdk"), QStringLiteral("terminal-square"),
@@ -300,6 +307,7 @@ public:
         stack_->addWidget(wrapScroll(buildUpdatesPage()));   // 5
         stack_->addWidget(wrapScroll(buildSdkPage()));       // 6
         stack_->addWidget(wrapScroll(buildDetailPage()));    // 7
+        stack_->addWidget(wrapScroll(buildMacosPage()));     // 8
         right_col->addWidget(stack_, 1);
 
         setContentWidget(right_host_);
@@ -321,6 +329,33 @@ public:
         switchPage(key);
     }
 
+    void handleInstallTarget(const QString& path) {
+        const QString clean = path.trimmed();
+        if (clean.isEmpty()) return;
+        const std::string std_path = clean.toStdString();
+        if (finn::compat::detect_flatpak_file_kind(std_path) !=
+            finn::compat::FlatpakFileKind::Unknown) {
+            openPage(QStringLiteral("linux"));
+            installFlatpakFile(clean);
+            return;
+        }
+        const QString low = clean.toLower();
+        if (low.endsWith(QStringLiteral(".exe")) || low.endsWith(QStringLiteral(".msi"))) {
+            openPage(QStringLiteral("windows"));
+            launchWindowsInstaller(clean);
+            return;
+        }
+        if (low.endsWith(QStringLiteral(".dmg")) || low.endsWith(QStringLiteral(".pkg")) ||
+            low.endsWith(QStringLiteral(".mpkg")) || low.endsWith(QStringLiteral(".app"))) {
+            openPage(QStringLiteral("macos"));
+            inspectMacosTarget(clean);
+            return;
+        }
+        showToast(QStringLiteral("Unsupported installer format: %1")
+                      .arg(QFileInfo(clean).fileName()),
+                  FinnToast::Severity::Warning);
+    }
+
 private:
     QString currentSearchQuery() const {
         return (sidebar_ && sidebar_->searchField())
@@ -332,6 +367,7 @@ private:
         const auto& t = FinnThemeManager::instance().tokens();
         apply_log_edit_style(linux_log_, t);
         apply_log_edit_style(android_log_, t);
+        apply_log_edit_style(macos_log_, t);
         apply_log_edit_style(updates_log_, t);
         apply_log_edit_style(finnapp_log_, t);
     }
@@ -364,6 +400,7 @@ private:
             stack_->setCurrentIndex(2);
             if (!flathub_loaded_) refreshFlathubCatalog();
         } else if (id == QLatin1String("windows")) {
+            last_list_page_ = QStringLiteral("windows");
             page_title_->setText(QStringLiteral("Windows (Wine)"));
             refreshWindowsPage();
             stack_->setCurrentIndex(3);
@@ -371,6 +408,11 @@ private:
             page_title_->setText(QStringLiteral("Android"));
             refreshAndroidPage();
             stack_->setCurrentIndex(4);
+        } else if (id == QLatin1String("macos")) {
+            last_list_page_ = QStringLiteral("macos");
+            page_title_->setText(QStringLiteral("macOS"));
+            refreshMacosPage();
+            stack_->setCurrentIndex(8);
         } else if (id == QLatin1String("updates")) {
             page_title_->setText(QStringLiteral("Installed & Updates"));
             refreshUpdatesList();
@@ -396,6 +438,7 @@ private:
         populateAppsGrid(currentSearchQuery());
         refreshWindowsPage();
         refreshAndroidPage();
+        refreshMacosPage();
         refreshUpdatesList();
     }
 
@@ -698,8 +741,23 @@ private:
             if (id.isEmpty()) return;
             installFlatpakApp(id, id);
         });
+        auto* install_file_btn = new FinnButton(
+            QStringLiteral("Install File..."), FinnButton::Variant::Secondary,
+            QStringLiteral("folder"), page);
+        install_file_btn->setFixedHeight(28);
+        install_file_btn->setToolTip(
+            QStringLiteral("Install a local .flatpakref, .flatpak bundle, or .flatpakrepo file"));
+        install_file_btn->setAccessibleName(QStringLiteral("Install Flatpak file"));
+        install_file_btn->setEnabled(has_flatpak);
+        connect(install_file_btn, &QAbstractButton::clicked, this, [this]() {
+            const QString file = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select Flatpak File"), QDir::homePath(),
+                QStringLiteral("Flatpak Files (*.flatpakref *.flatpak *.flatpakrepo);;All Files (*)"));
+            if (!file.isEmpty()) installFlatpakFile(file);
+        });
         bar->addWidget(flatpak_input_, 1);
         bar->addWidget(install_btn);
+        bar->addWidget(install_file_btn);
         root->addLayout(bar);
 
         flathub_grid_ = new QGridLayout();
@@ -729,6 +787,26 @@ private:
                           {QStringLiteral("install"), QStringLiteral("-y"),
                            QStringLiteral("--user"), QStringLiteral("flathub"), app_id},
                           linux_log_);
+    }
+
+    void installFlatpakFile(const QString& file_path) {
+        const auto plan = finn::compat::build_flatpak_install_plan(file_path.toStdString());
+        if (!plan.ok || plan.argv.empty()) {
+            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Error, 4500);
+            return;
+        }
+        if (linux_log_) {
+            linux_log_->setVisible(true);
+            linux_log_->clear();
+        }
+        QStringList args;
+        for (size_t i = 1; i < plan.argv.size(); ++i) {
+            args << QString::fromStdString(plan.argv[i]);
+        }
+        showToast(QStringLiteral("%1: %2...")
+                      .arg(QString::fromStdString(plan.action_label),
+                           QString::fromStdString(plan.display_name)));
+        runCommandIntoLog(QString::fromStdString(plan.argv[0]), args, linux_log_);
     }
 
     void uninstallFlatpakApp(const QString& app_id, const QString& display_name) {
@@ -937,32 +1015,51 @@ private:
         root->setSpacing(10);
 
         win_status_row_ = new FinnSettingRow(
-            QStringLiteral("Wine Compatibility Layer"),
+            QStringLiteral("Windows Compatibility (Wine / Proton)"),
             QStringLiteral("Checking..."),
             QStringLiteral("view-open-windows"), nullptr, page);
         root->addWidget(win_status_row_);
 
-        auto* pick_exe = new FinnButton(
-            QStringLiteral("Run Windows .exe"), FinnButton::Variant::Primary,
-            QStringLiteral("view-open-windows"), page);
-        connect(pick_exe, &QAbstractButton::clicked, this, [this]() {
+        auto* actions = new QWidget(page);
+        auto* act_lay = new QHBoxLayout(actions);
+        act_lay->setContentsMargins(0, 0, 0, 0);
+        act_lay->setSpacing(6);
+
+        win_install_btn_ = new FinnButton(
+            QStringLiteral("Install / Run .exe"), FinnButton::Variant::Primary,
+            QStringLiteral("download"), actions);
+        win_install_btn_->setFixedHeight(28);
+        connect(win_install_btn_, &QAbstractButton::clicked, this, [this]() {
             const QString exe = QFileDialog::getOpenFileName(
-                this, QStringLiteral("Select Windows Executable"), QDir::homePath(),
+                this, QStringLiteral("Select Windows Installer or Executable"), QDir::homePath(),
                 QStringLiteral("Windows Executables (*.exe *.msi);;All Files (*)"));
-            if (exe.isEmpty()) return;
-            const auto plan = finn::compat::build_wine_launch(exe.toStdString());
-            if (!plan.ok || plan.argv.empty()) {
-                showToast(QString::fromStdString(plan.error), FinnToast::Severity::Error);
-                return;
-            }
-            QStringList args;
-            for (size_t i = 1; i < plan.argv.size(); ++i) {
-                args << QString::fromStdString(plan.argv[i]);
-            }
-            QProcess::startDetached(QString::fromStdString(plan.argv[0]), args);
-            showToast(QStringLiteral("Launched via Wine"));
+            if (!exe.isEmpty()) launchWindowsInstaller(exe);
         });
-        win_status_row_->setTrailingWidget(pick_exe);
+
+        win_add_btn_ = new FinnButton(
+            QStringLiteral("Add to Launcher"), FinnButton::Variant::Secondary,
+            QStringLiteral("plus"), actions);
+        win_add_btn_->setFixedHeight(28);
+        win_add_btn_->setToolTip(
+            QStringLiteral("Register a portable .exe so it appears in All Apps and Home Menu"));
+        connect(win_add_btn_, &QAbstractButton::clicked, this, [this]() {
+            const QString exe = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select Windows Application (.exe)"), QDir::homePath(),
+                QStringLiteral("Windows Executables (*.exe);;All Files (*)"));
+            if (!exe.isEmpty()) registerWindowsExecutable(exe);
+        });
+
+        act_lay->addWidget(win_install_btn_);
+        act_lay->addWidget(win_add_btn_);
+        win_status_row_->setTrailingWidget(actions);
+
+        auto* hint = new FinnLabel(
+            QStringLiteral("Run any .exe or .msi installer to install it into your Windows prefix. "
+                           "Installed Start Menu apps appear automatically in All Apps; use "
+                           "'Add to Launcher' for standalone portable .exe apps."),
+            FinnLabel::Role::Caption, FinnLabel::Tone::Dim, page);
+        hint->setWordWrap(true);
+        root->addWidget(hint);
 
         win_list_layout_ = new QVBoxLayout();
         win_list_layout_->setSpacing(8);
@@ -971,10 +1068,86 @@ private:
         return page;
     }
 
+    void launchWindowsInstaller(const QString& exe) {
+        const auto plan = finn::compat::build_wine_launch(exe.toStdString());
+        if (!plan.ok || plan.argv.empty()) {
+            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Error, 4500);
+            return;
+        }
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (const auto& [k, v] : plan.env) {
+            env.insert(QString::fromStdString(k), QString::fromStdString(v));
+        }
+        QStringList args;
+        for (size_t i = 1; i < plan.argv.size(); ++i) {
+            args << QString::fromStdString(plan.argv[i]);
+        }
+        QProcess proc;
+        proc.setProgram(QString::fromStdString(plan.argv[0]));
+        proc.setArguments(args);
+        proc.setProcessEnvironment(env);
+        if (proc.startDetached()) {
+            showToast(QStringLiteral("Launched %1 via Wine").arg(QFileInfo(exe).fileName()),
+                      FinnToast::Severity::Success);
+        } else {
+            showToast(QStringLiteral("Failed to launch %1").arg(QFileInfo(exe).fileName()),
+                      FinnToast::Severity::Error);
+        }
+    }
+
+    void registerWindowsExecutable(const QString& exe) {
+        const QFileInfo fi(exe);
+        const auto pe = finn::compat::inspect_pe_file(exe.toStdString());
+        if (!pe.valid) {
+            showToast(QStringLiteral("Not a valid Windows PE executable (%1)")
+                          .arg(QString::fromStdString(pe.error)),
+                      FinnToast::Severity::Error, 4500);
+            return;
+        }
+        const QString default_name = fi.completeBaseName();
+        const QString name = FinnDialog::prompt(
+            this, QStringLiteral("Add Windows App"),
+            QStringLiteral("Display name for %1 (%2):")
+                .arg(fi.fileName(),
+                     QString::fromStdString(finn::compat::pe_arch_name(pe.arch))),
+            default_name);
+        if (name.trimmed().isEmpty()) return;
+
+        QString slug = name.trimmed().toLower();
+        slug.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
+        slug.remove(QRegularExpression(QStringLiteral("^-+|-+$")));
+        if (slug.isEmpty()) slug = QStringLiteral("app");
+
+        finn::compat::WindowsAppEntry entry;
+        entry.id = "win:" + slug.toStdString();
+        entry.name = name.trimmed().toStdString();
+        entry.exe_path = fi.absoluteFilePath().toStdString();
+        entry.icon = "windows.svg";
+
+        const std::string conf_path =
+            (QDir::homePath() + QLatin1Char('/') +
+             QString::fromLatin1(finn::kUserWindowsConfRel))
+                .toStdString();
+        std::string err;
+        if (!finn::compat::save_windows_app(conf_path, entry, &err)) {
+            showToast(QString::fromStdString(err), FinnToast::Severity::Error);
+            return;
+        }
+        showToast(QStringLiteral("Added %1 to launcher").arg(name.trimmed()),
+                  FinnToast::Severity::Success);
+        reloadCatalogue();
+    }
+
     void refreshWindowsPage() {
         if (!win_status_row_) return;
         const auto st = finn::compat::probe_wine_runtime();
         win_status_row_->setSubtitle(QString::fromStdString(st.summary));
+        if (win_install_btn_) {
+            win_install_btn_->setEnabled(st.ready);
+            win_install_btn_->setToolTip(
+                st.ready ? QStringLiteral("Run a Windows .exe or .msi installer via Wine")
+                         : QString::fromStdString(st.summary));
+        }
         clear_layout(win_list_layout_);
         const std::string conf_path =
             (QDir::homePath() + QLatin1Char('/') +
@@ -985,24 +1158,345 @@ private:
             win_list_layout_->addWidget(new FinnEmptyState(
                 QStringLiteral("view-open-windows"),
                 QStringLiteral("No registered Windows applications"),
-                QStringLiteral("Use 'Run Windows .exe' above to launch installers or portable apps."),
+                QStringLiteral("Use 'Install / Run .exe' to run installers or 'Add to Launcher' for portable apps."),
                 {}, win_list_layout_->parentWidget()));
             return;
         }
         for (const auto& e : entries) {
+            auto* row_actions = new QWidget(win_list_layout_->parentWidget());
+            auto* rl = new QHBoxLayout(row_actions);
+            rl->setContentsMargins(0, 0, 0, 0);
+            rl->setSpacing(6);
+
             auto* launch = new FinnButton(
-                QStringLiteral("Open"), FinnButton::Variant::Secondary, {},
-                win_list_layout_->parentWidget());
+                QStringLiteral("Open"), FinnButton::Variant::Secondary, {}, row_actions);
+            launch->setFixedHeight(26);
+            launch->setEnabled(st.ready);
             const std::string id = e.id;
+            const QString app_name = QString::fromStdString(e.name);
             connect(launch, &QAbstractButton::clicked, this, [this, id]() {
                 finn::SessionClient client;
                 std::string err;
                 client.launch(id, &err);
-                showToast(err.empty() ? QStringLiteral("Launching Windows app...") : QString::fromStdString(err));
+                showToast(err.empty() ? QStringLiteral("Launching Windows app...")
+                                      : QString::fromStdString(err));
             });
+
+            auto* rm = new FinnButton(
+                QString(), FinnButton::Variant::Ghost, QStringLiteral("trash"), row_actions);
+            rm->setFixedSize(26, 26);
+            rm->setToolTip(QStringLiteral("Remove from Launcher"));
+            connect(rm, &QAbstractButton::clicked, this, [this, id, app_name, conf_path]() {
+                if (!FinnDialog::confirm(
+                        this, QStringLiteral("Remove %1?").arg(app_name),
+                        QStringLiteral("Unregister %1 from the FinnOS launcher? "
+                                       "The original .exe file will not be deleted.")
+                            .arg(app_name),
+                        QStringLiteral("Remove"), true)) {
+                    return;
+                }
+                std::string err;
+                if (finn::compat::remove_windows_app(conf_path, id, &err)) {
+                    showToast(QStringLiteral("Removed %1").arg(app_name));
+                    reloadCatalogue();
+                } else {
+                    showToast(QString::fromStdString(err), FinnToast::Severity::Error);
+                }
+            });
+
+            rl->addWidget(launch);
+            rl->addWidget(rm);
             win_list_layout_->addWidget(new FinnSettingRow(
-                QString::fromStdString(e.name), QString::fromStdString(e.exe_path),
-                QStringLiteral("view-open-windows"), launch, win_list_layout_->parentWidget()));
+                app_name, QString::fromStdString(e.exe_path),
+                QStringLiteral("view-open-windows"), row_actions,
+                win_list_layout_->parentWidget()));
+        }
+    }
+
+    QWidget* buildMacosPage() {
+        auto* page = new QWidget();
+        auto* root = new QVBoxLayout(page);
+        root->setContentsMargins(0, 4, 2, 16);
+        root->setSpacing(10);
+
+        macos_status_row_ = new FinnSettingRow(
+            QStringLiteral("FinnOS macOS Runtime (finn-darwin)"),
+            QStringLiteral("Checking..."),
+            QStringLiteral("laptop"), nullptr, page);
+        root->addWidget(macos_status_row_);
+
+        auto* actions = new QWidget(page);
+        auto* act_lay = new QHBoxLayout(actions);
+        act_lay->setContentsMargins(0, 0, 0, 0);
+        act_lay->setSpacing(6);
+
+        macos_install_btn_ = new FinnButton(
+            QStringLiteral("Install .dmg / .pkg"), FinnButton::Variant::Primary,
+            QStringLiteral("download"), actions);
+        macos_install_btn_->setFixedHeight(28);
+        connect(macos_install_btn_, &QAbstractButton::clicked, this, [this]() {
+            const QString file = QFileDialog::getOpenFileName(
+                this, QStringLiteral("Select macOS Installer (.dmg / .pkg)"), QDir::homePath(),
+                QStringLiteral("macOS Installers (*.dmg *.pkg *.mpkg);;All Files (*)"));
+            if (!file.isEmpty()) inspectMacosTarget(file);
+        });
+
+        macos_run_btn_ = new FinnButton(
+            QStringLiteral("Add / Run .app"), FinnButton::Variant::Secondary,
+            QStringLiteral("laptop"), actions);
+        macos_run_btn_->setFixedHeight(28);
+        connect(macos_run_btn_, &QAbstractButton::clicked, this, [this]() {
+            const QString dir = QFileDialog::getExistingDirectory(
+                this, QStringLiteral("Select macOS .app Bundle"), QDir::homePath());
+            if (!dir.isEmpty()) inspectMacosTarget(dir);
+        });
+
+        act_lay->addWidget(macos_install_btn_);
+        act_lay->addWidget(macos_run_btn_);
+        macos_status_row_->setTrailingWidget(actions);
+
+        macos_detail_row_ = new FinnSettingRow(
+            QStringLiteral("Installer Extractors (.dmg / .pkg)"),
+            QStringLiteral("Checking..."),
+            QStringLiteral("package"), nullptr, page);
+        root->addWidget(macos_detail_row_);
+
+        auto* note = new FinnLabel(
+            QStringLiteral("finn-darwin loads unmodified 64-bit Mach-O binaries with clean-room "
+                           "libSystem, Objective-C 2.0, Foundation, and basic AppKit-on-Qt6 "
+                           "support, plus native .pkg/.dmg/.app installation. Apps requiring "
+                           "SwiftUI, Metal, WebKit, CoreData, or App Store/iCloud report missing "
+                           "frameworks clearly via Diagnose."),
+            FinnLabel::Role::Caption, FinnLabel::Tone::Dim, page);
+        note->setWordWrap(true);
+        root->addWidget(note);
+
+        macos_list_layout_ = new QVBoxLayout();
+        macos_list_layout_->setSpacing(8);
+        root->addLayout(macos_list_layout_);
+
+        macos_log_ = new QPlainTextEdit(page);
+        macos_log_->setReadOnly(true);
+        macos_log_->setMinimumHeight(140);
+        root->addWidget(macos_log_);
+        root->addStretch(1);
+        return page;
+    }
+
+    void refreshMacosPage() {
+        if (!macos_status_row_) return;
+        const auto st = finn::compat::probe_macos_runtime();
+        macos_status_row_->setSubtitle(QString::fromStdString(st.summary));
+        if (macos_run_btn_) {
+            macos_run_btn_->setEnabled(st.gui_ready || st.cli_ready);
+            macos_run_btn_->setToolTip(QString::fromStdString(st.summary));
+        }
+        if (macos_detail_row_) {
+            const QString dmg_str = st.dmg_extractor_installed
+                                        ? QString::fromStdString(st.dmg_extractor_bin)
+                                        : QStringLiteral("native UDIF inspect (install 7z to extract)");
+            const QString pkg_str = st.finn_darwin_installed
+                                        ? QStringLiteral("native XAR+gzip/cpio (finn-darwin)")
+                                        : (st.pkg_extractor_installed
+                                               ? QString::fromStdString(st.pkg_extractor_bin)
+                                               : QStringLiteral("not installed"));
+            macos_detail_row_->setSubtitle(
+                QStringLiteral(".dmg: %1 · .pkg: %2").arg(dmg_str, pkg_str));
+        }
+        if (!macos_list_layout_) return;
+        clear_layout(macos_list_layout_);
+        const auto bundles = finn::compat::discover_macos_bundles();
+        if (bundles.empty()) {
+            macos_list_layout_->addWidget(new FinnEmptyState(
+                QStringLiteral("laptop"),
+                QStringLiteral("No macOS applications installed"),
+                QStringLiteral("Use 'Install .dmg / .pkg' or 'Add / Run .app' above to install macOS apps."),
+                {}, macos_list_layout_->parentWidget()));
+            return;
+        }
+        for (const auto& b : bundles) {
+            auto* row_actions = new QWidget(macos_list_layout_->parentWidget());
+            auto* rl = new QHBoxLayout(row_actions);
+            rl->setContentsMargins(0, 0, 0, 0);
+            rl->setSpacing(6);
+
+            const QString bundle_path = QString::fromStdString(b.bundle_path);
+            const QString app_name = QString::fromStdString(b.name);
+            const std::string app_id = b.id;
+
+            auto* diag_btn = new FinnButton(
+                QStringLiteral("Diagnose"), FinnButton::Variant::Ghost, {}, row_actions);
+            diag_btn->setFixedHeight(26);
+            diag_btn->setEnabled(st.finn_darwin_installed);
+            connect(diag_btn, &QAbstractButton::clicked, this, [this, bundle_path]() {
+                const auto dp = finn::compat::build_macos_diagnose_plan(bundle_path.toStdString());
+                if (!dp.ok || dp.argv.empty()) {
+                    showToast(QString::fromStdString(dp.error), FinnToast::Severity::Warning);
+                    return;
+                }
+                if (macos_log_) macos_log_->clear();
+                QStringList args;
+                for (size_t i = 1; i < dp.argv.size(); ++i) {
+                    args << QString::fromStdString(dp.argv[i]);
+                }
+                runCommandIntoLog(QString::fromStdString(dp.argv[0]), args, macos_log_);
+            });
+
+            auto* open_btn = new FinnButton(
+                QStringLiteral("Open"), FinnButton::Variant::Secondary, {}, row_actions);
+            open_btn->setFixedHeight(26);
+            open_btn->setEnabled(st.gui_ready || st.cli_ready);
+            connect(open_btn, &QAbstractButton::clicked, this, [this, app_id, bundle_path]() {
+                finn::SessionClient client;
+                std::string err;
+                if (client.connect(&err) && client.launch(app_id, &err)) {
+                    showToast(QStringLiteral("Launching via finn-darwin..."));
+                    return;
+                }
+                const auto lp = finn::compat::build_macos_launch_plan(bundle_path.toStdString());
+                if (!lp.ok || lp.argv.empty()) {
+                    showToast(QString::fromStdString(lp.error), FinnToast::Severity::Warning, 4500);
+                    return;
+                }
+                QStringList args;
+                for (size_t i = 1; i < lp.argv.size(); ++i) {
+                    args << QString::fromStdString(lp.argv[i]);
+                }
+                runCommandIntoLog(QString::fromStdString(lp.argv[0]), args, macos_log_);
+            });
+
+            auto* rm_btn = new FinnButton(
+                QString(), FinnButton::Variant::Ghost, QStringLiteral("trash"), row_actions);
+            rm_btn->setFixedSize(26, 26);
+            rm_btn->setToolTip(QStringLiteral("Remove macOS App"));
+            connect(rm_btn, &QAbstractButton::clicked, this, [this, app_name, bundle_path]() {
+                if (!FinnDialog::confirm(
+                        this, QStringLiteral("Remove %1?").arg(app_name),
+                        QStringLiteral("Delete %1 from your FinnOS macOS Applications folder?")
+                            .arg(app_name),
+                        QStringLiteral("Remove"), true)) {
+                    return;
+                }
+                if (QDir(bundle_path).removeRecursively()) {
+                    showToast(QStringLiteral("Removed %1").arg(app_name));
+                    reloadCatalogue();
+                } else {
+                    showToast(QStringLiteral("Failed to remove %1").arg(app_name),
+                              FinnToast::Severity::Error);
+                }
+            });
+
+            rl->addWidget(diag_btn);
+            rl->addWidget(open_btn);
+            rl->addWidget(rm_btn);
+            const QString sub = b.version.empty()
+                                    ? bundle_path
+                                    : QStringLiteral("v%1 · %2")
+                                          .arg(QString::fromStdString(b.version), bundle_path);
+            macos_list_layout_->addWidget(new FinnSettingRow(
+                app_name, sub, QStringLiteral("laptop"), row_actions,
+                macos_list_layout_->parentWidget()));
+        }
+    }
+
+    void inspectMacosTarget(const QString& path) {
+        refreshMacosPage();
+        if (macos_log_) macos_log_->clear();
+        const QFileInfo fi(path);
+        const std::string std_path = path.toStdString();
+        const auto rt = finn::compat::probe_macos_runtime();
+
+        if (fi.isDir() && path.endsWith(QStringLiteral(".app"), Qt::CaseInsensitive)) {
+            const auto app = finn::compat::inspect_macos_app_bundle(std_path);
+            if (app.valid && macos_log_) {
+                macos_log_->appendPlainText(
+                    QStringLiteral("Bundle: %1\nIdentifier: %2\nVersion: %3\nExecutable: %4\nBinary: %5")
+                        .arg(QString::fromStdString(app.name),
+                             app.bundle_id.empty() ? QStringLiteral("-")
+                                                   : QString::fromStdString(app.bundle_id),
+                             app.version.empty() ? QStringLiteral("-")
+                                                 : QString::fromStdString(app.version),
+                             QString::fromStdString(app.executable_name),
+                             QString::fromStdString(finn::compat::macho_arches_summary(app.binary))));
+            }
+            if (rt.finn_darwin_installed) {
+                const auto ip = finn::compat::build_macos_install_plan(std_path);
+                if (ip.ok && !ip.argv.empty() &&
+                    FinnDialog::confirm(
+                        this, QStringLiteral("Install %1?").arg(fi.fileName()),
+                        QStringLiteral("Install %1 into your FinnOS macOS Applications folder "
+                                       "and run a Mach-O compatibility check?")
+                            .arg(fi.fileName()),
+                        QStringLiteral("Install"), false)) {
+                    QStringList args;
+                    for (size_t i = 1; i < ip.argv.size(); ++i) {
+                        args << QString::fromStdString(ip.argv[i]);
+                    }
+                    runCommandIntoLog(QString::fromStdString(ip.argv[0]), args, macos_log_);
+                }
+            }
+            return;
+        }
+
+        const auto inst = finn::compat::inspect_macos_installer(std_path);
+        if (!inst.valid) {
+            if (macos_log_) {
+                macos_log_->appendPlainText(
+                    QStringLiteral("Inspection failed: %1")
+                        .arg(QString::fromStdString(inst.error)));
+            }
+            showToast(QString::fromStdString(inst.error), FinnToast::Severity::Warning);
+            return;
+        }
+
+        if (macos_log_) {
+            macos_log_->appendPlainText(
+                QStringLiteral("File: %1\nFormat: %2\nSize: %3 bytes")
+                    .arg(fi.fileName(),
+                         QString::fromStdString(inst.format_detail))
+                    .arg(fi.size()));
+        }
+
+        if (rt.finn_darwin_installed) {
+            const auto ip = finn::compat::build_macos_install_plan(std_path);
+            if (ip.ok && !ip.argv.empty() &&
+                FinnDialog::confirm(
+                    this, QStringLiteral("Install %1?").arg(fi.fileName()),
+                    QStringLiteral("Unpack and install macOS apps from %1 via finn-darwin?")
+                        .arg(fi.fileName()),
+                    QStringLiteral("Install"), false)) {
+                QStringList args;
+                for (size_t i = 1; i < ip.argv.size(); ++i) {
+                    args << QString::fromStdString(ip.argv[i]);
+                }
+                runCommandIntoLog(QString::fromStdString(ip.argv[0]), args, macos_log_);
+            }
+            return;
+        }
+
+        const QString dest =
+            QDir::homePath() + QStringLiteral("/.local/share/finn/macos/") + fi.completeBaseName();
+        const auto plan = finn::compat::build_macos_extract_plan(std_path, dest.toStdString());
+        if (!plan.ok || plan.argv.empty()) {
+            if (macos_log_) {
+                macos_log_->appendPlainText(
+                    QStringLiteral("\nExtraction unavailable: %1")
+                        .arg(QString::fromStdString(plan.error)));
+            }
+            showToast(QString::fromStdString(plan.error), FinnToast::Severity::Warning, 4500);
+            return;
+        }
+
+        if (FinnDialog::confirm(
+                this, QStringLiteral("Extract %1?").arg(fi.fileName()),
+                QStringLiteral("%1 into %2?").arg(QString::fromStdString(plan.note), dest),
+                QStringLiteral("Extract"), false)) {
+            QDir().mkpath(dest);
+            QStringList args;
+            for (size_t i = 1; i < plan.argv.size(); ++i) {
+                args << QString::fromStdString(plan.argv[i]);
+            }
+            runCommandIntoLog(QString::fromStdString(plan.argv[0]), args, macos_log_);
         }
     }
 
@@ -1482,11 +1976,19 @@ private:
     bool flathub_loaded_ = false;
     QPlainTextEdit* linux_log_ = nullptr;
     FinnSettingRow* win_status_row_ = nullptr;
+    FinnButton* win_install_btn_ = nullptr;
+    FinnButton* win_add_btn_ = nullptr;
     QVBoxLayout* win_list_layout_ = nullptr;
     FinnSettingRow* android_status_row_ = nullptr;
     FinnButton* android_install_btn_ = nullptr;
     QVBoxLayout* android_list_layout_ = nullptr;
     QPlainTextEdit* android_log_ = nullptr;
+    FinnSettingRow* macos_status_row_ = nullptr;
+    FinnSettingRow* macos_detail_row_ = nullptr;
+    FinnButton* macos_install_btn_ = nullptr;
+    FinnButton* macos_run_btn_ = nullptr;
+    QVBoxLayout* macos_list_layout_ = nullptr;
+    QPlainTextEdit* macos_log_ = nullptr;
     QPlainTextEdit* updates_log_ = nullptr;
     FinnButton* updates_check_btn_ = nullptr;
     QPointer<QProcess> updates_pac_proc_;
@@ -1510,17 +2012,22 @@ private:
 
 int main(int argc, char** argv) {
     QString start_page;
+    QString install_target;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
             std::puts("finn-store 0.2.0");
             return 0;
         }
         if (std::strcmp(argv[i], "--help") == 0) {
-            std::puts("Usage: finn-store [--page discover|all|flathub|updates|sdk]");
+            std::puts("Usage: finn-store [--page discover|all|flathub|windows|macos|updates|sdk] [--install <file>]");
             return 0;
         }
         if (std::strcmp(argv[i], "--page") == 0 && i + 1 < argc) {
             start_page = QString::fromUtf8(argv[++i]);
+        } else if (std::strcmp(argv[i], "--install") == 0 && i + 1 < argc) {
+            install_target = QString::fromUtf8(argv[++i]);
+        } else if (argv[i][0] != '-' && install_target.isEmpty()) {
+            install_target = QString::fromUtf8(argv[i]);
         }
     }
     finn::ui::FinnApplication app(argc, argv, QStringLiteral("store"),
@@ -1528,6 +2035,7 @@ int main(int argc, char** argv) {
     StoreWindow w;
     if (!start_page.isEmpty()) w.openPage(start_page);
     w.show();
+    if (!install_target.isEmpty()) w.handleInstallTarget(install_target);
     return app.exec();
 }
 

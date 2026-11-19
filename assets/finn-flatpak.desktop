@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Finn Store Package Installer
+Comment=Install Flatpak (.flatpakref, .flatpak, .flatpakrepo) files in Finn Store
+Exec=/usr/local/bin/finn-store --install %f
+Icon=package
+NoDisplay=true
+Terminal=false
+MimeType=application/vnd.flatpak.ref;application/vnd.flatpak;application/vnd.flatpak.repo;

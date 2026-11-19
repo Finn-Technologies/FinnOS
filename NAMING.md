@@ -46,6 +46,7 @@
 | `finn-installer` | Bare-Metal GUI Installer (disk partitioning, bootloader, base system deployment) |
 | `finn-oobe` | First-Time Setup (`hi`, `How do we talk?`, Wi-Fi, account, appearance, and 6-ring ribbon completion) |
 | `finn-open` | Unified CLI target/file/URL opener (`finn-session` client) |
+| `finn-darwin` | Clean-room macOS compatibility runtime (`Mach-O`, `libSystem`, `libobjc`, `Foundation`, basic `AppKit-on-Qt6`, `.pkg`/`.dmg`/`.app` installer) |
 | `finn-sdk` | Developer CLI: scaffolding, manifest validation, signed `.finnapp` packaging, simulator, build, run, register, check |
 | `finn-update` | OTA A/B update CLI (`status`, `check`, `download`, `apply`, `commit`, `rollback`, `health-check`, `config`) |
 | `libfinnui` | The Qt6 app runtime shared library |
@@ -57,7 +58,8 @@
 | `src/ui` | `libfinnui` and public `<FinnSDK/*>` headers: tokens, theme, spring physics (`spring.hpp`), custom CSD window (`FinnFormFactor`), widgets, LayerShell wrapper |
 | `src/qtplugin` | Custom Qt6 platform theme & widget style plugins (`QT_QPA_PLATFORMTHEME=finn`, `QT_STYLE_OVERRIDE=finn`) |
 | `src/session` | `finn-session`, `SessionClient`, and unified `AppRegistry` |
-| `src/compat` | Linux `.desktop` / Flatpak parser, Windows PE / Wine runner, and Waydroid Android probe (`android_runner`) |
+| `src/compat` | Linux `.desktop` / Flatpak parser & installer, Windows PE / Wine runner, macOS probe (`macos_runner`), and Waydroid Android probe (`android_runner`) |
+| `src/darwin` | `finn-darwin`: clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0 runtime + `objc_msgSend` asm, Foundation, AppKit-on-Qt6 bridge, native `.pkg`/`.dmg`/`.icns` installer |
 | `src/system` | Honest `/proc`, `/sys`, settings readers & async D-Bus/NetworkManager/BlueZ/PipeWire/logind controllers |
 | `src/shell` | `finn-shell` responsive desktop/tablet/phone overlay (`dock`, `popovers`, `notifications`, `LockScreenWindow`) |
 | `src/ota` | `finn-update` and `finn_ota`: Ed25519 manifest verification, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot switching |

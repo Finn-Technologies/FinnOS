@@ -39,8 +39,9 @@ handles DRM/power/brightness actuators, `finn-comp` can also drop root via `seat
 - Compositor GPU shader backdrop blur behind translucent `layer-shell` and glass surfaces.
 - Multi-monitor arrangement editor and mixed per-output fractional/integer scaling.
 - Wayland IME text input (`zwp_text_input_v3`), clipboard history UI, and runtime accessibility enforcement (`text_scale` across fonts, `color_filter` compositor shader, XKB `sticky_keys`/`filter_keys`, packaged `orca`, and `QTranslator` localization).
-- Verified boot hardening (Secure Boot, `dm-verity`, TPM2 sealing) and live hosted `repo.finnos.org` + real-hardware/VM A/B slot reboot rollback verification.
-- Cellular modem/telephony stack (`ModemManager`) for phone hardware.
+- **Verified boot hardening** (Secure Boot, `dm-verity`, TPM2 sealing) and live hosted `repo.finnos.org` + real-hardware/VM A/B slot reboot rollback verification.
+- **Cellular modem/telephony stack** (`ModemManager`) for phone hardware.
+- **Expanded macOS framework coverage (`finn-darwin`)**: `src/darwin/` provides the clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0 runtime, Foundation, basic AppKit-on-Qt6 bridge, and native `.pkg`/`.dmg`/`.icns` installer; full coverage of Swift runtime, SwiftUI, Metal-over-Vulkan/OpenGL, CoreGraphics/CoreText, QuartzCore, WebKit, and CoreData remains iterative multi-framework work.
 
 ## What "done" means
 

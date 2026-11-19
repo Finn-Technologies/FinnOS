@@ -4,7 +4,7 @@ DESTDIR   ?=
 VM        ?= finn@10.211.55.6
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 
-.PHONY: all configure ui qtplugin compositor session shell apps tools \
+.PHONY: all configure ui qtplugin compositor session darwin shell apps tools \
         test test-unit check lint install clean deploy help
 
 all: compositor session configure
@@ -27,6 +27,9 @@ compositor:
 
 session:
 	$(MAKE) -C src/session
+
+darwin:
+	$(MAKE) -C src/darwin
 
 shell: configure
 	cmake --build $(BUILD_DIR) --target finn-shell
@@ -82,6 +85,8 @@ install: all
 	install -m755 tools/finn-win $(DESTDIR)$(PREFIX)/bin/finn-win
 	install -d $(DESTDIR)$(PREFIX)/share/applications
 	install -m644 assets/finn-win.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-win.desktop
+	install -m644 assets/finn-flatpak.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-flatpak.desktop
+	install -m644 assets/finn-darwin.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-darwin.desktop
 	install -m755 src/ota/finn-update $(DESTDIR)$(PREFIX)/bin/finn-update
 	install -d $(DESTDIR)$(PREFIX)/bin/finn_ota
 	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/
@@ -100,6 +105,7 @@ install: all
 	ln -sf $(PREFIX)/bin/finn-open $(DESTDIR)/usr/bin/finn-open
 	ln -sf $(PREFIX)/bin/finn-cursors $(DESTDIR)/usr/bin/finn-cursors
 	ln -sf $(PREFIX)/bin/finn-win $(DESTDIR)/usr/bin/finn-win
+	ln -sf $(PREFIX)/bin/finn-darwin $(DESTDIR)/usr/bin/finn-darwin
 	@if [ -z "$(DESTDIR)" ] && [ -w /etc/ld.so.conf.d ]; then \
 		printf '%s\n' "$(PREFIX)/lib" > /etc/ld.so.conf.d/finn.conf; \
 		ldconfig 2>/dev/null || true; \
@@ -112,6 +118,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 	$(MAKE) -C src/comp clean
 	$(MAKE) -C src/session clean
+	$(MAKE) -C src/darwin clean
 	$(MAKE) -C tests/unit clean
 	rm -rf tests/__pycache__ tools/__pycache__
 

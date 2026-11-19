@@ -5,6 +5,7 @@
 /src/comp/finn-comp
 /src/comp/build/
 /src/session/finn-session
+/src/darwin/finn-darwin
 /src/shell/finn-shell
 /src/ui/libfinnui.a
 /src/ui/build/
@@ -25,6 +26,7 @@
 /tests/unit/test_session_client
 /tests/unit/test_search
 /tests/unit/test_compat
+/tests/unit/test_darwin
 /tests/unit/test_sys_files
 /tests/unit/test_spring
 /tests/unit/test_ota

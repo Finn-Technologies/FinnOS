@@ -170,6 +170,8 @@ QString source_label(finn::AppSource src) {
             return QStringLiteral("Linux");
         case finn::AppSource::kWindows:
             return QStringLiteral("Windows");
+        case finn::AppSource::kMacos:
+            return QStringLiteral("macOS");
         case finn::AppSource::kUnknown:
             return QStringLiteral("App");
     }
