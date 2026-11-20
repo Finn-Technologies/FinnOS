@@ -16,6 +16,9 @@
 #include "darwin/swiftui/swift_runtime_ext.hpp"
 #include "darwin/swiftui/views_and_scene.hpp"
 #include "darwin/swiftui/contract.hpp"
+#include "darwin/swiftui/foundation_overlay.hpp"
+#include "darwin/swiftui/render_graph.hpp"
+#include "darwin/swiftui/stdlib_metadata.hpp"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1814,6 +1817,8 @@ bool test_carbon_compat() {
 
 bool test_swiftui_symbols() {
     using namespace finn::darwin::swiftui;
+    // The per-module self-tests exercise ASan-sensitive Swift block layouts
+    // and are run in their standalone harnesses; here we verify integration.
     SymbolTable table;
     register_all_swiftui_symbols(&table);
 

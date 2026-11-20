@@ -4,7 +4,7 @@ CXXFLAGS += -I..
 LDFLAGS  += -rdynamic
 LDLIBS   += -lz -lpthread -ldl
 
-CXX_SRCS = main.cpp zip_reader.cpp arkui_bridge.cpp arkui_declarative.cpp \
+CXX_SRCS = main.cpp zip_reader.cpp arkui_bridge.cpp arkui_declarative.cpp arkui_bytecode_ui.cpp \
            abc_runtime.cpp ohos_installer.cpp
 HDRS     = ohos_format.hpp zip_reader.hpp arkui_bridge.hpp \
            abc_runtime.hpp ohos_installer.hpp

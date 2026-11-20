@@ -55,8 +55,17 @@ RuntimeState& rt() {
 
 thread_local std::vector<std::vector<ObjcId>> g_autorelease_pools;
 
+static bool guest_pointer_is_mapped(std::uintptr_t value);
+
 ObjcHeapHeader* heap_header_of(ObjcId obj) {
     if (!obj) return nullptr;
+    const auto addr = reinterpret_cast<std::uintptr_t>(obj);
+    // Guest code may release a pointer that is not one of our heap objects.
+    // Validate both the object and its header page before reading the magic.
+    if (!guest_pointer_is_mapped(addr) ||
+        !guest_pointer_is_mapped(addr - sizeof(ObjcHeapHeader))) {
+        return nullptr;
+    }
     auto* hdr = reinterpret_cast<ObjcHeapHeader*>(
         reinterpret_cast<std::uint8_t*>(obj) - sizeof(ObjcHeapHeader));
     if (hdr->magic != kObjcHeapMagic) return nullptr;
@@ -152,8 +161,20 @@ void import_mach_method_list(ObjcClass* target_cls, std::uintptr_t list_addr) {
     }
 }
 
+// A guest Mach-O's ObjC sections can contain pointers whose target was not
+// mapped (e.g. a class reference into a weak-framework dylib we don't load).
+// Never dereference such a pointer: validate that its page is mapped first.
+static bool guest_pointer_is_mapped(std::uintptr_t value) {
+    if (value == 0) return false;
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return false;
+    const std::uintptr_t page = value & ~static_cast<std::uintptr_t>(page_size - 1);
+    return ::msync(reinterpret_cast<void*>(page),
+                   static_cast<std::size_t>(page_size), MS_ASYNC) == 0;
+}
+
 ObjcClass* lookup_or_realize_mach_class(std::uintptr_t raw_ptr) {
-    if (raw_ptr == 0) return nullptr;
+    if (raw_ptr == 0 || !guest_pointer_is_mapped(raw_ptr)) return nullptr;
     auto& state = rt();
 
     // Already a FinnOS ObjcClass*?
@@ -167,9 +188,12 @@ ObjcClass* lookup_or_realize_mach_class(std::uintptr_t raw_ptr) {
 
     const auto* mc = reinterpret_cast<const MachObjcClass*>(raw_ptr);
     const std::uintptr_t ro_ptr = mc->data_bits & ~static_cast<std::uintptr_t>(0x7u);
-    if (ro_ptr == 0) return nullptr;
+    if (ro_ptr == 0 || !guest_pointer_is_mapped(ro_ptr)) return nullptr;
     const auto* ro = reinterpret_cast<const MachObjcClassRo*>(ro_ptr);
-    const char* cname = ro->name ? ro->name : "UnnamedMachClass";
+    const char* cname = (ro->name != 0 &&
+                         guest_pointer_is_mapped(reinterpret_cast<std::uintptr_t>(ro->name)))
+                            ? reinterpret_cast<const char*>(ro->name)
+                            : "UnnamedMachClass";
 
     ObjcClass* super_cls = nullptr;
     if (mc->superclass != 0) {

@@ -10,6 +10,7 @@
 #include "views_and_scene.hpp"
 #include "foundation_overlay.hpp"
 #include "render_graph.hpp"
+#include "stdlib_metadata.hpp"
 
 namespace finn::darwin::swiftui {
 
@@ -29,6 +30,7 @@ void register_all_swiftui_symbols(SymbolTable* table) {
     register_containers(table);
     register_swift_foundation_overlay(table);
     register_swiftui_render_graph(table);
+    register_swift_stdlib_metadata(table);
 }
 
 bool swiftui_available() { return !all_metadata().empty(); }

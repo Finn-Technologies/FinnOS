@@ -5,6 +5,7 @@
 #include "darwin/appkit_bridge.hpp"
 #include "darwin/carbon_compat.hpp"
 #include "darwin/late_frameworks.hpp"
+#include "darwin/workspace_shims.hpp"
 #include "darwin/compat_symbols.hpp"
 #include "darwin/coregraphics.hpp"
 #include "darwin/foundation.hpp"
@@ -596,7 +597,25 @@ std::vector<LoadedMachoImage*>& loaded_images() {
 }
 
 void shim_missing_symbol_trap() {
-    std::fprintf(stderr, "finn-darwin: called an unimplemented macOS symbol (aborting cleanly)\n");
+    // Name the guest call site so the exact missing API can be implemented
+    // instead of leaving a generic "unimplemented symbol" message.
+    const auto pc = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0));
+    std::string caller = "unknown guest call site";
+    std::uintptr_t best = 0;
+    for (const LoadedMachoImage* img : loaded_images()) {
+        for (const auto& [name, addr] : img->symbols) {
+            const auto a = reinterpret_cast<std::uintptr_t>(addr);
+            if (a <= pc && pc - a < 4096 && a >= best) {
+                best = a;
+                caller = name;
+            }
+        }
+    }
+    std::fprintf(stderr,
+                 "finn-darwin: called an unimplemented macOS symbol from %s "
+                 "(pc=0x%llx, nearest=0x%llx, aborting cleanly)\n",
+                 caller.c_str(), static_cast<unsigned long long>(pc),
+                 static_cast<unsigned long long>(best));
     std::exit(78);
 }
 
@@ -699,6 +718,7 @@ void MachoLoader::initialize_runtime(int argc, char** argv, const std::string& t
         register_compat_symbols(&symbols_);
         register_carbon_symbols(&symbols_);
         register_late_framework_symbols(&symbols_);
+        register_workspace_shims(&symbols_);
         finn::darwin::swiftui::register_all_swiftui_symbols(&symbols_);
         runtime_initialized_ = true;
     } else {

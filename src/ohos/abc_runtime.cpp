@@ -1,5 +1,6 @@
 #include "ohos/abc_runtime.hpp"
 #include "ohos/arkui_declarative.hpp"
+#include "ohos/arkui_bytecode_ui.hpp"
 
 #include <dlfcn.h>
 #include <zlib.h>
@@ -2661,8 +2662,13 @@ AbilityRunReport AbcRuntime::run_ability_lifecycle(const OhosModuleManifest& man
     // If package provided a declarative UI page but .abc didn't invoke loadContent, mount it now.
     if (!content_loaded && arkui_) {
         std::string declarative_error;
-        const bool declarative = build_declarative_ui_from_hap(
+        bool declarative = build_arkui_from_panda_bytecode(
             app_root_dir_, arkui_, &declarative_error);
+        if (!declarative) {
+            declarative_error.clear();
+            declarative = build_declarative_ui_from_hap(
+                app_root_dir_, arkui_, &declarative_error);
+        }
         if (declarative) {
             content_loaded = true;
             report.lifecycle_phases.push_back("declarative-ui-from-package");

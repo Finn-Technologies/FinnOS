@@ -8,6 +8,7 @@ add_executable(finn-ohos
     main.cpp
     zip_reader.cpp
     arkui_declarative.cpp
+    arkui_bytecode_ui.cpp
     arkui_bridge.cpp
     abc_runtime.cpp
     ohos_installer.cpp
