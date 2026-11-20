@@ -33,6 +33,8 @@ void register_state_and_binding(SymbolTable* table);
 void register_combine(SymbolTable* table);
 void register_modifiers(SymbolTable* table);
 void register_containers(SymbolTable* table);
+void register_swift_foundation_overlay(SymbolTable* table);
+void register_swiftui_render_graph(SymbolTable* table);
 
 // Calls every module above. Defined in registry.cpp (integration owner).
 void register_all_swiftui_symbols(SymbolTable* table);

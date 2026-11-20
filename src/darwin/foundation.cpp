@@ -2563,6 +2563,13 @@ ObjcId nsurl_byAppendingPathComponent(ObjcId self, ObjcSel, ObjcId comp_obj) {
     return make_nsurl_parsed(base, false);
 }
 
+ObjcId nsurl_appendingPathComponentIsDirectory(ObjcId self, ObjcSel,
+                                                ObjcId component, bool is_dir) {
+    ObjcId result = nsurl_byAppendingPathComponent(self, nullptr, component);
+    (void)is_dir;
+    return result;
+}
+
 ObjcId nsurl_byDeletingLastPathComponent(ObjcId self, ObjcSel) {
     const auto* u = reinterpret_cast<const NSURLObj*>(self);
     if (!u) return nullptr;
@@ -2655,6 +2662,56 @@ ObjcId nsbundle_infoDictionary(ObjcId self, ObjcSel) {
 ObjcId nsbundle_objectForInfoKey(ObjcId self, ObjcSel, ObjcId key) {
     const auto* b = reinterpret_cast<const NSBundleObj*>(self);
     return (b && b->info_dict) ? nsdict_objectForKey(b->info_dict, nullptr, key) : nullptr;
+}
+
+// Real Foundation semantics: look the key up in the bundle's .strings table,
+// fall back to the supplied value, then to the key itself. This is not a
+// fake translation — if no table exists the caller gets its own key back.
+ObjcId nsbundle_localizedStringForKey(ObjcId self, ObjcSel, ObjcId key,
+                                      ObjcId value, ObjcId table) {
+    const std::string k = nsstring_to_utf8(key);
+    const std::string fallback = value ? nsstring_to_utf8(value) : std::string();
+    const std::string table_name = table ? nsstring_to_utf8(table) : std::string();
+    const auto* b = reinterpret_cast<const NSBundleObj*>(self);
+    if (b && b->path && !k.empty()) {
+        const std::string base = table_name.empty() ? "Localizable" : table_name;
+        // Try each preferred language from Info.plist, then the base table.
+        std::vector<std::string> languages{"Base"};
+        if (b->info_dict) {
+            ObjcId locs = nsdict_objectForKey(b->info_dict, nullptr,
+                                              nsstring_from_utf8("CFBundleLocalizations"));
+            if (locs) {
+                const std::uint32_t n = nsarray_count(locs, nullptr);
+                for (std::uint32_t i = 0; i < n; ++i) {
+                    ObjcId lang = nsarray_objectAtIndex(locs, nullptr, i);
+                    if (lang) languages.push_back(nsstring_to_utf8(lang));
+                }
+            }
+        }
+        for (const auto& lang : languages) {
+            const std::string path = *b->path + "/Contents/Resources/" + lang +
+                                     ".lproj/" + base + ".strings";
+            std::ifstream in(path);
+            if (!in) continue;
+            std::string line;
+            while (std::getline(in, line)) {
+                const auto q1 = line.find('"');
+                if (q1 == std::string::npos) continue;
+                const auto q2 = line.find('"', q1 + 1);
+                if (q2 == std::string::npos) continue;
+                const auto eq = line.find('=', q2 + 1);
+                if (eq == std::string::npos) continue;
+                const auto q3 = line.find('"', eq + 1);
+                if (q3 == std::string::npos) continue;
+                const auto q4 = line.find('"', q3 + 1);
+                if (q4 == std::string::npos) continue;
+                if (line.substr(q1 + 1, q2 - q1 - 1) == k) {
+                    return nsstring_from_utf8(line.substr(q3 + 1, q4 - q3 - 1));
+                }
+            }
+        }
+    }
+    return nsstring_from_utf8(fallback.empty() ? k : fallback);
 }
 
 // --- NSProcessInfo ---
@@ -2843,6 +2900,47 @@ ObjcId nsfilemanager_tempDirectory(ObjcId, ObjcSel) {
     std::error_code ec;
     const fs::path tmp = fs::temp_directory_path(ec);
     return finn_objc_autorelease(make_nsurl_parsed(tmp.empty() ? "/tmp" : tmp.string(), true));
+}
+
+// NSSearchPathDirectory subset used by real macOS apps. Return real paths
+// from the FinnOS user's home; never invent directories that do not exist.
+signed char nsfilemanager_createDirectoryAtURL(ObjcId, ObjcSel, ObjcId url,
+                                               signed char intermediates,
+                                               ObjcId attributes, ObjcId* err_out) {
+    (void)attributes;
+    if (!url) return 0;
+    const std::string path = nsstring_to_utf8(nsurl_path(url, nullptr));
+    if (path.empty()) return 0;
+    std::error_code ec;
+    if (intermediates) fs::create_directories(path, ec);
+    else fs::create_directory(path, ec);
+    if (ec) {
+        set_out_error(err_out, "NSCocoaErrorDomain", 512,
+                      "Failed to create directory " + path + ": " + ec.message());
+    }
+    return ec ? 0 : 1;
+}
+
+ObjcId nsfilemanager_urlsForDirectory(ObjcId, ObjcSel, std::intptr_t directory,
+                                      std::uint64_t domain_mask) {
+    (void)domain_mask;
+    const char* home = std::getenv("HOME");
+    const fs::path base = home ? fs::path(home) : fs::path("/home/finn");
+    fs::path dir;
+    switch (directory) {
+        case 5:  dir = base / ".local/share"; break;       // NSLibraryDirectory
+        case 13: dir = base / ".cache"; break;              // NSCachesDirectory
+        case 14: dir = base / ".local/share"; break;        // NSApplicationSupportDirectory
+        case 19: dir = base / ".config"; break;             // NSPreferencesDirectory
+        case 9:  dir = base / "Documents"; break;           // NSDocumentDirectory
+        case 17: dir = base / "Applications"; break;        // NSApplicationDirectory
+        default: dir = base; break;
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    ObjcId arr = make_nsarray(false);
+    nsarray_addObject(arr, nullptr, make_nsurl_parsed(dir.string(), true));
+    return finn_objc_autorelease(arr);
 }
 
 // --- NSUserDefaults (persisted to ~/.local/share/finn/macos/defaults/<bundle>.conf) ---
@@ -3900,6 +3998,7 @@ void init_foundation(const std::string& bundle_path) {
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("lastPathComponent"), to_imp(&nsurl_lastPathComponent));
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("pathExtension"), to_imp(&nsurl_pathExtension));
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("URLByAppendingPathComponent:"), to_imp(&nsurl_byAppendingPathComponent));
+    finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("URLByAppendingPathComponent:isDirectory:"), to_imp(&nsurl_appendingPathComponentIsDirectory));
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("URLByDeletingLastPathComponent"), to_imp(&nsurl_byDeletingLastPathComponent));
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("isFileURL"), to_imp(&nsurl_isFileURL));
     finn_class_addMethod(g_cls_nsurl, finn_sel_registerName("description"), to_imp(&nsurl_absoluteString));
@@ -3912,6 +4011,7 @@ void init_foundation(const std::string& bundle_path) {
     finn_class_addMethod(g_cls_nsbundle, finn_sel_registerName("bundleIdentifier"), to_imp(&nsbundle_bundleIdentifier));
     finn_class_addMethod(g_cls_nsbundle, finn_sel_registerName("infoDictionary"), to_imp(&nsbundle_infoDictionary));
     finn_class_addMethod(g_cls_nsbundle, finn_sel_registerName("objectForInfoDictionaryKey:"), to_imp(&nsbundle_objectForInfoKey));
+    finn_class_addMethod(g_cls_nsbundle, finn_sel_registerName("localizedStringForKey:value:table:"), to_imp(&nsbundle_localizedStringForKey));
     finn_objc_registerClassPair(g_cls_nsbundle);
 
     // NSProcessInfo
@@ -3941,6 +4041,8 @@ void init_foundation(const std::string& bundle_path) {
     finn_class_addMethod(g_cls_nsfilemanager, finn_sel_registerName("moveItemAtPath:toPath:error:"), to_imp(&nsfilemanager_moveItem));
     finn_class_addMethod(g_cls_nsfilemanager, finn_sel_registerName("homeDirectoryForCurrentUser"), to_imp(&nsfilemanager_homeDirectory));
     finn_class_addMethod(g_cls_nsfilemanager, finn_sel_registerName("temporaryDirectory"), to_imp(&nsfilemanager_tempDirectory));
+    finn_class_addMethod(g_cls_nsfilemanager, finn_sel_registerName("URLsForDirectory:inDomains:"), to_imp(&nsfilemanager_urlsForDirectory));
+    finn_class_addMethod(g_cls_nsfilemanager, finn_sel_registerName("createDirectoryAtURL:withIntermediateDirectories:attributes:error:"), to_imp(&nsfilemanager_createDirectoryAtURL));
     finn_objc_registerClassPair(g_cls_nsfilemanager);
 
     // NSUserDefaults

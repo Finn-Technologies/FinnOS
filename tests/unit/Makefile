@@ -33,9 +33,13 @@ DARWIN_SRCS   = ../../src/darwin/plist.cpp \
                 ../../src/darwin/swiftui/views_and_scene.cpp \
                 ../../src/darwin/swiftui/state_and_combine.cpp \
                 ../../src/darwin/swiftui/registry.cpp \
+                ../../src/darwin/swiftui/foundation_overlay.cpp \
+                ../../src/darwin/swiftui/render_graph.cpp \
+                ../../src/darwin/late_frameworks.cpp \
                 ../../src/compat/desktop_entry.cpp
 OHOS_SRCS     = ../../src/ohos/zip_reader.cpp \
                 ../../src/ohos/arkui_bridge.cpp \
+                ../../src/ohos/arkui_declarative.cpp \
                 ../../src/ohos/abc_runtime.cpp \
                 ../../src/ohos/ohos_installer.cpp \
                 ../../src/compat/ohos_runner.cpp \

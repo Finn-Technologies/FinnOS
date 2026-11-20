@@ -11,6 +11,8 @@ CXX_SRCS = main.cpp plist.cpp framework_coverage.cpp icns.cpp installer.cpp \
            swiftui/abi_metadata.cpp swiftui/swift_runtime_ext.cpp \
            swiftui/views_and_scene.cpp swiftui/state_and_combine.cpp \
            swiftui/registry.cpp \
+           swiftui/foundation_overlay.cpp swiftui/render_graph.cpp \
+           late_frameworks.cpp \
            ../compat/desktop_entry.cpp
 ASM_SRCS = objc_msgsend.S
 HDRS     = macho_format.hpp plist.hpp framework_coverage.hpp icns.hpp installer.hpp \

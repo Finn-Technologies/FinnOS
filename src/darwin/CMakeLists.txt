@@ -25,6 +25,9 @@ add_executable(finn-darwin
     swiftui/views_and_scene.cpp
     swiftui/state_and_combine.cpp
     swiftui/registry.cpp
+    swiftui/foundation_overlay.cpp
+    swiftui/render_graph.cpp
+    late_frameworks.cpp
     ../compat/desktop_entry.cpp
 )
 

@@ -4,6 +4,7 @@
 
 #include "darwin/appkit_bridge.hpp"
 #include "darwin/carbon_compat.hpp"
+#include "darwin/late_frameworks.hpp"
 #include "darwin/compat_symbols.hpp"
 #include "darwin/coregraphics.hpp"
 #include "darwin/foundation.hpp"
@@ -697,6 +698,7 @@ void MachoLoader::initialize_runtime(int argc, char** argv, const std::string& t
         register_swift_runtime_symbols(&symbols_);
         register_compat_symbols(&symbols_);
         register_carbon_symbols(&symbols_);
+        register_late_framework_symbols(&symbols_);
         finn::darwin::swiftui::register_all_swiftui_symbols(&symbols_);
         runtime_initialized_ = true;
     } else {

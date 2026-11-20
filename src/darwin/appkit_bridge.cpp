@@ -132,6 +132,7 @@ struct NSAppObj {
     ObjcObject base;
     ObjcId delegate;
     ObjcId main_menu;
+    ObjcId appearance;
     std::vector<ObjcId>* windows;
 };
 
@@ -166,6 +167,10 @@ struct NSAlertObj {
     ObjcObject base;
     std::string* message;
     std::string* info;
+    std::vector<std::string>* buttons;
+    ObjcId icon;
+    ObjcId delegate;
+    bool shows_help;
 };
 
 struct NSColorObj {
@@ -526,8 +531,14 @@ void nsalert_dtor(ObjcId obj) {
     auto* a = reinterpret_cast<NSAlertObj*>(obj);
     delete a->message;
     delete a->info;
+    delete a->buttons;
     a->message = nullptr;
     a->info = nullptr;
+    a->buttons = nullptr;
+    finn_objc_release(a->icon);
+    finn_objc_release(a->delegate);
+    a->icon = nullptr;
+    a->delegate = nullptr;
 }
 
 void nsfont_dtor(ObjcId obj) {
@@ -593,6 +604,11 @@ ObjcId nsapp_delegate(ObjcId self, ObjcSel) {
     return reinterpret_cast<NSAppObj*>(self)->delegate;
 }
 signed char nsapp_setActivationPolicy(ObjcId, ObjcSel, std::intptr_t) { return 1; }
+// NSAppearance is recorded but not applied: FinnOS owns the window theme via
+// its live token manager. We do not pretend a guest can override the desktop.
+void nsapp_setAppearance(ObjcId self, ObjcSel, ObjcId appearance) {
+    reinterpret_cast<NSAppObj*>(self)->appearance = appearance;
+}
 void nsapp_activateIgnoringOtherApps(ObjcId, ObjcSel, signed char) {}
 void nsapp_setMainMenu(ObjcId self, ObjcSel, ObjcId menu) {
     auto* app = reinterpret_cast<NSAppObj*>(self);
@@ -1875,15 +1891,65 @@ void nsalert_setInformativeText(ObjcId self, ObjcSel, ObjcId txt) {
     if (!a->info) a->info = new std::string();
     *a->info = nsstring_to_utf8(txt);
 }
+void nsalert_setIcon(ObjcId self, ObjcSel, ObjcId icon) {
+    auto* a = reinterpret_cast<NSAlertObj*>(self);
+    if (icon != a->icon) {
+        finn_objc_retain(icon);
+        finn_objc_release(a->icon);
+        a->icon = icon;
+    }
+}
+void nsalert_setShowsHelp(ObjcId self, ObjcSel, bool value) {
+    reinterpret_cast<NSAlertObj*>(self)->shows_help = value;
+}
+void nsalert_setDelegate(ObjcId self, ObjcSel, ObjcId delegate) {
+    auto* a = reinterpret_cast<NSAlertObj*>(self);
+    if (delegate != a->delegate) {
+        finn_objc_retain(delegate);
+        finn_objc_release(a->delegate);
+        a->delegate = delegate;
+    }
+}
+// NSAlert's addButtonWithTitle: returns the NSButton it created, not an index.
+// Returning an integer here makes callers dereference a bogus object pointer.
+ObjcId nsalert_addButtonWithTitle(ObjcId self, ObjcSel, ObjcId title) {
+    auto* a = reinterpret_cast<NSAlertObj*>(self);
+    if (!a->buttons) a->buttons = new std::vector<std::string>();
+    a->buttons->push_back(nsstring_to_utf8(title));
+    ObjcId button = finn_objc_alloc_object(g_cls_nsbutton, sizeof(NSViewObj));
+    nsbutton_initWithFrame(button, nullptr, {{0, 0}, {120, 32}});
+    objc_send_name<void>(button, "setTitle:", title);
+    return button;
+}
 std::intptr_t nsalert_runModal(ObjcId self, ObjcSel) {
     auto* a = reinterpret_cast<NSAlertObj*>(self);
     const std::string msg = a->message ? *a->message : "";
     const std::string info = a->info ? *a->info : "";
+    const bool help = a->shows_help;
+    (void)help;
 #ifdef FINN_DARWIN_QT6
     (void)ensure_qapp();
     QMessageBox box;
     box.setText(QString::fromStdString(msg));
     if (!info.empty()) box.setInformativeText(QString::fromStdString(info));
+    if (a->buttons && !a->buttons->empty()) {
+        // Qt's QMessageBox has a fixed button set; map the first guest button
+        // onto OK and report the rest as additional informational text rather
+        // than pretending the extra buttons exist.
+        box.setStandardButtons(QMessageBox::Ok);
+        box.button(QMessageBox::Ok)->setText(
+            QString::fromStdString(a->buttons->front()));
+        if (a->buttons->size() > 1) {
+            QString extra;
+            for (std::size_t i = 1; i < a->buttons->size(); ++i) {
+                if (i > 1) extra += QStringLiteral(" | ");
+                extra += QString::fromStdString((*a->buttons)[i]);
+            }
+            if (!info.empty()) box.setInformativeText(
+                QString::fromStdString(info) + QStringLiteral("\n") + extra);
+            else box.setInformativeText(extra);
+        }
+    }
     box.exec();
 #else
     std::fprintf(stderr, "NSAlert: %s — %s\n", msg.c_str(), info.c_str());
@@ -1933,6 +1999,7 @@ void init_appkit(int argc, char** argv) {
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("setDelegate:"), to_imp(&nsapp_setDelegate));
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("delegate"), to_imp(&nsapp_delegate));
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("setActivationPolicy:"), to_imp(&nsapp_setActivationPolicy));
+    finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("setAppearance:"), to_imp(&nsapp_setAppearance));
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("activateIgnoringOtherApps:"), to_imp(&nsapp_activateIgnoringOtherApps));
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("setMainMenu:"), to_imp(&nsapp_setMainMenu));
     finn_class_addMethod(g_cls_nsapp, finn_sel_registerName("mainMenu"), to_imp(&nsapp_mainMenu));
@@ -2105,6 +2172,10 @@ void init_appkit(int argc, char** argv) {
     g_cls_nsalert->cpp_destructor = &nsalert_dtor;
     finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("setMessageText:"), to_imp(&nsalert_setMessageText));
     finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("setInformativeText:"), to_imp(&nsalert_setInformativeText));
+    finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("setIcon:"), to_imp(&nsalert_setIcon));
+    finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("setShowsHelp:"), to_imp(&nsalert_setShowsHelp));
+    finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("setDelegate:"), to_imp(&nsalert_setDelegate));
+    finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("addButtonWithTitle:"), to_imp(&nsalert_addButtonWithTitle));
     finn_class_addMethod(g_cls_nsalert, finn_sel_registerName("runModal"), to_imp(&nsalert_runModal));
     finn_objc_registerClassPair(g_cls_nsalert);
 
