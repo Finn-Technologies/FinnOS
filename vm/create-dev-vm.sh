@@ -64,6 +64,25 @@ isolation.tools.copy.disable = "FALSE"
 isolation.tools.paste.disable = "FALSE"
 EOF
 
+# Guest SVGA3D (EGL/GLES2 in finn-comp) needs a host Vulkan device that meets
+# VMware 26's device limits. Older Intel GPUs have incomplete Mesa Vulkan
+# support; install vulkan-swrast (lavapipe) and set FINN_VM_VULKAN_DEVICE to
+# its device name to force it. Without that, VMware falls back to 2D and
+# finn-comp uses its pixman renderer instead.
+if [ "${FINN_VM_3D:-1}" = "1" ]; then
+  cat >> "$WORKDIR/$VM.vmx" <<EOF2
+svga3d.enable = "TRUE"
+mks.enable3d = "TRUE"
+mks.gl.allowUnsupportedDrivers = "TRUE"
+mks.gl.allowBlacklistedDrivers = "TRUE"
+mks.gl.allowSoftwareAndVMwareDrivers = "TRUE"
+mks.vk.allowUnsupportedDevices = "TRUE"
+EOF2
+  if [ -n "${FINN_VM_VULKAN_DEVICE:-}" ]; then
+    printf 'mks.vk.forceDevice = "%s"\n' "$FINN_VM_VULKAN_DEVICE" >> "$WORKDIR/$VM.vmx"
+  fi
+fi
+
 # Create an empty virtual disk if vmware-vdiskmanager or qemu-img is available.
 if command -v vmware-vdiskmanager >/dev/null 2>&1; then
   vmware-vdiskmanager -c -s "${HDD}MB" -a lsilogic -t 0 \

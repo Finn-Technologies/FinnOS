@@ -207,6 +207,14 @@ bool finn::Server::commit_output_with_backdrop_blur(
     finn::Server::OutputDevice* od) {
     namespace bb = finn::comp::backdrop_blur;
 
+    // The CPU blur needs direct pixel access to the output buffer, which only
+    // the pixman renderer exposes. On a GPU renderer we must not hide the glass
+    // layers below: there is no image to read back and no way to redraw them,
+    // so the dock and status pills would disappear. Render the whole scene.
+    if (!wlr_renderer_is_pixman(renderer_)) {
+        return wlr_scene_output_commit(od->scene_output, nullptr);
+    }
+
     // Step 1: isolate the glass layer surfaces.
     std::vector<LayerSurface*> glass;
     for (const auto& ls : layers_) {

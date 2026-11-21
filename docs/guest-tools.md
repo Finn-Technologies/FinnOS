@@ -69,29 +69,49 @@ sudo finn-guest-tools mount-shared       # mount VMware HGFS at /mnt/hgfs
 resize, `finn-comp` adopts the new mode and relayouts the wallpaper and shell
 layers automatically.
 
-## Rendering on virtual GPUs without 3D acceleration
+## 3D acceleration in VMware Workstation
 
-VMware SVGA (`vmwgfx`) can expose a DRM device even when VMware's **Accelerate
-3D graphics** option is off. In that state Mesa cannot create an EGL or Vulkan
-device, so a GPU-only renderer would make `finn-comp` exit at boot. `finn-comp`
-detects this and falls back to wlroots' pixman software renderer, logging
-`no GPU renderer available; falling back to software (pixman)`. The desktop,
-Settings and guest-tools UI work normally, but rendering is CPU-bound; enable
-3D acceleration in the VM where the host supports it for hardware rendering.
-This is a renderer fallback, not a claim that the virtual GPU has 3D support.
+VMware 26 uses a host Vulkan renderer for guest SVGA3D. On a host whose Vulkan
+driver cannot satisfy VMware's device limits (for example Mesa's Haswell
+`vulkan-intel`), install `vulkan-swrast` (lavapipe) and force it for the VM:
+
+```sh
+sudo pacman -S vulkan-swrast
+FINN_VM_VULKAN_DEVICE='llvmpipe (LLVM 23.1.5, 256 bits)' vm/create-dev-vm.sh ...
+```
+
+`vm/create-dev-vm.sh` writes the required `svga3d.enable`, `mks.enable3d`,
+`mks.gl.allow*` and `mks.vk.allowUnsupportedDevices` settings; the optional
+`FINN_VM_VULKAN_DEVICE` adds `mks.vk.forceDevice`. The same settings can be put
+in `~/.vmware/preferences`. With 3D active, `finn-comp` initialises EGL 1.5 on
+the `vmwgfx` driver and the GLES2 renderer reports
+`GL renderer: SVGA3D; build: RELEASE; LLVM;`. VMware's log then shows
+`svga.supports3D bool 1` instead of "No 3D support is available from the host".
+
+If the host has no usable Vulkan device at all, `finn-comp` falls back to the
+pixman software renderer, logging
+`no GPU renderer available; falling back to software (pixman)`. The desktop and
+apps still render; this is an honest software fallback, not a claim of 3D.
 
 ## Visual verification
 
 An installed x86_64 system was booted in VMware Workstation 26.0.1 with
-`open-vm-tools` active. Confirmed from the live framebuffer: the desktop and
-dock at the virtual monitor's 1280×800 preferred mode (not a forced 1440×900),
-**Settings → Compatibility → Virtualization & Guest Tools** reporting the host
-as "VMware, Inc. VMware Virtual Platform" with VMware Tools **Active**
-(`vmtoolsd` running, `vmwgfx`/`vmw_vmci`/`vmw_balloon`/`vmw_vsock_vmci_transport`
-loaded) and VirtualBox/QEMU suites **Installed** but inactive on a VMware host,
-and **Settings → About** reporting "VMware Graphics vmwgfx". Host tools reported
+`open-vm-tools` active, first with 3D off (pixman fallback) and then with 3D on
+(EGL/GLES2 on `vmwgfx`). Confirmed from live `grim` captures: the desktop at the
+virtual monitor's 1280×800 preferred mode (not a forced 1440×900), **Settings →
+Compatibility → Virtualization & Guest Tools** reporting the host as "VMware,
+Inc. VMware Virtual Platform" with VMware Tools **Active** (`vmtoolsd` running,
+`vmwgfx`/`vmw_vmci`/`vmw_balloon`/`vmw_vsock_vmci_transport` loaded) and
+VirtualBox/QEMU suites **Installed** but inactive on a VMware host, and
+**Settings → About** reporting "VMware Graphics vmwgfx". Host tools reported
 `vmrun checkToolsState` = `running`, `getGuestIPAddress` = `192.168.33.128` and
 a graceful `vmrun stop ... soft`.
+
+Known issue with the 3D path: under wlroots 0.20 + `vmwgfx`, layer-shell
+surfaces above the background (dock, lock screen) are not visible in the output
+commit even though they are mapped; toplevel windows and the wallpaper render
+correctly. The compositor's CPU backdrop blur is correctly skipped on GPU
+renderers so it no longer hides those layers.
 
 ## Honest limits
 
