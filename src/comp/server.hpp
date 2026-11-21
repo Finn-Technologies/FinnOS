@@ -30,6 +30,8 @@ public:
         int width = 0;
         int height = 0;
         float scale = 0.0f;
+        bool explicit_mode = false;
+        bool explicit_scale = false;
     };
 
     struct ManagedWindow;

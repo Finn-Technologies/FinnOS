@@ -70,6 +70,32 @@ class BaseImageTest(unittest.TestCase):
         self.assertTrue({"flatpak", "wine", "wayland", "wayland-protocols",
                          "libxkbcommon"}.issubset(packages))
 
+    def test_x86_64_release_manifest_includes_guest_tools_without_gtk3(self):
+        manifest = os.path.join(ROOT, "base", "packages.x86_64")
+        with open(manifest, "r", encoding="utf-8") as handle:
+            packages = {
+                line.strip()
+                for line in handle
+                if line.strip() and not line.lstrip().startswith("#")
+            }
+        self.assertTrue(
+            {"open-vm-tools", "virtualbox-guest-utils-nox", "qemu-guest-agent"}
+            .issubset(packages)
+        )
+        # virtualbox-guest-utils hard-depends on gtk3, which pacman.conf refuses.
+        self.assertNotIn("virtualbox-guest-utils", packages)
+
+        for script_parts in (("base", "setup.sh"), ("vm", "finn-chroot.sh")):
+            with open(os.path.join(ROOT, *script_parts), "r", encoding="utf-8") as h:
+                text = h.read()
+            self.assertIn("vmtoolsd.service", text)
+            self.assertIn("vboxservice.service", text)
+            self.assertIn("/mnt/hgfs", text)
+
+        helper = os.path.join(ROOT, "tools", "finn-guest-tools")
+        self.assertTrue(os.path.isfile(helper))
+        self.assertTrue(os.access(helper, os.X_OK))
+
     def test_arm_manifest_has_flatpak_and_wayland_runtime_but_no_unavailable_wine(self):
         manifest = os.path.join(ROOT, "base", "packages.aarch64")
         with open(manifest, "r", encoding="utf-8") as handle:

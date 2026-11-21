@@ -54,15 +54,24 @@ ethernet0.present = "TRUE"
 ethernet0.connectionType = "nat"
 ethernet0.virtualDev = "e1000"
 usb.present = "TRUE"
+floppy0.present = "FALSE"
 sound.present = "FALSE"
+vmci0.present = "TRUE"
+svga.autodetect = "TRUE"
+tools.syncTime = "TRUE"
+tools.upgrade.policy = "manual"
+isolation.tools.copy.disable = "FALSE"
+isolation.tools.paste.disable = "FALSE"
 EOF
 
-# Create an empty virtual disk if vmware-vdiskmanager is available.
+# Create an empty virtual disk if vmware-vdiskmanager or qemu-img is available.
 if command -v vmware-vdiskmanager >/dev/null 2>&1; then
   vmware-vdiskmanager -c -s "${HDD}MB" -a lsilogic -t 0 \
     "$WORKDIR/$VM.vmdk" >/dev/null
+elif command -v qemu-img >/dev/null 2>&1; then
+  qemu-img create -f vmdk -o adapter_type=lsilogic "$WORKDIR/$VM.vmdk" "${HDD}M" >/dev/null
 else
-  echo "vmware-vdiskmanager not found: create the disk in the VMware UI,"
+  echo "vmware-vdiskmanager and qemu-img not found: create the disk in the VMware UI,"
   echo "or install VMware Workstation's CLI tools."
 fi
 

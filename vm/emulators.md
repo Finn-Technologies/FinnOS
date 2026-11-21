@@ -57,9 +57,13 @@ and captures the menus with `vm/menu-shot.sh` (`iso.yml:248-264`).
 
 `vm/create-dev-vm.sh [vm-name] [finnos-iso]` writes a `.vmx` for VMware
 Workstation (no Parallels dependency) with `firmware = "bios"`, CDROM first in
-the boot order and a 32 GB LSILogic disk. If `vmware-vdiskmanager` is absent it
-prints an honest message asking you to create the disk in the UI
-(`create-dev-vm.sh:60-67`).
+the boot order, SVGA autodetect, VMCI, time sync, and a 32 GB LSILogic disk
+(created via `vmware-vdiskmanager` or `qemu-img` fallback). Inside the guest,
+`open-vm-tools` (`vmtoolsd.service` + `vmware-vmblock-fuse.service` +
+`vmhgfs-fuse`) ships in `base/packages.x86_64` and is also manageable via
+`finn-guest-tools` and **Settings → Compatibility**. See
+[`docs/guest-tools.md`](../docs/guest-tools.md) for VMware Tools, VirtualBox
+Guest Additions, and honest limits.
 
 ### 2.3 Headless compositor
 

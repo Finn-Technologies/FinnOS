@@ -95,6 +95,7 @@ install: all
 	install -m644 assets/fonts/FixelDisplay/*.otf $(DESTDIR)/usr/share/fonts/OTF/
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m755 tools/finn-display $(DESTDIR)$(PREFIX)/bin/finn-display
+	install -m755 tools/finn-guest-tools $(DESTDIR)$(PREFIX)/bin/finn-guest-tools
 	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
 	install -m755 tools/finn-win $(DESTDIR)$(PREFIX)/bin/finn-win
 	install -m755 tools/finn-emulator $(DESTDIR)$(PREFIX)/bin/finn-emulator
@@ -118,6 +119,7 @@ install: all
 		$(DESTDIR)/usr/lib/systemd/system/finn-boot-health.service
 	install -d $(DESTDIR)/usr/bin
 	ln -sf $(PREFIX)/bin/finn-display $(DESTDIR)/usr/bin/finn-display
+	ln -sf $(PREFIX)/bin/finn-guest-tools $(DESTDIR)/usr/bin/finn-guest-tools
 	ln -sf $(PREFIX)/bin/finn-sdk $(DESTDIR)/usr/bin/finn-sdk
 	ln -sf $(PREFIX)/bin/finn-open $(DESTDIR)/usr/bin/finn-open
 	ln -sf $(PREFIX)/bin/finn-cursors $(DESTDIR)/usr/bin/finn-cursors

@@ -27,4 +27,4 @@ target_link_libraries(finn-cursors PRIVATE
 
 include(GNUInstallDirs)
 install(TARGETS finn-open finn-cursors RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(PROGRAMS finn-display finn-sdk DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(PROGRAMS finn-display finn-guest-tools finn-sdk DESTINATION "${CMAKE_INSTALL_BINDIR}")

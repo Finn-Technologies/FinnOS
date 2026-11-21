@@ -51,6 +51,7 @@
 | `finn-android` | Clean-room Android 17 runtime & installer (native APK/ZIP, binary AXML manifest/layout, DEX verification + opcode decoder, ART-style analysis, Qt6/Wayland view bridge) — no Waydroid |
 | `finn-sdk` | Developer CLI: scaffolding, manifest validation, signed `.finnapp` packaging, simulator, build, run, register, check |
 | `finn-update` | OTA A/B update CLI (`status`, `check`, `download`, `apply`, `commit`, `rollback`, `health-check`, `config`) |
+| `finn-guest-tools` | Virtualization guest integration CLI (`status`, `install`, `enable`, `mount-shared`, `uninstall`) for VMware Tools, VirtualBox Guest Additions, and QEMU Guest Agent |
 | `libfinnui` | The Qt6 app runtime shared library |
 
 ## Modules

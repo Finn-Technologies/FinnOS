@@ -2018,11 +2018,18 @@ FinnSettingRow::FinnSettingRow(const QString& title, const QString& subtitle,
     auto* title_lbl = new FinnLabel(title, FinnLabel::Role::Body,
                                     FinnLabel::Tone::Ink, this);
     title_lbl->setFont(finn_font(10.5, QFont::Medium));
+    // A long title with trailing controls (guest-tools rows) must be able to
+    // wrap and shrink, otherwise it steals the controls' width.
+    title_lbl->setWordWrap(true);
+    title_lbl->setMinimumWidth(0);
     text_col->addWidget(title_lbl);
 
     subtitle_label_ = new FinnLabel(subtitle, FinnLabel::Role::Caption,
                                     FinnLabel::Tone::Dim, this);
     subtitle_label_->setWordWrap(true);
+    // A long wrapped subtitle must shrink too, so it does not claim width
+    // that the row's badge and buttons need.
+    subtitle_label_->setMinimumWidth(0);
     subtitle_label_->setVisible(!subtitle.isEmpty());
     text_col->addWidget(subtitle_label_);
 

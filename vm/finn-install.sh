@@ -630,7 +630,8 @@ if [ -z "$PKGS" ]; then
         # [multilib], which step 1 puts in front of pacman.
         PKGS="$PKGS vulkan-intel lib32-mesa lib32-vulkan-icd-loader
               lib32-vulkan-intel wine winetricks wine-mono wine-gecko
-              intel-ucode amd-ucode"
+              intel-ucode amd-ucode open-vm-tools virtualbox-guest-utils-nox
+              qemu-guest-agent"
     fi
 fi
 
@@ -747,7 +748,8 @@ if [ "$(uname -m)" = 'x86_64' ]; then
     installed_pkg linux || die "the linux kernel is not installed on $DISK"
     for pkg in intel-ucode amd-ucode vulkan-intel lib32-mesa \
                lib32-vulkan-icd-loader lib32-vulkan-intel wine winetricks \
-               wine-mono wine-gecko; do
+               wine-mono wine-gecko open-vm-tools virtualbox-guest-utils-nox \
+               qemu-guest-agent; do
         installed_pkg "$pkg" || die "$pkg is not installed on $DISK"
     done
     HARDWARE="x86_64: firmware, microcode, mesa, vulkan, wine, audio, bluetooth"

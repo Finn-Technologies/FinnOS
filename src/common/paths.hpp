@@ -52,6 +52,7 @@ inline constexpr const char* kOobeBinPath = "/usr/local/bin/finn-oobe";
 inline constexpr const char* kFinnTerminalBin = "/usr/local/bin/finn-terminal";
 inline constexpr const char* kFinnInstallBin = "/usr/local/bin/finn-install";
 inline constexpr const char* kFinnUpdateBin = "/usr/local/bin/finn-update";
+inline constexpr const char* kFinnGuestToolsBin = "/usr/local/bin/finn-guest-tools";
 inline constexpr const char* kFinnDarwinBin = "/usr/local/bin/finn-darwin";
 inline constexpr const char* kFinnOhosBin = "/usr/local/bin/finn-ohos";
 inline constexpr const char* kFinnAndroidBin = "/usr/local/bin/finn-android";

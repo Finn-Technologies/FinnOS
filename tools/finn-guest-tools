@@ -1,0 +1,445 @@
+#!/bin/bash
+# finn-guest-tools — inspect, install, enable, and manage VMware Tools,
+# VirtualBox Guest Additions, and QEMU Guest Agent on FinnOS.
+#
+#   finn-guest-tools status [--json]
+#   finn-guest-tools install [auto|vmware|virtualbox|qemu] [--from-cd <dir>] [--from-iso] [--yes]
+#   finn-guest-tools enable  [auto|vmware|virtualbox|qemu]
+#   finn-guest-tools mount-shared
+#   finn-guest-tools uninstall <vmware|virtualbox|qemu> [--yes]
+#
+# Reporting verbs (`status`) never mutate system state.
+# Changing verbs (`install`, `enable`, `mount-shared`, `uninstall`) require root
+# (or sudo/pkexec) and respect FinnOS's no-GTK3/no-Xorg base contract.
+set -euo pipefail
+
+die() { printf 'finn-guest-tools: error: %s\n' "$*" >&2; exit 1; }
+note() { printf '==> %s\n' "$*"; }
+
+usage() {
+    cat <<'EOF'
+Usage: finn-guest-tools <command> [options]
+
+Commands:
+  status [--json]
+      Report detected hypervisor, loaded kernel modules, installed guest tools,
+      systemd service states, shared folders, and mounted guest CD-ROMs.
+      Read-only; never changes system state.
+
+  install [auto|vmware|virtualbox|qemu] [--from-cd <dir>] [--from-iso] [--yes]
+      Install and enable guest integration packages cleanly without pulling in
+      GTK3 or Xorg server:
+        vmware      open-vm-tools (vmtoolsd + vmware-vmblock-fuse + vmhgfs-fuse)
+        virtualbox  virtualbox-guest-utils-nox (vboxservice + vboxsf group)
+                    Pass --from-iso [--from-cd <dir>] to run VBoxLinuxAdditions.run
+                    from a mounted Guest Additions CD-ROM instead.
+        qemu        qemu-guest-agent
+        auto        install the suite matching the detected hypervisor
+
+  enable [auto|vmware|virtualbox|qemu]
+      Enable and start already-installed guest services (and configure /mnt/hgfs
+      or vboxsf group membership).
+
+  mount-shared
+      Mount VMware Shared Folders (vmhgfs-fuse -> /mnt/hgfs) when in VMware, or
+      list active VirtualBox vboxsf shared folder mounts.
+
+  uninstall <vmware|virtualbox|qemu> [--yes]
+      Disable guest services and remove the package.
+EOF
+}
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        die "this action requires root privileges; run with sudo or pkexec"
+    fi
+}
+
+detect_hypervisor() {
+    local virt=""
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        virt="$(systemd-detect-virt --vm 2>/dev/null || true)"
+    fi
+    case "$virt" in
+        vmware) echo "vmware"; return ;;
+        oracle) echo "virtualbox"; return ;;
+        kvm|qemu) echo "qemu"; return ;;
+        microsoft) echo "hyperv"; return ;;
+    esac
+
+    local vendor="" product=""
+    vendor="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+    product="$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)"
+    local dmi
+    dmi="$(printf '%s %s' "$vendor" "$product" | tr '[:upper:]' '[:lower:]')"
+    case "$dmi" in
+        *vmware*) echo "vmware"; return ;;
+        *virtualbox*|*innotek*) echo "virtualbox"; return ;;
+        *qemu*|*kvm*|*bochs*) echo "qemu"; return ;;
+        *"microsoft corporation"*"virtual machine"*) echo "hyperv"; return ;;
+    esac
+
+    if grep -rqi '^0x15ad$' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
+        echo "vmware"; return
+    fi
+    if grep -rqi '^0x80ee$' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
+        echo "virtualbox"; return
+    fi
+    if grep -rqi '^0x1af4$' /sys/bus/pci/devices/*/vendor 2>/dev/null; then
+        echo "qemu"; return
+    fi
+    echo "none"
+}
+
+find_guest_cd() {
+    local kind="$1"
+    local d
+    for d in /run/media/*/* /media/* /mnt/* /mnt; do
+        [ -d "$d" ] || continue
+        case "$kind" in
+            vmware)
+                if compgen -G "$d/VMwareTools-*.tar.gz" >/dev/null 2>&1 ||
+                   [ -f "$d/manifest.txt" ] && grep -qi 'vmware' "$d/manifest.txt" 2>/dev/null; then
+                    echo "$d"; return
+                fi
+                ;;
+            virtualbox)
+                if [ -f "$d/VBoxLinuxAdditions.run" ]; then
+                    echo "$d"; return
+                fi
+                ;;
+        esac
+    done
+    echo ""
+}
+
+svc_active() {
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$1" 2>/dev/null; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+loaded_mods_csv() {
+    local out="" m
+    for m in "$@"; do
+        if [ -d "/sys/module/$m" ]; then
+            out="${out:+$out,}$m"
+        fi
+    done
+    echo "$out"
+}
+
+cmd_status() {
+    local as_json=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json) as_json=1 ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown status option: $1" ;;
+        esac
+        shift
+    done
+
+    local hv vmw_bin vb_bin q_bin
+    hv="$(detect_hypervisor)"
+    vmw_bin="$(command -v vmtoolsd 2>/dev/null || true)"
+    vb_bin="$(command -v VBoxService 2>/dev/null || true)"
+    q_bin="$(command -v qemu-ga 2>/dev/null || true)"
+
+    local vmw_active vb_active q_active
+    vmw_active="$(svc_active vmtoolsd.service)"
+    vb_active="$(svc_active vboxservice.service)"
+    q_active="$(svc_active qemu-guest-agent.service)"
+
+    local vmw_mods vb_mods q_mods
+    vmw_mods="$(loaded_mods_csv vmwgfx vmw_vmci vmw_balloon vmw_vsock_vmci_transport)"
+    vb_mods="$(loaded_mods_csv vboxguest vboxsf vboxvideo)"
+    q_mods="$(loaded_mods_csv virtio_gpu virtio_balloon virtio_console)"
+
+    local vmw_cd vb_cd hgfs_mounted vboxsf_mounted
+    vmw_cd="$(find_guest_cd vmware)"
+    vb_cd="$(find_guest_cd virtualbox)"
+    hgfs_mounted="false"
+    grep -q 'vmhgfs' /proc/mounts 2>/dev/null && hgfs_mounted="true"
+    vboxsf_mounted="false"
+    grep -q 'vboxsf' /proc/mounts 2>/dev/null && vboxsf_mounted="true"
+
+    if [ "$as_json" = 1 ]; then
+        python3 - "$hv" "$vmw_bin" "$vmw_active" "$vmw_mods" "$hgfs_mounted" "$vmw_cd" \
+                  "$vb_bin" "$vb_active" "$vb_mods" "$vboxsf_mounted" "$vb_cd" \
+                  "$q_bin" "$q_active" "$q_mods" <<'PY'
+import json, sys
+(hv, vmw_bin, vmw_act, vmw_mods, hgfs, vmw_cd,
+ vb_bin, vb_act, vb_mods, vboxsf, vb_cd,
+ q_bin, q_act, q_mods) = sys.argv[1:]
+def mods(s): return [m for m in s.split(",") if m]
+data = {
+    "hypervisor": hv,
+    "vmware": {
+        "package": "open-vm-tools",
+        "installed": bool(vmw_bin),
+        "binary": vmw_bin,
+        "service": "vmtoolsd.service",
+        "active": vmw_act == "true",
+        "modules": mods(vmw_mods),
+        "hgfs_mounted": hgfs == "true",
+        "cd_detected": vmw_cd,
+    },
+    "virtualbox": {
+        "package": "virtualbox-guest-utils-nox",
+        "installed": bool(vb_bin),
+        "binary": vb_bin,
+        "service": "vboxservice.service",
+        "active": vb_act == "true",
+        "modules": mods(vb_mods),
+        "vboxsf_mounted": vboxsf == "true",
+        "cd_detected": vb_cd,
+    },
+    "qemu": {
+        "package": "qemu-guest-agent",
+        "installed": bool(q_bin),
+        "binary": q_bin,
+        "service": "qemu-guest-agent.service",
+        "active": q_act == "true",
+        "modules": mods(q_mods),
+    },
+}
+print(json.dumps(data, indent=2))
+PY
+        return 0
+    fi
+
+    printf 'Hypervisor: %s\n' "$hv"
+    printf 'VMware Tools (open-vm-tools):            installed=%s active=%s modules=%s hgfs_mounted=%s\n' \
+        "$([ -n "$vmw_bin" ] && echo yes || echo no)" "$vmw_active" "${vmw_mods:-none}" "$hgfs_mounted"
+    [ -n "$vmw_cd" ] && printf '  VMware Tools CD-ROM detected at: %s\n' "$vmw_cd"
+    printf 'VirtualBox Guest Additions (-nox):       installed=%s active=%s modules=%s vboxsf_mounted=%s\n' \
+        "$([ -n "$vb_bin" ] && echo yes || echo no)" "$vb_active" "${vb_mods:-none}" "$vboxsf_mounted"
+    [ -n "$vb_cd" ] && printf '  VirtualBox Guest Additions CD-ROM detected at: %s\n' "$vb_cd"
+    printf 'QEMU / KVM Guest Agent (qemu-ga):        installed=%s active=%s modules=%s\n' \
+        "$([ -n "$q_bin" ] && echo yes || echo no)" "$q_active" "${q_mods:-none}"
+}
+
+enable_vmware() {
+    mkdir -p /mnt/hgfs
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
+    if [ "$(detect_hypervisor)" = "vmware" ]; then
+        systemctl start vmtoolsd.service 2>/dev/null || true
+        systemctl start vmware-vmblock-fuse.service 2>/dev/null || true
+        if command -v vmware-hgfsclient >/dev/null 2>&1 &&
+           [ -n "$(vmware-hgfsclient 2>/dev/null || true)" ] &&
+           command -v vmhgfs-fuse >/dev/null 2>&1 &&
+           ! mountpoint -q /mnt/hgfs 2>/dev/null; then
+            vmhgfs-fuse .host:/ /mnt/hgfs -o allow_other,subtype=vmhgfs-fuse 2>/dev/null || true
+        fi
+    else
+        note "Not running under VMware; vmtoolsd.service enabled (will start automatically when booted in VMware)"
+    fi
+}
+
+enable_virtualbox() {
+    if getent group vboxsf >/dev/null 2>&1; then
+        id finn >/dev/null 2>&1 && usermod -aG vboxsf finn 2>/dev/null || true
+        if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] && [ "$SUDO_USER" != "finn" ]; then
+            usermod -aG vboxsf "$SUDO_USER" 2>/dev/null || true
+        fi
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable vboxservice.service 2>/dev/null || true
+    if [ "$(detect_hypervisor)" = "virtualbox" ]; then
+        modprobe vboxguest 2>/dev/null || true
+        modprobe vboxsf 2>/dev/null || true
+        systemctl start vboxservice.service 2>/dev/null || true
+    else
+        note "Not running under VirtualBox; vboxservice.service enabled (will start automatically when booted in VirtualBox)"
+    fi
+}
+
+enable_qemu() {
+    systemctl daemon-reload 2>/dev/null || true
+    if [ -e /dev/virtio-ports/org.qemu.guest_agent.0 ]; then
+        systemctl start qemu-guest-agent.service 2>/dev/null || true
+    else
+        note "qemu-guest-agent activates automatically via udev when a QEMU virtio-serial guest agent channel is attached"
+    fi
+}
+
+resolve_target() {
+    local target="${1:-auto}"
+    if [ "$target" = "auto" ]; then
+        local hv
+        hv="$(detect_hypervisor)"
+        case "$hv" in
+            vmware|virtualbox|qemu) echo "$hv" ;;
+            none) die "no supported hypervisor detected on this machine; specify vmware, virtualbox, or qemu explicitly" ;;
+            *) die "detected hypervisor '$hv' has no dedicated FinnOS guest suite" ;;
+        esac
+    else
+        case "$target" in
+            vmware|virtualbox|qemu) echo "$target" ;;
+            *) die "unknown guest suite '$target' (expected auto, vmware, virtualbox, or qemu)" ;;
+        esac
+    fi
+}
+
+cmd_install() {
+    local target="auto"
+    local from_cd=""
+    local from_iso=0
+    local noconfirm=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            auto|vmware|virtualbox|qemu) target="$1" ;;
+            --from-cd)
+                [ $# -ge 2 ] || die "--from-cd requires a directory path"
+                from_cd="$2"; shift ;;
+            --from-cd=*) from_cd="${1#*=}" ;;
+            --from-iso) from_iso=1 ;;
+            --yes|-y) noconfirm="--noconfirm" ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown install option: $1" ;;
+        esac
+        shift
+    done
+
+    require_root
+    target="$(resolve_target "$target")"
+
+    case "$target" in
+        vmware)
+            if [ -n "$from_cd" ] || [ "$from_iso" = 1 ]; then
+                note "FinnOS uses open-vm-tools (VMware's official Linux guest tools for modern kernels; legacy VMwareTools-*.tar.gz kernel modules do not build on Linux 6.x/7.x)."
+            fi
+            note "Installing VMware Tools (open-vm-tools)..."
+            pacman -Sy --needed $noconfirm open-vm-tools
+            enable_vmware
+            note "VMware Tools ready. Wayland auto-resize works through vmwgfx + finn-comp; shared folders mount at /mnt/hgfs."
+            note "Note: X11/GTK3 clipboard drag-and-drop plugin (gtkmm3) is not used on FinnOS Wayland."
+            ;;
+        virtualbox)
+            if [ "$from_iso" = 1 ]; then
+                local cd_dir="${from_cd:-$(find_guest_cd virtualbox)}"
+                [ -n "$cd_dir" ] || die "no mounted VirtualBox Guest Additions CD-ROM found; mount it and pass --from-cd <dir>"
+                [ -f "$cd_dir/VBoxLinuxAdditions.run" ] || die "VBoxLinuxAdditions.run not found in $cd_dir"
+                note "Installing kernel headers & build prerequisites for Guest Additions ISO..."
+                pacman -Sy --needed $noconfirm linux-headers dkms bzip2 tar perl base-devel
+                note "Running $cd_dir/VBoxLinuxAdditions.run --nox11 ..."
+                sh "$cd_dir/VBoxLinuxAdditions.run" --nox11
+                enable_virtualbox
+            else
+                note "Installing VirtualBox Guest Additions (virtualbox-guest-utils-nox, no GTK3/Xorg)..."
+                pacman -Sy --needed $noconfirm virtualbox-guest-utils-nox
+                enable_virtualbox
+            fi
+            note "VirtualBox Guest Additions ready (vboxservice + vboxsf shared folders + in-kernel vboxvideo/vboxguest)."
+            ;;
+        qemu)
+            note "Installing QEMU / KVM Guest Agent (qemu-guest-agent)..."
+            pacman -Sy --needed $noconfirm qemu-guest-agent
+            enable_qemu
+            note "QEMU Guest Agent installed."
+            ;;
+    esac
+}
+
+cmd_enable() {
+    local target="${1:-auto}"
+    require_root
+    target="$(resolve_target "$target")"
+    case "$target" in
+        vmware)
+            command -v vmtoolsd >/dev/null 2>&1 || die "open-vm-tools is not installed; run: finn-guest-tools install vmware"
+            enable_vmware
+            note "VMware Tools services enabled."
+            ;;
+        virtualbox)
+            command -v VBoxService >/dev/null 2>&1 || die "virtualbox-guest-utils-nox is not installed; run: finn-guest-tools install virtualbox"
+            enable_virtualbox
+            note "VirtualBox Guest Additions service enabled."
+            ;;
+        qemu)
+            command -v qemu-ga >/dev/null 2>&1 || die "qemu-guest-agent is not installed; run: finn-guest-tools install qemu"
+            enable_qemu
+            ;;
+    esac
+}
+
+cmd_mount_shared() {
+    local hv
+    hv="$(detect_hypervisor)"
+    case "$hv" in
+        vmware)
+            require_root
+            command -v vmhgfs-fuse >/dev/null 2>&1 || die "vmhgfs-fuse not found; install VMware Tools first (finn-guest-tools install vmware)"
+            mkdir -p /mnt/hgfs
+            if mountpoint -q /mnt/hgfs 2>/dev/null; then
+                note "VMware Shared Folders already mounted at /mnt/hgfs"
+                ls -la /mnt/hgfs
+                return 0
+            fi
+            if command -v vmware-hgfsclient >/dev/null 2>&1; then
+                local shares
+                shares="$(vmware-hgfsclient 2>/dev/null || true)"
+                [ -n "$shares" ] || die "no VMware Shared Folders are enabled for this VM in VMware settings"
+            fi
+            vmhgfs-fuse .host:/ /mnt/hgfs -o allow_other,subtype=vmhgfs-fuse
+            note "Mounted VMware Shared Folders at /mnt/hgfs"
+            ;;
+        virtualbox)
+            if grep -q 'vboxsf' /proc/mounts 2>/dev/null; then
+                note "Active VirtualBox shared folders:"
+                grep 'vboxsf' /proc/mounts
+            else
+                die "no VirtualBox shared folders mounted yet; enable Auto-mount in VM Settings -> Shared Folders and ensure vboxservice.service is running"
+            fi
+            ;;
+        *)
+            die "shared-folder mounting requires a VMware or VirtualBox guest (detected: $hv)"
+            ;;
+    esac
+}
+
+cmd_uninstall() {
+    local target="" noconfirm=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            vmware|virtualbox|qemu) target="$1" ;;
+            --yes|-y) noconfirm="--noconfirm" ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown uninstall option: $1" ;;
+        esac
+        shift
+    done
+    [ -n "$target" ] || die "specify vmware, virtualbox, or qemu to uninstall"
+    require_root
+
+    case "$target" in
+        vmware)
+            systemctl disable --now vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
+            umount /mnt/hgfs 2>/dev/null || true
+            pacman -Rns $noconfirm open-vm-tools
+            ;;
+        virtualbox)
+            systemctl disable --now vboxservice.service 2>/dev/null || true
+            pacman -Rns $noconfirm virtualbox-guest-utils-nox
+            ;;
+        qemu)
+            systemctl disable --now qemu-guest-agent.service 2>/dev/null || true
+            pacman -Rns $noconfirm qemu-guest-agent
+            ;;
+    esac
+}
+
+case "${1:-}" in
+    status)       shift; cmd_status "$@" ;;
+    install)      shift; cmd_install "$@" ;;
+    enable)       shift; cmd_enable "$@" ;;
+    mount-shared) shift; cmd_mount_shared "$@" ;;
+    uninstall)    shift; cmd_uninstall "$@" ;;
+    -h|--help|"") usage; exit 0 ;;
+    *)            die "unknown command: $1 (try --help)" ;;
+esac

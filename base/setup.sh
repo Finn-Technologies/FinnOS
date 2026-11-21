@@ -41,7 +41,7 @@ list() { sed -e 's/#.*//' -e 's/[[:space:]]//g' "$1" | grep -v '^$'; }
 # 1. remove competing desktop stacks if they are already on the machine.
 #    FinnOS has its own compositor and hosts Wayland/Qt6 clients; protocol
 #    libraries and the optional Xwayland compatibility bridge are allowed.
-pacman -Rns --noconfirm xorg-server xorg-server-common \
+pacman -Rns --noconfirm xorg-server \
     gtk3 gtk4 gtkmm3 qt5-base 2>/dev/null || true
 
 # 2. the configuration: the repo list with the desktop ignored by name.
@@ -132,6 +132,15 @@ systemctl enable seatd
 systemctl enable NetworkManager
 systemctl enable bluetooth 2>/dev/null || echo "WARN: bluetooth.service is not on this image"
 systemctl enable systemd-timesyncd 2>/dev/null || true
+# Guest integration daemons: each unit is gated by systemd
+# ConditionVirtualization= (vmware / oracle), so enabling them is a no-op on
+# bare metal and automatic when booted inside VMware or VirtualBox.
+systemctl enable vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
+systemctl enable vboxservice.service 2>/dev/null || true
+if getent group vboxsf >/dev/null 2>&1; then
+    usermod -aG vboxsf finn 2>/dev/null || true
+fi
+mkdir -p /mnt/hgfs
 
 # 6. the system units, straight from this directory. finn-failure.service is
 #    pulled in by finn-comp's OnFailure=, so it is installed beside it.

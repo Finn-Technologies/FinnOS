@@ -14,6 +14,7 @@
 | [install.md](install.md) | the base image and the session units |
 | [security.md](security.md) | authority, sockets and the sandbox gap |
 | [hardware.md](hardware.md) | the reference machine and its limits |
+| [guest-tools.md](guest-tools.md) | VMware Tools, VirtualBox Guest Additions, and QEMU Guest Agent |
 | [troubleshooting.md](troubleshooting.md) | when the session does not come up |
 | [roadmap.md](roadmap.md) | what is next, and what "done" means |
 | [rebrand-checklist.md](rebrand-checklist.md) | upstream base hooks, branding checks, and license status |

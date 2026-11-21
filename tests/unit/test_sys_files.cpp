@@ -1,9 +1,11 @@
+#include "system/guest_tools.hpp"
 #include "system/sys_files.hpp"
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -112,6 +114,94 @@ bool test_proc_parsers() {
     return true;
 }
 
+bool test_guest_tools_probe() {
+    // 1. Bare-metal environment: no hypervisor, no guest binaries, no modules.
+    {
+        const TempDir bare;
+        bare.write("dmi/sys_vendor", "LENOVO\n");
+        bare.write("dmi/product_name", "ThinkPad\n");
+        bare.write("proc/cpuinfo", "flags\t: fpu vme de pse tsc\n");
+        bare.write("proc/mounts", "/dev/sda2 / ext4 rw 0 0\n");
+        finn::sys::GuestToolsProbePaths p;
+        p.dmi_dir = bare.dir_str() + "/dmi";
+        p.pci_dir = bare.dir_str() + "/pci";
+        p.modules_dir = bare.dir_str() + "/modules";
+        p.cpuinfo_path = bare.dir_str() + "/proc/cpuinfo";
+        p.mounts_path = bare.dir_str() + "/proc/mounts";
+        p.bin_dirs = {bare.dir_str() + "/bin"};
+        p.media_dirs = {bare.dir_str() + "/media"};
+        p.skip_systemctl = true;
+        const auto env = finn::sys::probe_guest_environment(p);
+        CHECK(env.hypervisor == finn::sys::HypervisorKind::kNone);
+        CHECK(env.hypervisor_id == "none");
+        CHECK(!env.vmware.installed);
+        CHECK(!env.virtualbox.installed);
+        CHECK(!env.qemu.installed);
+    }
+
+    // 2. VMware guest with open-vm-tools active, vmwgfx loaded, and HGFS mounted.
+    {
+        const TempDir vmw;
+        vmw.write("dmi/sys_vendor", "VMware, Inc.\n");
+        vmw.write("dmi/product_name", "VMware Virtual Platform\n");
+        vmw.write("pci/0000:00:0f.0/vendor", "0x15ad\n");
+        vmw.write("modules/vmwgfx/initstate", "live\n");
+        vmw.write("modules/vmw_balloon/initstate", "live\n");
+        vmw.write("proc/cpuinfo", "flags\t: fpu sse4_2 hypervisor\n");
+        vmw.write("proc/mounts", "vmhgfs-fuse /mnt/hgfs fuse.vmhgfs-fuse rw 0 0\n");
+        vmw.write("bin/vmtoolsd", "#!/bin/sh\n");
+        ::chmod((vmw.dir_str() + "/bin/vmtoolsd").c_str(), 0755);
+        finn::sys::GuestToolsProbePaths p;
+        p.dmi_dir = vmw.dir_str() + "/dmi";
+        p.pci_dir = vmw.dir_str() + "/pci";
+        p.modules_dir = vmw.dir_str() + "/modules";
+        p.cpuinfo_path = vmw.dir_str() + "/proc/cpuinfo";
+        p.mounts_path = vmw.dir_str() + "/proc/mounts";
+        p.bin_dirs = {vmw.dir_str() + "/bin"};
+        p.media_dirs = {vmw.dir_str() + "/media"};
+        p.skip_systemctl = true;
+        p.active_services_override = {"vmtoolsd.service"};
+        const auto env = finn::sys::probe_guest_environment(p);
+        CHECK(env.hypervisor == finn::sys::HypervisorKind::kVMware);
+        CHECK(env.vmware.installed);
+        CHECK(env.vmware.service_active);
+        CHECK(env.vmware.kernel_driver_loaded);
+        CHECK(env.vmware.shared_folders_ready);
+        CHECK(env.vmware.shared_folders_path == "/mnt/hgfs");
+    }
+
+    // 3. VirtualBox guest with mounted Guest Additions CD-ROM and vboxguest loaded.
+    {
+        const TempDir vb;
+        vb.write("dmi/sys_vendor", "innotek GmbH\n");
+        vb.write("dmi/product_name", "VirtualBox\n");
+        vb.write("pci/0000:00:02.0/vendor", "0x80ee\n");
+        vb.write("modules/vboxguest/initstate", "live\n");
+        vb.write("media/VBox_GAs_7.2/VBoxLinuxAdditions.run", "#!/bin/sh\n");
+        vb.write("proc/mounts", "share /media/sf_share vboxsf rw 0 0\n");
+        vb.write("bin/VBoxService", "#!/bin/sh\n");
+        ::chmod((vb.dir_str() + "/bin/VBoxService").c_str(), 0755);
+        finn::sys::GuestToolsProbePaths p;
+        p.dmi_dir = vb.dir_str() + "/dmi";
+        p.pci_dir = vb.dir_str() + "/pci";
+        p.modules_dir = vb.dir_str() + "/modules";
+        p.cpuinfo_path = vb.dir_str() + "/proc/cpuinfo";
+        p.mounts_path = vb.dir_str() + "/proc/mounts";
+        p.bin_dirs = {vb.dir_str() + "/bin"};
+        p.media_dirs = {vb.dir_str() + "/media"};
+        p.skip_systemctl = true;
+        p.active_services_override = {"vboxservice.service"};
+        const auto env = finn::sys::probe_guest_environment(p);
+        CHECK(env.hypervisor == finn::sys::HypervisorKind::kVirtualBox);
+        CHECK(env.virtualbox.installed);
+        CHECK(env.virtualbox.service_active);
+        CHECK(env.virtualbox.kernel_driver_loaded);
+        CHECK(env.virtualbox.shared_folders_ready);
+        CHECK(!env.virtualbox.detected_cd_path.empty());
+    }
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -120,6 +210,7 @@ int main() {
     ok &= test_math_eval();
     ok &= test_honest_sysfs_readers();
     ok &= test_proc_parsers();
+    ok &= test_guest_tools_probe();
     if (!ok) return 1;
     std::puts("test_sys_files: ok");
     return 0;

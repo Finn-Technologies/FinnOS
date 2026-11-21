@@ -14,6 +14,8 @@ add_executable(finn-settings
     main.cpp
     ../../src/system/desktop_services.cpp
     ../../src/system/desktop_services.hpp
+    ../../src/system/guest_tools.cpp
+    ../../src/system/guest_tools.hpp
     ../../src/compat/android_runner.cpp
     ../../src/compat/desktop_entry.cpp
     ../../src/compat/wine_runner.cpp

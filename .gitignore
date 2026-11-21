@@ -32,6 +32,7 @@
 /tests/unit/test_sys_files
 /tests/unit/test_spring
 /tests/unit/test_ota
+/tests/unit/test_windows_modules
 *.dSYM/
 
 # Captures. A session's PPM and PNG files are artefacts, not the OS.

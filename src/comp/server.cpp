@@ -144,14 +144,19 @@ int Server::read_auto_lock_minutes() {
 Server::OutputConfig Server::read_output_config() {
     OutputConfig cfg;
     if (const char* mode_env = std::getenv("FINN_OUTPUT_MODE")) {
-        std::sscanf(mode_env, "%dx%d", &cfg.width, &cfg.height);
+        if (std::sscanf(mode_env, "%dx%d", &cfg.width, &cfg.height) == 2 &&
+            cfg.width > 0 && cfg.height > 0) {
+            cfg.explicit_mode = true;
+        }
     }
-    if (cfg.width <= 0 || cfg.height <= 0) {
+    if (!cfg.explicit_mode) {
         if (const char* w = std::getenv("FINN_OUTPUT_WIDTH")) cfg.width = std::atoi(w);
         if (const char* h = std::getenv("FINN_OUTPUT_HEIGHT")) cfg.height = std::atoi(h);
+        if (cfg.width > 0 && cfg.height > 0) cfg.explicit_mode = true;
     }
     if (const char* s = std::getenv("FINN_OUTPUT_SCALE")) {
         cfg.scale = std::strtof(s, nullptr);
+        if (cfg.scale > 0.0f) cfg.explicit_scale = true;
     }
 
     for (const std::string& path : settings_paths()) {
@@ -160,30 +165,35 @@ Server::OutputConfig Server::read_output_config() {
         std::string line;
         while (std::getline(in, line)) {
             line = trim(line);
-            if (cfg.width <= 0 && line.rfind("resolution=", 0) == 0) {
+            if (!cfg.explicit_mode && line.rfind("resolution=", 0) == 0) {
                 int w = 0, h = 0;
                 if (std::sscanf(line.c_str() + 11, "%dx%d", &w, &h) == 2 &&
                     w > 0 && h > 0) {
                     cfg.width = w;
                     cfg.height = h;
+                    cfg.explicit_mode = true;
                 }
-            } else if (cfg.width <= 0 && line.rfind("width=", 0) == 0) {
+            } else if (!cfg.explicit_mode && line.rfind("width=", 0) == 0) {
                 cfg.width = std::atoi(line.c_str() + 6);
-            } else if (cfg.height <= 0 && line.rfind("height=", 0) == 0) {
+                if (cfg.width > 0 && cfg.height > 0) cfg.explicit_mode = true;
+            } else if (!cfg.explicit_mode && line.rfind("height=", 0) == 0) {
                 cfg.height = std::atoi(line.c_str() + 7);
-            } else if (cfg.scale <= 0.0f && line.rfind("scale=", 0) == 0) {
+                if (cfg.width > 0 && cfg.height > 0) cfg.explicit_mode = true;
+            } else if (!cfg.explicit_scale && line.rfind("scale=", 0) == 0) {
                 cfg.scale = std::strtof(line.c_str() + 6, nullptr);
+                if (cfg.scale > 0.0f) cfg.explicit_scale = true;
             }
         }
-        if (cfg.width > 0 && cfg.scale > 0.0f) break;
+        if (cfg.explicit_mode && cfg.explicit_scale) break;
     }
 
     if (cfg.width <= 0 || cfg.height <= 0) {
         cfg.width = 1440;
         cfg.height = 900;
     }
-    if (cfg.scale <= 0.0f) cfg.scale = (cfg.width >= 2400) ? 2.0f : 1.0f;
-    cfg.scale = std::clamp(cfg.scale, 0.5f, 4.0f);
+    if (cfg.explicit_scale) {
+        cfg.scale = std::clamp(cfg.scale, 0.5f, 4.0f);
+    }
     return cfg;
 }
 
@@ -192,23 +202,36 @@ void Server::apply_output_config(wlr_output* output, const OutputConfig& cfg) {
     wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, true);
-    wlr_output_state_set_scale(&state, cfg.scale);
 
-    wlr_output_mode* matched = nullptr;
-    wlr_output_mode* mode = nullptr;
-    wl_list_for_each(mode, &output->modes, link) {
-        if (mode->width == cfg.width && mode->height == cfg.height) {
-            matched = mode;
-            break;
+    wlr_output_mode* target_mode = nullptr;
+    if (cfg.explicit_mode) {
+        wlr_output_mode* mode = nullptr;
+        wl_list_for_each(mode, &output->modes, link) {
+            if (mode->width == cfg.width && mode->height == cfg.height) {
+                target_mode = mode;
+                break;
+            }
         }
     }
-    if (matched) {
-        wlr_output_state_set_mode(&state, matched);
-    } else if (!wl_list_empty(&output->modes)) {
-        wlr_output_state_set_mode(&state, wlr_output_preferred_mode(output));
+    if (!target_mode && !wl_list_empty(&output->modes)) {
+        // When no explicit resolution is pinned, follow the DRM preferred mode
+        // so both physical monitors and VMware/VirtualBox dynamic window
+        // resizes take effect natively.
+        target_mode = wlr_output_preferred_mode(output);
+    }
+
+    int effective_w = cfg.width;
+    if (target_mode) {
+        wlr_output_state_set_mode(&state, target_mode);
+        effective_w = target_mode->width;
     } else {
         wlr_output_state_set_custom_mode(&state, cfg.width, cfg.height, 60000);
     }
+
+    const float desired_scale = cfg.explicit_scale
+                                    ? cfg.scale
+                                    : ((effective_w >= 2400) ? 2.0f : 1.0f);
+    wlr_output_state_set_scale(&state, std::clamp(desired_scale, 0.5f, 4.0f));
     wlr_output_commit_state(output, &state);
     wlr_output_state_finish(&state);
 }
@@ -323,14 +346,31 @@ void Server::update_display_settings() {
     }
     const OutputConfig cfg = read_output_config();
     for (auto& o : outputs_) {
-        int cur_w = 0, cur_h = 0;
-        wlr_output_effective_resolution(o->output, &cur_w, &cur_h);
-        const float cur_scale = o->output->scale;
-        if (std::abs(cur_scale - cfg.scale) > 0.05f ||
-            (!wl_list_empty(&o->output->modes) &&
-             o->output->current_mode &&
-             (o->output->current_mode->width != cfg.width ||
-              o->output->current_mode->height != cfg.height))) {
+        wlr_output_mode* desired_mode = nullptr;
+        if (cfg.explicit_mode) {
+            wlr_output_mode* m = nullptr;
+            wl_list_for_each(m, &o->output->modes, link) {
+                if (m->width == cfg.width && m->height == cfg.height) {
+                    desired_mode = m;
+                    break;
+                }
+            }
+        }
+        if (!desired_mode && !wl_list_empty(&o->output->modes)) {
+            desired_mode = wlr_output_preferred_mode(o->output);
+        }
+
+        const int target_w = desired_mode ? desired_mode->width : cfg.width;
+        const float desired_scale =
+            cfg.explicit_scale ? cfg.scale : ((target_w >= 2400) ? 2.0f : 1.0f);
+        const bool scale_changed = std::abs(o->output->scale - desired_scale) > 0.05f;
+        const bool mode_changed =
+            desired_mode &&
+            (!o->output->current_mode ||
+             o->output->current_mode->width != desired_mode->width ||
+             o->output->current_mode->height != desired_mode->height);
+
+        if (scale_changed || mode_changed) {
             apply_output_config(o->output, cfg);
             arrange_layers();
             update_background();
@@ -1840,6 +1880,15 @@ int Server::run() {
     }
 
     renderer_ = wlr_renderer_autocreate(backend_);
+    if (!renderer_) {
+        // A virtual GPU can expose DRM without a usable EGL or Vulkan device
+        // (VMware SVGA with 3D disabled is one). Software rendering is still a
+        // real renderer, so fall back to it instead of leaving the display dead.
+        wlr_log(WLR_INFO,
+                "finn-comp: no GPU renderer available; falling back to software (pixman)");
+        setenv("WLR_RENDERER", "pixman", 1);
+        renderer_ = wlr_renderer_autocreate(backend_);
+    }
     if (!renderer_) return 1;
     wlr_renderer_init_wl_display(renderer_, display_);
 

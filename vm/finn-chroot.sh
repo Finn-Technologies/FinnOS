@@ -168,6 +168,15 @@ systemctl enable systemd-timesyncd 2>/dev/null || true
 # dongle it is what the Control Center's Bluetooth tile drives.
 systemctl enable bluetooth 2>/dev/null ||
     echo "WARN: bluetooth.service is not installed"
+# Virtualization guest services: each unit carries ConditionVirtualization= so
+# bare-metal installs never start them, while VMware and VirtualBox guests get
+# time sync, shared folders, and graceful host shutdown out of the box.
+systemctl enable vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
+systemctl enable vboxservice.service 2>/dev/null || true
+if getent group vboxsf >/dev/null 2>&1; then
+    usermod -aG vboxsf finn 2>/dev/null || true
+fi
+mkdir -p /mnt/hgfs
 # sshd is installed and disabled: a network login is a decision somebody
 # makes on the machine, not something an install turns on.
 # tty2 is the rescue console. tty1 belongs to the compositor, so the old

@@ -31,12 +31,14 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <unistd.h>
 
 #include "common/paths.hpp"
 #include "compat/android_runner.hpp"
 #include "compat/desktop_entry.hpp"
 #include "compat/wine_runner.hpp"
 #include "system/desktop_services.hpp"
+#include "system/guest_tools.hpp"
 #include "system/sys_files.hpp"
 
 namespace {
@@ -121,6 +123,7 @@ QString vendor_name_for_pci(const QString& vendor_hex) {
     if (v == QLatin1String("1af4") || v == QLatin1String("0x1af4")) return QStringLiteral("VirtIO");
     if (v == QLatin1String("1234") || v == QLatin1String("0x1234")) return QStringLiteral("QEMU");
     if (v == QLatin1String("15ad") || v == QLatin1String("0x15ad")) return QStringLiteral("VMware");
+    if (v == QLatin1String("80ee") || v == QLatin1String("0x80ee")) return QStringLiteral("VirtualBox");
     return {};
 }
 
@@ -1145,6 +1148,90 @@ private:
             new finn::ui::FinnBadge(QStringLiteral("Active"), finn::ui::FinnBadge::Tone::Accent, page),
             page));
 
+        auto* virt_hdr = new finn::ui::FinnLabel(
+            QStringLiteral("Virtualization & Guest Tools"),
+            finn::ui::FinnLabel::Role::Headline,
+            finn::ui::FinnLabel::Tone::Ink, page);
+        virt_hdr->setContentsMargins(0, 12, 0, 2);
+        root->addWidget(virt_hdr);
+
+        guest_env_badge_ = new finn::ui::FinnBadge(
+            QStringLiteral("Checking"), finn::ui::FinnBadge::Tone::Neutral, page);
+        guest_env_row_ = new finn::ui::FinnSettingRow(
+            QStringLiteral("Host Environment"),
+            QStringLiteral("Probing DMI, PCI devices, and kernel modules..."),
+            QStringLiteral("display"), guest_env_badge_, page);
+        root->addWidget(guest_env_row_);
+
+        auto make_guest_controls = [&](const QString& target_id,
+                                       finn::ui::FinnBadge*& badge_out,
+                                       finn::ui::FinnButton*& btn_out,
+                                       finn::ui::FinnButton** extra_btn_out) -> QWidget* {
+            auto* wrap = new QWidget(page);
+            wrap->setAutoFillBackground(false);
+            auto* h = new QHBoxLayout(wrap);
+            h->setContentsMargins(0, 0, 0, 0);
+            h->setSpacing(6);
+            badge_out = new finn::ui::FinnBadge(
+                QStringLiteral("Checking"), finn::ui::FinnBadge::Tone::Neutral, wrap);
+            btn_out = new finn::ui::FinnButton(
+                QStringLiteral("Install"), finn::ui::FinnButton::Variant::Secondary, {}, wrap);
+            btn_out->setAccessibleName(QStringLiteral("Install or enable %1 guest tools").arg(target_id));
+            connect(btn_out, &QAbstractButton::clicked, this, [this, target_id, btn_out]() {
+                const QString verb = (btn_out->text() == QLatin1String("Enable"))
+                                         ? QStringLiteral("enable")
+                                         : QStringLiteral("install");
+                QStringList args = {verb, target_id};
+                if (verb == QLatin1String("install")) args << QStringLiteral("--yes");
+                runGuestToolsCommand(args, QStringLiteral("Configuring %1 guest tools...").arg(target_id));
+            });
+            h->addWidget(badge_out);
+            h->addWidget(btn_out);
+            if (extra_btn_out) {
+                auto* extra = new finn::ui::FinnButton(
+                    QStringLiteral("Mount Shared"),
+                    finn::ui::FinnButton::Variant::Ghost, {}, wrap);
+                extra->setAccessibleName(QStringLiteral("Mount VMware shared folders"));
+                extra->setVisible(false);
+                connect(extra, &QAbstractButton::clicked, this, [this]() {
+                    runGuestToolsCommand({QStringLiteral("mount-shared")},
+                                         QStringLiteral("Mounting VMware shared folders..."));
+                });
+                h->addWidget(extra);
+                *extra_btn_out = extra;
+            }
+            return wrap;
+        };
+
+        vmware_tools_row_ = new finn::ui::FinnSettingRow(
+            QStringLiteral("VMware Tools (open-vm-tools)"),
+            QStringLiteral("Checking vmtoolsd and vmwgfx..."),
+            QStringLiteral("display"),
+            make_guest_controls(QStringLiteral("vmware"), vmware_tools_badge_,
+                                vmware_tools_btn_, &vmware_mount_btn_),
+            page);
+        root->addWidget(vmware_tools_row_);
+
+        vbox_tools_row_ = new finn::ui::FinnSettingRow(
+            QStringLiteral("VirtualBox Guest Additions"),
+            QStringLiteral("Checking vboxservice and vboxguest..."),
+            QStringLiteral("display"),
+            make_guest_controls(QStringLiteral("virtualbox"), vbox_tools_badge_,
+                                vbox_tools_btn_, nullptr),
+            page);
+        root->addWidget(vbox_tools_row_);
+
+        qemu_tools_row_ = new finn::ui::FinnSettingRow(
+            QStringLiteral("QEMU / KVM Guest Agent"),
+            QStringLiteral("Checking qemu-ga and virtio modules..."),
+            QStringLiteral("display"),
+            make_guest_controls(QStringLiteral("qemu"), qemu_tools_badge_,
+                                qemu_tools_btn_, nullptr),
+            page);
+        root->addWidget(qemu_tools_row_);
+
+        refreshGuestTools();
+
         root->addStretch(1);
         return page;
     }
@@ -1453,6 +1540,134 @@ private:
         bool connected = false;
         bool operator==(const BtRowKey&) const = default;
     };
+
+    QString finnGuestToolsExecutable() const {
+        const QString canonical = QString::fromUtf8(finn::kFinnGuestToolsBin);
+        if (QFileInfo::exists(canonical) && QFileInfo(canonical).isExecutable()) {
+            return canonical;
+        }
+        return QStandardPaths::findExecutable(QStringLiteral("finn-guest-tools"));
+    }
+
+    void refreshGuestTools() {
+        const auto env = finn::sys::probe_guest_environment();
+        const QString helper = finnGuestToolsExecutable();
+        const bool can_elevate =
+            (::geteuid() == 0) ||
+            !QStandardPaths::findExecutable(QStringLiteral("pkexec")).isEmpty();
+        const bool can_act = !helper.isEmpty() && can_elevate && !guest_tools_busy_;
+
+        if (guest_env_row_ && guest_env_badge_) {
+            const bool is_vm = env.hypervisor != finn::sys::HypervisorKind::kNone;
+            guest_env_badge_->setText(QString::fromStdString(env.hypervisor_label));
+            guest_env_badge_->setTone(is_vm ? finn::ui::FinnBadge::Tone::Accent
+                                            : finn::ui::FinnBadge::Tone::Neutral);
+            QString sub;
+            if (!env.dmi_vendor.empty() || !env.dmi_product.empty()) {
+                sub = QStringLiteral("%1 %2")
+                          .arg(QString::fromStdString(env.dmi_vendor),
+                               QString::fromStdString(env.dmi_product))
+                          .trimmed();
+            } else {
+                sub = is_vm ? QStringLiteral("Virtual machine detected")
+                            : QStringLiteral("No hypervisor detected (physical machine)");
+            }
+            if (helper.isEmpty()) {
+                sub += QStringLiteral(" · finn-guest-tools helper not installed");
+            }
+            guest_env_row_->setSubtitle(sub);
+        }
+
+        auto update_suite = [&](const finn::sys::GuestToolSuiteStatus& st,
+                                finn::ui::FinnSettingRow* row,
+                                finn::ui::FinnBadge* badge,
+                                finn::ui::FinnButton* btn,
+                                bool matches_hypervisor) {
+            if (!row || !badge || !btn) return;
+            row->setSubtitle(QString::fromStdString(st.summary));
+            if (st.installed && st.service_active) {
+                badge->setText(QStringLiteral("Active"));
+                badge->setTone(finn::ui::FinnBadge::Tone::Success);
+                btn->setText(QStringLiteral("Reinstall"));
+                btn->setEnabled(can_act);
+            } else if (st.installed) {
+                badge->setText(QStringLiteral("Installed"));
+                badge->setTone(finn::ui::FinnBadge::Tone::Accent);
+                btn->setText(matches_hypervisor ? QStringLiteral("Enable")
+                                                : QStringLiteral("Reinstall"));
+                btn->setEnabled(can_act);
+            } else {
+                badge->setText(QStringLiteral("Not Installed"));
+                badge->setTone(finn::ui::FinnBadge::Tone::Neutral);
+                btn->setText(QStringLiteral("Install"));
+                btn->setEnabled(can_act);
+            }
+        };
+
+        update_suite(env.vmware, vmware_tools_row_, vmware_tools_badge_, vmware_tools_btn_,
+                     env.hypervisor == finn::sys::HypervisorKind::kVMware);
+        update_suite(env.virtualbox, vbox_tools_row_, vbox_tools_badge_, vbox_tools_btn_,
+                     env.hypervisor == finn::sys::HypervisorKind::kVirtualBox);
+        update_suite(env.qemu, qemu_tools_row_, qemu_tools_badge_, qemu_tools_btn_,
+                     env.hypervisor == finn::sys::HypervisorKind::kQemuKvm);
+
+        if (vmware_mount_btn_) {
+            const bool show_mount =
+                env.hypervisor == finn::sys::HypervisorKind::kVMware && env.vmware.installed;
+            vmware_mount_btn_->setVisible(show_mount);
+            vmware_mount_btn_->setEnabled(show_mount && can_act);
+            vmware_mount_btn_->setText(env.vmware.shared_folders_ready
+                                           ? QStringLiteral("Shared Mounted")
+                                           : QStringLiteral("Mount Shared"));
+        }
+    }
+
+    void runGuestToolsCommand(const QStringList& args, const QString& progress_msg) {
+        if (guest_tools_busy_) return;
+        const QString helper = finnGuestToolsExecutable();
+        if (helper.isEmpty()) {
+            showToast(QStringLiteral("finn-guest-tools is not installed"));
+            return;
+        }
+        guest_tools_busy_ = true;
+        refreshGuestTools();
+        showToast(progress_msg);
+
+        auto* proc = new QProcess(this);
+        connect(proc, &QProcess::finished, this,
+                [this, proc](int code, QProcess::ExitStatus status) {
+                    const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                    proc->deleteLater();
+                    guest_tools_busy_ = false;
+                    refreshGuestTools();
+                    if (status == QProcess::NormalExit && code == 0) {
+                        showToast(QStringLiteral("Guest tools updated"));
+                    } else {
+                        const QString detail = !err.isEmpty() ? err.section(QLatin1Char('\n'), -1)
+                                                              : out.section(QLatin1Char('\n'), -1);
+                        showToast(detail.isEmpty()
+                                      ? QStringLiteral("Guest tools command failed (exit %1)").arg(code)
+                                      : detail);
+                    }
+                });
+        connect(proc, &QProcess::errorOccurred, this,
+                [this, proc](QProcess::ProcessError) {
+                    const QString err = proc->errorString();
+                    proc->deleteLater();
+                    guest_tools_busy_ = false;
+                    refreshGuestTools();
+                    showToast(QStringLiteral("Failed to launch guest tools helper: %1").arg(err));
+                });
+
+        if (::geteuid() == 0) {
+            proc->start(helper, args);
+        } else {
+            QStringList pk_args;
+            pk_args << helper << args;
+            proc->start(QStringLiteral("pkexec"), pk_args);
+        }
+    }
 
     QString finnUpdateExecutable() const {
         const QString canonical = QString::fromUtf8(finn::kFinnUpdateBin);
@@ -1797,6 +2012,20 @@ private:
     finn::ui::FinnButton* mute_btn_ = nullptr;
     finn::ui::FinnSettingRow* sound_row_ = nullptr;
     finn::ui::FinnSettingRow* battery_row_ = nullptr;
+
+    finn::ui::FinnSettingRow* guest_env_row_ = nullptr;
+    finn::ui::FinnBadge* guest_env_badge_ = nullptr;
+    finn::ui::FinnSettingRow* vmware_tools_row_ = nullptr;
+    finn::ui::FinnBadge* vmware_tools_badge_ = nullptr;
+    finn::ui::FinnButton* vmware_tools_btn_ = nullptr;
+    finn::ui::FinnButton* vmware_mount_btn_ = nullptr;
+    finn::ui::FinnSettingRow* vbox_tools_row_ = nullptr;
+    finn::ui::FinnBadge* vbox_tools_badge_ = nullptr;
+    finn::ui::FinnButton* vbox_tools_btn_ = nullptr;
+    finn::ui::FinnSettingRow* qemu_tools_row_ = nullptr;
+    finn::ui::FinnBadge* qemu_tools_badge_ = nullptr;
+    finn::ui::FinnButton* qemu_tools_btn_ = nullptr;
+    bool guest_tools_busy_ = false;
 };
 
 }  // namespace

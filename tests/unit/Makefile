@@ -132,9 +132,10 @@ test_android: test_android.cpp $(ANDROID_SRCS)
 		$(ANDROID_SRCS) -lz -lpthread -ldl
 
 test_sys_files: test_sys_files.cpp ../../src/system/sys_files.cpp \
-		../../src/system/sys_files.hpp ../../src/common/paths.hpp
+		../../src/system/sys_files.hpp ../../src/system/guest_tools.cpp \
+		../../src/system/guest_tools.hpp ../../src/common/paths.hpp
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_sys_files.cpp \
-		../../src/system/sys_files.cpp
+		../../src/system/sys_files.cpp ../../src/system/guest_tools.cpp
 
 run: $(BINS)
 	./test_app_registry

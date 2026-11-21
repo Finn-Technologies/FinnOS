@@ -119,6 +119,15 @@ openssh
 curl
 7zip
 
+# Virtualization guest tools (VMware Tools, VirtualBox Guest Additions, QEMU
+# Guest Agent). Each service carries systemd ConditionVirtualization= or a
+# virtio-serial device bind, so bare-metal machines pay zero runtime cost.
+# virtualbox-guest-utils-nox is chosen deliberately over virtualbox-guest-utils
+# because the latter hard-depends on gtk3, which base/pacman.conf refuses.
+open-vm-tools
+virtualbox-guest-utils-nox
+qemu-guest-agent
+
 # Flatpak package management and Wine compatibility target the x86_64
 # release image. Flatpak GUI apps require Wayland surfaces hosted by
 # finn-comp. wine-mono and wine-gecko are the two runtimes Wine downloads
