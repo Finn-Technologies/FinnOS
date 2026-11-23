@@ -315,6 +315,52 @@ bool FinnThemeManager::setLockWallpaper(const QString& path) {
     return saveUpdated(next);
 }
 
+bool FinnThemeManager::setFormFactor(const QString& form_factor) {
+    auto next = settings_;
+    const QString cleaned = form_factor.trimmed().toLower();
+    if (cleaned == QLatin1String("auto") || cleaned == QLatin1String("desktop") ||
+        cleaned == QLatin1String("tablet") || cleaned == QLatin1String("mobile") ||
+        cleaned == QLatin1String("tv")) {
+        next.form_factor = cleaned.toStdString();
+    } else if (cleaned == QLatin1String("phone")) {
+        next.form_factor = "mobile";
+    } else {
+        next.form_factor = "auto";
+    }
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setAlertSound(const QString& name) {
+    auto next = settings_;
+    const QString cleaned = name.trimmed();
+    next.alert_sound = cleaned.isEmpty() ? "Default" : cleaned.toStdString();
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setAlertVolume(int volume_percent) {
+    auto next = settings_;
+    next.alert_volume = std::clamp(volume_percent, 0, 100);
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setStartupSound(bool enabled) {
+    auto next = settings_;
+    next.startup_sound = enabled;
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setUiSounds(bool enabled) {
+    auto next = settings_;
+    next.ui_sounds = enabled;
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setVolumeFeedback(bool enabled) {
+    auto next = settings_;
+    next.volume_feedback = enabled;
+    return saveUpdated(next);
+}
+
 bool FinnThemeManager::setDockPins(const QStringList& pins) {
     auto next = settings_;
     next.dock_pins.clear();

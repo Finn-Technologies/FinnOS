@@ -4,15 +4,15 @@ The processes and shared libraries that make up FinnOS.
 
 | Component | Owns | Runs as |
 |---|---|---|
-| `finn-comp` | DRM/headless output, seats, pointer/touch/tablet, xdg-shell, layer-shell, `ext-session-lock-v1`, foreign-toplevel, `wlr_fractional_scale_v1`, Xwayland bridge, screencopy | root |
-| `libfinnui` (`FinnSDK`) | Qt6 C++20 UI library: tokens, theme manager, spring motion (`spring.hpp`), custom CSD chrome (`FinnWindow`, `FinnFormFactor`), LayerShell windows, custom widgets, `SessionClient` | shared library |
+| `finn-comp` | Qt 6 Wayland Compositor (KWin-inspired): DRM/KMS & offscreen/headless output, 8-layer scene stack, `WorkspaceModel`, `InputRouter`, GPU Dual-Kawase blur shader, lock-request/idle timers (`XKB_KEY_l`), zero app IDs | root |
+| `libfinnui` & `libfinnui_qml` (`FinnSDK`) | Qt 6 C++20 + QML UI framework (Kirigami/Breeze-inspired): live tokens, `FinnThemeBridge`, 120 Hz analytic spring physics (`spring.hpp`), `FinnFormFactor` (Desktop/Tablet/Mobile/TV), `FinnSquircle` (`cornerSmoothing=0.6`), HugeIcons `image://finn-icon/`, 19 AOT-compiled `FinnUI 1.0` QML controls including adaptive `FinnApplicationWindow` | shared libraries |
 | `libfinnplatformtheme` & `libfinnstyle` | Custom Qt6 `QPlatformTheme` and `QProxyStyle` injected via `QT_QPA_PLATFORMTHEME=finn` & `QT_STYLE_OVERRIDE=finn` | Qt6 plugins |
 | `finn-session` | Unified app catalogue, `.desktop`/Flatpak/Wine discovery, launch broker, runtime compat probe | `finn` |
-| `finn-shell` | Responsive desktop/tablet/phone dock, active-window indicators, Home Menu, Spotlight Search, Control Center, notifications, async lock screen | `finn` |
+| `finn-shell` | Unified adaptive System UI (Plasma Corona-inspired): single binary supporting Desktop (Figma 4-pill dock, Home Menu, Spotlight, Control Center, 3-card Notification stack), Tablet (hybrid status bar + touch dock), Mobile (Plasma Mobile homescreen, Action Drawer, card Task Switcher, 134×4dp gesture pill), and TV (Plasma Bigscreen 10-foot shelves, 1.5× typography, D-pad spatial focus, Quick Settings drawer), plus Lock Screen | `finn` |
 | `finn-wallpaper` | Background WebP wallpaper surface (`background` layer) | `finn` |
 | `finn-update` | A/B OTA update client (`src/ota/`): Ed25519 manifest check, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot commit/rollback | root (units) / `finn` (read-only status) |
 | `finn-android` | Clean-room Android 17 application runtime (`src/android/`): native APK/ZIP reader, binary AXML manifest/layout parser, `resources.arsc` basics, DEX header verification and opcode decoding, ART-style analysis, per-user installer, Qt6/Wayland view bridge | `finn` |
-| First-party apps | `finn-settings`, `finn-files`, `finn-terminal`, `finn-notes`, `finn-store`, `finn-viewer`, `finn-monitor`, `finn-installer`, `finn-oobe`, optional `flourish` | `finn` |
+| First-party apps | Adaptive Qt 6 `FinnUI` apps: `finn-settings` (1:1 Figma About & Sound + Form Factor switcher), `finn-files`, `finn-terminal` (native PTY + soft-keys), `finn-notes`, `finn-store`, `finn-viewer`, `finn-monitor`, `finn-installer`, `finn-oobe`, optional `flourish` | `finn` |
 
 `finnd` — a bespoke privileged system daemon — is not written. Instead, FinnOS integrates directly with standard upstream Linux mechanisms (systemd `logind`, `NetworkManager`, `BlueZ`, `PipeWire`/`wpctl`, `UPower`, and sysfs) when present, and marks missing hardware/services honestly disabled when absent.
 
@@ -91,17 +91,17 @@ outside this tree. The mark is the first thing FinnOS draws.
 
 ## The display
 
-`finn-comp` uses wlroots 0.20. The backend is `drm` in a hardware session or `headless` for VM/automated verification. It advertises `wl_compositor`, `wl_shm`, `wl_subcompositor`, `wl_data_device_manager`, `xdg_wm_base`, `zwlr_layer_shell_v1`, `zwlr_foreign_toplevel_manager_v1`, `ext-session-lock-v1`, `wlr_fractional_scale_manager_v1`, `zwlr_screencopy_manager_v1`, `zxdg_output_manager_v1`, pointer/keyboard/`WLR_INPUT_DEVICE_TOUCH`/`WLR_INPUT_DEVICE_TABLET_TOOL` input, XKB `kb_layout` loading, and Xwayland on demand when X11 support is enabled.
+`finn-comp` is a native C++20 / Qt 6 Wayland Compositor (`src/comp/`, mirroring KWin's workspace/scene architecture). On Linux hardware it links `Qt6::WaylandCompositor` over EGLFS/KMS (`QT_QPA_PLATFORM=eglfs`, `LIBSEAT_BACKEND=seatd`) serving `/run/finn/wayland-0` (`xdg-shell`, `wlr-layer-shell`, fractional scaling, pointer/touch/keyboard input, idle/Super+L lock requests); on non-Linux hosts without `Qt6WaylandCompositor` it builds cleanly into a Qt Quick preview harness for offscreen compositor verification. The scene graph compiles a GPU Dual-Kawase backdrop blur fragment shader (`src/comp/shaders/dual_kawase_blur.frag`).
 
-The scene graph has one fixed stacking order:
+The scene graph has one fixed 8-layer stacking order (`src/comp/core/scene_stack.hpp`):
 
 ```
 background → background layer → bottom layer → app toplevels → top layer → fullscreen → overlay → lock
 ```
 
-`finn-wallpaper` binds to the `background` layer, decodes `finn::kDefaultWallpaperPath` through Qt, and applies theme dimming. `finn-shell` surfaces bind to `top` (dock) and `overlay` (popovers, toasts, lock screen) with strict pointer input masks so transparent overlay regions pass clicks cleanly to apps beneath, adapting across `Desktop`, `Tablet`, and `Phone` breakpoints (`src/shell/shell_layout.hpp`).
+`finn-wallpaper` binds to the `background` layer, decodes `finn::kDefaultWallpaperPath` through Qt, and applies theme dimming. `finn-shell` runs a unified adaptive Qt Quick `SystemUI` (`ShellCorona`) that selects Desktop, Tablet, Mobile, or TV containments live from `src/ui/finn/form_factor.hpp` (or explicit `form_factor=` preference in Settings).
 
-Native `FinnSDK` apps use `FinnWindow` (custom frameless CSD with window controls, collapsible sidebar slot, edge resize, drag-move, and `FinnFormFactor` adaptation for `Desktop`, `Tablet`, and `Phone`). Foreign Wayland/Qt/GTK/X11 clients receive lightweight compositor SSD or keep their client titlebars.
+Native `FinnSDK` apps use `FinnApplicationWindow` (`FinnSDK::FinnUIQml`, QML `import FinnUI 1.0`) or `FinnWindow` (`FinnSDK::FinnUI`), adapting automatically across Desktop (250px Figma split-pane + floating 88×28 window controls pill), Tablet (collapsible NavRail), Mobile (master/detail + 56dp bottom navigation bar), and TV (10-foot overscan-safe 1.5× typography + D-pad focus rings).
 
 Window management keys:
 - `Alt+F1`: cycle focus across app toplevels
@@ -146,7 +146,7 @@ FinnOS does not leave Qt6 with stock desktop widgets. Both `FinnSDK` apps and un
 - **No weather forecast backend.** The clock pill displays real local time without fabricated temperatures or forecasts.
 - **No OS-level native app sandbox or enforced `.finnapp` permissions.** Native C++20/Qt6 apps run directly with user `finn` privileges; `finn-app.json` permissions are declarative metadata in v1, and sandboxed distribution uses `flatpak`. `src/compat/linux_sandbox` cleans the child environment (stripping `LD_*` and plugin-path hijack variables) and can build a bubblewrap argv only when `bwrap` exists, but that is a best-effort namespace wrapper, not an enforced permission sandbox. AppImages are not signature-verified, and there is no GTK theme for third-party GTK apps.
 - **Verified boot & hosted repo limits.** `src/ota/finn-update` implements Ed25519 manifest signing, `zstd` delta patching, and `systemd-boot`/`GRUB` A/B slot switching (`vm/finn-install.sh --ab-slots`), and `repo/` provides repository signing/publishing scripts — however Secure Boot, `dm-verity`, TPM2 sealing, live `repo.finnos.org` hosting (`finnos-keyring` ships an empty placeholder keyring), and real-disk A/B power-cycle rollback tests are not complete.
-- **Display, input & localization limits.** Single global output scale/layout (`outputs_.front()`), no per-display arrangement editor or mixed per-output HiDPI, no compositor GPU shader backdrop blur, no Wayland IME (`zwp_text_input_v3`), no `QTranslator` localization bundles, and no cellular modem/telephony stack (`ModemManager`).
+- **Display, DRM hardware & localization limits.** The rewritten Qt 6 Wayland Compositor (`finn-comp`) and unified adaptive `finn-shell` + core apps were compiled, unit-tested under ASan/UBSan, and visually verified via Qt 6 offscreen rendering on macOS (`Qt 6.12`). Physical Linux DRM/KMS (`eglfs_kms` + `Qt6WaylandCompositor` + `LayerShellQt`) runtime testing on target hardware/VM remains to be run when a Linux Wayland target is reachable. Per-display arrangement editor, mixed per-output HiDPI, Wayland IME (`zwp_text_input_v3`), `QTranslator` localization bundles, and cellular modem/telephony (`ModemManager`) are not yet implemented.
 - **Partial runtime accessibility enforcement.** High Contrast and Reduced Motion apply live; `text_scale`, `color_filter`, `sticky_keys`, `filter_keys`, and packaged `orca` screen reader integration remain incomplete.
 - **ARM64 Wine runtime**: `base/packages.aarch64` does not invent unavailable upstream `wine` packages; `probe_wine_runtime()` inspects binaries/prefixes honestly and keeps launch buttons disabled until a compatible runtime (`wine` + optional translator) exists on the machine.
 - **Incomplete macOS framework coverage (`finn-darwin`)**: `finn-darwin` runs unmodified 64-bit Mach-O C, Objective-C, Foundation, CoreGraphics/QuartzCore, core Swift ABI, and AppKit-on-Qt6 apps natively on matching CPU architecture (`arm64` on `aarch64`, `x86_64` on `x86_64`) and downloads/installs `.app`/`.pkg`/`.zip`/`.dmg` packages (using `7z` for HFS+/APFS `.dmg` extraction). Full Swift stdlib & SwiftUI, Metal GPU shaders, WebKit, CoreData, Security/Keychain, and Apple App Store / iCloud are not yet implemented; `finn-darwin diagnose` lists every missing framework/symbol honestly before launch.

@@ -215,6 +215,18 @@ SettingsData parse_settings(std::string_view text) {
         else if (key == "avatar_color" && !val.empty()) d.avatar_color = val;
         else if (key == "wallpaper") d.wallpaper = val;
         else if (key == "lock_wallpaper") d.lock_wallpaper = val;
+        else if (key == "form_factor" && !val.empty()) {
+            if (val == "auto" || val == "desktop" || val == "tablet" ||
+                val == "mobile" || val == "phone" || val == "tv") {
+                d.form_factor = (val == "phone") ? "mobile" : val;
+            }
+        } else if (key == "alert_sound" && !val.empty()) d.alert_sound = val;
+        else if (key == "alert_volume") {
+            int av = 75;
+            if (parse_int(val, &av)) d.alert_volume = std::clamp(av, 0, 100);
+        } else if (key == "startup_sound") d.startup_sound = parse_bool(val);
+        else if (key == "ui_sounds") d.ui_sounds = parse_bool(val);
+        else if (key == "volume_feedback") d.volume_feedback = parse_bool(val);
         else if (key == "scale" && !val.empty()) {
             const double parsed = std::strtod(val.c_str(), nullptr);
             if (parsed >= 0.5 && parsed <= 4.0) d.scale = parsed;
@@ -251,6 +263,12 @@ std::string serialize_settings(const SettingsData& data) {
     out << "avatar_color=" << (data.avatar_color.empty() ? "blue" : data.avatar_color) << '\n';
     if (!data.wallpaper.empty()) out << "wallpaper=" << data.wallpaper << '\n';
     if (!data.lock_wallpaper.empty()) out << "lock_wallpaper=" << data.lock_wallpaper << '\n';
+    out << "form_factor=" << (data.form_factor.empty() ? "auto" : data.form_factor) << '\n';
+    out << "alert_sound=" << (data.alert_sound.empty() ? "Default" : data.alert_sound) << '\n';
+    out << "alert_volume=" << std::clamp(data.alert_volume, 0, 100) << '\n';
+    out << "startup_sound=" << (data.startup_sound ? "1" : "0") << '\n';
+    out << "ui_sounds=" << (data.ui_sounds ? "1" : "0") << '\n';
+    out << "volume_feedback=" << (data.volume_feedback ? "1" : "0") << '\n';
     out << "scale=" << data.scale << '\n';
     out << "dock_pins=";
     for (std::size_t i = 0; i < data.dock_pins.size(); ++i) {

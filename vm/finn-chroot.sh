@@ -201,7 +201,7 @@ mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn /usr/loca
 get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
 get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
 get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\n' > /var/lib/finn/installed
+printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\ncalculator\narchive\ncapture\nflourish\n' > /var/lib/finn/installed
 printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
 ldconfig 2>/dev/null || true
 # Every icon, when the payload is the tree. A list of names is a second

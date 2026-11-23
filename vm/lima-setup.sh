@@ -83,13 +83,11 @@ if ! guest 'test -f /var/lib/finn-lima-upgraded'; then
     limactl start --tty=false "$NAME"
 fi
 
-# Without a host GPU wlroots picks GLES2 on llvmpipe, and what QEMU shows
-# then has stale blocks the compositor's own frame does not (grim is clean,
-# the window is not). Pixman is the renderer the tree is tested with.
+# Configure Qt 6 EGLFS/KMS on QEMU's virtio-gpu DRM output cleanly.
 guest '
     set -e
     install -d /etc/systemd/system/finn-comp.service.d
-    printf "[Service]\nEnvironment=WLR_RENDERER=pixman\n" \
+    printf "[Service]\nEnvironment=QT_QPA_PLATFORM=eglfs\nEnvironment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms\n" \
         > /etc/systemd/system/finn-comp.service.d/renderer.conf
     systemctl daemon-reload
 '

@@ -20,3 +20,7 @@ notes | Finn Notes | notes.svg | /usr/local/bin/finn-notes | Notes and text edit
 store | Finn Store | store.svg | /usr/local/bin/finn-store | Software, Flatpak & Windows apps
 viewer | Finn Viewer | viewer.svg | /usr/local/bin/finn-viewer | Image and SVG viewer
 monitor | Finn Monitor | monitor.svg | /usr/local/bin/finn-monitor | System activity and processes
+calculator | Finn Calculator | calculator.svg | /usr/local/bin/finn-calculator | Standard and scientific calculator
+archive | Finn Archive | archive.svg | /usr/local/bin/finn-archive | Archive manager for zip and tar
+capture | Finn Capture | capture.svg | /usr/local/bin/finn-capture | Screen capture and screenshots
+flourish | Flourish | flourish.svg | /usr/local/bin/finn-flourish | Arc-inspired Chromium web browser

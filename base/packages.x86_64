@@ -73,6 +73,7 @@ qt6-svg
 qt6-imageformats
 qt6-tools
 qt6-declarative
+qt6-shadertools
 qt6-webengine
 layer-shell-qt
 xorg-xwayland
@@ -82,8 +83,7 @@ desktop-file-utils
 shared-mime-info
 upower
 
-# What finn-comp links against.
-wlroots0.20
+# Native media/font libraries shared by finn-comp, libfinnui, and system apps.
 freetype2
 fontconfig
 libwebp

@@ -27,6 +27,12 @@ struct SettingsData {
     std::string avatar_color = "blue";   // blue, indigo, mint, amber, coral, pink, teal, slate
     std::string wallpaper;               // Empty means default wallpaper
     std::string lock_wallpaper;          // Empty means use the desktop wallpaper
+    std::string form_factor = "auto";    // auto, desktop, tablet, mobile, tv
+    std::string alert_sound = "Default"; // Figma Settings - Sound (71:239)
+    int alert_volume = 75;               // 0..100
+    bool startup_sound = true;
+    bool ui_sounds = true;
+    bool volume_feedback = true;
     double scale = 1.0;
     std::vector<std::string> dock_pins;  // Ordered app ids pinned to the dock
 };

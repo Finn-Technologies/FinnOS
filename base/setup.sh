@@ -217,7 +217,7 @@ install -m644 "$ROOT/assets/wallpaper/setup.webp"   /usr/share/finn/wallpaper/se
 cp "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg /usr/share/finn/icons/
 cp "$ROOT"/assets/models/*.glb /usr/share/finn/models/
 install -m644 "$ROOT/assets/apps.registry" /usr/share/finn/apps.registry
-printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\n' > /var/lib/finn/installed
+printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\ncalculator\narchive\ncapture\nflourish\n' > /var/lib/finn/installed
 printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
 ldconfig 2>/dev/null || true
 fc-cache -f >/dev/null

@@ -1,13 +1,13 @@
-<svg width="26" height="26" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="26" height="26" rx="5.90909" fill="url(#paint0_linear_notes)"/>
-<rect x="0.270833" y="0.270833" width="25.4583" height="25.4583" rx="5.63826" stroke="black" stroke-opacity="0.1" stroke-width="0.541667"/>
-<rect x="6" y="5.5" width="14" height="15" rx="2.5" fill="white"/>
-<rect x="6" y="5.5" width="14" height="4" rx="1.5" fill="#F59E0B"/>
-<path d="M9 12.5H17M9 15.5H17M9 18.5H14" stroke="#6B7280" stroke-width="1.3" stroke-linecap="round"/>
-<defs>
-<linearGradient id="paint0_linear_notes" x1="13" y1="0" x2="13" y2="26" gradientUnits="userSpaceOnUse">
-<stop stop-color="#FEF3C7"/>
-<stop offset="1" stop-color="#FDE68A"/>
-</linearGradient>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFC928"/>
+      <stop offset="100%" stop-color="#F59E0B"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="16" ry="16" fill="url(#bg)"/>
+  <rect x="17" y="14" width="30" height="36" rx="7" ry="7" fill="#FFFFFF"/>
+  <rect x="23" y="23" width="18" height="3.2" rx="1.6" ry="1.6" fill="#F59E0B"/>
+  <rect x="23" y="30.4" width="18" height="3.2" rx="1.6" ry="1.6" fill="#F59E0B"/>
+  <rect x="23" y="37.8" width="12" height="3.2" rx="1.6" ry="1.6" fill="#F59E0B" fill-opacity="0.72"/>
 </svg>

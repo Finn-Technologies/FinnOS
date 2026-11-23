@@ -9,39 +9,40 @@ where a key is handled".
 1. [`src/common/paths.hpp`](../src/common/paths.hpp) — every shared path.
 2. [`src/session/app_registry.cpp`](../src/session/app_registry.cpp) — catalogue and installed list.
 3. [`src/session/main.cpp`](../src/session/main.cpp) — the launch broker.
-4. [`src/ui/FinnSDK/FinnSDK.hpp`](../src/ui/FinnSDK/FinnSDK.hpp) — public C++20 + Qt6 SDK header.
-5. [`src/ui/finn/window.cpp`](../src/ui/finn/window.cpp) — custom CSD window chrome and live theme updates.
+4. [`src/ui/FinnSDK/FinnQml.hpp`](../src/ui/FinnSDK/FinnQml.hpp) & [`src/ui/FinnSDK/FinnSDK.hpp`](../src/ui/FinnSDK/FinnSDK.hpp) — public C++20 + Qt 6 SDK headers (`FinnUIQml` & `FinnUI`).
+5. [`src/ui/qml/controls/FinnApplicationWindow.qml`](../src/ui/qml/controls/FinnApplicationWindow.qml) — Kirigami-inspired adaptive Desktop/Tablet/Mobile/TV app window.
 6. [`src/qtplugin/`](../src/qtplugin/) — `finnplatformtheme` + `finnstyle` Qt6 plugins.
-7. [`src/shell/main.cpp`](../src/shell/main.cpp) — dock, Spotlight search, Home menu, Control Center, toasts.
-8. [`src/comp/server.cpp`](../src/comp/server.cpp) — the wlroots 0.20 compositor.
-9. [`src/comp/wlroots.hpp`](../src/comp/wlroots.hpp) — the one C shim.
+7. [`src/shell/core/shell_corona.cpp`](../src/shell/core/shell_corona.cpp) & [`src/shell/ui/SystemUI.qml`](../src/shell/ui/SystemUI.qml) — unified adaptive System UI (Desktop, Tablet, Mobile, TV).
+8. [`src/comp/server.cpp`](../src/comp/server.cpp) & [`src/comp/core/workspace_model.cpp`](../src/comp/core/workspace_model.cpp) — Qt 6 Wayland compositor (KWin-inspired).
+9. [`src/comp/shaders/dual_kawase_blur.frag`](../src/comp/shaders/dual_kawase_blur.frag) — GPU Dual-Kawase glass backdrop blur shader.
 10. [`docs/motion.md`](motion.md) — durations, easings, and motion tokens.
 
 ## Processes and files
 
 ```
 finn-comp (src/comp)
-  main.cpp         argument parsing and process entry
-  server.cpp/hpp   display, scene layers, pointer/touch/tablet, ext-session-lock-v1, output, timers
-  window.cpp       xdg_toplevel + Xwayland + fullscreen stacking, SSD, entrance motion
-  layer.cpp        wlr-layer-shell surface placement and exclusive zones
-  xwayland_shim.c  minimal C helper for Xwayland surface properties
-  wlroots.hpp      the C-header shim (the only macro trick in the tree)
+  main.cpp               argument parsing and process entry
+  server.cpp/hpp         Qt 6 Wayland compositor server (with host preview fallback), lock/idle timers, sd_notify
+  core/scene_stack.hpp   strict 8-layer scene stacking contract
+  core/workspace_model.* virtual desktops, focus history, snap/maximize/minimize state, zero app IDs
+  core/input_router.*    Super+L / Alt+Tab / Alt+F4 / TV D-pad spatial focus routing
+  qml/CompositorScene.qml hardware-accelerated Qt Quick compositor scene
+  shaders/dual_kawase_blur.frag GPU Dual-Kawase frosted glass shader
 
 finn-session (src/session)
   main.cpp         unix socket, request verbs, posix_spawn, CLI
   client.cpp/hpp   client helper shared with the shell and apps
   app_registry.*   catalogue + /var/lib/finn/installed merger
 
-libfinnui / FinnSDK (src/ui)
-  FinnSDK/         installed SDK umbrella & forwarding headers
-  finn/application.* Qt6 Wayland client bootstrap, Fixel Display font, Finn style
-  finn/window.*    custom frameless CSD FinnWindow (`FinnFormFactor`) + FinnLayerWindow
-  finn/theme.*     FinnThemeManager reading settings & FINN_DARK live
+libfinnui & libfinnui_qml / FinnSDK (src/ui)
+  FinnSDK/         installed SDK umbrella headers (FinnSDK.hpp, FinnQml.hpp)
+  finn/form_factor.hpp pure C++20 Desktop/Tablet/Mobile/TV form-factor & breakpoint engine
+  finn/theme.*     FinnThemeManager reading settings & FINN_DARK live (including form_factor & sound)
   finn/tokens.hpp  typed FinnTokens + generated_tokens.hpp bridge
-  finn/spring.hpp  analytic spring solver, SpringAnimator, rubber-band overscroll
-  finn/components.* FinnButton, FinnCard, FinnToggle, FinnSlider, FinnSearchField, etc.
-  finn/animation.hpp motion tokens, easing curves, and live reduced_motion() reader
+  finn/spring.hpp  analytic 120 Hz spring solver, SpringAnimator, rubber-band overscroll
+  qml/finn_qml_types.* FinnThemeBridge, FinnSpringValue, FinnSquircle, FinnBootMark, FinnAvatar, FinnIconProvider
+  qml/finn_qml_app.*   FinnQmlApp harness (Fixel Display, CLI form-factor/theme/screenshot)
+  qml/controls/*.qml   19 AOT-compiled FinnUI 1.0 controls (FinnApplicationWindow, FinnGlassPanel, FinnSlider, etc.)
 
 Qt6 platform customization (src/qtplugin)
   finn_platform_theme.*  libfinnplatformtheme.so (QT_QPA_PLATFORMTHEME=finn)
@@ -51,17 +52,19 @@ Compat & system helpers (src/compat, src/system)
   desktop_entry.*  XDG .desktop & Flatpak discovery + launch line building
   wine_runner.*    PE header inspection & per-app Wine prefix execution
   android_runner.* Clean-room Android 17 (finn-android) probe and launcher helper
-  sys_files.*      settings, users, mounts, /proc memory & CPU helpers
+  sys_files.*      settings (incl. form_factor & sound), users, mounts, /proc memory & CPU helpers
   desktop_services.* real NetworkManager/BlueZ/UPower/PipeWire probes + secure nmcli connect
 
 finn-shell (src/shell)
-  main.cpp         Qt6 layer-shell bootstrap and compositor surface coordination
-  shell_layout.hpp Phone/Tablet/Desktop breakpoints, tokenized colors, focus rings
-  dock.*           responsive bottom dock / mobile gesture bar, running dots, clock/status pills
-  popovers.*       Home menu, Control Center, Window overview, async LockScreenWindow
-  search.*         Spotlight search & evaluator
-  foreign_windows.* wlr-foreign-toplevel-management tracker
-  notifications.*  floating FinnToast notifications
+  main.cpp                 unified System UI bootstrap
+  core/shell_corona.*      Plasma Corona-inspired ShellCorona, AppCatalogModel, NotificationListModel
+  ui/SystemUI.qml          live adaptive root switching Desktop / Tablet / Mobile / TV containments
+  ui/common/*.qml          WallpaperLayer, NotificationStack (3-card receding stack), LockScreenOverlay
+  ui/desktop/*.qml         DesktopShell, DesktopDock (4-pill), HomeMenuPopover, SpotlightPopover, ControlCenterPopover, OverviewPopover
+  ui/tablet/TabletShell.qml hybrid top status bar + 56dp touch dock + floating popovers
+  ui/mobile/MobileShell.qml Plasma Mobile homescreen, pull-down Action Drawer, horizontal card Task Switcher, 134x4dp gesture pill
+  ui/tv/TvShell.qml        Plasma Bigscreen 10-foot shelves, 1.5x typography, D-pad focus rings, slide-over Quick Settings drawer
+  search.*                 Spotlight search & arithmetic evaluator
 
 finn-update & repo tooling (src/ota, ota, repo)
   src/ota/finn-update CLI entry for A/B OTA status, check, download, apply, commit, rollback

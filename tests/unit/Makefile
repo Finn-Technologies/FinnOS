@@ -53,9 +53,9 @@ ANDROID_SRCS  = ../../src/android/zip_reader.cpp ../../src/android/android_forma
                 ../../src/android/android_installer.cpp \
                 ../../src/compat/android_runner.cpp \
                 ../../src/compat/desktop_entry.cpp
-BINS          = test_app_registry test_animation test_spring test_session_client \
-                test_search test_compat test_windows_modules test_darwin test_ohos \
-                test_android test_sys_files
+BINS          = test_app_registry test_animation test_spring test_compositor \
+                test_session_client test_search test_compat test_windows_modules \
+                test_darwin test_ohos test_android test_sys_files
 
 all: $(BINS)
 
@@ -70,6 +70,17 @@ test_animation: test_animation.cpp ../../src/ui/finn/animation.hpp \
 test_spring: test_spring.cpp ../../src/ui/finn/spring.hpp \
 		../../src/ui/finn/animation.hpp ../../src/common/paths.hpp
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src/ui -o $@ test_spring.cpp
+
+test_compositor: test_compositor.cpp ../../src/comp/core/workspace_model.cpp \
+		../../src/comp/core/workspace_model.hpp \
+		../../src/comp/core/input_router.cpp \
+		../../src/comp/core/input_router.hpp \
+		../../src/comp/core/scene_stack.hpp \
+		../../src/ui/finn/form_factor.hpp \
+		../../src/ui/generated_tokens.hpp
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_compositor.cpp \
+		../../src/comp/core/workspace_model.cpp \
+		../../src/comp/core/input_router.cpp
 
 test_session_client: test_session_client.cpp ../../src/session/client.cpp \
 		../../src/session/client.hpp ../../src/common/paths.hpp
@@ -141,6 +152,7 @@ run: $(BINS)
 	./test_app_registry
 	./test_animation
 	./test_spring
+	./test_compositor
 	./test_session_client
 	./test_search
 	./test_compat

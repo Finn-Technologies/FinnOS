@@ -19,11 +19,22 @@ rsh() { ssh ${FINN_SSH_OPTS:-} "$@"; }
 OUT="${1:-/tmp/finn-shot.png}"
 REMOTE="/tmp/finn-shot-$$.png"
 
-rsh "$HOST" "sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 \
-    WAYLAND_DISPLAY=/run/finn/wayland-0 grim '$REMOTE'" >/dev/null
+# Try grim first if zwlr_screencopy is present, otherwise use finn-comp's native
+# Qt 6 framebuffer capture trigger (/run/finn/state/capture-request).
+rsh "$HOST" "
+    set -e
+    if sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/run/finn/wayland-0 grim '$REMOTE' 2>/dev/null; then
+        exit 0
+    fi
+    sudo rm -f '$REMOTE' '$REMOTE.done'
+    printf '%s\n' '$REMOTE' | sudo tee /run/finn/state/capture-request >/dev/null
+    for _ in \$(seq 1 40); do
+        [ -f '$REMOTE.done' ] && break
+        sleep 0.1
+    done
+    test -s '$REMOTE'
+" >/dev/null
 # shellcheck disable=SC2086
 scp ${FINN_SSH_OPTS:-} -q -o BatchMode=yes "$HOST:$REMOTE" "$OUT"
-# The capture is finn's file in a sticky /tmp, so only finn can remove it;
-# the ssh user is not finn on every VM.
-rsh "$HOST" "sudo -u finn rm -f '$REMOTE'"
+rsh "$HOST" "sudo rm -f '$REMOTE' '$REMOTE.done'"
 echo "$OUT"

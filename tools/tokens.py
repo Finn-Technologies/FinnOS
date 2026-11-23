@@ -15,9 +15,14 @@ COLOR = re.compile(
     r"\s*\1_dark\s+#([0-9A-Fa-f]{6,8})",
     re.MULTILINE,
 )
-LINE_PAIR = re.compile(r"^\s*(spacing|radius|blur|elevation|breakpoint):\s*(.+)$", re.MULTILINE)
+LINE_PAIR = re.compile(
+    r"^\s*(spacing|radius|blur|elevation|breakpoint|weight):\s*(.+)$",
+    re.MULTILINE,
+)
 ITEM = re.compile(r"\b([a-zA-Z_]\w*)\s+([0-9]+(?:\.[0-9]+)?)\b")
+MOTION = re.compile(r"^\s*motion:\s*([a-zA-Z_]\w*)\s+([0-9]+)ms\s+([a-zA-Z_]\w*)", re.MULTILINE)
 SMOOTHING = re.compile(r"\bcorner_smoothing\s+([0-9]+(?:\.[0-9]+)?)\b")
+TV_SCALE = re.compile(r"\btv_type_scale:\s*([0-9]+(?:\.[0-9]+)?)\s*,\s*min_tv\s+([0-9]+)sp\b")
 
 
 def strip_comment(line: str) -> str:
@@ -43,7 +48,8 @@ def parse_pairs(source: str, kind: str) -> list[tuple[str, str]]:
 
 
 def generate(source: str) -> str:
-    tokens = COLOR.findall(source)
+    cleaned_source = "\n".join(strip_comment(l) for l in source.splitlines())
+    tokens = COLOR.findall(cleaned_source)
     if not tokens:
         raise SystemExit("no colour tokens found")
 
@@ -52,9 +58,10 @@ def generate(source: str) -> str:
     blurs = parse_pairs(source, "blur")
     elevations = parse_pairs(source, "elevation")
     breakpoints = parse_pairs(source, "breakpoint")
-    smoothing_match = SMOOTHING.search(
-        "\n".join(strip_comment(l) for l in source.splitlines())
-    )
+    weights = [(k, v) for k, v in parse_pairs(source, "weight") if k != "corner_smoothing"]
+    motions = MOTION.findall(cleaned_source)
+    smoothing_match = SMOOTHING.search(cleaned_source)
+    tv_match = TV_SCALE.search(cleaned_source)
 
     lines = [
         "// Generated from ui/_tokens.fui by tools/tokens.py. Do not edit.",
@@ -105,6 +112,24 @@ def generate(source: str) -> str:
         for name, val in breakpoints:
             lines.append(f"inline constexpr int {name} = {int(float(val))};")
         lines += ["", "}  // namespace finn::ui::breakpoints"]
+
+    if weights:
+        lines += ["", "namespace finn::ui::weights {", ""]
+        for name, val in weights:
+            lines.append(f"inline constexpr double {name} = {float(val)};")
+        lines += ["", "}  // namespace finn::ui::weights"]
+
+    if motions:
+        lines += ["", "namespace finn::ui::motion {", ""]
+        for name, ms, _curve in motions:
+            lines.append(f"inline constexpr int {name}_ms = {int(ms)};")
+        lines += ["", "}  // namespace finn::ui::motion"]
+
+    if tv_match:
+        lines += ["", "namespace finn::ui::tv {", ""]
+        lines.append(f"inline constexpr double type_scale = {float(tv_match.group(1))};")
+        lines.append(f"inline constexpr int min_sp = {int(tv_match.group(2))};")
+        lines += ["", "}  // namespace finn::ui::tv"]
 
     lines += ["", "#endif", ""]
     return "\n".join(lines)

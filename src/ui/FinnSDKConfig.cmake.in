@@ -2,7 +2,8 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg)
-find_dependency(LayerShellQt REQUIRED)
+find_dependency(Qt6 COMPONENTS Qml Quick QuickControls2 QUIET)
+find_dependency(LayerShellQt QUIET)
 
 include("${CMAKE_CURRENT_LIST_DIR}/FinnSDKTargets.cmake")
 check_required_components(FinnSDK)

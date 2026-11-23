@@ -34,10 +34,16 @@ inline constexpr std::uint32_t fill_light = 0xFFFFFFFFu;
 inline constexpr std::uint32_t fill_dark = 0xFFEDE9E1u;
 inline constexpr std::uint32_t glass_light = 0xFFFBFBFDu;
 inline constexpr std::uint32_t glass_dark = 0xFF161922u;
+inline constexpr std::uint32_t notif_glass_light = 0xB2FFFFFFu;
+inline constexpr std::uint32_t notif_glass_dark = 0xB2414141u;
+inline constexpr std::uint32_t lock_pill_light = 0xA6FFFFFFu;
+inline constexpr std::uint32_t lock_pill_dark = 0xB8161922u;
 inline constexpr std::uint32_t nav_sel_light = 0x120F141Au;
 inline constexpr std::uint32_t nav_sel_dark = 0x24FFFFFFu;
 inline constexpr std::uint32_t hero_tint_light = 0xFFEBFFDFu;
 inline constexpr std::uint32_t hero_tint_dark = 0xFF15221Bu;
+inline constexpr std::uint32_t sound_badge_light = 0xFFFF0000u;
+inline constexpr std::uint32_t sound_badge_dark = 0xFFFF3B30u;
 inline constexpr std::uint32_t surface_canvas_light = 0xFFF2F4F8u;
 inline constexpr std::uint32_t surface_canvas_dark = 0xFF111319u;
 inline constexpr std::uint32_t surface_input_light = 0xFFF4F6FAu;
@@ -80,6 +86,7 @@ inline constexpr double r_xs = 4.0;
 inline constexpr double r_sm = 6.0;
 inline constexpr double r_md = 8.0;
 inline constexpr double r_lg = 12.0;
+inline constexpr double r_folder = 14.0;
 inline constexpr double r_xl = 20.0;
 inline constexpr double r_nav = 5.0;
 inline constexpr double r_bubble = 10.4;
@@ -118,7 +125,48 @@ inline constexpr int bp_phone_max = 599;
 inline constexpr int bp_tablet_min = 600;
 inline constexpr int bp_tablet_max = 1024;
 inline constexpr int bp_desktop_min = 1025;
+inline constexpr int bp_tv_min = 1920;
 
 }  // namespace finn::ui::breakpoints
+
+namespace finn::ui::weights {
+
+inline constexpr double glass_panel = 0.65;
+inline constexpr double glass_tile = 0.85;
+inline constexpr double glass_tile_pass = 0.5714286;
+inline constexpr double glass_well = 0.53;
+inline constexpr double glass_footer = 0.4;
+inline constexpr double surface_scale = 0.92;
+inline constexpr double wash_hover = 0.055;
+inline constexpr double wash_press = 0.09;
+
+}  // namespace finn::ui::weights
+
+namespace finn::ui::motion {
+
+inline constexpr int surface_open_ms = 280;
+inline constexpr int surface_close_ms = 180;
+inline constexpr int scrim_in_ms = 200;
+inline constexpr int scrim_out_ms = 140;
+inline constexpr int hover_in_ms = 110;
+inline constexpr int hover_out_ms = 200;
+inline constexpr int press_in_ms = 80;
+inline constexpr int press_out_ms = 180;
+inline constexpr int fill_ms = 200;
+inline constexpr int grid_cell_ms = 200;
+inline constexpr int grid_step_ms = 22;
+inline constexpr int grid_delay_ms = 60;
+inline constexpr int clock_tick_ms = 260;
+inline constexpr int note_ms = 220;
+inline constexpr int theme_ms = 360;
+
+}  // namespace finn::ui::motion
+
+namespace finn::ui::tv {
+
+inline constexpr double type_scale = 1.5;
+inline constexpr int min_sp = 32;
+
+}  // namespace finn::ui::tv
 
 #endif

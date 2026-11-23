@@ -2,7 +2,9 @@
 
 #include "ui/finn/window.hpp"
 
+#ifdef FINN_HAVE_LAYERSHELLQT
 #include <LayerShellQt/Window>
+#endif
 #include <QEvent>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -642,6 +644,7 @@ FinnLayerWindow::FinnLayerWindow(Layer layer, const QString& scope,
 }
 
 void FinnLayerWindow::applyLayerConfig() {
+#ifdef FINN_HAVE_LAYERSHELLQT
     if (!windowHandle() ||
         !QGuiApplication::platformName().contains(QStringLiteral("wayland"),
                                                   Qt::CaseInsensitive)) {
@@ -691,6 +694,9 @@ void FinnLayerWindow::applyLayerConfig() {
     layer_win_->setExclusiveZone(exclusive_zone_);
     layer_win_->setMargins(margins_);
     if (desired_size_.isValid()) layer_win_->setDesiredSize(desired_size_);
+#else
+    Q_UNUSED(layer_win_);
+#endif
 }
 
 void FinnLayerWindow::setLayer(Layer layer) {

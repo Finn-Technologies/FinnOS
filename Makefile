@@ -8,23 +8,24 @@ CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 .PHONY: all configure ui qtplugin compositor session darwin ohos android shell apps tools \
         test test-unit bench check lint install clean deploy help
 
-all: compositor session configure
+all: session configure
 	cmake --build $(BUILD_DIR)
 
 configure: $(BUILD_DIR)/CMakeCache.txt
 
-$(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt src/ui/CMakeLists.txt src/qtplugin/CMakeLists.txt \
-		src/shell/CMakeLists.txt src/android/CMakeLists.txt apps/CMakeLists.txt tools/CMakeLists.txt
+$(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt src/comp/CMakeLists.txt src/ui/CMakeLists.txt \
+		src/qtplugin/CMakeLists.txt src/shell/CMakeLists.txt src/android/CMakeLists.txt \
+		apps/CMakeLists.txt tools/CMakeLists.txt
 	cmake -S . -B $(BUILD_DIR) -G Ninja -DCMAKE_INSTALL_PREFIX=$(PREFIX) $(CMAKE_FLAGS)
 
 ui: configure
-	cmake --build $(BUILD_DIR) --target finnui
+	cmake --build $(BUILD_DIR) --target finnui finnui_qml
 
 qtplugin: configure
 	cmake --build $(BUILD_DIR) --target finnplatformtheme finnstyle
 
-compositor:
-	$(MAKE) -C src/comp
+compositor: configure
+	cmake --build $(BUILD_DIR) --target finn-comp
 
 session:
 	$(MAKE) -C src/session
@@ -71,7 +72,6 @@ lint:
 	@./tools/check-branding.sh
 
 install: all
-	$(MAKE) -C src/comp install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	$(MAKE) -C src/session install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
 	DESTDIR=$(DESTDIR) cmake --install $(BUILD_DIR) --prefix $(PREFIX)
 	install -d $(DESTDIR)/usr/share/finn

@@ -1,30 +1,38 @@
 #!/bin/sh
-# finn-display: inspect or change the display resolution and scale
+# finn-display: inspect or change the display resolution and scale (DRM KMS + Wayland).
+
+set -e
 
 SETTING_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/finn/settings"
 mkdir -p "$(dirname "$SETTING_FILE")"
 touch "$SETTING_FILE"
 
+detect_connector() {
+    for st in /sys/class/drm/card*-*/status; do
+        [ -f "$st" ] || continue
+        if [ "$(cat "$st" 2>/dev/null)" = "connected" ]; then
+            base="$(basename "$(dirname "$st")")"
+            echo "${base#card*-}"
+            return 0
+        fi
+    done
+    echo "Virtual-1"
+}
+
 if [ $# -eq 0 ]; then
     echo "FinnOS Display Manager"
     echo "======================"
+    echo "Connector: $(detect_connector)"
     echo "Current settings in $SETTING_FILE:"
-    grep -E '^(resolution|scale)=' "$SETTING_FILE" 2>/dev/null || echo "  (default: 1440x900 @ 1.0x)"
+    grep -E '^(resolution|scale)=' "$SETTING_FILE" 2>/dev/null || echo "  (default: 1280x800 @ 1.0x)"
     echo ""
     echo "Usage: finn-display <WIDTHxHEIGHT> [SCALE]"
     echo "   or: finn-display <WIDTH> <HEIGHT> [SCALE]"
     echo ""
-    echo "Presets:"
-    echo "  1440x900   (MacBook Air / 13\" Pro - best fit)"
-    echo "  1600x900   (Standard laptop 16:9)"
-    echo "  1920x1080  (Full HD 1080p)"
-    echo "  1920x1200  (16:10 widescreen)"
-    echo "  2560x1440  (2K Quad HD)"
-    echo "  2560x1664  (Retina HiDPI)"
-    echo ""
-    echo "Scale:"
-    echo "  1.0        (Standard 1:1)"
-    echo "  2.0        (HiDPI 2x)"
+    echo "Available modes:"
+    for m in /sys/class/drm/card*-*/modes; do
+        [ -f "$m" ] && head -n 20 "$m" && break
+    done
     exit 0
 fi
 
@@ -53,5 +61,22 @@ echo "resolution=$RES" >> "$TMP_FILE"
 echo "scale=$SCALE" >> "$TMP_FILE"
 mv -f "$TMP_FILE" "$SETTING_FILE"
 
-echo "Display updated to $RES @ ${SCALE}x"
-echo "Compositor will apply changes dynamically within 1 second."
+CONN="$(detect_connector)"
+QT_CONN="$(echo "$CONN" | sed -E 's/^Virtual-([0-9]+)$/Virtual\1/; s/^HDMI-A-([0-9]+)$/HDMI\1/; s/^eDP-([0-9]+)$/eDP\1/; s/^DP-([0-9]+)$/DP\1/')"
+KMS_JSON="$(printf '{\n  "device": "/dev/dri/card0",\n  "outputs": [\n    { "name": "%s", "mode": "%s" },\n    { "name": "%s", "mode": "%s" }\n  ]\n}\n' "$QT_CONN" "$RES" "$CONN" "$RES")"
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    SUDO="sudo -n"
+fi
+
+if $SUDO mkdir -p /etc/finn 2>/dev/null; then
+    printf '%s\n' "$KMS_JSON" | $SUDO tee /etc/finn/kms.json >/dev/null
+    if command -v systemctl >/dev/null 2>&1; then
+        $SUDO systemctl restart finn-comp 2>/dev/null || true
+        sleep 2
+        $SUDO systemctl restart finn-session finn-shell finn-wallpaper 2>/dev/null || true
+    fi
+fi
+
+echo "Display updated to $RES @ ${SCALE}x on $CONN"

@@ -73,7 +73,7 @@ FinnApplication::FinnApplication(int& argc, char** argv, const QString& app_id,
         }
     }
 
-    auto apply = [this](const FinnTokens& t) {
+    auto apply = [](const FinnTokens& t) {
         qputenv("XCURSOR_THEME", t.dark ? "finn-dark" : "finn-light");
         qputenv("XCURSOR_SIZE", QByteArray::number(t.cursor_size));
         setPalette(build_finn_palette(t));

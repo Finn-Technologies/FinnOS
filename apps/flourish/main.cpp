@@ -1,35 +1,46 @@
-#include <FinnSDK/FinnSDK.hpp>
-#include <QTimer>
-#include <QUrl>
+// finn-flourish: Zen-inspired Chromium web browser built with Qt 6 WebEngineQuick + FinnUI.
 
-#include "browser_window.hpp"
-#include "tab_model.hpp"
+#include "ui/qml/finn_qml_app.hpp"
+
+#include <QString>
+#include <QUrl>
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+#include <cstdio>
+#include <cstring>
 
 int main(int argc, char** argv) {
-    finn::ui::FinnApplication app(argc, argv,
-                                  QStringLiteral("flourish"),
-                                  QStringLiteral("Flourish"),
-                                  QStringLiteral("0.1.0"));
-
-    QUrl initial_url;
-    QString screenshot_path;
-    const QStringList args = app.arguments();
-    for (int i = 1; i < args.size(); ++i) {
-        if (args.at(i) == QStringLiteral("--screenshot") && i + 1 < args.size()) {
-            screenshot_path = args.at(++i);
-        } else if (initial_url.isEmpty()) {
-            initial_url = flourish::normalize_user_url(args.at(i));
+    QString initial_url;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--version") == 0) {
+            std::puts("finn-flourish 1.0.0");
+            return 0;
+        }
+        if (argv[i][0] != '-' && initial_url.isEmpty()) {
+            initial_url = QString::fromLocal8Bit(argv[i]);
         }
     }
 
-    flourish::BrowserWindow window(initial_url);
-    window.show();
+    // On software framebuffer VMs without virgl 3D accel, enable software compositing
+    // for Chromium so web pages render reliably while keeping GPU accel on bare metal.
+    if (qEnvironmentVariable("QT_QUICK_BACKEND")
+            .compare(QStringLiteral("software"), Qt::CaseInsensitive) == 0 &&
+        !qEnvironmentVariableIsSet("QTWEBENGINE_CHROMIUM_FLAGS")) {
+        qputenv("QTWEBENGINE_CHROMIUM_FLAGS",
+                "--disable-gpu --disable-gpu-compositing --disable-dev-shm-usage");
+    }
 
-    if (!screenshot_path.isEmpty()) {
-        QTimer::singleShot(2500, &window, [&window, &app, screenshot_path]() {
-            window.grab().save(screenshot_path);
-            app.quit();
-        });
+    QtWebEngineQuick::initialize();
+
+    finn::ui::qml::FinnQmlApp app(argc, argv,
+                                  QStringLiteral("finn-flourish"),
+                                  QStringLiteral("Flourish"),
+                                  QStringLiteral("1.0.0"));
+
+    app.setContextProperty(QStringLiteral("FlourishInitialUrl"), initial_url);
+
+    if (!app.load(QUrl(QStringLiteral("qrc:/qt/qml/FinnFlourish/FlourishApp.qml")))) {
+        std::fprintf(stderr, "finn-flourish: failed to load FlourishApp.qml\n");
+        return 1;
     }
 
     return app.exec();

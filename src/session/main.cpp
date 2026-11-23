@@ -713,8 +713,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
+    struct sigaction sa{};
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;  // No SA_RESTART so accept() wakes immediately on SIGTERM
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
     signal(SIGPIPE, SIG_IGN);
 
     const std::string sock_path = finn::session_socket_path();

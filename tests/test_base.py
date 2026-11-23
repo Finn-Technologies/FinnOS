@@ -189,6 +189,10 @@ class BaseImageTest(unittest.TestCase):
             "store",
             "viewer",
             "monitor",
+            "calculator",
+            "archive",
+            "capture",
+            "flourish",
         }
         self.assertTrue(expected.issubset(catalogue))
 
@@ -336,6 +340,10 @@ class BaseImageTest(unittest.TestCase):
                 "store",
                 "viewer",
                 "monitor",
+                "calculator",
+                "archive",
+                "capture",
+                "flourish",
             },
         )
 
@@ -443,9 +451,10 @@ class BootChainTest(unittest.TestCase):
         self.assertIn("lock_wallpaper", data)
         persisted = self.read("src", "system", "sys_files.cpp")
         self.assertIn("lock_wallpaper=", persisted)
-        screen = self.read("src", "shell", "popovers.cpp")
-        self.assertIn("lock_wallpaper_.load", screen)
-        self.assertIn("p.drawPixmap(target, lock_wallpaper_, src)", screen)
+        screen = self.read("src", "shell", "ui", "common", "LockScreenOverlay.qml")
+        self.assertIn("lockWallpaperUrl", screen)
+        wallpaper = self.read("src", "shell", "ui", "common", "WallpaperLayer.qml")
+        self.assertIn("Image.PreserveAspectCrop", wallpaper)
 
     def test_ribbon_animation_is_first_setup_only(self):
         # The ribbon "hi." animation plays in finn-oobe's first step. The

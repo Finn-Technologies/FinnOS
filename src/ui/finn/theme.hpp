@@ -42,6 +42,12 @@ public:
     QString wallpaperPath() const { return QString::fromStdString(settings_.wallpaper); }
     QString lockWallpaperPath() const { return QString::fromStdString(settings_.lock_wallpaper); }
     QString avatarColor() const { return QString::fromStdString(settings_.avatar_color); }
+    QString formFactorSetting() const { return QString::fromStdString(settings_.form_factor); }
+    QString alertSound() const { return QString::fromStdString(settings_.alert_sound); }
+    int alertVolume() const { return settings_.alert_volume; }
+    bool startupSound() const { return settings_.startup_sound; }
+    bool uiSounds() const { return settings_.ui_sounds; }
+    bool volumeFeedback() const { return settings_.volume_feedback; }
     static const QVector<AvatarPreset>& avatarPresets();
     QStringList dockPins() const;
 
@@ -70,6 +76,12 @@ public:
     bool setAvatarColor(const QString& color_id);
     bool setWallpaper(const QString& path);
     bool setLockWallpaper(const QString& path);
+    bool setFormFactor(const QString& form_factor);
+    bool setAlertSound(const QString& name);
+    bool setAlertVolume(int volume_percent);
+    bool setStartupSound(bool enabled);
+    bool setUiSounds(bool enabled);
+    bool setVolumeFeedback(bool enabled);
     bool setDockPins(const QStringList& pins);
     bool setScale(double scale);
     void reload();

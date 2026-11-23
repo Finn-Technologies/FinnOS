@@ -23,7 +23,8 @@ User=root
 Group=finn
 SupplementaryGroups=video render input seat audio
 Environment=XDG_RUNTIME_DIR=/run/finn
-Environment=WLR_BACKENDS=drm,libinput
+Environment=QT_QPA_PLATFORM=eglfs
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_kms
 Environment=LIBSEAT_BACKEND=seatd
 
 StandardOutput=journal

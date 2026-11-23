@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 namespace {
 
@@ -180,7 +181,16 @@ int main(int argc, char** argv) {
 
     finn::ui::FinnApplication app(argc, argv, QStringLiteral("finn-wallpaper"),
                                   QStringLiteral("Finn Wallpaper"));
-    WallpaperWindow win;
-    win.show();
+    // When running under finn-comp on Wayland, the compositor renders the
+    // background layer directly at z=1000; only map a standalone window when
+    // explicitly requested or off-Wayland so an xdg_toplevel fallback never
+    // floats over desktop applications.
+    std::unique_ptr<WallpaperWindow> win;
+    if (qEnvironmentVariableIntValue("FINN_WALLPAPER_STANDALONE") == 1 ||
+        !QGuiApplication::platformName().contains(QStringLiteral("wayland"),
+                                                  Qt::CaseInsensitive)) {
+        win = std::make_unique<WallpaperWindow>();
+        win->show();
+    }
     return app.exec();
 }

@@ -1,11 +1,11 @@
-<svg width="26" height="26" viewBox="0 0 26 26" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="26" height="26" rx="5.90909" fill="url(#paint0_linear_mon)"/>
-<rect x="0.270833" y="0.270833" width="25.4583" height="25.4583" rx="5.63826" stroke="black" stroke-opacity="0.12" stroke-width="0.541667"/>
-<path d="M4.5 14.5H8L10.4 8.5L13.6 18L16.2 12L18 14.5H21.5" stroke="#34D399" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-<defs>
-<linearGradient id="paint0_linear_mon" x1="13" y1="0" x2="13" y2="26" gradientUnits="userSpaceOnUse">
-<stop stop-color="#1E293B"/>
-<stop offset="1" stop-color="#0F172A"/>
-</linearGradient>
-</defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#14B8A6"/>
+      <stop offset="100%" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="16" ry="16" fill="url(#bg)"/>
+  <rect x="14" y="16" width="36" height="32" rx="8" ry="8" fill="#FFFFFF" fill-opacity="0.18"/>
+  <path d="M18 33H24.2L27.8 22.5L33 41.5L37.2 28.5L40.2 33H46" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

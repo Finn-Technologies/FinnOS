@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(FinnOS VERSION 0.2.0 LANGUAGES C CXX)
+project(FinnOS VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(FINN_BUILD_SHELL "Build finn-shell LayerShell desktop" ON)
+option(FINN_BUILD_COMPOSITOR "Build finn-comp Qt 6 Wayland compositor" ON)
+option(FINN_BUILD_SHELL "Build finn-shell unified adaptive System UI" ON)
 option(FINN_BUILD_APPS "Build native FinnOS Qt6 applications" ON)
 option(FINN_BUILD_QT_PLUGIN "Build FinnOS Qt6 platform theme & style plugins" ON)
 option(FINN_BUILD_TOOLS "Build finn-open CLI and SDK helpers" ON)
@@ -23,6 +24,10 @@ endif()
 include(GNUInstallDirs)
 
 add_subdirectory(src/ui)
+
+if(FINN_BUILD_COMPOSITOR)
+    add_subdirectory(src/comp)
+endif()
 
 if(FINN_BUILD_QT_PLUGIN)
     add_subdirectory(src/qtplugin)

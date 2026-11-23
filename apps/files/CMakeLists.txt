@@ -7,20 +7,29 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     find_package(FinnSDK REQUIRED)
 endif()
 
-add_executable(finn-files
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
+set(CMAKE_AUTOMOC ON)
+
+qt_add_executable(finn-files
     main.cpp
-    ../../src/compat/desktop_entry.cpp
-    ../../src/compat/flatpak_installer.cpp
-    ../../src/compat/macos_runner.cpp
-    ../../src/compat/ohos_runner.cpp
-    ../../src/compat/wine_runner.cpp
-    ../../src/compat/wine_prefix.cpp
-    ../../src/compat/msi_installer.cpp
+    files_controller.hpp
+    files_controller.cpp
 )
+
+set_source_files_properties(ui/FilesApp.qml PROPERTIES QT_RESOURCE_ALIAS FilesApp.qml)
+qt_add_qml_module(finn-files
+    URI FinnFiles
+    VERSION 1.0
+    RESOURCE_PREFIX /qt/qml
+    QML_FILES
+        ui/FilesApp.qml
+)
+
 target_include_directories(finn-files PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src
 )
-target_link_libraries(finn-files PRIVATE FinnSDK::FinnUI)
+
+target_link_libraries(finn-files PRIVATE FinnSDK::FinnUIQml)
 
 include(GNUInstallDirs)
 install(TARGETS finn-files RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

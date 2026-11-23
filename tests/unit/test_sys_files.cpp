@@ -49,6 +49,12 @@ bool test_settings_roundtrip() {
         "dark=1\n"
         "accent=#4F46E5\n"
         "avatar_color=mint\n"
+        "form_factor=tv\n"
+        "alert_sound=Chime\n"
+        "alert_volume=60\n"
+        "startup_sound=0\n"
+        "ui_sounds=1\n"
+        "volume_feedback=0\n"
         "dock_pins=settings,files,terminal\n"
         "reduced_motion=1\n"
         "scale=1.25\n";
@@ -56,11 +62,21 @@ bool test_settings_roundtrip() {
     CHECK(s.dark);
     CHECK(s.accent == "#4F46E5");
     CHECK(s.avatar_color == "mint");
+    CHECK(s.form_factor == "tv");
+    CHECK(s.alert_sound == "Chime");
+    CHECK(s.alert_volume == 60);
+    CHECK(!s.startup_sound);
+    CHECK(s.ui_sounds);
+    CHECK(!s.volume_feedback);
     CHECK(s.reduced_motion);
     CHECK(s.dock_pins.size() == 3);
     const auto s2 = finn::sys::parse_settings(finn::sys::serialize_settings(s));
     CHECK(s2.dark);
     CHECK(s2.avatar_color == "mint");
+    CHECK(s2.form_factor == "tv");
+    CHECK(s2.alert_sound == "Chime");
+    CHECK(s2.alert_volume == 60);
+    CHECK(!s2.startup_sound);
     CHECK(s2.reduced_motion);
     return true;
 }
