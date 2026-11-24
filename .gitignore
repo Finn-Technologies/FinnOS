@@ -32,6 +32,14 @@
 /tests/unit/test_sys_files
 /tests/unit/test_spring
 /tests/unit/test_ota
+/tests/unit/test_oobe
+/tests/unit/test_recovery
+/tests/unit/test_bootloader
+/tests/unit/test_store
+*.efi
+*.obj
+/tests/unit/test_compositor
+/tests/unit/test_android
 /tests/unit/test_windows_modules
 *.dSYM/
 

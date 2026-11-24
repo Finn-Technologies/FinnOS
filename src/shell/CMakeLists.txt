@@ -46,6 +46,7 @@ qt_add_executable(finn-shell
     ../compat/linux_sandbox.cpp
     ../compat/macos_runner.cpp
     ../compat/ohos_runner.cpp
+    ../compat/pe_icon.cpp
     ../compat/wine_prefix.cpp
     ../compat/wine_runner.cpp
     ../compat/windows_registry.cpp

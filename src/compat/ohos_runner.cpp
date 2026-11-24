@@ -274,6 +274,9 @@ std::vector<OhosAppEntry> discover_ohos_apps(const std::string& registry_path) {
         e.min_api_version = std::atoi(f[5].c_str());
         e.main_ability = f[6];
         e.module_type = f[7];
+        // Shared libraries (.hsp) without a launchable ability do not belong in
+        // the desktop app launcher.
+        if (e.module_type == "shared" && e.main_ability.empty()) continue;
         e.install_dir = f[8];
         e.package_path = f[9];
         if (!f[10].empty() && fs::is_regular_file(f[10], ec)) {

@@ -64,10 +64,15 @@ std::string default_android_registry_path(const std::string& android_root = {});
 // Static pre-flight. Never installs, launches or mutates the package.
 AndroidDiagnosticReport diagnose_android_package(const std::string& path);
 
-// Installs a local .apk into the invoking user's FinnOS data directory.
-// Remote URLs are rejected honestly rather than silently skipped.
+// Installs a local .apk, .xapk, .apkm, or .apks bundle into the invoking
+// user's FinnOS data directory. Remote URLs are rejected honestly.
 AndroidInstallResult install_android_package(const std::string& path,
                                              const std::string& android_root = {});
+
+// Installs a base APK together with one or more split APKs (ABI/density/lang
+// config splits, e.g. from Aurora / Google Play delivery).
+AndroidInstallResult install_android_splits(const std::vector<std::string>& apk_paths,
+                                            const std::string& android_root = {});
 
 bool uninstall_android_app(const std::string& package_or_id,
                            const std::string& android_root = {},

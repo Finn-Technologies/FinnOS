@@ -10,7 +10,6 @@
 #include "shell/oobe_capability_probe.hpp"
 #include "system/desktop_services.hpp"
 
-#include <QCheckBox>
 #include <QDir>
 #include <QDialog>
 #include <QElapsedTimer>
@@ -46,6 +45,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <unistd.h>
 
 namespace {
 
@@ -53,6 +53,22 @@ using namespace finn::ui;
 
 QFont oobe_font(int pixel_size, QFont::Weight weight = QFont::Normal) {
     return finn_font_px(pixel_size, weight);
+}
+
+// Compute exact wrapped height for a fixed-width QLabel so switching from a
+// 1-line English prompt to a 2-3 line translation never clips vertically.
+void set_wrapped_label_text(QLabel* lbl, const QString& text) {
+    if (!lbl) return;
+    lbl->setText(text);
+    const int w = lbl->width() > 0 ? lbl->width() : lbl->maximumWidth();
+    if (w > 0 && w < QWIDGETSIZE_MAX) {
+        const QFontMetrics fm(lbl->font());
+        const QRect br = fm.boundingRect(
+            0, 0, w, 1000,
+            static_cast<int>(lbl->alignment()) | Qt::TextWordWrap, text);
+        lbl->setMinimumHeight(std::max(fm.lineSpacing() + 6, br.height() + 10));
+    }
+    lbl->updateGeometry();
 }
 
 // Form factors share the shell's breakpoints and override variable so a
@@ -108,64 +124,323 @@ int oobe_content_width() {
 using OobeStep = finn::shell::oobe::Step;
 
 int ui_index_for_step(OobeStep step) {
-    switch (step) {
-        case OobeStep::Welcome: return 0;
-        case OobeStep::Connectivity: return 2;
-        case OobeStep::Account: return 3;
-        case OobeStep::Privacy: return 6;
-        case OobeStep::RegionLocale: return 1;
-        case OobeStep::Accessibility: return 5;
-        case OobeStep::Theme: return 4;
-        case OobeStep::Finish: return 7;
-    }
-    return 0;
+    return static_cast<int>(step);
 }
 
 OobeStep step_for_ui_index(int index) {
-    switch (index) {
-        case 0: return OobeStep::Welcome;
-        case 1: return OobeStep::RegionLocale;
-        case 2: return OobeStep::Connectivity;
-        case 3: return OobeStep::Account;
-        case 5: return OobeStep::Accessibility;
-        case 6: return OobeStep::Privacy;
-        case 7: return OobeStep::Finish;
-        case 4:
-        default: return OobeStep::Theme;
-    }
+    if (index < 0) return OobeStep::Welcome;
+    if (index >= static_cast<int>(finn::shell::oobe::kStepCount)) return OobeStep::Finish;
+    return static_cast<OobeStep>(index);
 }
 
 QString oobe_tr(const QString& key, const QString& locale) {
     struct Entry {
         const char* lang;
         const char* lang_prompt;
+        const char* region_prompt;
+        const char* kb_prompt;
         const char* wifi_prompt;
-        const char* wifi_scan;
+        const char* wifi_ethernet;
+        const char* wifi_connected;
+        const char* wifi_offline;
+        const char* wifi_pwd_title;
+        const char* wifi_connect_to;
+        const char* cancel;
+        const char* connect;
         const char* account_prompt;
+        const char* full_name;
+        const char* account_name;
+        const char* computer_name;
+        const char* password;
+        const char* verify_password;
+        const char* pw_mismatch;
         const char* appearance_prompt;
         const char* a11y_prompt;
+        const char* a11y_sr;
+        const char* a11y_hc;
+        const char* a11y_rm;
+        const char* a11y_sk;
+        const char* privacy_prompt;
+        const char* privacy_info;
+        const char* privacy_loc;
+        const char* privacy_diag;
+        const char* privacy_crash;
+        const char* privacy_ack;
         const char* complete_title;
+        const char* update_title;
         const char* get_started;
     };
     static constexpr Entry kTable[] = {
-        {"es", "¿Cómo hablamos?", "¿Dónde nos conectamos?", "Buscando redes cercanas...", "¿Cómo te llamamos?", "¿Oscuro o claro? Tú eliges.", "¿Algo que lo haga más fácil?", "Todo listo", "Empezar"},
-        {"it", "Come parliamo?", "Dove ci connettiamo?", "Ricerca reti vicine...", "Come ti chiamiamo?", "Scuro o chiaro? Scegli tu.", "Qualcosa per renderlo più facile?", "Tutto pronto", "Inizia"},
-        {"fr", "Comment parlons-nous ?", "Où se connecter ?", "Recherche des réseaux...", "Comment vous appelez-vous ?", "Sombre ou clair ? À vous de choisir.", "Quelque chose pour vous faciliter la vie ?", "Tout est prêt", "Commencer"},
-        {"ca", "Com parlem?", "On ens connectem?", "Cercant xarxes properes...", "Com et diem?", "Fosc o clar? Tu tries.", "Alguna cosa per fer-ho més fàcil?", "Tot a punt", "Començar"},
-        {"de", "Wie sprechen wir?", "Wo verbinden wir uns?", "Suche nach Netzwerken...", "Wie sollen wir dich nennen?", "Dunkel oder hell? Deine Wahl.", "Was es dir leichter macht?", "Alles bereit", "Los geht’s"},
-        {"af", "Hoe praat ons?", "Waar koppel ons?", "Soek na nabygeleë netwerke...", "Wat moet ons jou noem?", "Donker of lig? Jou keuse.", "Iets om dit makliker te maak?", "Alles gereed", "Begin"},
-        {"zh_CN", "我们使用哪种语言？", "连接到哪里？", "正在扫描附近网络…", "我们怎么称呼你？", "深色还是浅色？由你决定。", "需要帮你调得更顺手吗？", "一切就绪", "开始使用"},
-        {"zh_TW", "我們使用哪種語言？", "連線到哪裡？", "正在掃描附近網路…", "我們該怎麼稱呼你？", "深色還是淺色？由你決定。", "需要幫你調得更順手嗎？", "一切就緒", "開始使用"},
-        {"hi", "हम किस भाषा में बात करें?", "हम कहाँ जुड़ें?", "आस-पास के नेटवर्क खोजे जा रहे हैं...", "हम आपको क्या कहकर बुलाएँ?", "डार्क या लाइट? आपकी पसंद।", "इसे थोड़ा आसान बनाएँ?", "सब तैयार है", "शुरू करें"},
-        {"ko", "어떤 언어를 사용할까요?", "어디에 연결할까요?", "주변 네트워크 검색 중...", "어떻게 불러드릴까요?", "어둡게, 아니면 밝게? 선택해 보세요.", "조금 더 편하게 맞춰드릴까요?", "모두 준비되었습니다", "시작하기"},
-        {"ja", "どの言語を使いますか？", "どこに接続しますか？", "近くのネットワークを検索中…", "お名前を教えてください", "ダークかライトか、お好みで。", "もっと使いやすくしますか？", "準備が整いました", "始める"},
-        {"ar", "بأي لغة نتحدث؟", "أين نتصل؟", "جارٍ البحث عن الشبكات القريبة...", "ماذا نناديك؟", "داكن أم فاتح؟ الخيار لك.", "هل نجعل الأمور أسهل لك؟", "كل شيء جاهز", "ابدأ الآن"},
-        {"pt", "Como falamos?", "Onde nos ligamos?", "A procurar redes próximas...", "Como devemos chamar-te?", "Escuro ou claro? Tu escolhes.", "Algo para tornar mais fácil?", "Tudo pronto", "Começar"},
-        {"nl", "Hoe spreken we?", "Waar verbinden we?", "Zoeken naar netwerken...", "Hoe mogen we je noemen?", "Donker of licht? Aan jou de keus.", "Iets om het makkelijker te maken?", "Alles klaar", "Aan de slag"},
-        {"pl", "W jakim języku rozmawiamy?", "Gdzie się łączymy?", "Skanowanie pobliskich sieci...", "Jak mamy się do Ciebie zwracać?", "Ciemny czy jasny? Twój wybór.", "Coś, co ułatwi korzystanie?", "Wszystko gotowe", "Rozpocznij"},
-        {"ru", "На каком языке мы говорим?", "Куда подключимся?", "Поиск ближайших сетей...", "Как к вам обращаться?", "Тёмная или светлая? Выбор за вами.", "Сделать управление удобнее?", "Всё готово", "Начать"},
-        {"uk", "Якою мовою спілкуємось?", "Де підключимося?", "Пошук мереж поруч...", "Як до вас звертатися?", "Темна чи світла? Обирайте.", "Зробити користування зручнішим?", "Усе готово", "Почати"},
-        {"tr", "Hangi dilde konuşalım?", "Nereye bağlanalım?", "Yakındaki ağlar taranıyor...", "Size nasıl hitap edelim?", "Koyu mu açık mı? Seçim sizin.", "Daha kolay hale getirelim mi?", "Her şey hazır", "Başla"},
+        {"es",
+         "¿Cómo hablamos?",
+         "Un gran mundo. Pero un solo país. ¿Dónde?",
+         "¿Cómo escribes?",
+         "¿Dónde nos conectamos?",
+         "Ethernet", "Conectado", "Continuar sin conexión", "Contraseña Wi-Fi", "Conectar a %1", "Cancelar", "Conectar",
+         "¿Cómo te llamamos?",
+         "Nombre completo", "Nombre de cuenta", "Nombre del equipo", "Contraseña", "Verificar contraseña", "Las contraseñas no coinciden",
+         "¿Oscuro o claro? Tú eliges.",
+         "¿Algo que lo haga más fácil?",
+         "Lector de pantalla", "Alto contraste", "Reducir movimiento", "Teclas especiales",
+         "¿Cuánto deberíamos recordar?",
+         "FinnOS no recopila diagnósticos, ubicación ni informes de fallos. No hay ningún servicio de telemetría en esta instalación.",
+         "Ubicación", "Diagnósticos", "Informes de fallos", "Continuar con todo desactivado",
+         "Todo listo", "Actualización completada", "Empezar"},
+        {"it",
+         "Come parliamo?",
+         "Un grande mondo. Ma un solo paese. Dove?",
+         "Come scrivi?",
+         "Dove ci connettiamo?",
+         "Ethernet", "Connesso", "Continua offline", "Password Wi-Fi", "Connetti a %1", "Annulla", "Connetti",
+         "Come ti chiamiamo?",
+         "Nome completo", "Nome account", "Nome computer", "Password", "Verifica password", "Le password non corrispondono",
+         "Scuro o chiaro? Scegli tu.",
+         "Qualcosa per renderlo più facile?",
+         "Screen reader", "Contrasto elevato", "Riduci movimento", "Tasti permanenti",
+         "Quanto dovremmo ricordare?",
+         "FinnOS non raccoglie diagnostica, posizione o segnalazioni di arresto anomalo. Nessun servizio di telemetria è presente in questa installazione.",
+         "Posizione", "Diagnostica", "Segnalazioni di arresto", "Continua con tutto disattivato",
+         "Tutto pronto", "Aggiornamento riuscito", "Inizia"},
+        {"fr",
+         "Comment parlons-nous ?",
+         "Un grand monde. Mais un seul pays. Où ?",
+         "Comment tapez-vous ?",
+         "Où se connecter ?",
+         "Ethernet", "Connecté", "Continuer hors ligne", "Mot de passe Wi-Fi", "Se connecter à %1", "Annuler", "Connecter",
+         "Comment vous appelez-vous ?",
+         "Nom complet", "Nom du compte", "Nom de l’ordinateur", "Mot de passe", "Confirmer le mot de passe", "Les mots de passe ne correspondent pas",
+         "Sombre ou clair ? À vous de choisir.",
+         "Quelque chose pour vous faciliter la vie ?",
+         "Lecteur d’écran", "Contraste élevé", "Réduire les animations", "Touches rémanentes",
+         "Que devons-nous retenir ?",
+         "FinnOS ne collecte ni diagnostics, ni localisation, ni rapports de plantage. Aucun service de télémétrie n’est présent sur cette installation.",
+         "Localisation", "Diagnostics", "Rapports de plantage", "Continuer avec tout désactivé",
+         "Tout est prêt", "Mise à jour réussie", "Commencer"},
+        {"ca",
+         "Com parlem?",
+         "Un món gran. Però un sol país. On?",
+         "Com escrius?",
+         "On ens connectem?",
+         "Ethernet", "Connectat", "Continua fora de línia", "Contrasenya Wi-Fi", "Connecta a %1", "Cancel·la", "Connecta",
+         "Com et diem?",
+         "Nom complet", "Nom del compte", "Nom de l’ordinador", "Contrasenya", "Verifica la contrasenya", "Les contrasenyes no coincideixen",
+         "Fosc o clar? Tu tries.",
+         "Alguna cosa per fer-ho més fàcil?",
+         "Lector de pantalla", "Alt contrast", "Redueix el moviment", "Tecles enganxoses",
+         "Quant hauríem de recordar?",
+         "FinnOS no recopila diagnòstics, ubicació ni informes d’errors. No hi ha cap servei de telemetria en aquesta instal·lació.",
+         "Ubicació", "Diagnòstics", "Informes d’errors", "Continua amb tot desactivat",
+         "Tot a punt", "Actualització completada", "Començar"},
+        {"de",
+         "Wie sprechen wir?",
+         "Eine große Welt. Aber ein Land. Wo?",
+         "Wie tippst du?",
+         "Wo verbinden wir uns?",
+         "Ethernet", "Verbunden", "Offline fortfahren", "WLAN-Passwort", "Mit %1 verbinden", "Abbrechen", "Verbinden",
+         "Wie sollen wir dich nennen?",
+         "Vollständiger Name", "Kontoname", "Computername", "Passwort", "Passwort bestätigen", "Passwörter stimmen nicht überein",
+         "Dunkel oder hell? Deine Wahl.",
+         "Was es dir leichter macht?",
+         "Bildschirmleser", "Hoher Kontrast", "Bewegung reduzieren", "Einrastfunktion",
+         "Wie viel sollen wir merken?",
+         "FinnOS erfasst keine Diagnosedaten, Standorte oder Absturzberichte. Auf dieser Installation ist kein Telemetriedienst vorhanden.",
+         "Standort", "Diagnose", "Absturzberichte", "Mit allem deaktiviert fortfahren",
+         "Alles bereit", "Update erfolgreich", "Los geht’s"},
+        {"af",
+         "Hoe praat ons?",
+         "’n Groot wêreld. Maar een land. Waar?",
+         "Hoe tik jy?",
+         "Waar koppel ons?",
+         "Ethernet", "Gekoppel", "Gaan vanlyn voort", "Wi-Fi-wagwoord", "Koppel aan %1", "Kanselleer", "Koppel",
+         "Wat moet ons jou noem?",
+         "Volle naam", "Rekeningnaam", "Rekenaarnaam", "Wagwoord", "Bevestig wagwoord", "Wagwoorde stem nie ooreen nie",
+         "Donker of lig? Jou keuse.",
+         "Iets om dit makliker te maak?",
+         "Skermleser", "Hoë kontras", "Verminder beweging", "Kleefsleutels",
+         "Hoeveel moet ons onthou?",
+         "FinnOS versamel geen diagnostiek, ligging of omvalverslae nie. Geen telemetriediens is op hierdie installasie teenwoordig nie.",
+         "Ligging", "Diagnostiek", "Omvalverslae", "Gaan voort met alles af",
+         "Alles gereed", "Opdatering suksesvol", "Begin"},
+        {"zh_CN",
+         "我们使用哪种语言？",
+         "世界很大，但只需选一个国家。你在哪里？",
+         "你使用哪种键盘布局？",
+         "连接到哪里？",
+         "以太网", "已连接", "离线继续", "Wi-Fi 密码", "连接到 %1", "取消", "连接",
+         "我们怎么称呼你？",
+         "全名", "账户名称", "电脑名称", "密码", "确认密码", "两次输入的密码不一致",
+         "深色还是浅色？由你决定。",
+         "需要帮你调得更顺手吗？",
+         "屏幕阅读器", "高对比度", "减弱动态效果", "粘滞键",
+         "我们需要记住多少信息？",
+         "FinnOS 不会收集诊断、位置或崩溃报告。此安装不包含任何遥测服务。",
+         "位置", "诊断", "崩溃报告", "保持全部关闭并继续",
+         "一切就绪", "更新成功", "开始使用"},
+        {"zh_TW",
+         "我們使用哪種語言？",
+         "世界很大，但只需選一個國家。你在哪裡？",
+         "你使用哪種鍵盤配置？",
+         "連線到哪裡？",
+         "乙太網路", "已連線", "離線繼續", "Wi-Fi 密碼", "連線到 %1", "取消", "連線",
+         "我們該怎麼稱呼你？",
+         "全名", "帳戶名稱", "電腦名稱", "密碼", "確認密碼", "兩次輸入的密碼不一致",
+         "深色還是淺色？由你決定。",
+         "需要幫你調得更順手嗎？",
+         "螢幕閱讀器", "高對比", "減少動態效果", "相黏鍵",
+         "我們需要記住多少資訊？",
+         "FinnOS 不會收集診斷、位置或當機報告。此安裝不包含任何遙測服務。",
+         "位置", "診斷", "當機報告", "保持全部關閉並繼續",
+         "一切就緒", "更新成功", "開始使用"},
+        {"hi",
+         "हम किस भाषा में बात करें?",
+         "बड़ी दुनिया, लेकिन एक देश। कहाँ?",
+         "आप कैसे टाइप करते हैं?",
+         "हम कहाँ जुड़ें?",
+         "ईथरनेट", "कनेक्टेड", "ऑफ़लाइन जारी रखें", "Wi-Fi पासवर्ड", "%1 से कनेक्ट करें", "रद्द करें", "कनेक्ट करें",
+         "हम आपको क्या कहकर बुलाएँ?",
+         "पूरा नाम", "खाता नाम", "कंप्यूटर नाम", "पासवर्ड", "पासवर्ड की पुष्टि करें", "पासवर्ड मेल नहीं खाते",
+         "डार्क या लाइट? आपकी पसंद।",
+         "इसे थोड़ा आसान बनाएँ?",
+         "स्क्रीन रीडर", "उच्च कंट्रास्ट", "मोशन कम करें", "स्टिकी कीज़",
+         "हमें कितना याद रखना चाहिए?",
+         "FinnOS डायग्नोस्टिक्स, लोकेशन या क्रैश रिपोर्ट एकत्र नहीं करता। इस इंस्टॉलेशन में कोई टेलीमेट्री सेवा नहीं है।",
+         "लोकेशन", "डायग्नोस्टिक्स", "क्रैश रिपोर्ट", "सब कुछ बंद रखकर जारी रखें",
+         "सब तैयार है", "अपडेट सफल", "शुरू करें"},
+        {"ko",
+         "어떤 언어를 사용할까요?",
+         "넓은 세상, 하나의 국가. 어디인가요?",
+         "어떻게 입력하시나요?",
+         "어디에 연결할까요?",
+         "이더넷", "연결됨", "오프라인으로 계속", "Wi-Fi 암호", "%1에 연결", "취소", "연결",
+         "어떻게 불러드릴까요?",
+         "이름", "계정 이름", "컴퓨터 이름", "암호", "암호 확인", "암호가 일치하지 않습니다",
+         "어둡게, 아니면 밝게? 선택해 보세요.",
+         "조금 더 편하게 맞춰드릴까요?",
+         "화면 낭독기", "고대비", "동작 줄이기", "고정 키",
+         "얼마나 기억할까요?",
+         "FinnOS는 진단, 위치 또는 충돌 보고서를 수집하지 않습니다. 이 설치에는 원격 측정 서비스가 없습니다.",
+         "위치", "진단", "충돌 보고서", "모두 끈 상태로 계속",
+         "모두 준비되었습니다", "업데이트 완료", "시작하기"},
+        {"ja",
+         "どの言語を使いますか？",
+         "広い世界の中で、どの国ですか？",
+         "どのキーボードを使いますか？",
+         "どこに接続しますか？",
+         "イーサネット", "接続済み", "オフラインで続行", "Wi-Fi パスワード", "%1 に接続", "キャンセル", "接続",
+         "お名前を教えてください",
+         "氏名", "アカウント名", "コンピュータ名", "パスワード", "パスワードの確認", "パスワードが一致しません",
+         "ダークかライトか、お好みで。",
+         "もっと使いやすくしますか？",
+         "スクリーンリーダー", "ハイコントラスト", "視差効果を減らす", "固定キー機能",
+         "どこまで記憶しますか？",
+         "FinnOSは診断データ、位置情報、クラッシュレポートを収集しません。この環境にはテレメトリ機能は含まれていません。",
+         "位置情報", "診断", "クラッシュレポート", "すべてオフのまま続行",
+         "準備が整いました", "アップデート完了", "始める"},
+        {"ar",
+         "بأي لغة نتحدث؟",
+         "عالم واسع، لكن دولة واحدة. أين؟",
+         "كيف تكتب؟",
+         "أين نتصل؟",
+         "إيثرنت", "متصل", "المتابعة دون اتصال", "كلمة مرور Wi-Fi", "الاتصال بـ %1", "إلغاء", "اتصال",
+         "ماذا نناديك؟",
+         "الاسم الكامل", "اسم الحساب", "اسم الكمبيوتر", "كلمة المرور", "تأكيد كلمة المرور", "كلمتا المرور غير متطابقتين",
+         "داكن أم فاتح؟ الخيار لك.",
+         "هل نجعل الأمور أسهل لك؟",
+         "قارئ الشاشة", "تباين عالٍ", "تقليل الحركة", "المفاتيح الثابتة",
+         "كم يجب أن نتذكر؟",
+         "لا يجمع FinnOS بيانات التشخيص أو الموقع أو تقارير الأعطال. لا توجد أي خدمة قياس عن بُعد في هذا التثبيت.",
+         "الموقع", "التشخيص", "تقارير الأعطال", "المتابعة مع إيقاف كل شيء",
+         "كل شيء جاهز", "تم التحديث بنجاح", "ابدأ الآن"},
+        {"pt",
+         "Como falamos?",
+         "Um mundo grande. Mas um só país. Onde?",
+         "Como escreves?",
+         "Onde nos ligamos?",
+         "Ethernet", "Ligado", "Continuar offline", "Palavra-passe Wi-Fi", "Ligar a %1", "Cancelar", "Ligar",
+         "Como devemos chamar-te?",
+         "Nome completo", "Nome da conta", "Nome do computador", "Palavra-passe", "Confirmar palavra-passe", "As palavras-passe não coincidem",
+         "Escuro ou claro? Tu escolhes.",
+         "Algo para tornar mais fácil?",
+         "Leitor de ecrã", "Alto contraste", "Reduzir movimento", "Teclas presas",
+         "Quanto devemos recordar?",
+         "O FinnOS não recolhe diagnósticos, localização nem relatórios de falhas. Não existe qualquer serviço de telemetria nesta instalação.",
+         "Localização", "Diagnósticos", "Relatórios de falhas", "Continuar com tudo desativado",
+         "Tudo pronto", "Atualização concluída", "Começar"},
+        {"nl",
+         "Hoe spreken we?",
+         "Een grote wereld. Maar één land. Waar?",
+         "Hoe typ je?",
+         "Waar verbinden we?",
+         "Ethernet", "Verbonden", "Offline doorgaan", "Wi-Fi-wachtwoord", "Verbinden met %1", "Annuleren", "Verbinden",
+         "Hoe mogen we je noemen?",
+         "Volledige naam", "Accountnaam", "Computernaam", "Wachtwoord", "Wachtwoord bevestigen", "Wachtwoorden komen niet overeen",
+         "Donker of licht? Aan jou de keus.",
+         "Iets om het makkelijker te maken?",
+         "Schermlezer", "Hoog contrast", "Beweging verminderen", "Plaktoetsen",
+         "Hoeveel mogen we onthouden?",
+         "FinnOS verzamelt geen diagnostiek, locatie of crashrapporten. Er is geen telemetrieservice aanwezig op deze installatie.",
+         "Locatie", "Diagnostiek", "Crashrapporten", "Doorgaan met alles uit",
+         "Alles klaar", "Update voltooid", "Aan de slag"},
+        {"pl",
+         "W jakim języku rozmawiamy?",
+         "Wielki świat, ale jeden kraj. Gdzie?",
+         "Jak piszesz?",
+         "Gdzie się łączymy?",
+         "Ethernet", "Połączono", "Kontynuuj offline", "Hasło Wi-Fi", "Połącz z %1", "Anuluj", "Połącz",
+         "Jak mamy się do Ciebie zwracać?",
+         "Imię i nazwisko", "Nazwa konta", "Nazwa komputera", "Hasło", "Potwierdź hasło", "Hasła nie są takie same",
+         "Ciemny czy jasny? Twój wybór.",
+         "Coś, co ułatwi korzystanie?",
+         "Czytnik ekranu", "Wysoki kontrast", "Ogranicz ruch", "Klawisze trwałe",
+         "Ile mamy zapamiętać?",
+         "FinnOS nie zbiera danych diagnostycznych, lokalizacji ani raportów awarii. W tej instalacji nie ma żadnej usługi telemetrii.",
+         "Lokalizacja", "Diagnostyka", "Raporty awarii", "Kontynuuj ze wszystkim wyłączonym",
+         "Wszystko gotowe", "Aktualizacja zakończona", "Rozpocznij"},
+        {"ru",
+         "На каком языке мы говорим?",
+         "Большой мир, но одна страна. Где вы?",
+         "Какая у вас раскладка?",
+         "Куда подключимся?",
+         "Ethernet", "Подключено", "Продолжить без сети", "Пароль Wi-Fi", "Подключиться к %1", "Отмена", "Подключить",
+         "Как к вам обращаться?",
+         "Полное имя", "Имя учётной записи", "Имя компьютера", "Пароль", "Подтвердите пароль", "Пароли не совпадают",
+         "Тёмная или светлая? Выбор за вами.",
+         "Сделать управление удобнее?",
+         "Экранный диктор", "Высокая контрастность", "Уменьшение движения", "Залипание клавиш",
+         "Сколько нам запоминать?",
+         "FinnOS не собирает диагностику, геолокацию или отчёты о сбоях. В этой системе нет служб телеметрии.",
+         "Геолокация", "Диагностика", "Отчёты о сбоях", "Продолжить со всем отключённым",
+         "Всё готово", "Обновление завершено", "Начать"},
+        {"uk",
+         "Якою мовою спілкуємось?",
+         "Великий світ, але одна країна. Де ви?",
+         "Як ви друкуєте?",
+         "Де підключимося?",
+         "Ethernet", "Підключено", "Продовжити офлайн", "Пароль Wi-Fi", "Підключитися до %1", "Скасувати", "Підключити",
+         "Як до вас звертатися?",
+         "Повне ім’я", "Ім’я облікового запису", "Назва комп’ютера", "Пароль", "Підтвердьте пароль", "Паролі не збігаються",
+         "Темна чи світла? Обирайте.",
+         "Зробити користування зручнішим?",
+         "Екранний диктор", "Висока контрастність", "Зменшення руху", "Залипання клавіш",
+         "Скільки нам запам’ятовувати?",
+         "FinnOS не збирає діагностику, геолокацію чи звіти про збої. У цій системі немає жодної служби телеметрії.",
+         "Геолокація", "Діагностика", "Звіти про збої", "Продовжити з усім вимкненим",
+         "Усе готово", "Оновлення завершено", "Почати"},
+        {"tr",
+         "Hangi dilde konuşalım?",
+         "Büyük bir dünya, ama tek bir ülke. Neresi?",
+         "Nasıl yazıyorsunuz?",
+         "Nereye bağlanalım?",
+         "Ethernet", "Bağlandı", "Çevrimdışı devam et", "Wi-Fi Parolası", "%1 ağına bağlan", "İptal", "Bağlan",
+         "Size nasıl hitap edelim?",
+         "Ad Soyad", "Hesap Adı", "Bilgisayar Adı", "Parola", "Parolayı Doğrula", "Parolalar eşleşmiyor",
+         "Koyu mu açık mı? Seçim sizin.",
+         "Daha kolay hale getirelim mi?",
+         "Ekran Okuyucu", "Yüksek Kontrast", "Hareketi Azalt", "Yapışkan Tuşlar",
+         "Ne kadarını hatırlayalım?",
+         "FinnOS tanılama, konum veya çökme raporu toplamaz. Bu kurulumda hiçbir telemetri hizmeti bulunmaz.",
+         "Konum", "Tanılama", "Çökme raporları", "Her şey kapalı olarak devam et",
+         "Her şey hazır", "Güncelleme başarılı", "Başla"},
     };
 
     const QString short_loc = locale.section(QLatin1Char('.'), 0, 0);
@@ -179,18 +454,69 @@ QString oobe_tr(const QString& key, const QString& locale) {
     }
     if (key == QLatin1String("lang_prompt"))
         return match ? QString::fromUtf8(match->lang_prompt) : QStringLiteral("How do we talk?");
+    if (key == QLatin1String("region_prompt"))
+        return match ? QString::fromUtf8(match->region_prompt) : QStringLiteral("A big world. But one country. Where?");
+    if (key == QLatin1String("kb_prompt"))
+        return match ? QString::fromUtf8(match->kb_prompt) : QStringLiteral("How do you type?");
     if (key == QLatin1String("wifi_prompt"))
         return match ? QString::fromUtf8(match->wifi_prompt) : QStringLiteral("Where do we connect?");
-    if (key == QLatin1String("wifi_scan"))
-        return match ? QString::fromUtf8(match->wifi_scan) : QStringLiteral("Scanning nearby networks...");
+    if (key == QLatin1String("wifi_ethernet"))
+        return match ? QString::fromUtf8(match->wifi_ethernet) : QStringLiteral("Ethernet");
+    if (key == QLatin1String("wifi_connected"))
+        return match ? QString::fromUtf8(match->wifi_connected) : QStringLiteral("Connected");
+    if (key == QLatin1String("wifi_offline"))
+        return match ? QString::fromUtf8(match->wifi_offline) : QStringLiteral("Continue offline");
+    if (key == QLatin1String("wifi_pwd_title"))
+        return match ? QString::fromUtf8(match->wifi_pwd_title) : QStringLiteral("Wi-Fi Password");
+    if (key == QLatin1String("wifi_connect_to"))
+        return match ? QString::fromUtf8(match->wifi_connect_to) : QStringLiteral("Connect to %1");
+    if (key == QLatin1String("cancel"))
+        return match ? QString::fromUtf8(match->cancel) : QStringLiteral("Cancel");
+    if (key == QLatin1String("connect"))
+        return match ? QString::fromUtf8(match->connect) : QStringLiteral("Connect");
     if (key == QLatin1String("account_prompt"))
         return match ? QString::fromUtf8(match->account_prompt) : QStringLiteral("What should we call you?");
+    if (key == QLatin1String("full_name"))
+        return match ? QString::fromUtf8(match->full_name) : QStringLiteral("Full Name");
+    if (key == QLatin1String("account_name"))
+        return match ? QString::fromUtf8(match->account_name) : QStringLiteral("Account Name");
+    if (key == QLatin1String("computer_name"))
+        return match ? QString::fromUtf8(match->computer_name) : QStringLiteral("Computer Name");
+    if (key == QLatin1String("password"))
+        return match ? QString::fromUtf8(match->password) : QStringLiteral("Password");
+    if (key == QLatin1String("verify_password"))
+        return match ? QString::fromUtf8(match->verify_password) : QStringLiteral("Verify Password");
+    if (key == QLatin1String("pw_mismatch"))
+        return match ? QString::fromUtf8(match->pw_mismatch) : QStringLiteral("Passwords don\u2019t match");
     if (key == QLatin1String("appearance_prompt"))
         return match ? QString::fromUtf8(match->appearance_prompt) : QStringLiteral("Dark or light? Your choice.");
     if (key == QLatin1String("a11y_prompt"))
         return match ? QString::fromUtf8(match->a11y_prompt) : QStringLiteral("Need a hand?");
+    if (key == QLatin1String("a11y_sr"))
+        return match ? QString::fromUtf8(match->a11y_sr) : QStringLiteral("Screen Reader");
+    if (key == QLatin1String("a11y_hc"))
+        return match ? QString::fromUtf8(match->a11y_hc) : QStringLiteral("High Contrast");
+    if (key == QLatin1String("a11y_rm"))
+        return match ? QString::fromUtf8(match->a11y_rm) : QStringLiteral("Reduce Motion");
+    if (key == QLatin1String("a11y_sk"))
+        return match ? QString::fromUtf8(match->a11y_sk) : QStringLiteral("Sticky Keys");
+    if (key == QLatin1String("privacy_prompt"))
+        return match ? QString::fromUtf8(match->privacy_prompt) : QStringLiteral("How much should we remember?");
+    if (key == QLatin1String("privacy_info"))
+        return match ? QString::fromUtf8(match->privacy_info)
+                     : QStringLiteral("FinnOS does not collect diagnostics, location or crash reports. No telemetry service is present on this installation.");
+    if (key == QLatin1String("privacy_loc"))
+        return match ? QString::fromUtf8(match->privacy_loc) : QStringLiteral("Location");
+    if (key == QLatin1String("privacy_diag"))
+        return match ? QString::fromUtf8(match->privacy_diag) : QStringLiteral("Diagnostics");
+    if (key == QLatin1String("privacy_crash"))
+        return match ? QString::fromUtf8(match->privacy_crash) : QStringLiteral("Crash reports");
+    if (key == QLatin1String("privacy_ack"))
+        return match ? QString::fromUtf8(match->privacy_ack) : QStringLiteral("Continue with everything off");
     if (key == QLatin1String("complete_title"))
         return match ? QString::fromUtf8(match->complete_title) : QStringLiteral("You\u2019re all set");
+    if (key == QLatin1String("update_title"))
+        return match ? QString::fromUtf8(match->update_title) : QStringLiteral("Update successful");
     if (key == QLatin1String("get_started"))
         return match ? QString::fromUtf8(match->get_started) : QStringLiteral("Get started");
     return key;
@@ -317,8 +643,12 @@ protected:
         }
 
         if (fill.alpha() > 0) {
-            p.setPen(Qt::NoPen);
+            p.setPen(t.high_contrast ? QPen(t.ink, 2.0) : Qt::NoPen);
             p.setBrush(fill);
+            p.drawEllipse(circle_r);
+        } else if (t.high_contrast && en) {
+            p.setPen(QPen(t.ink, 2.0));
+            p.setBrush(Qt::NoBrush);
             p.drawEllipse(circle_r);
         }
         if (hasFocus()) {
@@ -470,7 +800,12 @@ public:
     void setSelected(bool selected) {
         if (selected_ == selected) return;
         selected_ = selected;
-        if (!anim_timer_.isActive()) anim_timer_.start();
+        if (FinnThemeManager::instance().reducedMotion()) {
+            sel_t_ = selected_ ? 1.0 : 0.0;
+            update();
+        } else if (!anim_timer_.isActive()) {
+            anim_timer_.start();
+        }
     }
 
     bool isSelected() const { return selected_; }
@@ -493,9 +828,10 @@ protected:
             const QColor pill_base = t.dark ? t.tile_on : t.tile;
             const QColor bg(pill_base.red(), pill_base.green(), pill_base.blue(),
                             std::min(255, qRound(t.dark ? base_a * 8.0 : base_a)));
-            p.setPen(Qt::NoPen);
+            p.setPen(t.high_contrast && selected_ ? QPen(t.ink, 2.0) : Qt::NoPen);
             p.setBrush(bg);
-            p.drawRoundedRect(r, 10.0, 10.0);
+            p.drawRoundedRect(t.high_contrast && selected_ ? r.adjusted(1.0, 1.0, -1.0, -1.0) : r,
+                              10.0, 10.0);
         }
         if (hasFocus()) {
             p.setPen(QPen(t.accent, 1.5));
@@ -503,11 +839,10 @@ protected:
             p.drawRoundedRect(r.adjusted(1.0, 1.0, -1.0, -1.0), 10.0, 10.0);
         }
 
-        const qreal nudge_x = 2.5 * hover_t_ + 3.0 * sel_t_;
         const QColor ink = t.ink;
         p.setFont(oobe_font(18, QFont::Normal));
         p.setPen(ink);
-        const QRectF text_r(8.0 + nudge_x, 0.0, width() - 16.0 - nudge_x, height());
+        const QRectF text_r(8.0, 0.0, width() - 16.0, height());
         p.drawText(text_r, Qt::AlignLeft | Qt::AlignVCenter, label_);
 
         if (!detail_.isEmpty()) {
@@ -565,178 +900,6 @@ private:
     QTimer anim_timer_;
 };
 
-// 3D-ready appearance preview stage showing the Finn logo on the active Light/Dark backdrop.
-class OobeAppearancePreview final : public QWidget {
-    Q_OBJECT
-
-public:
-    explicit OobeAppearancePreview(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedSize(oobe_content_width(), 200);
-        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
-                this, qOverload<>(&QWidget::update));
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        const auto& t = FinnThemeManager::instance().tokens();
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        const QRectF bounds = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        const QColor stage_bg = t.bone;
-        const QColor border = t.hair;
-
-        p.setPen(QPen(border, 1.0));
-        p.setBrush(stage_bg);
-        p.drawRoundedRect(bounds, 16.0, 16.0);
-
-        // Soft ambient glow behind the logo stage (placeholder until 3D model integration).
-        QRadialGradient glow(bounds.center(), bounds.width() * 0.42);
-        QColor glow_c = t.ink;
-        glow_c.setAlpha(t.dark ? 22 : 12);
-        QColor glow_end = t.ink;
-        glow_end.setAlpha(0);
-        glow.setColorAt(0.0, glow_c);
-        glow.setColorAt(1.0, glow_end);
-        p.setPen(Qt::NoPen);
-        p.setBrush(glow);
-        p.drawRoundedRect(bounds, 16.0, 16.0);
-
-        const qreal logo_sz = 64.0;
-        const QRectF logo_rect(bounds.center().x() - logo_sz * 0.5,
-                               bounds.center().y() - logo_sz * 0.5 - 6.0,
-                               logo_sz, logo_sz);
-        FinnThemeManager::instance().paintIcon(
-            &p, logo_rect,
-            t.dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
-            t.ink);
-
-        p.setFont(oobe_font(12, QFont::Medium));
-        p.setPen(t.dim);
-        p.drawText(QRectF(bounds.left(), bounds.bottom() - 32.0, bounds.width(), 22.0),
-                   Qt::AlignCenter,
-                   t.dark ? QStringLiteral("Dark Mode") : QStringLiteral("Light Mode"));
-    }
-};
-
-// Visual Light/Dark mode selector card featuring the white/black 4-shape Finn logo.
-class OobeAppearanceCard final : public QWidget {
-    Q_OBJECT
-
-public:
-    OobeAppearanceCard(bool dark_card, const QString& label, bool selected,
-                       QWidget* parent = nullptr)
-        : QWidget(parent),
-          dark_card_(dark_card),
-          label_(label),
-          selected_(selected) {
-        setFixedSize(169, 122);
-        setFocusPolicy(Qt::TabFocus);
-        setAccessibleName(QStringLiteral("%1 theme").arg(label));
-        setCursor(Qt::PointingHandCursor);
-        setAttribute(Qt::WA_Hover, true);
-        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
-                this, qOverload<>(&QWidget::update));
-    }
-
-    void setSelected(bool selected) {
-        if (selected_ == selected) return;
-        selected_ = selected;
-        update();
-    }
-
-signals:
-    void clicked();
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        const auto& t = FinnThemeManager::instance().tokens();
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        const QRectF r = QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5);
-        QColor card_bg = t.tile;
-        if (pressed_) {
-            card_bg = t.surface_pressed;
-        } else if (hovered_ && !selected_) {
-            card_bg = t.surface_hover;
-        }
-
-        const QColor border = (selected_ || hasFocus()) ? t.accent : t.hair;
-        p.setPen(QPen(border, (selected_ || hasFocus()) ? 2.5 : 1.0));
-        p.setBrush(card_bg);
-        p.drawRoundedRect(r, 14.0, 14.0);
-
-        const QRectF swatch(r.left() + 10.0, r.top() + 10.0, r.width() - 20.0, 70.0);
-        const QColor swatch_bg = QColor::fromRgba(dark_card_ ? colors::bone_dark : colors::bone_light);
-        const QColor swatch_border = QColor::fromRgba(dark_card_ ? colors::hair_dark : colors::hair_light);
-        const QColor swatch_ink = QColor::fromRgba(dark_card_ ? colors::ink_dark : colors::ink_light);
-        p.setPen(QPen(swatch_border, 1.0));
-        p.setBrush(swatch_bg);
-        p.drawRoundedRect(swatch, 9.0, 9.0);
-
-        const qreal logo_sz = 34.0;
-        const QRectF logo_r(swatch.center().x() - logo_sz * 0.5,
-                            swatch.center().y() - logo_sz * 0.5,
-                            logo_sz, logo_sz);
-        FinnThemeManager::instance().paintIcon(
-            &p, logo_r,
-            dark_card_ ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
-            swatch_ink);
-
-        p.setFont(oobe_font(15, selected_ ? QFont::DemiBold : QFont::Normal));
-        p.setPen(t.ink);
-        p.drawText(QRectF(r.left(), swatch.bottom() + 4.0, r.width(), 28.0),
-                   Qt::AlignCenter, label_);
-    }
-
-    void enterEvent(QEnterEvent*) override {
-        hovered_ = true;
-        update();
-    }
-    void leaveEvent(QEvent*) override {
-        hovered_ = false;
-        pressed_ = false;
-        update();
-    }
-    void mousePressEvent(QMouseEvent* event) override {
-        if (event->button() == Qt::LeftButton) {
-            pressed_ = true;
-            update();
-        } else {
-            QWidget::mousePressEvent(event);
-        }
-    }
-    void mouseReleaseEvent(QMouseEvent* event) override {
-        if (event->button() == Qt::LeftButton && pressed_) {
-            pressed_ = false;
-            update();
-            if (rect().contains(event->pos())) emit clicked();
-        } else {
-            QWidget::mouseReleaseEvent(event);
-        }
-    }
-
-    void keyPressEvent(QKeyEvent* event) override {
-        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter ||
-            event->key() == Qt::Key_Space) {
-            emit clicked();
-            return;
-        }
-        QWidget::keyPressEvent(event);
-    }
-
-private:
-    bool dark_card_ = false;
-    QString label_;
-    bool selected_ = false;
-    bool hovered_ = false;
-    bool pressed_ = false;
-    qreal hover_t_ = 0.0;
-    qreal sel_t_ = 0.0;
-    QTimer anim_timer_;
-};
-
 // Minimalist 350px text input row matching Figma 37:98 pill geometry.
 class OobeInputField final : public QWidget {
     Q_OBJECT
@@ -768,13 +931,19 @@ public:
     QLineEdit* lineEdit() const { return edit_; }
     QString text() const { return edit_->text(); }
     void setText(const QString& t) { edit_->setText(t); }
+    void setPlaceholderText(const QString& p) {
+        edit_->setPlaceholderText(p);
+        edit_->setAccessibleName(p);
+    }
 
 protected:
     void paintEvent(QPaintEvent*) override {
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(edit_->hasFocus() ? QPen(t.accent, 1.5) : QPen(t.hair, 1.0));
+        p.setPen(edit_->hasFocus()
+                     ? QPen(t.accent, t.high_contrast ? 2.5 : 1.5)
+                     : QPen(t.hair, t.high_contrast ? 2.0 : 1.0));
         p.setBrush(t.surface_input);
         p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 10.0, 10.0);
     }
@@ -822,6 +991,10 @@ public:
     }
 
     FinnToggle* toggle() const { return toggle_; }
+    void setLabel(const QString& text) {
+        if (label_) label_->setText(text);
+        if (toggle_) toggle_->setAccessibleName(text);
+    }
 
 signals:
     void toggled(bool checked);
@@ -1242,8 +1415,10 @@ struct NeonTextReveal {
     }
 };
 
-// Smooth ease-in-out directional slide transition overlay for OOBE steps
-// (forward: right-to-left, back: left-to-right), keeping background and nav arrows fixed.
+// Buttery sequential fade + subtle optical blur transition for OOBE steps.
+// Outgoing page accelerates softly away with a whisper of blur and fades out
+// completely before the incoming page decelerates into place on a long quintic
+// ease-out tail (zero overlap, zero sudden stop).
 class OobeSlideTransitionOverlay final : public QWidget {
 public:
     OobeSlideTransitionOverlay(QWidget* parent, QWidget* stack_widget,
@@ -1262,6 +1437,8 @@ public:
         } else if (parent) {
             setGeometry(parent->rect());
         }
+        old_blur_ = makeWhisperBlur(old_snap_);
+        new_blur_ = makeWhisperBlur(new_snap_);
         elapsed_.start();
         timer_ = new QTimer(this);
         timer_->setInterval(8);
@@ -1306,6 +1483,7 @@ public:
         if (timer_) timer_->stop();
         if (stack_widget_) {
             stack_widget_->setVisible(true);
+            stack_widget_->update();
         }
         hide();
         deleteLater();
@@ -1314,37 +1492,70 @@ public:
 protected:
     void paintEvent(QPaintEvent*) override {
         const double t = std::clamp((elapsed_.nsecsElapsed() / 1e9) / kDurationSec, 0.0, 1.0);
-        // Smooth ease-in-out with a long, gentle settle tail and subtle directional travel.
-        const double u = (t < 0.35)
-                             ? (0.4066 * std::pow(t / 0.35, 2.2))
-                             : (1.0 - 0.5934 * std::pow((1.0 - t) / 0.65, 2.8));
-        const double fade_out_t = std::clamp(t / 0.48, 0.0, 1.0);
-        const double fade_out = 1.0 - fade_out_t * fade_out_t * (3.0 - 2.0 * fade_out_t);
-        const double fade_in_t = std::clamp((t - 0.10) / 0.52, 0.0, 1.0);
-        const double fade_in = fade_in_t * fade_in_t * (3.0 - 2.0 * fade_in_t);
-
-        constexpr qreal kOutTravel = 140.0;
-        constexpr qreal kInTravel = 180.0;
+        constexpr qreal kDrift = 36.0;
         const qreal dir = forward_ ? 1.0 : -1.0;
 
         QPainter p(this);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        if (fade_out > 0.001) {
-            p.setOpacity(fade_out);
-            p.drawPixmap(QPointF(-dir * kOutTravel * u, 0.0), old_snap_);
-        }
-        if (fade_in > 0.001) {
-            p.setOpacity(fade_in);
-            p.drawPixmap(QPointF(dir * kInTravel * (1.0 - u), 0.0), new_snap_);
+
+        if (t < 0.40) {
+            // Phase 1: smooth cubic acceleration out + whisper of blur
+            const double u = std::clamp(t / 0.40, 0.0, 1.0);
+            const double ease_in = u * u * (2.0 - u) * u;  // starts at 0 vel, accelerates smoothly
+            const double alpha = 1.0 - (u * u * (3.0 - 2.0 * u));
+            const double blur_mix = u * u;
+            const QPointF off(-dir * kDrift * ease_in, 0.0);
+
+            const double sharp_a = alpha * (1.0 - blur_mix);
+            const double blur_a = alpha * blur_mix;
+            if (sharp_a > 0.002) {
+                p.setOpacity(sharp_a);
+                p.drawPixmap(off, old_snap_);
+            }
+            if (blur_a > 0.002 && !old_blur_.isNull()) {
+                p.setOpacity(blur_a);
+                p.drawPixmap(QRectF(off, QSizeF(size())), old_blur_, QRectF(old_blur_.rect()));
+            }
+        } else if (t >= 0.44) {
+            // Phase 2: long quartic/quintic ease-out deceleration into place (zero sudden stop)
+            const double u = std::clamp((t - 0.44) / 0.56, 0.0, 1.0);
+            const double inv = 1.0 - u;
+            const double ease_out = 1.0 - inv * inv * inv * inv;  // silky long settle tail
+            const double alpha = 1.0 - inv * inv * inv;
+            const double blur_mix = inv * inv;                    // subtle blur clears early
+            const QPointF off(dir * kDrift * (1.0 - ease_out), 0.0);
+
+            const double blur_a = alpha * blur_mix;
+            const double sharp_a = alpha * (1.0 - blur_mix);
+            if (blur_a > 0.002 && !new_blur_.isNull()) {
+                p.setOpacity(blur_a);
+                p.drawPixmap(QRectF(off, QSizeF(size())), new_blur_, QRectF(new_blur_.rect()));
+            }
+            if (sharp_a > 0.002) {
+                p.setOpacity(sharp_a);
+                p.drawPixmap(off, new_snap_);
+            }
         }
         p.setOpacity(1.0);
     }
 
 private:
-    static constexpr double kDurationSec = 0.58;
+    static QPixmap makeWhisperBlur(const QPixmap& src) {
+        if (src.isNull()) return {};
+        QImage img = src.toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const QSize half(std::max(1, img.width() / 2), std::max(1, img.height() / 2));
+        QImage small = img.scaled(half, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        // Gentle optical blur (radius 2) — just enough softness without smudging
+        QImage blurred = box_blur_image(small, 2);
+        return QPixmap::fromImage(blurred);
+    }
+
+    static constexpr double kDurationSec = 0.52;
     QPointer<QWidget> stack_widget_;
     QPixmap old_snap_;
     QPixmap new_snap_;
+    QPixmap old_blur_;
+    QPixmap new_blur_;
     bool forward_ = true;
     bool cancelled_ = false;
     QElapsedTimer elapsed_;
@@ -1643,14 +1854,19 @@ public:
         root->setSpacing(0);
 
         stack_ = new FinnPageStack(this);
-        stack_->addWidget(buildHiPage());
-        stack_->addWidget(buildLanguagePage());
-        stack_->addWidget(buildWifiPage());
-        stack_->addWidget(buildAccountPage());
-        stack_->addWidget(buildAppearancePage());
-        stack_->addWidget(buildAccessibilityPage());
-        stack_->addWidget(buildPrivacyPage());   // UI 6 -> model Step::Privacy
-        stack_->addWidget(buildCompletePage());  // UI 7 -> model Step::Finish
+        // OobeSlideTransitionOverlay owns the step fade; disable FinnPageStack's
+        // internal crossfade so the previous page never flashes at transition end.
+        stack_->setAnimatedTransitions(false);
+        stack_->addWidget(buildHiPage());             // 0 -> Welcome
+        stack_->addWidget(buildLanguagePage());       // 1 -> Language
+        stack_->addWidget(buildRegionTimezonePage()); // 2 -> RegionTimezone
+        stack_->addWidget(buildKeyboardPage());       // 3 -> Keyboard
+        stack_->addWidget(buildWifiPage());           // 4 -> Connectivity
+        stack_->addWidget(buildAccountPage());        // 5 -> Account (+ Hostname)
+        stack_->addWidget(buildAppearancePage());     // 6 -> Theme
+        stack_->addWidget(buildAccessibilityPage());  // 7 -> Accessibility
+        stack_->addWidget(buildPrivacyPage());        // 8 -> Privacy
+        stack_->addWidget(buildCompletePage());       // 9 -> Finish
         root->addWidget(stack_, 1);
 
 
@@ -1670,21 +1886,18 @@ public:
         shared_nav_box_->setVisible(false);
         shared_nav_box_->raise();
 
-        gate_hint_lbl_ = new QLabel(this);
-        gate_hint_lbl_->setAlignment(Qt::AlignCenter);
-        gate_hint_lbl_->setFont(oobe_font(12, QFont::Normal));
-        gate_hint_lbl_->setWordWrap(true);
-        gate_hint_lbl_->setFixedWidth(460);
-        gate_hint_lbl_->setVisible(false);
-
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 this, qOverload<>(&QWidget::update));
+        if (qApp) qApp->installEventFilter(this);
         connect(&finn::sys::FinnDesktopServices::instance(),
                 &finn::sys::FinnDesktopServices::stateUpdated,
                 this, &OobeWindow::syncNetwork);
         finn::sys::FinnDesktopServices::instance().refreshAll();
 
-        setStep(update_mode_ ? 7 : 0);
+        setStep(update_mode_ ? 9 : 0);
+        if (selected_locale_ != QLatin1String("en_GB.UTF-8")) {
+            applyLanguageSelection(selected_language_, selected_locale_);
+        }
         positionSharedNav();
     }
 
@@ -1712,8 +1925,7 @@ protected:
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             QWidget* fw = focusWidget();
             if (qobject_cast<QAbstractButton*>(fw) ||
-                qobject_cast<OobeOptionRow*>(fw) ||
-                qobject_cast<OobeAppearanceCard*>(fw)) {
+                qobject_cast<OobeOptionRow*>(fw)) {
                 FinnLayerWindow::keyPressEvent(event);
                 return;
             }
@@ -1721,6 +1933,41 @@ protected:
             return;
         }
         FinnLayerWindow::keyPressEvent(event);
+    }
+
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        if (sticky_keys_active_ && !sticky_replaying_ && ev &&
+            (ev->type() == QEvent::KeyPress || ev->type() == QEvent::KeyRelease)) {
+            auto* ke = static_cast<QKeyEvent*>(ev);
+            const int k = ke->key();
+            Qt::KeyboardModifier mod = Qt::NoModifier;
+            if (k == Qt::Key_Shift) mod = Qt::ShiftModifier;
+            else if (k == Qt::Key_Control) mod = Qt::ControlModifier;
+            else if (k == Qt::Key_Alt) mod = Qt::AltModifier;
+            else if (k == Qt::Key_Meta) mod = Qt::MetaModifier;
+
+            if (mod != Qt::NoModifier) {
+                if (ev->type() == QEvent::KeyPress && !ke->isAutoRepeat()) {
+                    sticky_latched_mods_ ^= mod;
+                }
+            } else if (ev->type() == QEvent::KeyPress &&
+                       sticky_latched_mods_ != Qt::NoModifier &&
+                       (ke->modifiers() & sticky_latched_mods_) != sticky_latched_mods_) {
+                const Qt::KeyboardModifiers combined = ke->modifiers() | sticky_latched_mods_;
+                QString txt = ke->text();
+                if ((sticky_latched_mods_ & Qt::ShiftModifier) && !txt.isEmpty()) {
+                    txt = txt.toUpper();
+                }
+                sticky_latched_mods_ = Qt::NoModifier;
+                QKeyEvent synth(QEvent::KeyPress, ke->key(), combined, txt,
+                                ke->isAutoRepeat(), ke->count());
+                sticky_replaying_ = true;
+                QCoreApplication::sendEvent(obj, &synth);
+                sticky_replaying_ = false;
+                return true;
+            }
+        }
+        return FinnLayerWindow::eventFilter(obj, ev);
     }
 
 private:
@@ -1772,13 +2019,14 @@ private:
         left_col->addSpacing(form == OobeForm::Phone ? 12
                              : form == OobeForm::Tablet ? 24 : 40);
 
-        auto* prompt_lbl = new QLabel(prompt_text, left_host);
+        auto* prompt_lbl = new QLabel(left_host);
         prompt_lbl->setFont(oobe_font(form == OobeForm::Phone ? 20 : 24,
                                       QFont::Normal));
         prompt_lbl->setAlignment(Qt::AlignCenter);
         prompt_lbl->setWordWrap(true);
-        prompt_lbl->setFixedWidth(qMin(300, oobe_content_width()));
+        prompt_lbl->setFixedWidth(form == OobeForm::Desktop ? 380 : qMin(300, oobe_content_width()));
         prompt_lbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+        set_wrapped_label_text(prompt_lbl, prompt_text);
         if (out_prompt_label) *out_prompt_label = prompt_lbl;
         left_col->addWidget(prompt_lbl, 0, Qt::AlignHCenter);
 
@@ -1790,6 +2038,7 @@ private:
             sub_lbl->setAlignment(Qt::AlignCenter);
             sub_lbl->setWordWrap(true);
             sub_lbl->setFixedWidth(qMin(280, oobe_content_width()));
+            sub_lbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
             sub_lbl->setVisible(!sub_caption.isEmpty());
             left_col->addWidget(sub_lbl, 0, Qt::AlignHCenter);
             if (out_sub_label) *out_sub_label = sub_lbl;
@@ -1875,8 +2124,9 @@ private:
         connect(hi_next_btn_, &QAbstractButton::clicked, this, &OobeWindow::advanceStep);
         col->addWidget(hi_next_btn_, 0, Qt::AlignHCenter);
 
-        // Bottom stretch so Next button sits at y=631/832 (~75.8% from top)
-        col->addStretch(174);
+        // Lock first-page arrow to the exact same bottom inset as positionSharedNav()
+        // so the navigation arrows never jump vertically between steps at any resolution.
+        col->addSpacing(oobe_form() == OobeForm::Phone ? 24 : 145);
 
         grid->addWidget(chrome_layer, 0, 0);
 
@@ -1915,7 +2165,6 @@ private:
         };
         static constexpr LangEntry kLanguages[] = {
             {"English (UK)", "en_GB.UTF-8"},
-            {"English (US)", "en_US.UTF-8"},
             {"Spanish", "es_ES.UTF-8"},
             {"Italian", "it_IT.UTF-8"},
             {"French", "fr_FR.UTF-8"},
@@ -1928,7 +2177,8 @@ private:
             {"Japanese", "ja_JP.UTF-8"},
             {"Arabic", "ar_SA.UTF-8"},
             {"Chinese (Traditional)", "zh_TW.UTF-8"},
-            {"Portuguese (Portugal)", "pt_PT.UTF-8"},
+            {"Portuguese", "pt_PT.UTF-8"},
+            {"English (US)", "en_US.UTF-8"},
             {"Portuguese (Brazil)", "pt_BR.UTF-8"},
             {"Dutch", "nl_NL.UTF-8"},
             {"Polish", "pl_PL.UTF-8"},
@@ -2008,6 +2258,11 @@ private:
             for (const QString z : QTimeZone::availableTimeZoneIds()) {
                 catalog.timezones.push_back(z.toStdString());
             }
+            for (const char* kb : {"us", "gb", "de", "fr", "es", "it", "pt", "br",
+                                   "nl", "se", "no", "dk", "fi", "ch", "pl", "cz",
+                                   "tr", "ru", "ua", "jp", "kr", "cn", "latam", "ca"}) {
+                catalog.keyboard_layouts.emplace_back(kb);
+            }
             flow_.setCatalog(std::move(catalog));
         }
         for (int i = 0; i < kLangCount; ++i) {
@@ -2047,11 +2302,218 @@ private:
                                    {}, list_wrap, nullptr, false, &lang_prompt_lbl_);
     }
 
-    // Step 2: Wi-Fi / Network in the same Figma 36:53 split layout
+    // Step 2: Figma 70:3 ("A big world. But one country. Where?")
+    // Pure country list matching Figma 1:1 (no search bar, no timezone suffix,
+    // no bottom footer). Selecting a country sets both region and default timezone.
+    QWidget* buildRegionTimezonePage() {
+        auto* list_wrap = new QWidget();
+        list_wrap->setFixedWidth(oobe_content_width() + 6);
+        list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
+
+        region_prog_list_ = new OobeProgressiveList(list_wrap);
+        region_blur_ov_ = new ProgressiveBlurOverlay(region_prog_list_, list_wrap);
+        auto* stack_lay = new QGridLayout(list_wrap);
+        stack_lay->setContentsMargins(0, 0, 0, 0);
+        stack_lay->addWidget(region_prog_list_, 0, 0);
+        stack_lay->addWidget(region_blur_ov_, 0, 0);
+
+        struct RegionItem {
+            const char* code;
+            const char* name;
+            const char* default_tz;
+        };
+        static constexpr RegionItem kRegions[] = {
+            {"IT", "Italy", "Europe/Rome"},
+            {"GB", "United Kingdom", "Europe/London"},
+            {"FR", "France", "Europe/Paris"},
+            {"CH", "Switzerland", "Europe/Zurich"},
+            {"DE", "Germany", "Europe/Berlin"},
+            {"ES", "Spain", "Europe/Madrid"},
+            {"PT", "Portugal", "Europe/Lisbon"},
+            {"US", "United States", "America/New_York"},
+            {"IN", "India", "Asia/Kolkata"},
+            {"KR", "Korea", "Asia/Seoul"},
+            {"JP", "Japan", "Asia/Tokyo"},
+            {"CN", "China", "Asia/Shanghai"},
+            {"ID", "Indonesia", "Asia/Jakarta"},
+            {"PH", "Philippines", "Asia/Manila"},
+            {"CA", "Canada", "America/Toronto"},
+            {"NL", "Netherlands", "Europe/Amsterdam"},
+            {"SE", "Sweden", "Europe/Stockholm"},
+            {"NO", "Norway", "Europe/Oslo"},
+            {"DK", "Denmark", "Europe/Copenhagen"},
+            {"FI", "Finland", "Europe/Helsinki"},
+            {"PL", "Poland", "Europe/Warsaw"},
+            {"BR", "Brazil", "America/Sao_Paulo"},
+            {"TW", "Taiwan", "Asia/Taipei"},
+            {"AU", "Australia", "Australia/Sydney"},
+            {"UA", "Ukraine", "Europe/Kyiv"},
+            {"TR", "Turkey", "Europe/Istanbul"},
+            {"SA", "Saudi Arabia", "Asia/Riyadh"},
+            {"ZA", "South Africa", "Africa/Johannesburg"},
+        };
+
+        selected_region_ = selected_locale_.section(QLatin1Char('_'), -1)
+                                           .section(QLatin1Char('.'), 0, 0);
+        if (selected_region_.isEmpty()) selected_region_ = QStringLiteral("GB");
+        selected_timezone_ = QString::fromLatin1(QTimeZone::systemTimeZoneId());
+        if (selected_timezone_.isEmpty()) selected_timezone_ = QStringLiteral("UTC");
+
+        // Ensure all UI region codes are present in the model's region catalog.
+        {
+            auto cat = flow_.data().catalog;
+            for (const auto& r : kRegions) {
+                const std::string rc(r.code);
+                if (std::find(cat.regions.begin(), cat.regions.end(), rc) == cat.regions.end()) {
+                    cat.regions.push_back(rc);
+                }
+            }
+            if (std::find(cat.timezones.begin(), cat.timezones.end(), "UTC") == cat.timezones.end()) {
+                cat.timezones.emplace_back("UTC");
+            }
+            if (std::find(cat.timezones.begin(), cat.timezones.end(),
+                          selected_timezone_.toStdString()) == cat.timezones.end()) {
+                selected_timezone_ = QString::fromStdString(cat.timezones.front());
+            }
+            flow_.setCatalog(std::move(cat));
+        }
+
+        region_rows_.clear();
+        constexpr int kRegionCount = static_cast<int>(sizeof(kRegions) / sizeof(kRegions[0]));
+        int initial_idx = 0;
+        for (int i = 0; i < kRegionCount; ++i) {
+            if (QString::fromLatin1(kRegions[i].code) == selected_region_) {
+                initial_idx = i;
+                break;
+            }
+        }
+        selected_region_ = QString::fromLatin1(kRegions[initial_idx].code);
+        {
+            const std::string def_tz(kRegions[initial_idx].default_tz);
+            const auto& tzs = flow_.data().catalog.timezones;
+            if (std::find(tzs.begin(), tzs.end(), def_tz) != tzs.end()) {
+                selected_timezone_ = QString::fromStdString(def_tz);
+            }
+        }
+
+        for (int i = 0; i < kRegionCount; ++i) {
+            const QString rcode = QString::fromLatin1(kRegions[i].code);
+            const QString rname = QString::fromUtf8(kRegions[i].name);
+            const QString rtz = QString::fromLatin1(kRegions[i].default_tz);
+            auto* row = new OobeOptionRow(rname, {}, i == initial_idx,
+                                          region_prog_list_->hostWidget());
+            region_rows_.push_back(row);
+            connect(row, &OobeOptionRow::clicked, this, [this, i, rcode, rtz]() {
+                for (int j = 0; j < region_rows_.size(); ++j) {
+                    region_rows_[j]->setSelected(j == i);
+                }
+                selected_region_ = rcode;
+                const auto& tzs = flow_.data().catalog.timezones;
+                if (std::find(tzs.begin(), tzs.end(), rtz.toStdString()) != tzs.end()) {
+                    selected_timezone_ = rtz;
+                }
+                if (region_blur_ov_) region_blur_ov_->invalidateCache();
+                refreshFlowGate();
+            });
+            region_prog_list_->listLayout()->addWidget(row);
+        }
+        region_prog_list_->listLayout()->addStretch(1);
+
+        return createSplitStepPage(QStringLiteral("globe"),
+                                   oobe_tr(QStringLiteral("region_prompt"), selected_locale_),
+                                   {},
+                                   list_wrap, nullptr, false, &region_prompt_lbl_);
+    }
+
+    // Step 3: Keyboard layout selection matching the Figma 36:53 / 70:3 list style.
+    QWidget* buildKeyboardPage() {
+        auto* list_wrap = new QWidget();
+        list_wrap->setFixedWidth(oobe_content_width() + 6);
+        list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
+
+        struct KbEntry {
+            const char* label;
+            const char* layout;
+            const char* variant;
+        };
+        static constexpr KbEntry kKeyboards[] = {
+            {"English (US)", "us", ""},
+            {"English (UK)", "gb", ""},
+            {"English (US International)", "us", "intl"},
+            {"English (Dvorak)", "us", "dvorak"},
+            {"English (Colemak)", "us", "colemak"},
+            {"German (QWERTZ)", "de", ""},
+            {"French (AZERTY)", "fr", ""},
+            {"Spanish", "es", ""},
+            {"Latin American", "latam", ""},
+            {"Italian", "it", ""},
+            {"Portuguese (Portugal)", "pt", ""},
+            {"Portuguese (Brazil ABNT2)", "br", ""},
+            {"Dutch", "nl", ""},
+            {"Swedish", "se", ""},
+            {"Norwegian", "no", ""},
+            {"Danish", "dk", ""},
+            {"Finnish", "fi", ""},
+            {"Swiss German", "ch", ""},
+            {"Polish", "pl", ""},
+            {"Czech", "cz", ""},
+            {"Turkish", "tr", ""},
+            {"Ukrainian", "ua", ""},
+            {"Russian", "ru", ""},
+            {"Japanese", "jp", ""},
+            {"Korean", "kr", ""},
+            {"Canadian Multilingual", "ca", ""},
+        };
+
+        selected_kb_layout_ = FinnThemeManager::instance().keyboardLayout();
+        if (selected_kb_layout_.isEmpty()) selected_kb_layout_ = QStringLiteral("us");
+        selected_kb_variant_ = FinnThemeManager::instance().keyboardVariant();
+
+        auto* prog_list = new OobeProgressiveList(list_wrap);
+        auto* blur_ov = new ProgressiveBlurOverlay(prog_list, list_wrap);
+        auto* stack_lay = new QGridLayout(list_wrap);
+        stack_lay->setContentsMargins(0, 0, 0, 0);
+        stack_lay->addWidget(prog_list, 0, 0);
+        stack_lay->addWidget(blur_ov, 0, 0);
+
+        kb_rows_.clear();
+        constexpr int kKbCount = static_cast<int>(sizeof(kKeyboards) / sizeof(kKeyboards[0]));
+        for (int i = 0; i < kKbCount; ++i) {
+            const QString lbl = QString::fromUtf8(kKeyboards[i].label);
+            const QString lay_code = QString::fromLatin1(kKeyboards[i].layout);
+            const QString var_code = QString::fromLatin1(kKeyboards[i].variant);
+            const bool is_sel = (selected_kb_layout_ == lay_code && selected_kb_variant_ == var_code);
+            auto* row = new OobeOptionRow(lbl, {}, is_sel, prog_list->hostWidget());
+            kb_rows_.push_back(row);
+            connect(row, &OobeOptionRow::clicked, this,
+                    [this, i, lay_code, var_code, blur_ov]() {
+                        for (int j = 0; j < kb_rows_.size(); ++j) {
+                            kb_rows_[j]->setSelected(j == i);
+                        }
+                        selected_kb_layout_ = lay_code;
+                        selected_kb_variant_ = var_code;
+                        FinnThemeManager::instance().setKeyboardLayout(lay_code, var_code);
+                        blur_ov->invalidateCache();
+                        refreshFlowGate();
+                    });
+            prog_list->listLayout()->addWidget(row);
+        }
+        prog_list->listLayout()->addStretch(1);
+
+        return createSplitStepPage(QStringLiteral("keyboard"),
+                                   oobe_tr(QStringLiteral("kb_prompt"), selected_locale_),
+                                   {},
+                                   list_wrap, nullptr, false, &kb_prompt_lbl_);
+    }
+
+    // Step 4: Wi-Fi / Network in the same Figma 36:53 split layout
     QWidget* buildWifiPage() {
         auto* list_wrap = new QWidget();
         list_wrap->setFixedWidth(oobe_content_width() + 6);
         list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
 
         wifi_prog_list_ = new OobeProgressiveList(list_wrap);
         wifi_blur_ov_ = new ProgressiveBlurOverlay(wifi_prog_list_, list_wrap);
@@ -2061,23 +2523,10 @@ private:
         stack_lay->addWidget(wifi_prog_list_, 0, 0);
         stack_lay->addWidget(wifi_blur_ov_, 0, 0);
 
-        // Offline is an explicit, named choice. The model refuses to record
-        // "connected" without a measured connector and a named network.
-        auto* host = new QWidget();
-        auto* col = new QVBoxLayout(host);
-        col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(12);
-        col->addWidget(list_wrap, 1);
-        continue_offline_cb_ = new QCheckBox(
-            QStringLiteral("Continue without connecting to a network"), host);
-        connect(continue_offline_cb_, &QCheckBox::toggled, this,
-                [this]() { refreshFlowGate(); });
-        col->addWidget(continue_offline_cb_, 0, Qt::AlignHCenter);
-
         return createSplitStepPage(QStringLiteral("wifi-02"),
                                    oobe_tr(QStringLiteral("wifi_prompt"), selected_locale_),
                                    {},
-                                   host, nullptr, false, &wifi_prompt_lbl_);
+                                   list_wrap, nullptr, false, &wifi_prompt_lbl_);
     }
 
     // Step 3: Account setup with Figma PFP color picker + account fields
@@ -2127,13 +2576,33 @@ private:
                 col_host, sync_pfp);
         sync_pfp();
 
-        fullname_edit_ = new OobeInputField(QStringLiteral("Full Name"), false, col_host);
-        username_edit_ = new OobeInputField(QStringLiteral("Account Name"), false, col_host);
-        username_edit_->setText(QString::fromLocal8Bit(qgetenv("USER")));
-        pw_edit_ = new OobeInputField(QStringLiteral("Password"), true, col_host);
-        pw_verify_edit_ = new OobeInputField(QStringLiteral("Verify Password"), true, col_host);
+        fullname_edit_ = new OobeInputField(oobe_tr(QStringLiteral("full_name"), selected_locale_), false, col_host);
+        username_edit_ = new OobeInputField(oobe_tr(QStringLiteral("account_name"), selected_locale_), false, col_host);
+        const QString default_user = QString::fromLocal8Bit(qgetenv("USER")).trimmed();
+        username_edit_->setText(default_user.isEmpty() ? QStringLiteral("finn") : default_user);
+        hostname_edit_ = new OobeInputField(oobe_tr(QStringLiteral("computer_name"), selected_locale_), false, col_host);
+        hostname_edit_->setText(QStringLiteral("finnos"));
+        pw_edit_ = new OobeInputField(oobe_tr(QStringLiteral("password"), selected_locale_), true, col_host);
+        pw_verify_edit_ = new OobeInputField(oobe_tr(QStringLiteral("verify_password"), selected_locale_), true, col_host);
 
-        pw_hint_lbl_ = new QLabel(QStringLiteral("Passwords don\u2019t match"), col_host);
+        connect(fullname_edit_->lineEdit(), &QLineEdit::textChanged, this, [this](const QString& txt) {
+            if (!hostname_manually_edited_ && hostname_edit_) {
+                const QString suggested = QString::fromStdString(
+                    finn::shell::oobe::suggest_hostname_from_name(txt.toStdString()));
+                QSignalBlocker b(hostname_edit_->lineEdit());
+                hostname_edit_->setText(suggested);
+            }
+            refreshFlowGate();
+        });
+        connect(username_edit_->lineEdit(), &QLineEdit::textChanged, this, [this]() {
+            refreshFlowGate();
+        });
+        connect(hostname_edit_->lineEdit(), &QLineEdit::textEdited, this, [this]() {
+            hostname_manually_edited_ = true;
+            refreshFlowGate();
+        });
+
+        pw_hint_lbl_ = new QLabel(oobe_tr(QStringLiteral("pw_mismatch"), selected_locale_), col_host);
         pw_hint_lbl_->setFont(oobe_font(12, QFont::Normal));
         pw_hint_lbl_->setContentsMargins(6, 0, 0, 0);
         pw_hint_lbl_->setVisible(false);
@@ -2149,17 +2618,25 @@ private:
             pal.setColor(QPalette::WindowText, t.danger);
             pw_hint_lbl_->setPalette(pal);
         };
-        connect(pw_edit_->lineEdit(), &QLineEdit::textChanged, col_host, sync_pw_hint);
-        connect(pw_verify_edit_->lineEdit(), &QLineEdit::textChanged, col_host, sync_pw_hint);
+        connect(pw_edit_->lineEdit(), &QLineEdit::textChanged, col_host, [this, sync_pw_hint]() {
+            sync_pw_hint();
+            refreshFlowGate();
+        });
+        connect(pw_verify_edit_->lineEdit(), &QLineEdit::textChanged, col_host, [this, sync_pw_hint]() {
+            sync_pw_hint();
+            refreshFlowGate();
+        });
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 col_host, sync_pw_hint);
 
         col->addWidget(fullname_edit_);
-        col->addSpacing(10);
+        col->addSpacing(8);
         col->addWidget(username_edit_);
-        col->addSpacing(10);
+        col->addSpacing(8);
+        col->addWidget(hostname_edit_);
+        col->addSpacing(8);
         col->addWidget(pw_edit_);
-        col->addSpacing(10);
+        col->addSpacing(8);
         col->addWidget(pw_verify_edit_);
         col->addSpacing(6);
         col->addWidget(pw_hint_lbl_);
@@ -2199,12 +2676,14 @@ private:
         left_col->addWidget(icon_lbl, 0, Qt::AlignHCenter);
         left_col->addSpacing(40);
 
-        appearance_prompt_lbl_ = new QLabel(
-            oobe_tr(QStringLiteral("appearance_prompt"), selected_locale_), left_host);
+        appearance_prompt_lbl_ = new QLabel(left_host);
         appearance_prompt_lbl_->setFont(oobe_font(24, QFont::Normal));
         appearance_prompt_lbl_->setAlignment(Qt::AlignCenter);
         appearance_prompt_lbl_->setWordWrap(true);
-        appearance_prompt_lbl_->setFixedWidth(qMin(300, oobe_content_width()));
+        appearance_prompt_lbl_->setFixedWidth(380);
+        appearance_prompt_lbl_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+        set_wrapped_label_text(appearance_prompt_lbl_,
+                               oobe_tr(QStringLiteral("appearance_prompt"), selected_locale_));
         left_col->addWidget(appearance_prompt_lbl_, 0, Qt::AlignHCenter);
         left_col->addStretch(51);
 
@@ -2225,46 +2704,25 @@ private:
         sync_left_colors();
 
         auto* lamp = new finn::oobe::OobeLamp3DWidget(page);
+        selected_theme_ = FinnThemeManager::instance().isDark()
+            ? finn::shell::oobe::ThemeChoice::Dark
+            : finn::shell::oobe::ThemeChoice::Light;
+
+        connect(lamp, &finn::oobe::OobeLamp3DWidget::themeToggled, this,
+                [this](bool is_dark) {
+                    selected_theme_ = is_dark ? finn::shell::oobe::ThemeChoice::Dark
+                                              : finn::shell::oobe::ThemeChoice::Light;
+                    refreshFlowGate();
+                });
 
         halves->addWidget(left_host, 1);
         halves->addStretch(1);
         stack_grid->addWidget(base_layer, 0, 0);
         stack_grid->addWidget(lamp, 0, 0);
-
-        // A real Light/Dark choice. The cards were already part of the
-        // FinnUI vocabulary but were not wired to the appearance step; the
-        // flow model requires an explicit choice before finishing.
-        auto* chooser = new QWidget(page);
-        auto* chooser_row = new QHBoxLayout(chooser);
-        chooser_row->setContentsMargins(0, 0, 0, 24);
-        chooser_row->setSpacing(12);
-        auto* light_card = new OobeAppearanceCard(false, QStringLiteral("Light"),
-                                                  !FinnThemeManager::instance().isDark(),
-                                                  chooser);
-        auto* dark_card = new OobeAppearanceCard(true, QStringLiteral("Dark"),
-                                                 FinnThemeManager::instance().isDark(),
-                                                 chooser);
-        connect(light_card, &OobeAppearanceCard::clicked, this, [this, light_card, dark_card]() {
-            FinnThemeManager::instance().setDark(false);
-            light_card->setSelected(true);
-            dark_card->setSelected(false);
-            selected_theme_ = finn::shell::oobe::ThemeChoice::Light;
-            refreshFlowGate();
-        });
-        connect(dark_card, &OobeAppearanceCard::clicked, this, [this, light_card, dark_card]() {
-            FinnThemeManager::instance().setDark(true);
-            light_card->setSelected(false);
-            dark_card->setSelected(true);
-            selected_theme_ = finn::shell::oobe::ThemeChoice::Dark;
-            refreshFlowGate();
-        });
-        chooser_row->addWidget(light_card, 0, Qt::AlignHCenter);
-        chooser_row->addWidget(dark_card, 0, Qt::AlignHCenter);
-        stack_grid->addWidget(chooser, 0, 0, Qt::AlignBottom | Qt::AlignHCenter);
         return page;
     }
 
-    // Step 5: Accessibility toggles in the same Figma 36:53 split layout
+    // Step 7: Accessibility toggles in the same Figma 36:53 split layout
     QWidget* buildAccessibilityPage() {
         auto* col_host = new QWidget();
         col_host->setFixedWidth(oobe_content_width() + 6);
@@ -2274,43 +2732,72 @@ private:
 
         auto& tm = FinnThemeManager::instance();
         const auto s = finn::sys::load_merged_settings();
+        sticky_keys_active_ = s.sticky_keys;
 
-        auto* sr = a11y_sr_ = new OobeToggleRow(QStringLiteral("Screen Reader"),
-                                                s.screen_reader, col_host);
-        connect(sr, &OobeToggleRow::toggled, this, [](bool on) {
-            FinnThemeManager::instance().setScreenReader(on);
-        });
+        const QString orca_bin = QStandardPaths::findExecutable(QStringLiteral("orca"));
+        const QString spd_bin = QStandardPaths::findExecutable(QStringLiteral("spd-say"));
+        const QString espeak_bin = QStandardPaths::findExecutable(QStringLiteral("espeak-ng"));
+        const bool has_sr_backend = !orca_bin.isEmpty() || !spd_bin.isEmpty() || !espeak_bin.isEmpty();
+
+        auto* sr = a11y_sr_ = new OobeToggleRow(
+            oobe_tr(QStringLiteral("a11y_sr"), selected_locale_),
+            has_sr_backend && s.screen_reader, col_host);
+        if (!has_sr_backend) {
+            sr->setEnabled(false);
+        } else {
+            connect(sr, &OobeToggleRow::toggled, this, [this, orca_bin, spd_bin, espeak_bin](bool on) {
+                FinnThemeManager::instance().setScreenReader(on);
+                if (on) {
+                    if (!orca_bin.isEmpty()) {
+                        QProcess::startDetached(orca_bin, {QStringLiteral("--replace")});
+                    } else if (!spd_bin.isEmpty()) {
+                        QProcess::startDetached(spd_bin, {oobe_tr(QStringLiteral("a11y_sr"), selected_locale_)});
+                    } else if (!espeak_bin.isEmpty()) {
+                        QProcess::startDetached(espeak_bin, {oobe_tr(QStringLiteral("a11y_sr"), selected_locale_)});
+                    }
+                } else if (!orca_bin.isEmpty()) {
+                    QProcess::startDetached(QStringLiteral("pkill"), {QStringLiteral("-x"), QStringLiteral("orca")});
+                }
+            });
+        }
         col->addWidget(sr);
 
-        auto* hc = a11y_hc_ = new OobeToggleRow(QStringLiteral("High Contrast"),
-                                                tm.tokens().high_contrast, col_host);
-        connect(hc, &OobeToggleRow::toggled, this, [](bool on) {
+        auto* hc = a11y_hc_ = new OobeToggleRow(
+            oobe_tr(QStringLiteral("a11y_hc"), selected_locale_),
+            tm.tokens().high_contrast, col_host);
+        connect(hc, &OobeToggleRow::toggled, this, [this](bool on) {
             FinnThemeManager::instance().setHighContrast(on);
+            update();
         });
         col->addWidget(hc);
 
-        auto* rm = a11y_rm_ = new OobeToggleRow(QStringLiteral("Reduce Motion"),
-                                                tm.tokens().reduced_motion, col_host);
+        auto* rm = a11y_rm_ = new OobeToggleRow(
+            oobe_tr(QStringLiteral("a11y_rm"), selected_locale_),
+            tm.tokens().reduced_motion, col_host);
         connect(rm, &OobeToggleRow::toggled, this, [](bool on) {
             FinnThemeManager::instance().setReducedMotion(on);
         });
         col->addWidget(rm);
 
-        auto* sk = new OobeToggleRow(QStringLiteral("Sticky Keys"),
-                                     s.sticky_keys, col_host);
-        connect(sk, &OobeToggleRow::toggled, this, [](bool on) {
+        auto* sk = a11y_sk_ = new OobeToggleRow(
+            oobe_tr(QStringLiteral("a11y_sk"), selected_locale_),
+            s.sticky_keys, col_host);
+        connect(sk, &OobeToggleRow::toggled, this, [this](bool on) {
+            sticky_keys_active_ = on;
+            sticky_latched_mods_ = Qt::NoModifier;
             FinnThemeManager::instance().setStickyKeys(on);
         });
         col->addWidget(sk);
 
         connect(&tm, &FinnThemeManager::themeChanged, this,
-                [sr, hc, rm, sk]() {
+                [this, sr, hc, rm, sk, has_sr_backend]() {
                     const auto& st = FinnThemeManager::instance().settings();
+                    sticky_keys_active_ = st.sticky_keys;
                     QSignalBlocker b1(sr->toggle());
                     QSignalBlocker b2(hc->toggle());
                     QSignalBlocker b3(rm->toggle());
                     QSignalBlocker b4(sk->toggle());
-                    sr->toggle()->setChecked(st.screen_reader);
+                    sr->toggle()->setChecked(has_sr_backend && st.screen_reader);
                     hc->toggle()->setChecked(st.high_contrast);
                     rm->toggle()->setChecked(st.reduced_motion);
                     sk->toggle()->setChecked(st.sticky_keys);
@@ -2322,9 +2809,8 @@ private:
                                    col_host, nullptr, false, &a11y_prompt_lbl_);
     }
 
-    // Model step 3: an explicit privacy acknowledgement. FinnOS has no
-    // telemetry, location or crash-upload service, so those rows are shown
-    // disabled and named as absent rather than offered as working switches.
+    // Step 8: Explicit privacy acknowledgement. FinnOS has no telemetry,
+    // location or crash-upload service, so those rows are shown disabled.
     QWidget* buildPrivacyPage() {
         auto* host = new QWidget();
         host->setFixedWidth(oobe_content_width() + 6);
@@ -2332,32 +2818,43 @@ private:
         col->setContentsMargins(0, 0, 6, 0);
         col->setSpacing(12);
 
-        auto* info = new QLabel(
-            QStringLiteral("FinnOS does not collect diagnostics, location or crash reports. "
-                           "No telemetry service is present on this installation."), host);
-        info->setWordWrap(true);
-        info->setFont(oobe_font(14, QFont::Normal));
-        col->addWidget(info);
+        privacy_info_lbl_ = new QLabel(host);
+        privacy_info_lbl_->setWordWrap(true);
+        privacy_info_lbl_->setFont(oobe_font(14, QFont::Normal));
+        privacy_info_lbl_->setFixedWidth(oobe_content_width());
+        privacy_info_lbl_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+        set_wrapped_label_text(privacy_info_lbl_,
+                               oobe_tr(QStringLiteral("privacy_info"), selected_locale_));
+        auto sync_info_col = [this]() {
+            if (!privacy_info_lbl_) return;
+            const auto& t = FinnThemeManager::instance().tokens();
+            QPalette pal = privacy_info_lbl_->palette();
+            pal.setColor(QPalette::WindowText, t.dim);
+            privacy_info_lbl_->setPalette(pal);
+        };
+        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
+                host, sync_info_col);
+        sync_info_col();
+        col->addWidget(privacy_info_lbl_);
 
-        auto* loc = new OobeToggleRow(QStringLiteral("Location"), false, host);
-        auto* diag = new OobeToggleRow(QStringLiteral("Diagnostics"), false, host);
-        auto* crash = new OobeToggleRow(QStringLiteral("Crash reports"), false, host);
-        for (auto* row : {loc, diag, crash}) {
+        privacy_loc_row_ = new OobeToggleRow(oobe_tr(QStringLiteral("privacy_loc"), selected_locale_), false, host);
+        privacy_diag_row_ = new OobeToggleRow(oobe_tr(QStringLiteral("privacy_diag"), selected_locale_), false, host);
+        privacy_crash_row_ = new OobeToggleRow(oobe_tr(QStringLiteral("privacy_crash"), selected_locale_), false, host);
+        for (auto* row : {privacy_loc_row_, privacy_diag_row_, privacy_crash_row_}) {
             row->setEnabled(false);
-            row->setToolTip(QStringLiteral("Service absent — not available in this release"));
             col->addWidget(row);
         }
 
-        privacy_ack_ = new QCheckBox(
-            QStringLiteral("I understand — continue with everything off"), host);
-        connect(privacy_ack_, &QCheckBox::toggled, this,
+        privacy_ack_row_ = new OobeToggleRow(
+            oobe_tr(QStringLiteral("privacy_ack"), selected_locale_), false, host);
+        connect(privacy_ack_row_, &OobeToggleRow::toggled, this,
                 [this]() { refreshFlowGate(); });
-        col->addWidget(privacy_ack_, 0, Qt::AlignHCenter);
+        col->addWidget(privacy_ack_row_);
         col->addStretch(1);
 
         return createSplitStepPage(QStringLiteral("cog"),
-                                   QStringLiteral("How much should we remember?"), {},
-                                   host);
+                                   oobe_tr(QStringLiteral("privacy_prompt"), selected_locale_), {},
+                                   host, nullptr, false, &privacy_prompt_lbl_);
     }
 
     // Step 5: Video-matched Completion / Update Successful Screen with 6-Ring Slinky
@@ -2385,7 +2882,7 @@ private:
         col->addSpacing(20);
 
         complete_title_ = new QLabel(
-            update_mode_ ? QStringLiteral("Update successful")
+            update_mode_ ? oobe_tr(QStringLiteral("update_title"), selected_locale_)
                          : oobe_tr(QStringLiteral("complete_title"), selected_locale_),
             page);
         complete_title_->setFont(oobe_font(26, QFont::Medium));
@@ -2444,21 +2941,21 @@ private:
         root->setSpacing(12);
 
         auto* title = new FinnLabel(
-            QStringLiteral("Connect to %1").arg(ssid),
+            oobe_tr(QStringLiteral("wifi_connect_to"), selected_locale_).arg(ssid),
             FinnLabel::Role::Headline, FinnLabel::Tone::Ink, &dlg);
         root->addWidget(title);
 
-        auto* field = new OobeInputField(QStringLiteral("Wi-Fi Password"), true, &dlg);
-        field->lineEdit()->setAccessibleName(QStringLiteral("Wi-Fi password for %1").arg(ssid));
+        auto* field = new OobeInputField(oobe_tr(QStringLiteral("wifi_pwd_title"), selected_locale_), true, &dlg);
+        field->lineEdit()->setAccessibleName(oobe_tr(QStringLiteral("wifi_connect_to"), selected_locale_).arg(ssid));
         root->addWidget(field);
 
         auto* btn_row = new QHBoxLayout();
         btn_row->setSpacing(8);
         btn_row->addStretch(1);
         auto* cancel_btn = new FinnButton(
-            QStringLiteral("Cancel"), FinnButton::Variant::Secondary, {}, &dlg);
+            oobe_tr(QStringLiteral("cancel"), selected_locale_), FinnButton::Variant::Secondary, {}, &dlg);
         auto* join_btn = new FinnButton(
-            QStringLiteral("Connect"), FinnButton::Variant::Primary, {}, &dlg);
+            oobe_tr(QStringLiteral("connect"), selected_locale_), FinnButton::Variant::Primary, {}, &dlg);
         cancel_btn->setAccessibleName(QStringLiteral("Cancel Wi-Fi connection"));
         join_btn->setAccessibleName(QStringLiteral("Connect to %1").arg(ssid));
         btn_row->addWidget(cancel_btn);
@@ -2491,14 +2988,14 @@ private:
 
         if (net.wired_connected) {
             auto* eth_row = new OobeOptionRow(
-                QStringLiteral("Ethernet"), net.ipv4_summary, true,
+                oobe_tr(QStringLiteral("wifi_ethernet"), selected_locale_), net.ipv4_summary, true,
                 wifi_prog_list_->hostWidget());
             lay->addWidget(eth_row);
         }
 
         for (const auto& w : net.networks) {
             const QString detail =
-                w.active ? QStringLiteral("Connected")
+                w.active ? oobe_tr(QStringLiteral("wifi_connected"), selected_locale_)
                          : QStringLiteral("%1%").arg(w.signal);
             auto* row = new OobeOptionRow(w.ssid, detail, w.active,
                                           wifi_prog_list_->hostWidget());
@@ -2515,11 +3012,14 @@ private:
         }
 
         auto* offline_row = new OobeOptionRow(
-            QStringLiteral("Continue offline"), {},
-            !net.wired_connected && net.active_wifi_ssid.isEmpty(),
+            oobe_tr(QStringLiteral("wifi_offline"), selected_locale_), {},
+            continue_offline_selected_ || (!net.wired_connected && net.active_wifi_ssid.isEmpty()),
             wifi_prog_list_->hostWidget());
-        connect(offline_row, &OobeOptionRow::clicked, this,
-                &OobeWindow::advanceStep);
+        connect(offline_row, &OobeOptionRow::clicked, this, [this]() {
+            continue_offline_selected_ = true;
+            refreshFlowGate();
+            advanceStep();
+        });
         lay->addWidget(offline_row);
         lay->addStretch(1);
 
@@ -2552,7 +3052,7 @@ private:
                     st.attempt = NetworkAttempt::Connected;
                     st.ssid = "Wired network";
                     st.detail = "Ethernet link reported by the network service";
-                } else if (continue_offline_cb_ && continue_offline_cb_->isChecked()) {
+                } else if (continue_offline_selected_) {
                     st.attempt = caps.network_manager.state == Availability::Unavailable
                         ? NetworkAttempt::Unavailable : NetworkAttempt::Failed;
                     st.continue_offline = true;
@@ -2566,33 +3066,50 @@ private:
                 flow_.setConnectivity(std::move(st));
                 break;
             }
+            case OobeStep::Language: {
+                flow_.setLanguage(selected_locale_.toStdString());
+                break;
+            }
+            case OobeStep::RegionTimezone: {
+                RegionState st;
+                st.locale = selected_locale_.toStdString();
+                st.region = selected_region_.toStdString();
+                st.timezone = selected_timezone_.toStdString();
+                flow_.setRegion(std::move(st));
+                break;
+            }
+            case OobeStep::Keyboard: {
+                KeyboardState kb;
+                kb.layout = selected_kb_layout_.toStdString();
+                kb.variant = selected_kb_variant_.toStdString();
+                flow_.setKeyboard(std::move(kb));
+                break;
+            }
             case OobeStep::Account: {
                 AccountState st;
                 const QString name = fullname_edit_ ? fullname_edit_->text().trimmed()
                                                     : QString();
+                const QString user = username_edit_ ? username_edit_->text().trimmed()
+                                                    : QStringLiteral("finn");
+                const QString host = hostname_edit_ ? hostname_edit_->text().trimmed().toLower()
+                                                    : QStringLiteral("finnos");
+                const QString p1 = pw_edit_ ? pw_edit_->text() : QString();
+                const QString p2 = pw_verify_edit_ ? pw_verify_edit_->text() : QString();
                 st.display_name = name.toStdString();
+                st.username = user.toStdString();
+                st.hostname = host.toStdString();
+                st.passwords_match = (p1.isEmpty() && p2.isEmpty()) || (p1 == p2);
                 if (!name.isEmpty()) {
-                    // The local account is created by finishSetup() through
-                    // pkexec; until then no remote account is claimed.
                     st.outcome = AccountOutcome::LocalOnly;
-                    st.detail = "local profile; account is created at Finish";
+                    st.detail = "local profile; account is provisioned at Finish";
                 }
                 flow_.setAccount(std::move(st));
                 break;
             }
             case OobeStep::Privacy:
                 flow_.setPrivacy(PrivacyState{false, false, false,
-                                              privacy_ack_ && privacy_ack_->isChecked()});
+                                              privacy_ack_row_ && privacy_ack_row_->toggle()->isChecked()});
                 break;
-            case OobeStep::RegionLocale: {
-                RegionState st;
-                st.locale = selected_locale_.toStdString();
-                st.region = selected_locale_.section(QLatin1Char('_'), -1)
-                                         .section(QLatin1Char('.'), 0, 0).toStdString();
-                st.timezone = QTimeZone::systemTimeZoneId().toStdString();
-                flow_.setRegion(std::move(st));
-                break;
-            }
             case OobeStep::Accessibility: {
                 AccessibilityState st;
                 const auto tri = [](OobeToggleRow* row) {
@@ -2622,11 +3139,6 @@ private:
         syncFlowFromUi();
         const auto v = flow_.validate(step_for_ui_index(stack_->currentIndex()));
         if (shared_next_btn_) shared_next_btn_->setEnabled(v.can_advance);
-        if (gate_hint_lbl_) {
-            gate_hint_lbl_->setText(v.can_advance ? QString()
-                                                   : QString::fromStdString(v.reason));
-            gate_hint_lbl_->setVisible(!v.can_advance);
-        }
     }
 
     void previousStep() {
@@ -2638,7 +3150,7 @@ private:
 
     void advanceStep() {
         const int cur = stack_->currentIndex();
-        if (cur == 3 && pw_edit_ && pw_verify_edit_) {
+        if (cur == 5 && pw_edit_ && pw_verify_edit_) {
             const QString p1 = pw_edit_->text();
             const QString p2 = pw_verify_edit_->text();
             if ((!p1.isEmpty() || !p2.isEmpty()) && p1 != p2) {
@@ -2652,7 +3164,6 @@ private:
             refreshFlowGate();
             return;
         }
-        if (gate_hint_lbl_) gate_hint_lbl_->setVisible(false);
         setStep(ui_index_for_step(flow_.current()));
         refreshFlowGate();
     }
@@ -2665,10 +3176,6 @@ private:
         const int bottom = oobe_form() == OobeForm::Phone ? 24 : 145;
         const int y = height() - bottom - shared_nav_box_->height();
         shared_nav_box_->move(x, y);
-        if (gate_hint_lbl_) {
-            gate_hint_lbl_->move((width() - gate_hint_lbl_->width()) / 2, y - 34);
-            gate_hint_lbl_->raise();
-        }
     }
 
     QPixmap grabTransparentStack() const {
@@ -2686,7 +3193,7 @@ private:
 
     void setStep(int idx, bool animate_slide = true) {
         if (shared_nav_box_) {
-            shared_nav_box_->setVisible(idx >= 1 && idx <= 6);
+            shared_nav_box_->setVisible(idx >= 1 && idx <= 8);
             shared_nav_box_->raise();
         }
         if (hi_lang_overlay_ && idx != 1) {
@@ -2718,8 +3225,13 @@ private:
 
         stack_->setCurrentIndex(idx);
         if (shared_nav_box_) {
-            shared_nav_box_->setVisible(idx >= 1 && idx <= 6);
+            shared_nav_box_->setVisible(idx >= 1 && idx <= 8);
             shared_nav_box_->raise();
+        }
+        if (prev == 0 && idx == 1 && animate_slide && fixed_phase_ < 0.0 &&
+            !FinnThemeManager::instance().tokens().reduced_motion) {
+            hi_lang_overlay_ = new OobeHiToLangOverlay(this, lang_prompt_lbl_);
+            if (shared_nav_box_) shared_nav_box_->raise();
         }
         if (idx == 0 && hi_ribbon_) {
             if (fixed_phase_ < 0.0) hi_ribbon_->restart();
@@ -2728,7 +3240,7 @@ private:
             if (hi_next_btn_) hi_next_btn_->setRevealOpacity(rev);
             return;
         }
-        if (idx == 7 && complete_ribbon_ && fixed_phase_ < 0.0) {
+        if (idx == 9 && complete_ribbon_ && fixed_phase_ < 0.0) {
             complete_ribbon_->restart();
         }
         if (do_slide && !old_snap.isNull()) {
@@ -2741,8 +3253,7 @@ private:
                 this, stack_, std::move(old_snap), new_snap, idx > prev);
             if (shared_nav_box_) shared_nav_box_->raise();
         }
-        if (idx >= 1 && idx <= 6) refreshFlowGate();
-        else if (gate_hint_lbl_) gate_hint_lbl_->setVisible(false);
+        if (idx >= 1 && idx <= 8) refreshFlowGate();
     }
 
     void applyLanguageSelection(const QString& lang_name, const QString& locale_code) {
@@ -2754,20 +3265,50 @@ private:
         qputenv("LANG", locale_code.toUtf8());
         qputenv("LC_ALL", locale_code.toUtf8());
 
-        if (lang_prompt_lbl_)
-            lang_prompt_lbl_->setText(oobe_tr(QStringLiteral("lang_prompt"), locale_code));
-        if (wifi_prompt_lbl_)
-            wifi_prompt_lbl_->setText(oobe_tr(QStringLiteral("wifi_prompt"), locale_code));
-        if (account_prompt_lbl_)
-            account_prompt_lbl_->setText(oobe_tr(QStringLiteral("account_prompt"), locale_code));
-        if (appearance_prompt_lbl_)
-            appearance_prompt_lbl_->setText(oobe_tr(QStringLiteral("appearance_prompt"), locale_code));
-        if (a11y_prompt_lbl_)
-            a11y_prompt_lbl_->setText(oobe_tr(QStringLiteral("a11y_prompt"), locale_code));
-        if (complete_title_ && !update_mode_)
-            complete_title_->setText(oobe_tr(QStringLiteral("complete_title"), locale_code));
+        set_wrapped_label_text(lang_prompt_lbl_, oobe_tr(QStringLiteral("lang_prompt"), locale_code));
+        set_wrapped_label_text(region_prompt_lbl_, oobe_tr(QStringLiteral("region_prompt"), locale_code));
+        set_wrapped_label_text(kb_prompt_lbl_, oobe_tr(QStringLiteral("kb_prompt"), locale_code));
+        set_wrapped_label_text(wifi_prompt_lbl_, oobe_tr(QStringLiteral("wifi_prompt"), locale_code));
+        set_wrapped_label_text(account_prompt_lbl_, oobe_tr(QStringLiteral("account_prompt"), locale_code));
+        if (fullname_edit_)
+            fullname_edit_->setPlaceholderText(oobe_tr(QStringLiteral("full_name"), locale_code));
+        if (username_edit_)
+            username_edit_->setPlaceholderText(oobe_tr(QStringLiteral("account_name"), locale_code));
+        if (hostname_edit_)
+            hostname_edit_->setPlaceholderText(oobe_tr(QStringLiteral("computer_name"), locale_code));
+        if (pw_edit_)
+            pw_edit_->setPlaceholderText(oobe_tr(QStringLiteral("password"), locale_code));
+        if (pw_verify_edit_)
+            pw_verify_edit_->setPlaceholderText(oobe_tr(QStringLiteral("verify_password"), locale_code));
+        if (pw_hint_lbl_)
+            pw_hint_lbl_->setText(oobe_tr(QStringLiteral("pw_mismatch"), locale_code));
+        set_wrapped_label_text(appearance_prompt_lbl_, oobe_tr(QStringLiteral("appearance_prompt"), locale_code));
+        set_wrapped_label_text(a11y_prompt_lbl_, oobe_tr(QStringLiteral("a11y_prompt"), locale_code));
+        if (a11y_sr_)
+            a11y_sr_->setLabel(oobe_tr(QStringLiteral("a11y_sr"), locale_code));
+        if (a11y_hc_)
+            a11y_hc_->setLabel(oobe_tr(QStringLiteral("a11y_hc"), locale_code));
+        if (a11y_rm_)
+            a11y_rm_->setLabel(oobe_tr(QStringLiteral("a11y_rm"), locale_code));
+        if (a11y_sk_)
+            a11y_sk_->setLabel(oobe_tr(QStringLiteral("a11y_sk"), locale_code));
+        set_wrapped_label_text(privacy_prompt_lbl_, oobe_tr(QStringLiteral("privacy_prompt"), locale_code));
+        set_wrapped_label_text(privacy_info_lbl_, oobe_tr(QStringLiteral("privacy_info"), locale_code));
+        if (privacy_loc_row_)
+            privacy_loc_row_->setLabel(oobe_tr(QStringLiteral("privacy_loc"), locale_code));
+        if (privacy_diag_row_)
+            privacy_diag_row_->setLabel(oobe_tr(QStringLiteral("privacy_diag"), locale_code));
+        if (privacy_crash_row_)
+            privacy_crash_row_->setLabel(oobe_tr(QStringLiteral("privacy_crash"), locale_code));
+        if (privacy_ack_row_)
+            privacy_ack_row_->setLabel(oobe_tr(QStringLiteral("privacy_ack"), locale_code));
+        if (complete_title_)
+            complete_title_->setText(oobe_tr(update_mode_ ? QStringLiteral("update_title")
+                                                          : QStringLiteral("complete_title"),
+                                             locale_code));
         if (start_btn_)
             start_btn_->setText(oobe_tr(QStringLiteral("get_started"), locale_code));
+        syncNetwork();
 
         const QString conf_path =
             QDir::homePath() + QStringLiteral("/.config/finn/locale.conf");
@@ -2821,8 +3362,8 @@ private:
 
     void finishSetup() {
         if (finish_in_progress_) return;
-        if (finish_allow_continue_) {
-            writeCompleteMarkerAndClose();
+        if (update_mode_) {
+            close();
             return;
         }
 
@@ -2831,12 +3372,14 @@ private:
         const QString env_user = QString::fromLocal8Bit(qgetenv("USER")).trimmed();
         const QString raw_user =
             username_edit_ ? username_edit_->text().trimmed() : env_user;
-        const QString target_user = raw_user.isEmpty() ? env_user : raw_user;
+        const QString target_user = raw_user.isEmpty() ? QStringLiteral("finn") : raw_user;
+        const QString target_host =
+            hostname_edit_ ? hostname_edit_->text().trimmed().toLower() : QStringLiteral("finnos");
         const QString pw1 = pw_edit_ ? pw_edit_->text() : QString();
         const QString pw2 = pw_verify_edit_ ? pw_verify_edit_->text() : QString();
 
         if ((!pw1.isEmpty() || !pw2.isEmpty()) && pw1 != pw2) {
-            setStep(3);
+            setStep(5);
             if (pw_hint_lbl_) {
                 pw_hint_lbl_->setText(QStringLiteral("Passwords don\u2019t match"));
                 pw_hint_lbl_->setVisible(true);
@@ -2844,9 +3387,8 @@ private:
             if (pw_verify_edit_) pw_verify_edit_->lineEdit()->setFocus();
             return;
         }
-        static const QRegularExpression kUserRe(QStringLiteral("^[a-z_][a-z0-9_-]{0,31}$"));
-        if (!target_user.isEmpty() && !kUserRe.match(target_user).hasMatch()) {
-            setStep(3);
+        if (!finn::shell::oobe::is_valid_posix_username(target_user.toStdString())) {
+            setStep(5);
             if (pw_hint_lbl_) {
                 pw_hint_lbl_->setText(
                     QStringLiteral("Account name must match [a-z_][a-z0-9_-]*"));
@@ -2855,11 +3397,20 @@ private:
             if (username_edit_) username_edit_->lineEdit()->setFocus();
             return;
         }
+        if (!finn::shell::oobe::is_valid_rfc1123_hostname(target_host.toStdString())) {
+            setStep(5);
+            if (pw_hint_lbl_) {
+                pw_hint_lbl_->setText(
+                    QStringLiteral("Computer name must use lowercase letters, digits, and hyphens"));
+                pw_hint_lbl_->setVisible(true);
+            }
+            if (hostname_edit_) hostname_edit_->lineEdit()->setFocus();
+            return;
+        }
 
         applyLanguageSelection(selected_language_, selected_locale_);
+        FinnThemeManager::instance().setKeyboardLayout(selected_kb_layout_, selected_kb_variant_);
 
-        // Persist user profile metadata locally so settings/shell can read it even
-        // before any privileged system account update.
         const QString account_conf =
             QDir::homePath() + QStringLiteral("/.config/finn/account.conf");
         QDir().mkpath(QFileInfo(account_conf).absolutePath());
@@ -2867,116 +3418,124 @@ private:
             QFile af(account_conf);
             if (af.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 const QString body =
-                    QStringLiteral("username=%1\nfull_name=%2\navatar_color=%3\nlocale=%4\n")
-                        .arg(target_user, full_name,
+                    QStringLiteral("username=%1\nfull_name=%2\nhostname=%3\navatar_color=%4\nlocale=%5\nregion=%6\ntimezone=%7\nkb_layout=%8\nkb_variant=%9\n")
+                        .arg(target_user, full_name, target_host,
                              FinnThemeManager::instance().avatarColor(),
-                             selected_locale_);
+                             selected_locale_, selected_region_, selected_timezone_,
+                             selected_kb_layout_, selected_kb_variant_);
                 af.write(body.toUtf8());
             }
         }
 
-        struct PendingOp {
-            QString bin;
-            QStringList args;
-            QByteArray stdin_data;
-            QString label;
-        };
-        auto ops = std::make_shared<QVector<PendingOp>>();
-        if (!selected_locale_.isEmpty()) {
-            ops->push_back({QStringLiteral("localectl"),
-                            {QStringLiteral("set-locale"),
-                             QStringLiteral("LANG=") + selected_locale_},
-                            {},
-                            QStringLiteral("System locale (%1)").arg(selected_locale_)});
-        }
-        if (!target_user.isEmpty() && !pw1.isEmpty()) {
-            const QByteArray payload = (target_user + QLatin1Char(':') + pw1 + QLatin1Char('\n')).toUtf8();
-            ops->push_back({QStringLiteral("pkexec"),
-                            {QStringLiteral("chpasswd")},
-                            payload,
-                            QStringLiteral("Account password")});
-        }
-        if (!target_user.isEmpty() && !full_name.isEmpty()) {
-            ops->push_back({QStringLiteral("chfn"),
-                            {QStringLiteral("-f"), full_name, target_user},
-                            {},
-                            QStringLiteral("Full name")});
-        }
+        const QString helper_path = QString::fromLatin1(finn::kOobeApplyHelperPath);
+        const bool is_installed_os = QFileInfo::exists(QString::fromLatin1(finn::kInstalledPath));
+        const bool local_only_env = qEnvironmentVariableIntValue("FINN_OOBE_LOCAL_ONLY") == 1;
 
-        if (ops->isEmpty()) {
+        if (!is_installed_os && local_only_env) {
             writeCompleteMarkerAndClose();
             return;
         }
 
-        finish_in_progress_ = true;
-        if (start_btn_) start_btn_->setEnabled(false);
-        setCompleteStatus(QStringLiteral("Applying language and account settings..."), false);
+        QString runner_bin;
+        QStringList runner_args;
+        if (QFileInfo::exists(helper_path)) {
+            if (::geteuid() == 0) {
+                runner_bin = helper_path;
+            } else if (!QStandardPaths::findExecutable(QStringLiteral("sudo")).isEmpty() &&
+                       QFileInfo::exists(QStringLiteral("/etc/sudoers.d/finn-oobe"))) {
+                runner_bin = QStringLiteral("sudo");
+                runner_args = {QStringLiteral("-n"), helper_path};
+            } else if (!QStandardPaths::findExecutable(QStringLiteral("pkexec")).isEmpty()) {
+                runner_bin = QStringLiteral("pkexec");
+                runner_args = {helper_path};
+            }
+        }
 
-        auto errs = std::make_shared<QStringList>();
-        auto run_next = std::make_shared<std::function<void(int)>>();
-        *run_next = [this, ops, errs, run_next](int idx) {
-            if (idx >= ops->size()) {
-                finish_in_progress_ = false;
-                if (start_btn_) start_btn_->setEnabled(true);
-                if (errs->isEmpty()) {
-                    writeCompleteMarkerAndClose();
-                } else {
-                    finish_allow_continue_ = true;
-                    if (start_btn_) start_btn_->setText(QStringLiteral("Continue"));
-                    setCompleteStatus(
-                        QStringLiteral("Saved local config, but system step(s) failed: %1")
-                            .arg(errs->join(QStringLiteral("; "))),
-                        true);
-                }
+        if (runner_bin.isEmpty()) {
+            if (!is_installed_os) {
+                // Uninstalled developer host preview: save local config cleanly.
+                writeCompleteMarkerAndClose();
                 return;
             }
-            const PendingOp op = (*ops)[idx];
-            auto* proc = new QProcess(this);
-            connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                    this, [proc, op, errs, run_next, idx](int code, QProcess::ExitStatus status) {
-                        if (status != QProcess::NormalExit || code != 0) {
-                            const QString e = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-                            errs->append(e.isEmpty()
-                                             ? QStringLiteral("%1 (exit %2)").arg(op.label).arg(code)
-                                             : QStringLiteral("%1: %2").arg(op.label, e));
-                        }
-                        proc->deleteLater();
-                        (*run_next)(idx + 1);
-                    });
-            connect(proc, &QProcess::errorOccurred, this,
-                    [proc, op, errs, run_next, idx](QProcess::ProcessError) {
-                        errs->append(QStringLiteral("%1 (%2 unavailable)").arg(op.label, op.bin));
-                        proc->deleteLater();
-                        (*run_next)(idx + 1);
-                    });
-            if (!op.stdin_data.isEmpty()) {
-                connect(proc, &QProcess::started, this, [proc, data = op.stdin_data]() {
-                    proc->write(data);
-                    proc->closeWriteChannel();
+            setCompleteStatus(
+                QStringLiteral("First-boot provisioning helper (%1) is missing.").arg(helper_path),
+                true);
+            return;
+        }
+
+        const QByteArray stdin_payload =
+            QStringLiteral("locale=%1\nregion=%2\ntimezone=%3\nkb_layout=%4\nkb_variant=%5\nhostname=%6\nusername=%7\nfull_name=%8\npassword=%9\ndark=%10\navatar_color=%11\n")
+                .arg(selected_locale_, selected_region_, selected_timezone_,
+                     selected_kb_layout_, selected_kb_variant_, target_host,
+                     target_user, full_name, pw1,
+                     FinnThemeManager::instance().isDark() ? QStringLiteral("1") : QStringLiteral("0"),
+                     FinnThemeManager::instance().avatarColor())
+                .toUtf8();
+
+        finish_in_progress_ = true;
+        if (start_btn_) start_btn_->setEnabled(false);
+        setCompleteStatus(QStringLiteral("Applying language, timezone, keyboard, hostname, and account..."), false);
+
+        auto* proc = new QProcess(this);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, proc](int code, QProcess::ExitStatus status) {
+                    finish_in_progress_ = false;
+                    if (start_btn_) start_btn_->setEnabled(true);
+                    const QString err_text = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    proc->deleteLater();
+                    if (status == QProcess::NormalExit && code == 0) {
+                        writeCompleteMarkerAndClose();
+                    } else {
+                        setCompleteStatus(
+                            err_text.isEmpty()
+                                ? QStringLiteral("Provisioning failed (exit %1). Check your inputs and try again.").arg(code)
+                                : QStringLiteral("Provisioning failed: %1").arg(err_text),
+                            true);
+                    }
                 });
-            }
-            proc->start(op.bin, op.args);
-        };
-        (*run_next)(0);
+        connect(proc, &QProcess::errorOccurred, this,
+                [this, proc, runner_bin](QProcess::ProcessError) {
+                    finish_in_progress_ = false;
+                    if (start_btn_) start_btn_->setEnabled(true);
+                    proc->deleteLater();
+                    setCompleteStatus(
+                        QStringLiteral("Could not execute %1 to apply system settings.").arg(runner_bin),
+                        true);
+                });
+        connect(proc, &QProcess::started, this, [proc, stdin_payload]() {
+            proc->write(stdin_payload);
+            proc->closeWriteChannel();
+        });
+        proc->start(runner_bin, runner_args);
     }
 
     // The headless, honest step machine. It owns no UI and claims no success;
     // every state below is fed from a real probe or a real user action.
     finn::shell::oobe::FullOobeFlow flow_;
     OobeCircleNavButton* shared_next_btn_ = nullptr;
-    QLabel* gate_hint_lbl_ = nullptr;
-    QCheckBox* continue_offline_cb_ = nullptr;
-    QCheckBox* privacy_ack_ = nullptr;
+    bool continue_offline_selected_ = false;
+    OobeToggleRow* privacy_loc_row_ = nullptr;
+    OobeToggleRow* privacy_diag_row_ = nullptr;
+    OobeToggleRow* privacy_crash_row_ = nullptr;
+    OobeToggleRow* privacy_ack_row_ = nullptr;
     OobeToggleRow* a11y_sr_ = nullptr;
     OobeToggleRow* a11y_hc_ = nullptr;
     OobeToggleRow* a11y_rm_ = nullptr;
+    OobeToggleRow* a11y_sk_ = nullptr;
+    bool sticky_keys_active_ = false;
+    bool sticky_replaying_ = false;
+    Qt::KeyboardModifiers sticky_latched_mods_ = Qt::NoModifier;
     finn::shell::oobe::ThemeChoice selected_theme_ =
-        finn::shell::oobe::ThemeChoice::Unset;
+        finn::shell::oobe::ThemeChoice::Light;
 
     bool update_mode_ = false;
     double fixed_phase_ = -1.0;
     QString selected_language_ = QStringLiteral("English (UK)");
     QString selected_locale_ = QStringLiteral("en_GB.UTF-8");
+    QString selected_region_ = QStringLiteral("GB");
+    QString selected_timezone_ = QStringLiteral("UTC");
+    QString selected_kb_layout_ = QStringLiteral("us");
+    QString selected_kb_variant_;
     FinnPageStack* stack_ = nullptr;
     QWidget* shared_nav_box_ = nullptr;
     QPointer<OobeSlideTransitionOverlay> slide_overlay_;
@@ -2985,19 +3544,27 @@ private:
     OobeBrandingHeader* hi_branding_ = nullptr;
     OobeCircleNavButton* hi_next_btn_ = nullptr;
     QLabel* lang_prompt_lbl_ = nullptr;
+    QLabel* region_prompt_lbl_ = nullptr;
+    QLabel* kb_prompt_lbl_ = nullptr;
     QLabel* wifi_prompt_lbl_ = nullptr;
     QLabel* account_prompt_lbl_ = nullptr;
     QLabel* appearance_prompt_lbl_ = nullptr;
     QLabel* a11y_prompt_lbl_ = nullptr;
+    QLabel* privacy_prompt_lbl_ = nullptr;
+    QLabel* privacy_info_lbl_ = nullptr;
     FinnRibbonAnimation* complete_ribbon_ = nullptr;
     QLabel* complete_title_ = nullptr;
     QLabel* complete_status_lbl_ = nullptr;
     OobeGetStartedPill* start_btn_ = nullptr;
     bool finish_in_progress_ = false;
-    bool finish_allow_continue_ = false;
     bool complete_has_error_ = false;
+    bool hostname_manually_edited_ = false;
 
     QVector<OobeOptionRow*> language_rows_;
+    QVector<OobeOptionRow*> region_rows_;
+    QVector<OobeOptionRow*> kb_rows_;
+    OobeProgressiveList* region_prog_list_ = nullptr;
+    ProgressiveBlurOverlay* region_blur_ov_ = nullptr;
     OobeProgressiveList* wifi_prog_list_ = nullptr;
     ProgressiveBlurOverlay* wifi_blur_ov_ = nullptr;
 
@@ -3005,6 +3572,7 @@ private:
     QVector<OobePfpSwatch*> pfp_swatches_;
     OobeInputField* fullname_edit_ = nullptr;
     OobeInputField* username_edit_ = nullptr;
+    OobeInputField* hostname_edit_ = nullptr;
     OobeInputField* pw_edit_ = nullptr;
     OobeInputField* pw_verify_edit_ = nullptr;
     QLabel* pw_hint_lbl_ = nullptr;
@@ -3017,11 +3585,14 @@ int main(int argc, char** argv) {
     bool update_mode = false;
     double fixed_phase = -1.0;
     QString capabilities_path;
+    QString screenshot_path;
 
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QLatin1String("--capabilities") && i + 1 < argc) {
             capabilities_path = QString::fromUtf8(argv[++i]);
+        } else if (arg == QLatin1String("--screenshot") && i + 1 < argc) {
+            screenshot_path = QString::fromUtf8(argv[++i]);
         } else if (arg == QLatin1String("--step") && i + 1 < argc) {
             bool ok = false;
             const int parsed = QString::fromUtf8(argv[++i]).toInt(&ok);
@@ -3038,8 +3609,6 @@ int main(int argc, char** argv) {
     }
 
     finn::ui::FinnApplication app(argc, argv, QStringLiteral("oobe"));
-    // Prefer the shell's measured preflight. If OOBE was started directly,
-    // probe here instead — a missing file is never treated as success.
     bool preflight_ok = false;
     if (capabilities_path.isEmpty()) {
         capabilities_path = QDir::homePath() + QLatin1Char('/') +
@@ -3048,9 +3617,22 @@ int main(int argc, char** argv) {
     auto measured_caps = finn::shell::oobe::probe::read_preflight(
         capabilities_path, &preflight_ok);
     if (!preflight_ok) measured_caps = finn::shell::oobe::probe::capabilities();
-    OobeWindow w(update_mode, fixed_phase, measured_caps);
+    OobeWindow w(update_mode, fixed_phase >= 0.0 ? fixed_phase : (!screenshot_path.isEmpty() ? 2.5 : -1.0), measured_caps);
     if (initial_step >= 0) w.openStep(initial_step);
-    w.show();
+    if (screenshot_path.isEmpty()) {
+        if (QScreen* scr = QGuiApplication::primaryScreen()) {
+            w.setGeometry(scr->geometry());
+        }
+        w.showFullScreen();
+    } else {
+        w.resize(1280, 832);
+        w.show();
+        QTimer::singleShot(120, &w, [&w, &app, screenshot_path]() {
+            const QPixmap pm = w.grab();
+            pm.save(screenshot_path, "PNG");
+            app.quit();
+        });
+    }
     return app.exec();
 }
 

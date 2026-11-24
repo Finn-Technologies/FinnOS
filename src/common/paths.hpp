@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace finn {
@@ -13,6 +14,8 @@ namespace finn {
 inline constexpr const char* kCataloguePath = "/usr/share/finn/apps.registry";
 inline constexpr const char* kInstalledPath = "/var/lib/finn/installed";
 inline constexpr const char* kSettingsPath = "/var/lib/finn/settings";
+inline constexpr const char* kSystemOobeCompletePath = "/var/lib/finn/oobe_complete";
+inline constexpr const char* kRecoverySessionMarkerPath = "/run/finn/recovery-session";
 inline constexpr const char* kIconDir = "/usr/share/finn/icons";
 inline constexpr const char* kIconsDir = kIconDir;
 inline constexpr const char* kPointersDir = "/usr/share/finn/pointers";
@@ -49,13 +52,72 @@ inline constexpr const char* kRecentAppsRel = ".local/state/finn/recent-apps";
 inline constexpr const char* kWinePrefixRel = ".local/share/finn/wine";
 inline constexpr const char* kOobeCompleteRel = ".config/finn/oobe_complete";
 inline constexpr const char* kOobeBinPath = "/usr/local/bin/finn-oobe";
+inline constexpr const char* kOobeApplyHelperPath = "/usr/local/libexec/finn-oobe-apply";
 inline constexpr const char* kFinnTerminalBin = "/usr/local/bin/finn-terminal";
 inline constexpr const char* kFinnInstallBin = "/usr/local/bin/finn-install";
+inline constexpr const char* kFinnRecoveryBin = "/usr/local/bin/finn-installer";
 inline constexpr const char* kFinnUpdateBin = "/usr/local/bin/finn-update";
 inline constexpr const char* kFinnGuestToolsBin = "/usr/local/bin/finn-guest-tools";
 inline constexpr const char* kFinnDarwinBin = "/usr/local/bin/finn-darwin";
 inline constexpr const char* kFinnOhosBin = "/usr/local/bin/finn-ohos";
 inline constexpr const char* kFinnAndroidBin = "/usr/local/bin/finn-android";
+
+/// Returns true when a kernel command line names a live ISO, USB installer, or recovery boot.
+inline bool is_live_or_recovery_cmdline(std::string_view cmdline) noexcept {
+    std::size_t pos = 0;
+    while (pos < cmdline.size()) {
+        while (pos < cmdline.size() &&
+               (cmdline[pos] == ' ' || cmdline[pos] == '\t' ||
+                cmdline[pos] == '\r' || cmdline[pos] == '\n')) {
+            ++pos;
+        }
+        if (pos >= cmdline.size()) break;
+        const std::size_t start = pos;
+        while (pos < cmdline.size() &&
+               cmdline[pos] != ' ' && cmdline[pos] != '\t' &&
+               cmdline[pos] != '\r' && cmdline[pos] != '\n') {
+            ++pos;
+        }
+        const std::string_view tok = cmdline.substr(start, pos - start);
+        if (tok.rfind("archisobasedir=", 0) == 0 ||
+            tok.rfind("archisolabel=", 0) == 0 ||
+            tok.rfind("archisodevice=", 0) == 0 ||
+            tok == "finn.install" || tok.rfind("finn.install=", 0) == 0 ||
+            tok == "finn.recovery" || tok.rfind("finn.recovery=", 0) == 0 ||
+            tok == "single" || tok == "rescue" || tok == "emergency" ||
+            tok == "systemd.unit=rescue.target" ||
+            tok == "systemd.unit=emergency.target") {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Decides whether OOBE should auto-launch on startup.
+/// Runs strictly on the first normal boot of an installed FinnOS system
+/// (never on live/recovery media, and never once system or user completion exists).
+inline bool should_run_oobe_on_boot(std::string_view cmdline,
+                                    bool live_or_recovery_marker,
+                                    bool installed_system_marker,
+                                    bool sys_oobe_complete,
+                                    bool user_oobe_complete,
+                                    const char* env_override = nullptr) noexcept {
+    if (env_override && *env_override) {
+        const std::string_view v(env_override);
+        if (v == "0" || v == "false" || v == "skip") return false;
+        if (v == "1" || v == "true" || v == "force") return true;
+    }
+    if (live_or_recovery_marker || is_live_or_recovery_cmdline(cmdline)) {
+        return false;
+    }
+    if (!installed_system_marker) {
+        return false;
+    }
+    if (sys_oobe_complete || user_oobe_complete) {
+        return false;
+    }
+    return true;
+}
 
 /// Directories searched for AppImages. Shared by the session registry and the
 /// registry cache so the set of scanned directories cannot drift.

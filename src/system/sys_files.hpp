@@ -28,6 +28,8 @@ struct SettingsData {
     std::string wallpaper;               // Empty means default wallpaper
     std::string lock_wallpaper;          // Empty means use the desktop wallpaper
     std::string form_factor = "auto";    // auto, desktop, tablet, mobile, tv
+    std::string kb_layout = "us";        // XKB layout code (e.g. us, gb, de, fr, jp)
+    std::string kb_variant;              // Optional XKB variant (e.g. dvorak, colemak, intl)
     std::string alert_sound = "Default"; // Figma Settings - Sound (71:239)
     int alert_volume = 75;               // 0..100
     bool startup_sound = true;

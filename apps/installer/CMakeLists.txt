@@ -11,6 +11,7 @@ set(CMAKE_AUTOMOC ON)
 
 add_executable(finn-installer
     main.cpp
+    ../../src/recovery/recovery_engine.cpp
     ../../src/system/sys_files.cpp
 )
 target_include_directories(finn-installer PRIVATE
@@ -20,3 +21,4 @@ target_link_libraries(finn-installer PRIVATE FinnSDK::FinnUI)
 
 include(GNUInstallDirs)
 install(TARGETS finn-installer RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(CODE "execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink finn-installer \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/finn-recovery\")")

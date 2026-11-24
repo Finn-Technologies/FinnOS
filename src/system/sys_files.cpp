@@ -220,6 +220,10 @@ SettingsData parse_settings(std::string_view text) {
                 val == "mobile" || val == "phone" || val == "tv") {
                 d.form_factor = (val == "phone") ? "mobile" : val;
             }
+        } else if (key == "kb_layout" && !val.empty()) {
+            d.kb_layout = val;
+        } else if (key == "kb_variant") {
+            d.kb_variant = val;
         } else if (key == "alert_sound" && !val.empty()) d.alert_sound = val;
         else if (key == "alert_volume") {
             int av = 75;
@@ -264,6 +268,8 @@ std::string serialize_settings(const SettingsData& data) {
     if (!data.wallpaper.empty()) out << "wallpaper=" << data.wallpaper << '\n';
     if (!data.lock_wallpaper.empty()) out << "lock_wallpaper=" << data.lock_wallpaper << '\n';
     out << "form_factor=" << (data.form_factor.empty() ? "auto" : data.form_factor) << '\n';
+    out << "kb_layout=" << (data.kb_layout.empty() ? "us" : data.kb_layout) << '\n';
+    if (!data.kb_variant.empty()) out << "kb_variant=" << data.kb_variant << '\n';
     out << "alert_sound=" << (data.alert_sound.empty() ? "Default" : data.alert_sound) << '\n';
     out << "alert_volume=" << std::clamp(data.alert_volume, 0, 100) << '\n';
     out << "startup_sound=" << (data.startup_sound ? "1" : "0") << '\n';

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-finnapp">
+    <comment>FinnOS Native Application Bundle</comment>
+    <glob pattern="*.finnapp"/>
+  </mime-type>
+  <mime-type type="application/vnd.android.package-archive">
+    <comment>Android Application Package</comment>
+    <glob pattern="*.apk"/>
+  </mime-type>
+  <mime-type type="application/x-xapk">
+    <comment>Android Split Application Bundle</comment>
+    <glob pattern="*.xapk"/>
+    <glob pattern="*.apkm"/>
+    <glob pattern="*.apks"/>
+  </mime-type>
+  <mime-type type="application/x-ohos-hap">
+    <comment>OpenHarmony Application Package</comment>
+    <glob pattern="*.hap"/>
+    <glob pattern="*.hsp"/>
+  </mime-type>
+  <mime-type type="application/x-apple-diskimage">
+    <comment>macOS Disk Image</comment>
+    <glob pattern="*.dmg"/>
+  </mime-type>
+  <mime-type type="application/x-xar">
+    <comment>macOS Installer Package</comment>
+    <glob pattern="*.pkg"/>
+    <glob pattern="*.mpkg"/>
+  </mime-type>
+  <mime-type type="application/x-appimage">
+    <comment>Linux AppImage Executable</comment>
+    <glob pattern="*.AppImage"/>
+    <glob pattern="*.appimage"/>
+  </mime-type>
+  <mime-type type="application/x-ms-dos-executable">
+    <comment>Windows Application Executable</comment>
+    <glob pattern="*.exe"/>
+  </mime-type>
+  <mime-type type="application/x-msi">
+    <comment>Windows Installer Package</comment>
+    <glob pattern="*.msi"/>
+  </mime-type>
+</mime-info>

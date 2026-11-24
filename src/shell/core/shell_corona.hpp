@@ -67,7 +67,7 @@ public:
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    void reload();
+    Q_INVOKABLE void reload();
     void setPinnedIds(const QStringList& pins);
     void setRunningAppIds(const QStringList& running);
 
@@ -168,10 +168,13 @@ class ShellCorona final : public QObject {
     // Open windows (foreign-toplevel) & live Dock taskbar items (pinned + unpinned open apps)
     Q_PROPERTY(QVariantList openWindows READ openWindows NOTIFY windowsChanged)
     Q_PROPERTY(QVariantList dockItems READ dockItems NOTIFY windowsChanged)
+    Q_PROPERTY(bool oobeActive READ oobeActive NOTIFY oobeActiveChanged)
 
 public:
     explicit ShellCorona(QObject* parent = nullptr);
     ~ShellCorona() override;
+
+    bool oobeActive() const { return oobe_active_; }
 
     AppCatalogModel* appModel() const { return app_model_; }
     NotificationListModel* notificationModel() const { return notif_model_; }
@@ -254,6 +257,7 @@ signals:
     void clockChanged();
     void statusChanged();
     void windowsChanged();
+    void oobeActiveChanged();
 
 private:
     void updateClock();
@@ -262,6 +266,8 @@ private:
     void sendWindowCommand(const QString& verb, const QString& windowId);
     void loadUsers();
     void setupLockWatchers();
+    void setupCatalogWatchers();
+    void maybeLaunchFirstBootOobe();
     void consumeLockRequest();
     void pollOtaStatus();
     void startPasswordlessCheck(const QString& user);
@@ -313,8 +319,12 @@ private:
     QTimer clock_timer_;
     QTimer status_timer_;
     QTimer windows_timer_;
+    QTimer catalog_reload_timer_;
     QFileSystemWatcher lock_watcher_;
+    QFileSystemWatcher catalog_watcher_;
     QProcess* auth_proc_ = nullptr;
+    QProcess* oobe_proc_ = nullptr;
+    bool oobe_active_ = false;
     QQuickWindow* shell_window_ = nullptr;
 };
 

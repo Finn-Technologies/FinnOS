@@ -386,6 +386,49 @@ AppImageLaunchPlan build_appimage_extract_plan(const std::string& path) {
     return plan;
 }
 
+bool ensure_appimage_executable(const std::string& path) {
+    std::error_code ec;
+    if (!fs::is_regular_file(path, ec)) return false;
+    fs::permissions(path,
+                    fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add, ec);
+    return !ec;
+}
+
+std::string integrate_appimage(const std::string& path,
+                               const std::string& dest_dir,
+                               std::string* error) {
+    const AppImageInfo info = inspect_appimage_file(path);
+    if (!info.valid) {
+        if (error) *error = info.error.empty() ? "invalid AppImage" : info.error;
+        return {};
+    }
+    std::string dir = dest_dir;
+    if (dir.empty()) {
+        if (const char* home = std::getenv("HOME"); home && *home) {
+            dir = std::string(home) + "/.local/share/finn/appimages";
+        } else {
+            dir = "/tmp/finn-appimages";
+        }
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        if (error) *error = "failed to create appimages dir: " + ec.message();
+        return {};
+    }
+    const fs::path dst = fs::path(dir) / fs::path(path).filename();
+    if (fs::weakly_canonical(path, ec) != fs::weakly_canonical(dst, ec)) {
+        fs::copy_file(path, dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            if (error) *error = "failed to copy AppImage: " + ec.message();
+            return {};
+        }
+    }
+    ensure_appimage_executable(dst.string());
+    return dst.string();
+}
+
 std::vector<AppImageCandidate> discover_appimages(const std::string& dir) {
     std::error_code ec;
     if (dir.empty() || !fs::is_directory(dir, ec) || ec) return {};

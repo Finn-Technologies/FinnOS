@@ -401,6 +401,8 @@ inline bool load_glb_meshes(const QString& path, std::vector<GlbSubMesh>& out_me
 // Renders with a lightweight software Z-buffer rasterizer (zero GPU/driver dependency)
 // with real damped pendulum + spring pull physics and directional spotlight lighting.
 class OobeLamp3DWidget final : public QWidget {
+    Q_OBJECT
+
 public:
     explicit OobeLamp3DWidget(QWidget* parent = nullptr) : QWidget(parent) {
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
@@ -1016,6 +1018,9 @@ protected:
         }
     }
 
+signals:
+    void themeToggled(bool dark);
+
 private:
     void toggleThemeWithRecoil() {
         auto& tm = finn::ui::FinnThemeManager::instance();
@@ -1028,6 +1033,7 @@ private:
         vel_z_ += 0.40f;
         wire_bow_vel_z_ -= 0.55f;
         play_lamp_switch_sound(turning_on);
+        emit themeToggled(tm.isDark());
     }
 
     void ensureAnimating() {

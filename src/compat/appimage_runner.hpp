@@ -91,6 +91,15 @@ AppImageLaunchPlan build_appimage_launch_plan(const std::string& path,
 // it; legacy Type 1 images do not, and are refused rather than faked.
 AppImageLaunchPlan build_appimage_extract_plan(const std::string& path);
 
+// Ensures the executable bit (+x) is set on a local AppImage.
+bool ensure_appimage_executable(const std::string& path);
+
+// Copies an AppImage into ~/.local/share/finn/appimages (or dest_dir), marks it
+// executable, and returns the installed path (empty on failure).
+std::string integrate_appimage(const std::string& path,
+                               const std::string& dest_dir = {},
+                               std::string* error = nullptr);
+
 std::vector<AppImageCandidate> discover_appimages(const std::string& dir);
 std::vector<AppImageCandidate> discover_appimages(const std::vector<std::string>& dirs);
 

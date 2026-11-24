@@ -55,6 +55,9 @@ endif()
 install(FILES assets/apps.registry
     DESTINATION "${CMAKE_INSTALL_DATADIR}/finn"
 )
+install(FILES assets/finnos-mime.xml
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/mime/packages"
+)
 install(FILES VERSION
     DESTINATION "${CMAKE_INSTALL_DATADIR}/finn"
     RENAME version

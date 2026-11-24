@@ -101,8 +101,16 @@ int cmd_diagnose(const std::string& target) {
     return a.runnable ? 0 : 2;
 }
 
-int cmd_install(const std::string& target) {
-    const auto res = finn::android::install_android_package(target);
+int cmd_install(int argc, char** argv) {
+    std::vector<std::string> targets;
+    for (int i = 2; i < argc; ++i) targets.emplace_back(argv[i]);
+    if (targets.empty()) {
+        print_usage();
+        return 1;
+    }
+    const auto res = (targets.size() == 1)
+        ? finn::android::install_android_package(targets[0])
+        : finn::android::install_android_splits(targets);
     for (const auto& line : res.log) std::cout << line << "\n";
     if (!res.ok) {
         std::cerr << "finn-android: install failed: " << res.error << "\n";
@@ -179,7 +187,7 @@ int main(int argc, char** argv) {
     if (cmd == "status") return cmd_status();
     if (cmd == "list") return cmd_list();
     if (cmd == "diagnose" && argc >= 3) return cmd_diagnose(argv[2]);
-    if (cmd == "install" && argc >= 3) return cmd_install(argv[2]);
+    if (cmd == "install" && argc >= 3) return cmd_install(argc, argv);
     if (cmd == "uninstall" && argc >= 3) return cmd_uninstall(argv[2]);
     if (cmd == "run" && argc >= 3) return cmd_run(argc, argv);
     print_usage();

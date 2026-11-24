@@ -12,6 +12,7 @@ find_package(Qt6 REQUIRED COMPONENTS DBus Network)
 
 add_executable(finn-oobe
     main.cpp
+    lamp_widget.hpp
     ../../src/shell/full_oobe_flow.cpp
     ../../src/system/desktop_services.cpp
     ../../src/system/sys_files.cpp

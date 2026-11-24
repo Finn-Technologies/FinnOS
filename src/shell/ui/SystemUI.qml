@@ -34,7 +34,7 @@ Window {
         id: shellLoader
         anchors.fill: parent
         z: 10
-        opacity: ShellCorona.locked ? 0.0 : 1.0
+        opacity: (ShellCorona.locked || ShellCorona.oobeActive) ? 0.0 : 1.0
         visible: opacity > 0.01
 
         Behavior on opacity {
@@ -58,7 +58,7 @@ Window {
     // Layer 3: Receding 3-Card Figma Notification Stack (top-right on Desktop/Tablet/TV, top-center on Mobile)
     NotificationStack {
         z: 30
-        visible: !ShellCorona.locked && ShellNotifications.count > 0
+        visible: !ShellCorona.locked && !ShellCorona.oobeActive && ShellNotifications.count > 0
         formFactor: root.formFactor
         anchors.top: parent.top
         anchors.topMargin: root.formFactor === "mobile" ? 42 : (root.formFactor === "tv" ? 84 : 18)

@@ -7,6 +7,7 @@
 #include "compat/android_runner.hpp"
 #include "compat/appimage_runner.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/finnapp_installer.hpp"
 #include "compat/flatpak_installer.hpp"
 #include "compat/linux_app_probe.hpp"
 #include "compat/linux_sandbox.hpp"
@@ -104,8 +105,11 @@ private:
             targets.push_back(std::string(home) + "/" + finn::kUserAndroidRegistryRel);
             // A Windows app installed into the default prefix creates Uninstall
             // keys and executables that load_all() discovers. Watching the
-            // prefix makes them appear without a session restart.
-            targets.push_back(std::string(home) + "/" + finn::kWinePrefixRel);
+            // prefix + system.reg/user.reg makes them appear without restart.
+            const std::string wprefix = std::string(home) + "/" + finn::kWinePrefixRel;
+            targets.push_back(wprefix);
+            targets.push_back(wprefix + "/system.reg");
+            targets.push_back(wprefix + "/user.reg");
         }
         for (const auto& [dir, _] : finn::compat::default_desktop_dirs()) {
             targets.push_back(dir);
@@ -419,10 +423,19 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
 
     std::error_code ec;
     if (fs::is_directory(t, ec)) {
-        if (ends_with_ci(t, ".app") &&
-            fs::is_regular_file(fs::path(t) / "Contents" / "Info.plist", ec)) {
+        if ((ends_with_ci(t, ".app") &&
+             fs::is_regular_file(fs::path(t) / "Contents" / "Info.plist", ec)) ||
+            finn::compat::is_finnapp_bundle(t)) {
             if (const finn::App* store = reg.find("store")) {
                 return spawn_argv({store->command, "--install", t}, {}, error);
+            }
+            if (finn::compat::is_finnapp_bundle(t)) {
+                const auto res = finn::compat::install_finnapp(t);
+                if (!res.ok) {
+                    if (error) *error = res.error;
+                    return false;
+                }
+                return true;
             }
         }
         if (const finn::App* files = reg.find("files")) return spawn_app(*files, t, error);
@@ -439,6 +452,7 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
         return spawn_argv(plan.argv, {}, error);
     }
     if (ends_with_ci(t, ".appimage")) {
+        finn::compat::ensure_appimage_executable(t);
         const auto plan = finn::compat::build_appimage_launch_plan(t);
         if (!plan.ok) {
             if (error) *error = plan.error;
@@ -447,7 +461,8 @@ bool open_path_or_url(const finn::AppRegistry& reg, std::string_view target,
         return spawn_argv(plan.argv, plan.env, error);
     }
     if (ends_with_ci(t, ".dmg") || ends_with_ci(t, ".pkg") || ends_with_ci(t, ".mpkg") ||
-        ends_with_ci(t, ".msix") || finn::compat::is_ohos_package_path(t) ||
+        ends_with_ci(t, ".msix") || ends_with_ci(t, ".xapk") || ends_with_ci(t, ".apkm") ||
+        ends_with_ci(t, ".apks") || finn::compat::is_ohos_package_path(t) ||
         finn::compat::is_apk_package_path(t)) {
         if (const finn::App* store = reg.find("store")) {
             return spawn_argv({store->command, "--install", t}, {}, error);
@@ -655,6 +670,53 @@ void handle_client(int fd) {
             return;
         }
         (void)write_all(fd, "OK opened\n");
+        return;
+    }
+
+    if (line.rfind("APP.UNINSTALL ", 0) == 0) {
+        const std::string id = line.substr(14);
+        const finn::App* app = reg.find(id);
+        if (!app) {
+            (void)write_all(fd, "ERR unknown app: " + sanitize(id) + "\n");
+            return;
+        }
+        std::string err;
+        bool ok = false;
+        if (app->source == finn::AppSource::kAndroid) {
+            const auto rt = finn::compat::probe_android_runtime();
+            ok = rt.finn_android_installed &&
+                 spawn_argv({rt.finn_android_bin, "uninstall", app->command}, {}, &err);
+        } else if (app->source == finn::AppSource::kMacos) {
+            const auto rt = finn::compat::probe_macos_runtime();
+            ok = rt.finn_darwin_installed &&
+                 spawn_argv({rt.finn_darwin_bin, "uninstall", app->command}, {}, &err);
+        } else if (app->source == finn::AppSource::kOhos) {
+            const auto rt = finn::compat::probe_ohos_runtime();
+            ok = rt.finn_ohos_installed &&
+                 spawn_argv({rt.finn_ohos_bin, "uninstall", app->command}, {}, &err);
+        } else if (app->source == finn::AppSource::kFlatpak) {
+            std::string fpid = app->id;
+            if (fpid.rfind("flatpak:", 0) == 0) fpid = fpid.substr(8);
+            ok = spawn_argv({"flatpak", "uninstall", "-y", "--user", fpid}, {}, &err);
+        } else if (app->source == finn::AppSource::kWindows) {
+            if (const char* home = std::getenv("HOME"); home && *home) {
+                ok = finn::compat::remove_windows_app(
+                    std::string(home) + "/" + finn::kUserWindowsConfRel, app->id, &err);
+            }
+        } else if (!app->appimage_path.empty()) {
+            std::error_code ec;
+            ok = fs::remove(app->appimage_path, ec);
+            if (!ok) err = "failed to remove AppImage: " + ec.message();
+        } else if (app->source == finn::AppSource::kNative) {
+            ok = finn::compat::uninstall_finnapp(app->id, {}, {}, &err);
+        } else {
+            err = "uninstall is not supported for this app source";
+        }
+        if (!ok) {
+            (void)write_all(fd, "ERR " + sanitize(err.empty() ? "uninstall failed" : err) + "\n");
+            return;
+        }
+        (void)write_all(fd, "OK uninstalled\n");
         return;
     }
 

@@ -380,9 +380,18 @@ QVariantMap FinnThemeBridge::formFactorMetrics(const QString& formFactor,
 QString FinnThemeBridge::iconUrl(const QString& name, const QColor& tint,
                                  int sizePx) const {
     if (name.isEmpty()) return {};
-    QUrl url(QStringLiteral("image://finn-icon/") + name);
+    if (name.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
+        name.startsWith(QLatin1String("https://"), Qt::CaseInsensitive) ||
+        name.startsWith(QLatin1String("file://"), Qt::CaseInsensitive) ||
+        name.startsWith(QLatin1String("qrc:"))) {
+        return name;
+    }
+    const QString encoded_id = name.startsWith(QLatin1Char('/'))
+        ? (QStringLiteral("abs:") + QString::fromLatin1(QUrl::toPercentEncoding(name)))
+        : name;
+    QUrl url(QStringLiteral("image://finn-icon/") + encoded_id);
     QUrlQuery q;
-    if (tint.isValid()) {
+    if (tint.isValid() && tint.alpha() > 0) {
         q.addQueryItem(QStringLiteral("color"), tint.name(QColor::HexArgb));
     }
     if (sizePx > 0) {
@@ -785,7 +794,7 @@ QPixmap FinnIconProvider::requestPixmap(const QString& id, QSize* size,
         const QUrlQuery query(id.mid(qidx + 1));
         if (query.hasQueryItem(QStringLiteral("color"))) {
             const QColor parsed(query.queryItemValue(QStringLiteral("color")));
-            if (parsed.isValid()) tint = parsed;
+            if (parsed.isValid() && parsed.alpha() > 0) tint = parsed;
         }
         if (query.hasQueryItem(QStringLiteral("size"))) {
             bool ok = false;
@@ -793,14 +802,27 @@ QPixmap FinnIconProvider::requestPixmap(const QString& id, QSize* size,
             if (ok && s > 0 && s <= 512) px = s;
         }
     }
+    if (name.startsWith(QLatin1String("abs:"))) {
+        name = QUrl::fromPercentEncoding(name.mid(4).toLatin1());
+    }
     if (requestedSize.isValid() && requestedSize.width() > 0) {
         px = std::max(requestedSize.width(), requestedSize.height());
     }
 
-    // Preserve multi-color app icons automatically (never flatten them with a tint).
+    // Preserve multi-color app icons and raster icons automatically (never flatten them with a tint).
     const QString resolved = resolve_icon_path(name);
+    const bool is_raster =
+        resolved.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive) ||
+        resolved.endsWith(QStringLiteral(".webp"), Qt::CaseInsensitive) ||
+        resolved.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive) ||
+        resolved.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive) ||
+        resolved.endsWith(QStringLiteral(".ico"), Qt::CaseInsensitive) ||
+        name.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive) ||
+        name.endsWith(QStringLiteral(".webp"), Qt::CaseInsensitive);
     const bool is_app_icon =
+        is_raster ||
         resolved.contains(QStringLiteral("/apps/")) ||
+        resolved.contains(QStringLiteral("/icons/hicolor/")) ||
         name.endsWith(QStringLiteral("-app")) ||
         name == QLatin1String("files") || name == QLatin1String("terminal") ||
         name == QLatin1String("notes") || name == QLatin1String("store") ||

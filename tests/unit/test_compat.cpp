@@ -1,11 +1,13 @@
 #include "common/paths.hpp"
 #include "compat/appimage_runner.hpp"
 #include "compat/desktop_entry.hpp"
+#include "compat/finnapp_installer.hpp"
 #include "compat/flatpak_installer.hpp"
 #include "compat/linux_app_probe.hpp"
 #include "compat/linux_sandbox.hpp"
 #include "compat/macos_runner.hpp"
 #include "compat/msi_installer.hpp"
+#include "compat/pe_icon.hpp"
 #include "compat/windows_registry.hpp"
 #include "compat/wine_prefix.hpp"
 #include "compat/wine_runner.hpp"
@@ -854,6 +856,87 @@ bool test_windows_uninstall_discovery() {
     return true;
 }
 
+bool test_bplist_pe_icon_and_finnapp_lifecycle() {
+    using namespace finn::compat;
+    // 1. Minimal synthetic bplist00 dictionary:
+    //    obj 0: dict(2) keys=[1,2], vals=[3,4]
+    //    obj 1: "CFBundleName" (12)
+    //    obj 2: "CFBundleIdentifier" (18)
+    //    obj 3: "XcodeApp" (8)
+    //    obj 4: "com.example.xcode" (17)
+    std::string bp = "bplist00";
+    std::vector<std::uint8_t> offs;
+    offs.push_back(static_cast<std::uint8_t>(bp.size()));  // 0: dict
+    bp.append("\xD2\x01\x02\x03\x04", 5);
+    auto add_str = [&](std::string_view s) {
+        offs.push_back(static_cast<std::uint8_t>(bp.size()));
+        if (s.size() < 15) {
+            bp.push_back(static_cast<char>(0x50u | s.size()));
+        } else {
+            bp.push_back(static_cast<char>(0x5Fu));
+            bp.push_back(static_cast<char>(0x10u));  // 1-byte int
+            bp.push_back(static_cast<char>(s.size()));
+        }
+        bp.append(s.data(), s.size());
+    };
+    add_str("CFBundleName");
+    add_str("CFBundleIdentifier");
+    add_str("XcodeApp");
+    add_str("com.example.xcode");
+    const std::size_t off_tbl = bp.size();
+    for (std::uint8_t o : offs) bp.push_back(static_cast<char>(o));
+    // 32-byte trailer: 6 unused, offset_sz=1, ref_sz=1, num_objs=5, top=0, off_tbl
+    std::string tr(32, '\0');
+    tr[6] = 1;
+    tr[7] = 1;
+    tr[15] = 5;
+    tr[31] = static_cast<char>(off_tbl);
+    bp.append(tr);
+
+    const auto binfo = parse_macos_info_plist(bp, "/tmp/XcodeApp.app");
+    CHECK(binfo.valid);
+    CHECK(binfo.name == "XcodeApp");
+    CHECK(binfo.bundle_id == "com.example.xcode");
+
+    // 2. Standalone ICO carrying a PNG payload
+    std::string ico(22, '\0');
+    ico[2] = 1;   // type = ICO
+    ico[4] = 1;   // count = 1
+    ico[6] = 0;   // 256px
+    ico[7] = 0;
+    ico[12] = 32; // 32 bpp
+    const std::string fake_png = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR";
+    ico[14] = static_cast<char>(fake_png.size());
+    ico[18] = 22; // image offset
+    ico.append(fake_png);
+    const auto ex = extract_pe_or_ico_icon_bytes(ico);
+    CHECK(ex.ok);
+    CHECK(ex.ext == ".png");
+    CHECK(ex.bytes.size() == fake_png.size());
+
+    // 3. .finnapp bundle install & uninstall lifecycle
+    const TempDir dir;
+    const std::filesystem::path bundle = dir.path("Hello.finnapp");
+    std::filesystem::create_directories(bundle / "bin");
+    {
+        std::ofstream mf(bundle / "manifest.conf");
+        mf << "id=hello-native\nname=Hello Native\nversion=1.0\nexec=bin/hello\ncategory=Productivity\n";
+        std::ofstream bin(bundle / "bin" / "hello");
+        bin << "#!/bin/sh\necho hi\n";
+    }
+    const std::string apps_root = dir.path("apps");
+    const std::string desk_dir = dir.path("desktop");
+    const auto inst = install_finnapp(bundle.string(), apps_root, desk_dir);
+    CHECK(inst.ok);
+    CHECK(std::filesystem::is_regular_file(inst.manifest_path));
+    CHECK(std::filesystem::is_regular_file(inst.desktop_path));
+    std::string uerr;
+    CHECK(uninstall_finnapp("hello-native", apps_root, desk_dir, &uerr));
+    CHECK(!std::filesystem::exists(inst.manifest_path));
+    CHECK(!std::filesystem::exists(inst.desktop_path));
+    return true;
+}
+
 }  // namespace
 
 int main() {
@@ -875,6 +958,7 @@ int main() {
     ok &= test_wine_prefix_planning();
     ok &= test_windows_installer_plans();
     ok &= test_windows_uninstall_discovery();
+    ok &= test_bplist_pe_icon_and_finnapp_lifecycle();
     if (!ok) return 1;
     std::puts("test_compat: ok");
     return 0;

@@ -11,10 +11,13 @@
 
 #include "shell/full_oobe_flow.hpp"
 
+#if defined(FINN_HAVE_QT_DBUS) || defined(QT_DBUS_LIB)
 #include <QDBusConnection>
 #include <QDBusInterface>
+#endif
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QString>
@@ -90,13 +93,19 @@ inline CapabilitySnapshot capabilities() {
         caps.wired_link = Capability::unknown(detail::S(why));
     }
 
-    caps.account_service = detail::from_executable("pkexec", "privileged account helper");
-    const QString useradd = QStandardPaths::findExecutable(QStringLiteral("useradd"));
-    if (!useradd.isEmpty() && caps.account_service.state == Availability::Available) {
-        caps.account_service.detail += detail::S(QStringLiteral(" + useradd (%1)").arg(useradd));
-    } else if (caps.account_service.state == Availability::Available) {
-        caps.account_service = Capability::unavailable(
-            detail::S(QStringLiteral("useradd not found on PATH")));
+    const QString apply_helper = QString::fromLatin1(finn::kOobeApplyHelperPath);
+    if (QFileInfo::exists(apply_helper)) {
+        caps.account_service = Capability::available(
+            detail::S(QStringLiteral("finn-oobe-apply (%1)").arg(apply_helper)));
+    } else {
+        caps.account_service = detail::from_executable("pkexec", "privileged account helper");
+        const QString useradd = QStandardPaths::findExecutable(QStringLiteral("useradd"));
+        if (!useradd.isEmpty() && caps.account_service.state == Availability::Available) {
+            caps.account_service.detail += detail::S(QStringLiteral(" + useradd (%1)").arg(useradd));
+        } else if (caps.account_service.state == Availability::Available) {
+            caps.account_service = Capability::unavailable(
+                detail::S(QStringLiteral("useradd not found on PATH")));
+        }
     }
 
     // A real write into the user's Finn config directory, then removed. This
@@ -112,6 +121,7 @@ inline CapabilitySnapshot capabilities() {
             detail::S(QStringLiteral("cannot write %1").arg(dir)));
     }
 
+#if defined(FINN_HAVE_QT_DBUS) || defined(QT_DBUS_LIB)
     const QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) {
         caps.accessibility_bus = Capability::unavailable(
@@ -124,6 +134,10 @@ inline CapabilitySnapshot capabilities() {
             ? Capability::available(detail::S(QStringLiteral("org.a11y.Bus registered")))
             : Capability::unavailable(detail::S(QStringLiteral("org.a11y.Bus not registered")));
     }
+#else
+    caps.accessibility_bus = Capability::unavailable(
+        detail::S(QStringLiteral("QtDBus not built into this binary")));
+#endif
     return caps;
 }
 

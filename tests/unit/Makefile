@@ -10,6 +10,7 @@ REGISTRY_SRCS = ../../src/session/app_registry.cpp \
                 ../../src/compat/linux_sandbox.cpp \
                 ../../src/compat/macos_runner.cpp \
                 ../../src/compat/ohos_runner.cpp \
+                ../../src/compat/pe_icon.cpp \
                 ../../src/compat/wine_runner.cpp \
                 ../../src/compat/wine_prefix.cpp \
                 ../../src/compat/msi_installer.cpp \
@@ -55,7 +56,8 @@ ANDROID_SRCS  = ../../src/android/zip_reader.cpp ../../src/android/android_forma
                 ../../src/compat/desktop_entry.cpp
 BINS          = test_app_registry test_animation test_spring test_compositor \
                 test_session_client test_search test_compat test_windows_modules \
-                test_darwin test_ohos test_android test_sys_files
+                test_darwin test_ohos test_android test_sys_files test_oobe \
+                test_recovery test_bootloader test_store
 
 all: $(BINS)
 
@@ -100,10 +102,12 @@ WINDOWS_SRCS = ../../src/compat/wine_prefix.cpp \
 
 COMPAT_SRCS = ../../src/compat/appimage_runner.cpp \
               ../../src/compat/desktop_entry.cpp \
+              ../../src/compat/finnapp_installer.cpp \
               ../../src/compat/flatpak_installer.cpp \
               ../../src/compat/linux_app_probe.cpp \
               ../../src/compat/linux_sandbox.cpp \
               ../../src/compat/macos_runner.cpp \
+              ../../src/compat/pe_icon.cpp \
               ../../src/compat/wine_runner.cpp \
               ../../src/compat/wine_prefix.cpp \
               ../../src/compat/msi_installer.cpp \
@@ -148,6 +152,31 @@ test_sys_files: test_sys_files.cpp ../../src/system/sys_files.cpp \
 	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_sys_files.cpp \
 		../../src/system/sys_files.cpp ../../src/system/guest_tools.cpp
 
+test_oobe: test_oobe.cpp ../../src/shell/full_oobe_flow.cpp \
+		../../src/shell/full_oobe_flow.hpp ../../src/common/paths.hpp
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_oobe.cpp \
+		../../src/shell/full_oobe_flow.cpp
+
+test_recovery: test_recovery.cpp ../../src/recovery/recovery_engine.cpp \
+		../../src/recovery/recovery_engine.hpp
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_recovery.cpp \
+		../../src/recovery/recovery_engine.cpp
+
+test_bootloader: test_bootloader.cpp ../../src/boot/bls_parser.c \
+		../../src/boot/boot_ui.c ../../src/boot/bls_parser.h ../../src/boot/boot_ui.h
+	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror $(SAN) -c -o bls_parser.o ../../src/boot/bls_parser.c
+	$(CC) -std=c11 -O2 -g -Wall -Wextra -Werror $(SAN) -c -o boot_ui.o ../../src/boot/boot_ui.c
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../src -o $@ test_bootloader.cpp bls_parser.o boot_ui.o
+
+STORE_SRCS = ../../apps/store/providers/protobuf_wire.cpp \
+             ../../apps/store/providers/aurora_play_provider.cpp \
+             ../../apps/store/providers/flathub_provider.cpp \
+             ../../apps/store/providers/winget_provider.cpp \
+             ../../apps/store/providers/curated_catalog.cpp
+
+test_store: test_store.cpp $(STORE_SRCS)
+	$(CXX) $(CXXFLAGS) $(SAN) -I../../apps/store -I../../src -o $@ test_store.cpp $(STORE_SRCS)
+
 run: $(BINS)
 	./test_app_registry
 	./test_animation
@@ -161,6 +190,10 @@ run: $(BINS)
 	./test_ohos
 	./test_android
 	./test_sys_files
+	./test_oobe
+	./test_recovery
+	./test_bootloader
+	./test_store
 	python3 test_tokens.py
 
 clean:

@@ -1,0 +1,257 @@
+#!/bin/bash
+# finn-oobe-apply: Audited first-boot system provisioning helper for finn-oobe.
+#
+# Runs ONCE during first normal boot of an installed FinnOS system to apply:
+#   - system locale (/etc/locale.gen + /etc/locale.conf)
+#   - system timezone (/etc/localtime symlink)
+#   - keyboard layout (/etc/vconsole.conf + /var/lib/finn/settings)
+#   - computer hostname (/etc/hostname + /etc/hosts)
+#   - primary user account, full name, and password
+#   - system-wide /var/lib/finn/oobe_complete marker
+#
+# Once /var/lib/finn/oobe_complete exists, this helper permanently refuses to run
+# and removes the first-boot /etc/sudoers.d/finn-oobe drop-in.
+set -euo pipefail
+
+if [ "$(id -u)" -eq 0 ]; then
+    ROOT_DIR="/"
+    DRY_SYSTEM=0
+elif [ -n "${FINN_OOBE_TEST_ROOT:-}" ]; then
+    ROOT_DIR="$FINN_OOBE_TEST_ROOT"
+    DRY_SYSTEM=1
+else
+    echo "error: finn-oobe-apply must run as root" >&2
+    exit 1
+fi
+
+rpath() {
+    local rel="${1#/}"
+    if [ "$ROOT_DIR" = "/" ]; then
+        printf '/%s' "$rel"
+    else
+        printf '%s/%s' "${ROOT_DIR%/}" "$rel"
+    fi
+}
+
+COMPLETE_MARKER="$(rpath /var/lib/finn/oobe_complete)"
+if [ -f "$COMPLETE_MARKER" ]; then
+    echo "error: first-boot setup is already complete" >&2
+    exit 1
+fi
+
+LOCALE=""
+REGION=""
+TIMEZONE=""
+KB_LAYOUT="us"
+KB_VARIANT=""
+HOSTNAME_VAL="finnos"
+USERNAME_VAL="finn"
+FULL_NAME=""
+PASSWORD_VAL=""
+DARK_VAL="0"
+AVATAR_COLOR="blue"
+
+while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [ -n "$line" ] || continue
+    case "$line" in
+        \#*) continue ;;
+    esac
+    key="${line%%=*}"
+    val="${line#*=}"
+    case "$key" in
+        locale)       LOCALE="$val" ;;
+        region)       REGION="$val" ;;
+        timezone)     TIMEZONE="$val" ;;
+        kb_layout)    KB_LAYOUT="$val" ;;
+        kb_variant)   KB_VARIANT="$val" ;;
+        hostname)     HOSTNAME_VAL="$val" ;;
+        username)     USERNAME_VAL="$val" ;;
+        full_name)    FULL_NAME="$val" ;;
+        password)     PASSWORD_VAL="$val" ;;
+        dark)         DARK_VAL="$val" ;;
+        avatar_color) AVATAR_COLOR="$val" ;;
+    esac
+done
+
+# 1. Validate inputs strictly before touching any file.
+if [ -n "$LOCALE" ]; then
+    if ! printf '%s' "$LOCALE" | grep -Eq '^[A-Za-z]{2,3}(_[A-Za-z]{2})?(\.[A-Za-z0-9-]+)?$'; then
+        echo "error: invalid locale '$LOCALE'" >&2
+        exit 1
+    fi
+fi
+
+if [ -n "$TIMEZONE" ]; then
+    case "$TIMEZONE" in
+        *..* | /* | *' '*)
+            echo "error: invalid timezone '$TIMEZONE'" >&2
+            exit 1
+            ;;
+    esac
+    if ! printf '%s' "$TIMEZONE" | grep -Eq '^[A-Za-z0-9_+/-]+$'; then
+        echo "error: invalid timezone '$TIMEZONE'" >&2
+        exit 1
+    fi
+    ZONE_SRC="$(rpath "/usr/share/zoneinfo/$TIMEZONE")"
+    if [ "$DRY_SYSTEM" -eq 0 ] && [ ! -f "$ZONE_SRC" ]; then
+        echo "error: timezone '$TIMEZONE' not found in /usr/share/zoneinfo" >&2
+        exit 1
+    fi
+fi
+
+if ! printf '%s' "$KB_LAYOUT" | grep -Eq '^[a-z0-9_-]{1,16}$'; then
+    echo "error: invalid keyboard layout '$KB_LAYOUT'" >&2
+    exit 1
+fi
+if [ -n "$KB_VARIANT" ] && ! printf '%s' "$KB_VARIANT" | grep -Eq '^[A-Za-z0-9_-]{1,24}$'; then
+    echo "error: invalid keyboard variant '$KB_VARIANT'" >&2
+    exit 1
+fi
+
+if ! printf '%s' "$HOSTNAME_VAL" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'; then
+    echo "error: invalid hostname '$HOSTNAME_VAL'" >&2
+    exit 1
+fi
+
+if ! printf '%s' "$USERNAME_VAL" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}$' || [ "$USERNAME_VAL" = "root" ]; then
+    echo "error: invalid username '$USERNAME_VAL'" >&2
+    exit 1
+fi
+
+# Sanitize GECOS full name (strip colons, commas, control characters).
+SAFE_FULL_NAME="$(printf '%s' "$FULL_NAME" | tr -d ':,;\r\n\t')"
+
+# 2. Configure locale.
+mkdir -p "$(rpath /etc)" "$(rpath /var/lib/finn)"
+if [ -n "$LOCALE" ]; then
+    LOCALE_GEN="$(rpath /etc/locale.gen)"
+    if [ -f "$LOCALE_GEN" ]; then
+        if grep -Eq "^#[[:space:]]*${LOCALE}[[:space:]]+UTF-8" "$LOCALE_GEN"; then
+            sed -i.bak "s/^#[[:space:]]*\(${LOCALE}[[:space:]]\+UTF-8\)/\1/" "$LOCALE_GEN" 2>/dev/null || \
+                sed -i '' "s/^#[[:space:]]*\(${LOCALE}[[:space:]]*UTF-8\)/\1/" "$LOCALE_GEN" 2>/dev/null || true
+            rm -f "${LOCALE_GEN}.bak"
+        elif ! grep -Eq "^${LOCALE}[[:space:]]+UTF-8" "$LOCALE_GEN"; then
+            printf '%s UTF-8\n' "$LOCALE" >> "$LOCALE_GEN"
+        fi
+    fi
+    if [ "$DRY_SYSTEM" -eq 0 ] && command -v locale-gen >/dev/null 2>&1; then
+        locale-gen >/dev/null 2>&1 || true
+    fi
+    printf 'LANG=%s\n' "$LOCALE" > "$(rpath /etc/locale.conf)"
+fi
+
+# 3. Configure timezone.
+if [ -n "$TIMEZONE" ]; then
+    ln -snf "/usr/share/zoneinfo/$TIMEZONE" "$(rpath /etc/localtime)"
+    printf '%s\n' "$TIMEZONE" > "$(rpath /etc/timezone)"
+    if [ "$DRY_SYSTEM" -eq 0 ] && command -v hwclock >/dev/null 2>&1; then
+        hwclock --systohc >/dev/null 2>&1 || true
+    fi
+fi
+
+# 4. Configure keyboard layout & shared /var/lib/finn/settings.
+printf 'KEYMAP=%s\n' "$KB_LAYOUT" > "$(rpath /etc/vconsole.conf)"
+SYS_SETTINGS="$(rpath /var/lib/finn/settings)"
+{
+    if [ -f "$SYS_SETTINGS" ]; then
+        grep -Ev '^(kb_layout|kb_variant|dark|avatar_color)=' "$SYS_SETTINGS" || true
+    fi
+    printf 'kb_layout=%s\n' "$KB_LAYOUT"
+    if [ -n "$KB_VARIANT" ]; then
+        printf 'kb_variant=%s\n' "$KB_VARIANT"
+    fi
+    printf 'dark=%s\n' "$([ "$DARK_VAL" = "1" ] && echo 1 || echo 0)"
+    if [ -n "$AVATAR_COLOR" ]; then
+        printf 'avatar_color=%s\n' "$AVATAR_COLOR"
+    fi
+} > "${SYS_SETTINGS}.tmp"
+mv "${SYS_SETTINGS}.tmp" "$SYS_SETTINGS"
+chmod 0644 "$SYS_SETTINGS"
+
+# 5. Configure hostname.
+printf '%s\n' "$HOSTNAME_VAL" > "$(rpath /etc/hostname)"
+cat > "$(rpath /etc/hosts)" <<EOF
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   ${HOSTNAME_VAL}.localdomain ${HOSTNAME_VAL}
+EOF
+if [ "$DRY_SYSTEM" -eq 0 ]; then
+    if command -v hostnamectl >/dev/null 2>&1; then
+        hostnamectl set-hostname "$HOSTNAME_VAL" >/dev/null 2>&1 || hostname "$HOSTNAME_VAL" >/dev/null 2>&1 || true
+    elif command -v hostname >/dev/null 2>&1; then
+        hostname "$HOSTNAME_VAL" >/dev/null 2>&1 || true
+    fi
+fi
+
+# 6. Configure user account & password.
+if [ "$DRY_SYSTEM" -eq 0 ]; then
+    GROUPS_LIST="wheel"
+    for g in input video render seat finn; do
+        if getent group "$g" >/dev/null 2>&1; then
+            GROUPS_LIST="${GROUPS_LIST},${g}"
+        fi
+    done
+
+    if ! id "$USERNAME_VAL" >/dev/null 2>&1; then
+        useradd -m -G "$GROUPS_LIST" -s /bin/bash "$USERNAME_VAL"
+    else
+        usermod -aG "$GROUPS_LIST" "$USERNAME_VAL" || true
+    fi
+
+    if [ -n "$SAFE_FULL_NAME" ]; then
+        usermod -c "$SAFE_FULL_NAME" "$USERNAME_VAL" || chfn -f "$SAFE_FULL_NAME" "$USERNAME_VAL" || true
+    fi
+
+    if [ -n "$PASSWORD_VAL" ]; then
+        printf '%s:%s\n' "$USERNAME_VAL" "$PASSWORD_VAL" | chpasswd
+    fi
+
+    USER_HOME="$(getent passwd "$USERNAME_VAL" | cut -d: -f6)"
+    USER_UID="$(id -u "$USERNAME_VAL")"
+    if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
+        install -d -m 0755 -o "$USERNAME_VAL" -g "$USERNAME_VAL" "$USER_HOME/.config/finn"
+        cp "$SYS_SETTINGS" "$USER_HOME/.config/finn/settings"
+        if [ -n "$LOCALE" ]; then
+            printf 'LANG=%s\nLC_ALL=%s\n' "$LOCALE" "$LOCALE" > "$USER_HOME/.config/finn/locale.conf"
+        fi
+        printf 'username=%s\nfull_name=%s\nhostname=%s\navatar_color=%s\nlocale=%s\n' \
+            "$USERNAME_VAL" "$SAFE_FULL_NAME" "$HOSTNAME_VAL" "$AVATAR_COLOR" "$LOCALE" \
+            > "$USER_HOME/.config/finn/account.conf"
+        printf 'done\n' > "$USER_HOME/.config/finn/oobe_complete"
+        chown -R "$USERNAME_VAL:$USERNAME_VAL" "$USER_HOME/.config/finn"
+    fi
+
+    if [ "$USERNAME_VAL" != "finn" ] && [ -n "$USER_UID" ]; then
+        for svc in finn-session finn-shell finn-wallpaper; do
+            drop_dir="/etc/systemd/system/${svc}.service.d"
+            mkdir -p "$drop_dir"
+            cat > "${drop_dir}/10-oobe-user.conf" <<EOF
+[Service]
+User=${USERNAME_VAL}
+Group=${USERNAME_VAL}
+WorkingDirectory=${USER_HOME}
+Environment=HOME=${USER_HOME}
+Environment=USER=${USERNAME_VAL}
+Environment=XDG_RUNTIME_DIR=/run/user/${USER_UID}
+EOF
+        done
+        loginctl enable-linger "$USERNAME_VAL" >/dev/null 2>&1 || true
+        passwd -l finn >/dev/null 2>&1 || true
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+else
+    # Test-root recording for deterministic host unit tests.
+    USER_REC="$(rpath "/var/lib/finn/provisioned_account")"
+    printf 'username=%s\nfull_name=%s\nhostname=%s\nregion=%s\npassword_set=%s\n' \
+        "$USERNAME_VAL" "$SAFE_FULL_NAME" "$HOSTNAME_VAL" "$REGION" \
+        "$([ -n "$PASSWORD_VAL" ] && echo 1 || echo 0)" > "$USER_REC"
+fi
+
+# 7. Seal completion marker and permanently retire first-boot privilege rules.
+printf 'done\n' > "$COMPLETE_MARKER"
+chmod 0644 "$COMPLETE_MARKER"
+rm -f "$(rpath /etc/sudoers.d/finn-oobe)"
+rm -f "$(rpath /etc/polkit-1/rules.d/49-finn-oobe.rules)"
+
+exit 0

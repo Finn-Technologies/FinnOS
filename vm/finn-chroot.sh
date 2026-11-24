@@ -146,7 +146,7 @@ step "accounts"
 # and on any network that is remote root after one guess. There is none now:
 # finn gets the operator-supplied or generated password, root is locked, and
 # sudo asks for finn's password.
-id finn >/dev/null 2>&1 || useradd -m -G wheel,input,video,seat -s /bin/bash finn
+id finn >/dev/null 2>&1 || useradd -m -G wheel,input,video,render,seat -s /bin/bash finn
 PW="${FINN_PASSWORD:-}"
 if [ -z "$PW" ]; then
     PW="$(head -c 12 /dev/urandom | base64 | tr -d '\n')"
@@ -158,6 +158,10 @@ printf 'finn:%s\n' "$PW" | chpasswd
 passwd -l root
 printf 'finn ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
 chmod 0440 /etc/sudoers.d/finn
+if [ ! -f /var/lib/finn/oobe_complete ]; then
+    printf 'finn ALL=(root) NOPASSWD: /usr/local/libexec/finn-oobe-apply\n' > /etc/sudoers.d/finn-oobe
+    chmod 0440 /etc/sudoers.d/finn-oobe
+fi
 
 step "services"
 systemctl enable NetworkManager 2>/dev/null || true
@@ -384,28 +388,34 @@ ABEOF
 fi
 
 efi=0
-if grub-install --target=x86_64-efi --efi-directory=/boot \
+if command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 | tail -5; then
+    if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
+        install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
+        install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
+    elif [ -f /usr/share/finn/boot/finn-bootaa64.efi ]; then
+        install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/BOOT/BOOTAA64.EFI
+        install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/systemd/systemd-bootaa64.efi
+    fi
+    mkdir -p /boot/loader/entries
+    if [ "${FINN_AB_SLOTS:-0}" = 1 ]; then
+        printf 'default finnos-a.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
+        printf 'title FinnOS (A)\nlinux /finnos/a/vmlinuz\ninitrd /finnos/a/initramfs.img\noptions root=PARTLABEL=FINNOS_A rw finn.slot=a quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
+            "$serial_args" > /boot/loader/entries/finnos-a.conf
+    else
+        printf 'default finnos.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
+        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
+            "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
+    fi
+    printf 'title FinnOS Recovery\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw finn.recovery quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
+        "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos-recovery.conf
+    efi=1
+    echo "BOOTLOADER=systemd-boot"
+elif grub-install --target=x86_64-efi --efi-directory=/boot \
         --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
     grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 ||
         { echo "error: grub-mkconfig failed" >&2; exit 1; }
     efi=1
     echo "BOOTLOADER=grub-efi"
-else
-    echo "grub-efi did not install; trying systemd-boot"
-    if bootctl --esp-path=/boot install 2>&1 | tail -5; then
-        mkdir -p /boot/loader/entries
-        if [ "${FINN_AB_SLOTS:-0}" = 1 ]; then
-            printf 'default finnos-a.conf\ntimeout 3\n' > /boot/loader/loader.conf
-            printf 'title FinnOS (A)\nlinux /finnos/a/vmlinuz\ninitrd /finnos/a/initramfs.img\noptions root=PARTLABEL=FINNOS_A rw finn.slot=a quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
-                "$serial_args" > /boot/loader/entries/finnos-a.conf
-        else
-            printf 'default finnos.conf\ntimeout 3\n' > /boot/loader/loader.conf
-            printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3%s\n' \
-                "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos.conf
-        fi
-        efi=1
-        echo "BOOTLOADER=systemd-boot"
-    fi
 fi
 
 # A machine that starts with a BIOS rather than EFI needs the boot code in

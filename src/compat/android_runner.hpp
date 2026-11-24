@@ -13,7 +13,7 @@
 
 namespace finn::compat {
 
-enum class ApkPackageType { Unknown, Apk };
+enum class ApkPackageType { Unknown, Apk, Xapk, Apkm, Apks };
 
 struct AndroidRuntimeStatus {
     std::string host_arch;

@@ -2,6 +2,7 @@
 
 #include "common/paths.hpp"
 #include "session/client.hpp"
+#include "shell/oobe_capability_probe.hpp"
 #include "ui/finn/theme.hpp"
 
 #include <QCoreApplication>
@@ -550,7 +551,130 @@ ShellCorona::~ShellCorona() {
 
 void ShellCorona::startSystemIntegration() {
     setupLockWatchers();
+    setupCatalogWatchers();
+    maybeLaunchFirstBootOobe();
     QTimer::singleShot(4000, this, &ShellCorona::pollOtaStatus);
+}
+
+void ShellCorona::setupCatalogWatchers() {
+    catalog_reload_timer_.setSingleShot(true);
+    catalog_reload_timer_.setInterval(200);
+    connect(&catalog_reload_timer_, &QTimer::timeout, this, [this]() {
+        app_model_->reload();
+        emit windowsChanged();
+    });
+
+    auto addWatchPath = [this](const QString& p) {
+        if (QFileInfo::exists(p) && !catalog_watcher_.files().contains(p) &&
+            !catalog_watcher_.directories().contains(p)) {
+            catalog_watcher_.addPath(p);
+        }
+    };
+
+    const QString home = QDir::homePath();
+    const QStringList dirs = {
+        QStringLiteral("/var/lib/finn"),
+        QStringLiteral("/var/lib/flatpak/exports/share/applications"),
+        home + QStringLiteral("/.local/share/finn"),
+        home + QStringLiteral("/.local/share/finn/apps"),
+        home + QStringLiteral("/.local/share/finn/macos"),
+        home + QStringLiteral("/.local/share/finn/macos/Applications"),
+        home + QStringLiteral("/.local/share/finn/ohos"),
+        home + QStringLiteral("/.local/share/finn/android"),
+        home + QStringLiteral("/.local/share/finn/appimages"),
+        home + QStringLiteral("/.local/share/finn/wine"),
+        home + QStringLiteral("/.local/share/applications"),
+        home + QStringLiteral("/.local/share/applications/wine"),
+        home + QStringLiteral("/.local/share/flatpak/exports/share/applications"),
+        home + QStringLiteral("/Applications"),
+    };
+    for (const QString& d : dirs) {
+        QDir().mkpath(d.startsWith(home + QStringLiteral("/.local/share/finn")) ? d : QString());
+        addWatchPath(d);
+    }
+    const QStringList files = {
+        QString::fromLatin1(finn::kInstalledPath),
+        home + QLatin1Char('/') + QString::fromLatin1(finn::kUserWindowsConfRel),
+        home + QLatin1Char('/') + QString::fromLatin1(finn::kUserOhosRegistryRel),
+        home + QLatin1Char('/') + QString::fromLatin1(finn::kUserAndroidRegistryRel),
+        home + QLatin1Char('/') + QString::fromLatin1(finn::kWinePrefixRel) + QStringLiteral("/system.reg"),
+        home + QLatin1Char('/') + QString::fromLatin1(finn::kWinePrefixRel) + QStringLiteral("/user.reg"),
+    };
+    for (const QString& f : files) addWatchPath(f);
+
+    connect(&catalog_watcher_, &QFileSystemWatcher::directoryChanged, this,
+            [this, addWatchPath](const QString& dir) {
+                addWatchPath(dir);
+                catalog_reload_timer_.start();
+            });
+    connect(&catalog_watcher_, &QFileSystemWatcher::fileChanged, this,
+            [this, addWatchPath](const QString& file) {
+                addWatchPath(file);
+                catalog_reload_timer_.start();
+            });
+}
+
+void ShellCorona::maybeLaunchFirstBootOobe() {
+    QString cmdline;
+    {
+        QFile cf(QStringLiteral("/proc/cmdline"));
+        if (cf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            cmdline = QString::fromUtf8(cf.readAll());
+        }
+    }
+    const bool live_marker =
+        QFileInfo::exists(QStringLiteral("/run/archiso")) ||
+        QFileInfo::exists(QString::fromLatin1(finn::kRecoverySessionMarkerPath));
+    const bool installed_marker =
+        QFileInfo::exists(QString::fromLatin1(finn::kInstalledPath));
+    const bool sys_complete =
+        QFileInfo::exists(QString::fromLatin1(finn::kSystemOobeCompletePath));
+    const QString user_complete_path =
+        QDir::homePath() + QLatin1Char('/') + QString::fromLatin1(finn::kOobeCompleteRel);
+    const bool user_complete = QFileInfo::exists(user_complete_path);
+
+    if (!finn::should_run_oobe_on_boot(cmdline.toStdString(),
+                                       live_marker,
+                                       installed_marker,
+                                       sys_complete,
+                                       user_complete,
+                                       std::getenv("FINN_OOBE_FORCE"))) {
+        return;
+    }
+
+    // Write measured preflight capability snapshot before spawning finn-oobe.
+    const QString preflight_path =
+        QDir::homePath() + QLatin1Char('/') +
+        QString::fromLatin1(finn::shell::oobe::probe::kOobeCapabilitiesRel);
+    QDir().mkpath(QFileInfo(preflight_path).absolutePath());
+    finn::shell::oobe::probe::write_preflight(
+        preflight_path, finn::shell::oobe::probe::capabilities());
+
+    QString oobe_exe = QStandardPaths::findExecutable(QStringLiteral("finn-oobe"));
+    if (oobe_exe.isEmpty() && QFileInfo::exists(QString::fromLatin1(finn::kOobeBinPath))) {
+        oobe_exe = QString::fromLatin1(finn::kOobeBinPath);
+    }
+    if (oobe_exe.isEmpty()) {
+        const QString sibling =
+            QCoreApplication::applicationDirPath() + QStringLiteral("/../../apps/oobe/finn-oobe");
+        if (QFileInfo::exists(sibling)) oobe_exe = sibling;
+    }
+    if (oobe_exe.isEmpty()) return;
+
+    oobe_active_ = true;
+    emit oobeActiveChanged();
+
+    oobe_proc_ = new QProcess(this);
+    connect(oobe_proc_, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this](int, QProcess::ExitStatus) {
+                oobe_active_ = false;
+                emit oobeActiveChanged();
+                loadUsers();
+                finn::ui::FinnThemeManager::instance().reload();
+                app_model_->reload();
+                emit windowsChanged();
+            });
+    oobe_proc_->start(oobe_exe, {QStringLiteral("--capabilities"), preflight_path});
 }
 
 void ShellCorona::updateClock() {

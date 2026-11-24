@@ -58,6 +58,7 @@ xdg-desktop-portal
 xdg-desktop-portal-wlr
 desktop-file-utils
 shared-mime-info
+xdg-utils
 upower
 
 # What finn-comp links against.

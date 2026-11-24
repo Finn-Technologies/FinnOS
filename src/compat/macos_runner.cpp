@@ -85,6 +85,112 @@ std::string extract_plist_string(std::string_view xml, std::string_view key) {
     return std::string(xml.substr(val_start, close - val_start));
 }
 
+// Lightweight clean-room Apple Binary Property List (bplist00) top-level string
+// dictionary extractor so real Xcode .app bundles parse cleanly without linking
+// finn-darwin.
+std::uint64_t read_be_uint(std::string_view b, std::size_t off, std::size_t n) {
+    std::uint64_t v = 0;
+    for (std::size_t i = 0; i < n && off + i < b.size(); ++i) {
+        v = (v << 8) | static_cast<unsigned char>(b[off + i]);
+    }
+    return v;
+}
+
+bool read_bplist_length(std::string_view b, std::size_t* pos, std::uint8_t low,
+                        std::uint64_t* out_len) {
+    if (low != 0x0Fu) {
+        *out_len = low;
+        return true;
+    }
+    if (*pos >= b.size()) return false;
+    const std::uint8_t int_marker = static_cast<unsigned char>(b[(*pos)++]);
+    if ((int_marker & 0xF0u) != 0x10u) return false;
+    const std::size_t nbytes = std::size_t{1} << (int_marker & 0x0Fu);
+    if (nbytes > 8 || *pos + nbytes > b.size()) return false;
+    *out_len = read_be_uint(b, *pos, nbytes);
+    *pos += nbytes;
+    return true;
+}
+
+bool decode_bplist_string(std::string_view b, std::size_t obj_off, std::string* out) {
+    if (obj_off >= b.size()) return false;
+    std::size_t pos = obj_off;
+    const std::uint8_t marker = static_cast<unsigned char>(b[pos++]);
+    const std::uint8_t hi = marker & 0xF0u;
+    const std::uint8_t lo = marker & 0x0Fu;
+    std::uint64_t len = 0;
+    if (hi == 0x50u) {  // ASCII string
+        if (!read_bplist_length(b, &pos, lo, &len)) return false;
+        if (pos + len > b.size()) return false;
+        out->assign(b.data() + pos, static_cast<std::size_t>(len));
+        return true;
+    }
+    if (hi == 0x60u) {  // UTF-16BE string
+        if (!read_bplist_length(b, &pos, lo, &len)) return false;
+        if (pos + len * 2 > b.size()) return false;
+        out->clear();
+        out->reserve(static_cast<std::size_t>(len));
+        for (std::uint64_t i = 0; i < len; ++i) {
+            const std::uint16_t ch = static_cast<std::uint16_t>(
+                (static_cast<unsigned char>(b[pos + i * 2]) << 8) |
+                static_cast<unsigned char>(b[pos + i * 2 + 1]));
+            if (ch < 0x80u) {
+                out->push_back(static_cast<char>(ch));
+            } else if (ch < 0x800u) {
+                out->push_back(static_cast<char>(0xC0u | (ch >> 6)));
+                out->push_back(static_cast<char>(0x80u | (ch & 0x3Fu)));
+            } else {
+                out->push_back(static_cast<char>(0xE0u | (ch >> 12)));
+                out->push_back(static_cast<char>(0x80u | ((ch >> 6) & 0x3Fu)));
+                out->push_back(static_cast<char>(0x80u | (ch & 0x3Fu)));
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+bool parse_bplist_top_dict(std::string_view b,
+                           std::vector<std::pair<std::string, std::string>>* kv_out) {
+    if (b.size() < 40 || b.substr(0, 8) != "bplist00") return false;
+    const std::size_t tr = b.size() - 32;
+    const std::size_t offset_sz = static_cast<unsigned char>(b[tr + 6]);
+    const std::size_t ref_sz = static_cast<unsigned char>(b[tr + 7]);
+    const std::uint64_t num_objs = read_be_uint(b, tr + 8, 8);
+    const std::uint64_t top_obj = read_be_uint(b, tr + 16, 8);
+    const std::uint64_t off_tbl = read_be_uint(b, tr + 24, 8);
+    if (offset_sz == 0 || offset_sz > 8 || ref_sz == 0 || ref_sz > 8 ||
+        num_objs == 0 || top_obj >= num_objs) {
+        return false;
+    }
+    if (off_tbl >= b.size() || num_objs * offset_sz > b.size() - off_tbl) return false;
+
+    auto obj_offset = [&](std::uint64_t idx) -> std::size_t {
+        if (idx >= num_objs) return b.size();
+        return static_cast<std::size_t>(
+            read_be_uint(b, static_cast<std::size_t>(off_tbl + idx * offset_sz), offset_sz));
+    };
+
+    std::size_t pos = obj_offset(top_obj);
+    if (pos >= b.size()) return false;
+    const std::uint8_t marker = static_cast<unsigned char>(b[pos++]);
+    if ((marker & 0xF0u) != 0xD0u) return false;  // Top object must be Dict
+    std::uint64_t count = 0;
+    if (!read_bplist_length(b, &pos, marker & 0x0Fu, &count)) return false;
+    if (count > 2048 || pos + count * 2 * ref_sz > b.size()) return false;
+
+    for (std::uint64_t i = 0; i < count; ++i) {
+        const std::uint64_t kref = read_be_uint(b, pos + static_cast<std::size_t>(i * ref_sz), ref_sz);
+        const std::uint64_t vref = read_be_uint(b, pos + static_cast<std::size_t>((count + i) * ref_sz), ref_sz);
+        std::string k, v;
+        if (decode_bplist_string(b, obj_offset(kref), &k) &&
+            decode_bplist_string(b, obj_offset(vref), &v)) {
+            kv_out->emplace_back(std::move(k), std::move(v));
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 std::string macho_arch_name(MachoArch arch) {
@@ -180,21 +286,41 @@ MacosAppInfo parse_macos_info_plist(std::string_view xml_content,
                                     const std::string& bundle_path) {
     MacosAppInfo info;
     info.bundle_path = bundle_path;
-    if (xml_content.find("<plist") == std::string_view::npos &&
-        xml_content.find("<dict>") == std::string_view::npos) {
-        info.error = "Info.plist is not an XML property list";
+
+    if (xml_content.size() >= 8 && xml_content.substr(0, 8) == "bplist00") {
+        std::vector<std::pair<std::string, std::string>> kv;
+        if (!parse_bplist_top_dict(xml_content, &kv)) {
+            info.error = "Info.plist is a malformed binary property list (bplist00)";
+            return info;
+        }
+        auto get_k = [&](std::string_view key) -> std::string {
+            for (const auto& [k, v] : kv) {
+                if (k == key) return v;
+            }
+            return {};
+        };
+        info.name = get_k("CFBundleDisplayName");
+        if (info.name.empty()) info.name = get_k("CFBundleName");
+        info.bundle_id = get_k("CFBundleIdentifier");
+        info.version = get_k("CFBundleShortVersionString");
+        if (info.version.empty()) info.version = get_k("CFBundleVersion");
+        info.executable_name = get_k("CFBundleExecutable");
+    } else if (xml_content.find("<plist") != std::string_view::npos ||
+               xml_content.find("<dict>") != std::string_view::npos) {
+        info.name = extract_plist_string(xml_content, "CFBundleDisplayName");
+        if (info.name.empty()) {
+            info.name = extract_plist_string(xml_content, "CFBundleName");
+        }
+        info.bundle_id = extract_plist_string(xml_content, "CFBundleIdentifier");
+        info.version = extract_plist_string(xml_content, "CFBundleShortVersionString");
+        if (info.version.empty()) {
+            info.version = extract_plist_string(xml_content, "CFBundleVersion");
+        }
+        info.executable_name = extract_plist_string(xml_content, "CFBundleExecutable");
+    } else {
+        info.error = "Info.plist is neither an XML nor a binary (bplist00) property list";
         return info;
     }
-    info.name = extract_plist_string(xml_content, "CFBundleDisplayName");
-    if (info.name.empty()) {
-        info.name = extract_plist_string(xml_content, "CFBundleName");
-    }
-    info.bundle_id = extract_plist_string(xml_content, "CFBundleIdentifier");
-    info.version = extract_plist_string(xml_content, "CFBundleShortVersionString");
-    if (info.version.empty()) {
-        info.version = extract_plist_string(xml_content, "CFBundleVersion");
-    }
-    info.executable_name = extract_plist_string(xml_content, "CFBundleExecutable");
 
     if (info.name.empty() && !bundle_path.empty()) {
         info.name = fs::path(bundle_path).stem().string();

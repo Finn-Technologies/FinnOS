@@ -15,7 +15,7 @@ Item {
     Image {
         anchors.fill: parent
         source: root.name.length > 0
-            ? FinnTheme.iconUrl(root.name, root.monochrome ? root.tint : "transparent", Math.max(16, Math.round(root.size * 2)))
+            ? FinnTheme.iconUrl(root.name, root.monochrome ? root.tint : "#00000000", Math.max(16, Math.round(root.size * 2)))
             : ""
         sourceSize.width: Math.max(16, Math.round(root.size * 2))
         sourceSize.height: Math.max(16, Math.round(root.size * 2))

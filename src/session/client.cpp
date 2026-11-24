@@ -228,6 +228,10 @@ bool SessionClient::open_target(std::string_view target, std::string* error) {
     return request_line("APP.OPEN " + std::string(target), nullptr, error);
 }
 
+bool SessionClient::uninstall(std::string_view id, std::string* error) {
+    return request_line("APP.UNINSTALL " + std::string(id), nullptr, error);
+}
+
 bool SessionClient::run_windows(std::string_view exe_path, std::string_view prefix,
                                  std::string* error) {
     return request_line("WIN.RUN " + std::string(exe_path) + "|" + std::string(prefix),

@@ -14,6 +14,7 @@ qt_add_executable(finn-files
     main.cpp
     files_controller.hpp
     files_controller.cpp
+    ../../src/session/client.cpp
 )
 
 set_source_files_properties(ui/FilesApp.qml PROPERTIES QT_RESOURCE_ALIAS FilesApp.qml)

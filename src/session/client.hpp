@@ -54,6 +54,7 @@ public:
     bool launch_with_arg(std::string_view id, std::string_view arg,
                          std::string* error);
     bool open_target(std::string_view target, std::string* error);
+    bool uninstall(std::string_view id, std::string* error);
     bool run_windows(std::string_view exe_path, std::string_view prefix,
                      std::string* error);
     bool compat_status(CompatStatus* out, std::string* error);

@@ -35,6 +35,7 @@ class FinnThemeBridge final : public QObject {
     Q_PROPERTY(double scale READ scale NOTIFY changed)
     Q_PROPERTY(QString fontFamily READ fontFamily CONSTANT)
     Q_PROPERTY(QString monoFontFamily READ monoFontFamily CONSTANT)
+    Q_PROPERTY(QString fontMono READ monoFontFamily CONSTANT)
     Q_PROPERTY(QString formFactorSetting READ formFactorSetting WRITE setFormFactorSetting NOTIFY changed)
     Q_PROPERTY(QString avatarColor READ avatarColor WRITE setAvatarColor NOTIFY changed)
     Q_PROPERTY(QUrl wallpaperUrl READ wallpaperUrl NOTIFY changed)
@@ -43,6 +44,7 @@ class FinnThemeBridge final : public QObject {
     // Core palette tokens from ui/_tokens.fui
     Q_PROPERTY(QColor bone READ bone NOTIFY changed)
     Q_PROPERTY(QColor tile READ tile NOTIFY changed)
+    Q_PROPERTY(QColor surface READ tile NOTIFY changed)
     Q_PROPERTY(QColor surfaceCanvas READ surfaceCanvas NOTIFY changed)
     Q_PROPERTY(QColor surfaceInput READ surfaceInput NOTIFY changed)
     Q_PROPERTY(QColor surfaceHover READ surfaceHover NOTIFY changed)

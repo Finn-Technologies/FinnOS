@@ -6,6 +6,7 @@
 #include "compat/desktop_entry.hpp"
 #include "compat/macos_runner.hpp"
 #include "compat/ohos_runner.hpp"
+#include "compat/pe_icon.hpp"
 #include "compat/windows_registry.hpp"
 #include "compat/wine_runner.hpp"
 
@@ -362,6 +363,11 @@ void AppRegistry::merge_windows_entries(const std::string& windows_conf_path) {
         app.id = w.id;
         app.name = w.name;
         app.icon = w.icon.empty() ? "windows.svg" : w.icon;
+        if (app.icon == "windows.svg") {
+            const std::string extracted =
+                compat::extract_and_cache_pe_icon(w.exe_path, slugify(w.id));
+            if (!extracted.empty()) app.icon = extracted;
+        }
         app.command = w.exe_path;
         app.desktop_file = w.prefix;  // Stores optional prefix cleanly
         app.note = "Windows application via finn-win";
@@ -435,10 +441,26 @@ void AppRegistry::merge_windows_entries(const std::string& windows_conf_path) {
             const std::string label = u.display_name.empty() ? u.key : u.display_name;
             const std::string id = "win:" + slugify(label);
             if (find(id) != nullptr) continue;
+            // Deduplicate against winemenubuilder .desktop entries that already
+            // registered the same Windows app name or executable.
+            bool dup = false;
+            const std::string label_slug = slugify(label);
+            for (const auto& existing : apps_) {
+                if (existing.command == exe ||
+                    (existing.source == AppSource::kDesktop &&
+                     existing.desktop_file.find("/wine/") != std::string::npos &&
+                     slugify(existing.name) == label_slug)) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) continue;
             App app;
             app.id = id;
             app.name = label;
-            app.icon = "windows.svg";
+            const std::string extracted =
+                compat::extract_and_cache_pe_icon(exe, label_slug);
+            app.icon = extracted.empty() ? "windows.svg" : extracted;
             app.command = exe;
             app.desktop_file = prefix;
             app.note = u.publisher.empty()

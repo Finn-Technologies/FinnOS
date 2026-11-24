@@ -1,6 +1,7 @@
 #include "shell/full_oobe_flow.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -60,15 +61,65 @@ std::string_view tri_name(TriState state) {
 
 }  // namespace
 
+bool is_valid_posix_username(std::string_view username) noexcept {
+    if (username.empty() || username.size() > 32) return false;
+    const unsigned char c0 = static_cast<unsigned char>(username[0]);
+    if (!((c0 >= 'a' && c0 <= 'z') || c0 == '_')) return false;
+    for (std::size_t i = 1; i < username.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(username[i]);
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                        c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    if (username == "root") return false;
+    return true;
+}
+
+bool is_valid_rfc1123_hostname(std::string_view hostname) noexcept {
+    if (hostname.empty() || hostname.size() > 63) return false;
+    const unsigned char first = static_cast<unsigned char>(hostname.front());
+    const unsigned char last = static_cast<unsigned char>(hostname.back());
+    auto is_alnum_lower = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    };
+    if (!is_alnum_lower(first) || !is_alnum_lower(last)) return false;
+    for (char ch : hostname) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (!is_alnum_lower(c) && c != '-') return false;
+    }
+    return true;
+}
+
+std::string suggest_hostname_from_name(std::string_view full_name) {
+    std::string slug;
+    for (char ch : trimmed(full_name)) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c)) {
+            slug.push_back(static_cast<char>(std::tolower(c)));
+        } else if ((c == ' ' || c == '-' || c == '_') && !slug.empty() && slug.back() != '-') {
+            slug.push_back('-');
+        }
+        if (slug.size() >= 48) break;
+    }
+    while (!slug.empty() && slug.back() == '-') slug.pop_back();
+    if (slug.empty()) return "finnos";
+    std::string out = slug + "-finnos";
+    if (out.size() > 63) out.resize(63);
+    while (!out.empty() && out.back() == '-') out.pop_back();
+    return is_valid_rfc1123_hostname(out) ? out : "finnos";
+}
+
 std::string_view step_id(Step step) noexcept {
     switch (step) {
         case Step::Welcome: return "welcome";
+        case Step::Language: return "language";
+        case Step::RegionTimezone: return "region_timezone";
+        case Step::Keyboard: return "keyboard";
         case Step::Connectivity: return "connectivity";
         case Step::Account: return "account";
-        case Step::Privacy: return "privacy";
-        case Step::RegionLocale: return "region_locale";
-        case Step::Accessibility: return "accessibility";
         case Step::Theme: return "theme";
+        case Step::Accessibility: return "accessibility";
+        case Step::Privacy: return "privacy";
         case Step::Finish: return "finish";
     }
     return "invalid";
@@ -77,12 +128,14 @@ std::string_view step_id(Step step) noexcept {
 std::string_view step_title(Step step) noexcept {
     switch (step) {
         case Step::Welcome: return "hi.";
+        case Step::Language: return "How do we talk?";
+        case Step::RegionTimezone: return "Where in the world?";
+        case Step::Keyboard: return "How do you type?";
         case Step::Connectivity: return "Where do we connect?";
         case Step::Account: return "What should we call you?";
-        case Step::Privacy: return "How much should we remember?";
-        case Step::RegionLocale: return "A big world. But one country. Where?";
-        case Step::Accessibility: return "Need a hand?";
         case Step::Theme: return "Dark or light? Your choice.";
+        case Step::Accessibility: return "Need a hand?";
+        case Step::Privacy: return "How much should we remember?";
         case Step::Finish: return "You're all set";
     }
     return "Unknown step";
@@ -100,9 +153,47 @@ void FullOobeFlow::note(std::string entry) {
 StepValidation FullOobeFlow::validate(Step step) const {
     switch (step) {
         case Step::Welcome:
-            // Informational: the ribbon intro runs here, there is nothing to
-            // validate and no capability to claim.
             return pass("welcome is informational");
+
+        case Step::Language: {
+            const LocaleCatalog& catalog = data_.catalog;
+            if (catalog.locales.empty()) {
+                return fail("no language catalogue was supplied", "locale_catalogue");
+            }
+            if (!has_text(data_.region.locale) || !contains(catalog.locales, data_.region.locale)) {
+                return fail("select a language from the catalogue");
+            }
+            return pass("language selected from catalogue");
+        }
+
+        case Step::RegionTimezone: {
+            const LocaleCatalog& catalog = data_.catalog;
+            const RegionState& region = data_.region;
+            if (catalog.regions.empty()) {
+                return fail("no region catalogue was supplied", "locale_catalogue");
+            }
+            if (!has_text(region.region) || !contains(catalog.regions, region.region)) {
+                return fail("select a country or region");
+            }
+            if (!catalog.timezones.empty()) {
+                if (!has_text(region.timezone) || !contains(catalog.timezones, region.timezone)) {
+                    return fail("select a valid time zone");
+                }
+            }
+            return pass("region and time zone selected");
+        }
+
+        case Step::Keyboard: {
+            const LocaleCatalog& catalog = data_.catalog;
+            const KeyboardState& kb = data_.keyboard;
+            if (!has_text(kb.layout)) {
+                return fail("select a keyboard layout");
+            }
+            if (!catalog.keyboard_layouts.empty() && !contains(catalog.keyboard_layouts, kb.layout)) {
+                return fail("keyboard layout is not present in the supplied catalogue");
+            }
+            return pass("keyboard layout selected");
+        }
 
         case Step::Connectivity: {
             const ConnectivityState& net = data_.connectivity;
@@ -139,7 +230,16 @@ StepValidation FullOobeFlow::validate(Step step) const {
         case Step::Account: {
             const AccountState& account = data_.account;
             if (!has_text(account.display_name)) {
-                return fail("a profile name is required to continue");
+                return fail("enter your full name to continue");
+            }
+            if (!has_text(account.username) || !is_valid_posix_username(account.username)) {
+                return fail("account name must start with a lowercase letter and use [a-z0-9_-]");
+            }
+            if (!has_text(account.hostname) || !is_valid_rfc1123_hostname(account.hostname)) {
+                return fail("computer hostname must use lowercase letters, digits, and hyphens");
+            }
+            if (!account.passwords_match) {
+                return fail("passwords do not match");
             }
             switch (account.outcome) {
                 case AccountOutcome::Created:
@@ -149,7 +249,7 @@ StepValidation FullOobeFlow::validate(Step step) const {
                     }
                     return pass("real account service reported success");
                 case AccountOutcome::LocalOnly:
-                    return pass("local profile chosen; no account was claimed");
+                    return pass("account details validated; provisioned at Finish");
                 case AccountOutcome::Unavailable:
                     return fail("account service is absent; choose a local profile to continue",
                                 "account_service");
@@ -163,34 +263,13 @@ StepValidation FullOobeFlow::validate(Step step) const {
             }
         }
 
-        case Step::Privacy:
-            if (!data_.privacy.choice_made) {
-                return fail("make an explicit privacy choice (leaving everything off is valid)");
+        case Step::Theme:
+            if (data_.theme.choice == ThemeChoice::Unset) {
+                return fail("choose light or dark appearance");
             }
-            return pass("privacy choice acknowledged");
-
-        case Step::RegionLocale: {
-            const LocaleCatalog& catalog = data_.catalog;
-            const RegionState& region = data_.region;
-            if (catalog.locales.empty() || catalog.regions.empty()) {
-                return fail("no locale and region catalogue was supplied", "locale_catalogue");
-            }
-            if (!has_text(region.locale) || !contains(catalog.locales, region.locale)) {
-                return fail("locale is not present in the supplied catalogue");
-            }
-            if (!has_text(region.region) || !contains(catalog.regions, region.region)) {
-                return fail("region is not present in the supplied catalogue");
-            }
-            if (has_text(region.timezone) && !catalog.timezones.empty() &&
-                !contains(catalog.timezones, region.timezone)) {
-                return fail("timezone is not present in the supplied catalogue");
-            }
-            return pass("locale and region are from the real catalogue");
-        }
+            return pass("appearance choice recorded");
 
         case Step::Accessibility:
-            // Unset means "keep the system default".  It is a complete answer,
-            // so this step can never block setup.
             if (data_.accessibility.screen_reader == TriState::On &&
                 caps_.accessibility_bus.state != Availability::Available) {
                 return fail("a screen reader cannot be enabled without an accessibility bus",
@@ -198,11 +277,11 @@ StepValidation FullOobeFlow::validate(Step step) const {
             }
             return pass("accessibility choices recorded (unset keeps system defaults)");
 
-        case Step::Theme:
-            if (data_.theme.choice == ThemeChoice::Unset) {
-                return fail("choose light or dark appearance");
+        case Step::Privacy:
+            if (!data_.privacy.choice_made) {
+                return fail("make an explicit privacy choice (leaving everything off is valid)");
             }
-            return pass("appearance choice recorded");
+            return pass("privacy choice acknowledged");
 
         case Step::Finish:
         default:
@@ -272,8 +351,6 @@ bool FullOobeFlow::goTo(Step target) {
 void FullOobeFlow::setCapabilities(CapabilitySnapshot caps) {
     caps_ = std::move(caps);
 
-    // A previously recorded success is void when its capability is withdrawn.
-    // Keeping it would be a fake capability surviving a hardware change.
     if (data_.connectivity.attempt == NetworkAttempt::Connected &&
         caps_.network_manager.state != Availability::Available) {
         data_.connectivity = ConnectivityState{};
@@ -292,6 +369,62 @@ void FullOobeFlow::setCapabilities(CapabilitySnapshot caps) {
         note("screen reader reset: accessibility_bus is no longer available");
     }
     last_error_.clear();
+}
+
+bool FullOobeFlow::setLanguage(const std::string& locale) {
+    const LocaleCatalog& catalog = data_.catalog;
+    if (!has_text(locale) || (!catalog.locales.empty() && !contains(catalog.locales, locale))) {
+        last_error_ = "locale is not in the supplied catalogue";
+        return false;
+    }
+    data_.region.locale = locale;
+    last_error_.clear();
+    note("language: " + locale);
+    return true;
+}
+
+bool FullOobeFlow::setRegion(RegionState state) {
+    const LocaleCatalog& catalog = data_.catalog;
+    if (has_text(state.locale) && !catalog.locales.empty() &&
+        !contains(catalog.locales, state.locale)) {
+        last_error_ = "locale is not in the supplied catalogue";
+        return false;
+    }
+    if (!catalog.regions.empty() && !contains(catalog.regions, state.region)) {
+        last_error_ = "region is not in the supplied catalogue";
+        return false;
+    }
+    if (has_text(state.timezone) && !catalog.timezones.empty() &&
+        !contains(catalog.timezones, state.timezone)) {
+        last_error_ = "timezone is not in the supplied catalogue";
+        return false;
+    }
+    if (!has_text(state.locale)) state.locale = data_.region.locale;
+    data_.region = std::move(state);
+    last_error_.clear();
+    note("region: " + data_.region.locale + "/" + data_.region.region +
+         (data_.region.timezone.empty() ? std::string()
+                                        : " (" + data_.region.timezone + ")"));
+    return true;
+}
+
+bool FullOobeFlow::setKeyboard(KeyboardState state) {
+    const LocaleCatalog& catalog = data_.catalog;
+    if (!has_text(state.layout)) {
+        last_error_ = "keyboard layout is required";
+        return false;
+    }
+    if (!catalog.keyboard_layouts.empty() &&
+        !contains(catalog.keyboard_layouts, state.layout)) {
+        last_error_ = "keyboard layout is not in the supplied catalogue";
+        return false;
+    }
+    data_.keyboard = std::move(state);
+    last_error_.clear();
+    note("keyboard: " + data_.keyboard.layout +
+         (data_.keyboard.variant.empty() ? std::string()
+                                         : "(" + data_.keyboard.variant + ")"));
+    return true;
 }
 
 bool FullOobeFlow::setConnectivity(ConnectivityState state) {
@@ -326,6 +459,24 @@ bool FullOobeFlow::setAccount(AccountState state) {
         last_error_ = "a profile name is required";
         return false;
     }
+    if (!has_text(state.username)) {
+        state.username = "finn";
+    }
+    if (!is_valid_posix_username(state.username)) {
+        last_error_ = "account name must match [a-z_][a-z0-9_-]*";
+        return false;
+    }
+    if (!has_text(state.hostname)) {
+        state.hostname = "finnos";
+    }
+    if (!is_valid_rfc1123_hostname(state.hostname)) {
+        last_error_ = "invalid RFC-1123 computer hostname";
+        return false;
+    }
+    if (!state.passwords_match) {
+        last_error_ = "passwords do not match";
+        return false;
+    }
     switch (state.outcome) {
         case AccountOutcome::Created:
             if (caps_.account_service.state != Availability::Available) {
@@ -354,7 +505,8 @@ bool FullOobeFlow::setAccount(AccountState state) {
     }
     data_.account = std::move(state);
     last_error_.clear();
-    note(std::string("account: ") + std::string(account_name(data_.account.outcome)));
+    note(std::string("account: ") + std::string(account_name(data_.account.outcome)) +
+         " user=" + data_.account.username + " host=" + data_.account.hostname);
     return true;
 }
 
@@ -366,29 +518,6 @@ bool FullOobeFlow::setPrivacy(PrivacyState state) {
          " location=" + (state.location ? "on" : "off") +
          " diagnostics=" + (state.diagnostics ? "on" : "off") +
          " crash_reports=" + (state.crash_reports ? "on" : "off"));
-    return true;
-}
-
-bool FullOobeFlow::setRegion(RegionState state) {
-    const LocaleCatalog& catalog = data_.catalog;
-    if (!catalog.locales.empty() && !contains(catalog.locales, state.locale)) {
-        last_error_ = "locale is not in the supplied catalogue";
-        return false;
-    }
-    if (!catalog.regions.empty() && !contains(catalog.regions, state.region)) {
-        last_error_ = "region is not in the supplied catalogue";
-        return false;
-    }
-    if (has_text(state.timezone) && !catalog.timezones.empty() &&
-        !contains(catalog.timezones, state.timezone)) {
-        last_error_ = "timezone is not in the supplied catalogue";
-        return false;
-    }
-    data_.region = std::move(state);
-    last_error_.clear();
-    note("region: " + data_.region.locale + "/" + data_.region.region +
-         (data_.region.timezone.empty() ? std::string()
-                                        : " (" + data_.region.timezone + ")"));
     return true;
 }
 
@@ -423,6 +552,13 @@ void FullOobeFlow::finalize() {
     report_ = CompletionReport{};
     report_.complete = true;
 
+    report_.configured.push_back("locale: " + data_.region.locale +
+                                 " region: " + data_.region.region +
+                                 (data_.region.timezone.empty() ? std::string()
+                                                                : " tz: " + data_.region.timezone));
+    report_.configured.push_back("keyboard: " + data_.keyboard.layout +
+                                 (data_.keyboard.variant.empty() ? std::string()
+                                                                 : "(" + data_.keyboard.variant + ")"));
     const ConnectivityState& net = data_.connectivity;
     report_.configured.push_back(
         net.attempt == NetworkAttempt::Connected
@@ -431,21 +567,18 @@ void FullOobeFlow::finalize() {
     report_.configured.push_back(
         data_.account.outcome == AccountOutcome::Created
             ? "account: created by the real service"
-            : "account: local profile only");
-    report_.configured.push_back("profile name: set");
-    report_.configured.push_back("privacy: choice acknowledged");
-    report_.configured.push_back("locale: " + data_.region.locale +
-                                 " region: " + data_.region.region);
+            : "account: validated for first-boot provisioning");
+    report_.configured.push_back("username: " + data_.account.username +
+                                 " hostname: " + data_.account.hostname);
+    report_.configured.push_back(
+        std::string("appearance: ") +
+        (data_.theme.choice == ThemeChoice::Light ? "light" : "dark"));
     report_.configured.push_back("accessibility: " +
                                  std::string(tri_name(data_.accessibility.reduced_motion)) +
                                  "/" + std::string(tri_name(data_.accessibility.high_contrast)) +
                                  "/" + std::string(tri_name(data_.accessibility.large_text)));
-    report_.configured.push_back(
-        std::string("appearance: ") +
-        (data_.theme.choice == ThemeChoice::Light ? "light" : "dark"));
+    report_.configured.push_back("privacy: choice acknowledged");
 
-    // Every unmeasured or absent capability is named, with the reason it was
-    // reported.  A report never silently upgrades Unknown to Available.
     struct CapEntry {
         const char* name;
         const Capability& value;
@@ -467,8 +600,9 @@ void FullOobeFlow::finalize() {
     report_.summary =
         "Setup finished with " + std::to_string(report_.configured.size()) +
         " recorded choices and " + std::to_string(report_.unavailable.size()) +
-        " unconfirmed or absent capabilities; the completion marker is written "
-        "only by a real settings sink at " + std::string(report_.marker_path);
+        " unconfirmed or absent capabilities; completion markers are written "
+        "only after real provisioning at " + std::string(report_.system_marker_path) +
+        " and " + std::string(report_.marker_path);
     complete_ = true;
     note("finish: setup report generated");
 }

@@ -153,9 +153,14 @@ inline FinnTokens tokens_from_settings(const finn::sys::SettingsData& s) {
     }
 
     if (s.high_contrast) {
-        t.hair = s.dark ? QColor(255, 255, 255, 220) : QColor(0, 0, 0, 220);
-        t.dim = s.dark ? QColor(235, 235, 235) : QColor(20, 20, 20);
-        t.mute = s.dark ? QColor(200, 200, 200) : QColor(50, 50, 50);
+        t.bone = s.dark ? QColor(0, 0, 0) : QColor(255, 255, 255);
+        t.ink = s.dark ? QColor(255, 255, 255) : QColor(0, 0, 0);
+        t.tile = s.dark ? QColor(24, 24, 24) : QColor(242, 242, 242);
+        t.surface_input = s.dark ? QColor(18, 18, 18) : QColor(255, 255, 255);
+        t.track = s.dark ? QColor(110, 110, 110) : QColor(90, 90, 90);
+        t.hair = s.dark ? QColor(255, 255, 255, 255) : QColor(0, 0, 0, 255);
+        t.dim = s.dark ? QColor(240, 240, 240) : QColor(15, 15, 15);
+        t.mute = s.dark ? QColor(210, 210, 210) : QColor(45, 45, 45);
     }
     return t;
 }

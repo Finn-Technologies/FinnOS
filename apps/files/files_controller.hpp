@@ -75,6 +75,8 @@ public:
     Q_INVOKABLE void goUp();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void activateIndex(int idx);
+    Q_INVOKABLE void showPackageContents(int idx);
+    Q_INVOKABLE bool isBundlePath(const QString& path) const;
     Q_INVOKABLE void createFolder(const QString& name);
     Q_INVOKABLE void renameSelected(const QString& newName);
     Q_INVOKABLE void copySelected();

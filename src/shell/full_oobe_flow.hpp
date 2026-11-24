@@ -21,24 +21,37 @@
 
 namespace finn::shell::oobe {
 
-// The eight steps of a complete setup.  The order is the product contract:
-// connectivity and account precede the choices that can be personalised by
-// them, and Finish is terminal.
+// The ten steps of first-boot setup, ordered to match the UI progression:
+// language, region/timezone, and keyboard come first so the user can type
+// Wi-Fi passphrases, account credentials, and hostname in their own language
+// and layout; Finish is terminal.
 enum class Step {
     Welcome = 0,
+    Language,
+    RegionTimezone,
+    Keyboard,
     Connectivity,
     Account,
-    Privacy,
-    RegionLocale,
-    Accessibility,
     Theme,
+    Accessibility,
+    Privacy,
     Finish,
+    // Compatibility alias for callers naming the combined region/locale step.
+    RegionLocale = RegionTimezone,
 };
 
-inline constexpr std::size_t kStepCount = 8;
+inline constexpr std::size_t kStepCount = 10;
 inline constexpr std::array<Step, kStepCount> kStepOrder{{
-    Step::Welcome,       Step::Connectivity, Step::Account, Step::Privacy,
-    Step::RegionLocale,  Step::Accessibility, Step::Theme,  Step::Finish,
+    Step::Welcome,
+    Step::Language,
+    Step::RegionTimezone,
+    Step::Keyboard,
+    Step::Connectivity,
+    Step::Account,
+    Step::Theme,
+    Step::Accessibility,
+    Step::Privacy,
+    Step::Finish,
 }};
 
 constexpr bool valid_step(Step step) noexcept {
@@ -50,6 +63,11 @@ constexpr std::size_t index_of(Step step) noexcept {
 // Stable machine ids (tests and the audit trail never depend on translations).
 std::string_view step_id(Step step) noexcept;
 std::string_view step_title(Step step) noexcept;
+
+// Validation helpers shared by the model, OOBE UI, and unit tests.
+bool is_valid_posix_username(std::string_view username) noexcept;
+bool is_valid_rfc1123_hostname(std::string_view hostname) noexcept;
+std::string suggest_hostname_from_name(std::string_view full_name);
 
 // A capability is a measurement, never a default.  Unknown means "not
 // probed"; it is not a quiet yes and never unlocks a success state.
@@ -75,14 +93,11 @@ struct CapabilitySnapshot {
     Capability network_manager;    // is there a real connector (NetworkManager)?
     Capability wifi_hardware;      // is there a Wi-Fi device at all?
     Capability wired_link;         // is there a wired link?
-    Capability account_service;    // is there a real account/local-signup service?
+    Capability account_service;    // is there a real account/first-boot helper?
     Capability settings_write;     // can the chosen settings be persisted?
     Capability accessibility_bus;  // is an AT-SPI/screen-reader bus present?
 };
 
-// Connectivity starts at NotAttempted.  Only a caller holding a real connect
-// result may write Connected, and setConnectivity() refuses to record it when
-// no network manager capability was measured as available.
 enum class NetworkAttempt {
     NotAttempted,
     Scanning,
@@ -112,6 +127,9 @@ enum class AccountOutcome {
 struct AccountState {
     AccountOutcome outcome = AccountOutcome::NotAttempted;
     std::string display_name;
+    std::string username;
+    std::string hostname = "finnos";
+    bool passwords_match = true;
     std::string detail = "no account request has been made";
 };
 
@@ -124,22 +142,26 @@ struct PrivacyState {
     bool choice_made = false;
 };
 
-// Catalogues are supplied by the host from real locale/region data.  With no
-// catalogue the step cannot validate: invented values are not accepted.
+// Catalogues are supplied by the host from real locale/region/keyboard data.
+// With no catalogue the step cannot validate: invented values are not accepted.
 struct LocaleCatalog {
     std::vector<std::string> locales;
     std::vector<std::string> regions;
     std::vector<std::string> timezones;
+    std::vector<std::string> keyboard_layouts;
 };
 
 struct RegionState {
     std::string locale;
     std::string region;
-    std::string timezone;  // empty is allowed and means "not selected"
+    std::string timezone;
 };
 
-// Unset means "keep the system default" — not "off".  This lets a person
-// finish setup without claiming an accessibility preference they did not make.
+struct KeyboardState {
+    std::string layout = "us";
+    std::string variant;
+};
+
 enum class TriState { Unset, On, Off };
 
 struct AccessibilityState {
@@ -149,8 +171,6 @@ struct AccessibilityState {
     TriState screen_reader = TriState::Unset;
 };
 
-// v1 has no clock-driven appearance service.  "Auto" is not offered because
-// it would have to guess the user's intent from a time we do not own.
 enum class ThemeChoice { Unset, Light, Dark };
 
 struct ThemeState {
@@ -163,6 +183,7 @@ struct OobeData {
     PrivacyState privacy;
     LocaleCatalog catalog;
     RegionState region;
+    KeyboardState keyboard;
     AccessibilityState accessibility;
     ThemeState theme;
 };
@@ -170,7 +191,7 @@ struct OobeData {
 struct StepValidation {
     bool can_advance = false;
     std::string reason;
-    std::string capability;  // named missing capability, empty when not capability-bound
+    std::string capability;
 };
 
 struct CompletionReport {
@@ -178,9 +199,8 @@ struct CompletionReport {
     std::vector<std::string> configured;
     std::vector<std::string> unavailable;
     std::string summary;
-    // The marker is a shared fact; writing it belongs to a real settings sink,
-    // not to this model.
     const char* marker_path = finn::kOobeCompleteRel;
+    const char* system_marker_path = finn::kSystemOobeCompletePath;
 };
 
 class FullOobeFlow final {
@@ -198,12 +218,8 @@ public:
     StepValidation validation() const { return validate(current_); }
     StepValidation validate(Step step) const;
 
-    // advance() validates the *current* step before moving.  finish is
-    // terminal; a report is only produced by arriving there through advance().
     bool advance();
     bool back();
-    // Only visited steps may be revisited; forward motion always goes through
-    // advance() so no step can be skipped by a jump.
     bool goTo(Step target);
 
     // Inputs --------------------------------------------------------------
@@ -211,12 +227,12 @@ public:
     const CapabilitySnapshot& capabilities() const noexcept { return caps_; }
     void setCatalog(LocaleCatalog catalog) { data_.catalog = std::move(catalog); }
 
-    // Each setter either records a real measurement or refuses it.  A false
-    // return leaves the state untouched and fills last_error().
+    bool setLanguage(const std::string& locale);
+    bool setRegion(RegionState state);
+    bool setKeyboard(KeyboardState state);
     bool setConnectivity(ConnectivityState state);
     bool setAccount(AccountState state);
     bool setPrivacy(PrivacyState state);
-    bool setRegion(RegionState state);
     bool setAccessibility(AccessibilityState state);
     bool setTheme(ThemeState state);
 

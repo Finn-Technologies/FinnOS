@@ -151,10 +151,16 @@ std::string extract_apk_icon(const ZipReader& zip, const ApkInfo& apk,
         const fs::path p(e.name);
         std::string stem = p.stem().string();
         if (stem.empty()) continue;
-        bool match = (stem == key);
-        if (!match && key == "ic_launcher" && stem.rfind("ic_launcher", 0) == 0) match = true;
+        bool match = (stem == key) || (stem == key + "_foreground") ||
+                     (stem == key + "_round");
+        if (!match && (key == "ic_launcher" || stem.rfind("ic_launcher", 0) == 0)) {
+            if (stem.rfind("ic_launcher", 0) == 0) match = true;
+        }
         if (!match) continue;
         int rank = starts_with(e.name, "res/mipmap") ? 10 : 0;
+        if (stem == key && !ends_with_ci(e.name, ".xml")) rank += 8;
+        else if (stem == key + "_foreground") rank += 6;
+        else if (stem == key + "_round") rank += 5;
         rank += density_rank(e.name);
         candidates.push_back({e.name, rank});
     }
@@ -282,6 +288,59 @@ AndroidInstallResult install_android_package(const std::string& path,
         return res;
     }
 
+    // Handle split-APK container bundles (.xapk / .apkm / .apks) transparently
+    if (ends_with_ci(path, ".xapk") || ends_with_ci(path, ".apkm") ||
+        ends_with_ci(path, ".apks")) {
+        ZipReader bundle_zip;
+        std::string zerr;
+        if (!bundle_zip.open_file(path, &zerr)) {
+            res.error = "failed to open split APK bundle: " + zerr;
+            return res;
+        }
+        const fs::path stage = fs::temp_directory_path() /
+            ("finn-android-bundle-" + std::to_string(::getpid()));
+        std::error_code ec;
+        fs::remove_all(stage, ec);
+        fs::create_directories(stage, ec);
+        if (!bundle_zip.extract_all(stage.string(), nullptr, &zerr)) {
+            fs::remove_all(stage, ec);
+            res.error = "failed to extract split APK bundle: " + zerr;
+            return res;
+        }
+        std::vector<std::string> apks;
+        std::vector<fs::path> obbs;
+        for (const auto& entry : fs::recursive_directory_iterator(stage, ec)) {
+            if (!entry.is_regular_file(ec)) continue;
+            const std::string p = entry.path().string();
+            if (ends_with_ci(p, ".apk")) apks.push_back(p);
+            else if (ends_with_ci(p, ".obb")) obbs.push_back(entry.path());
+        }
+        if (apks.empty()) {
+            fs::remove_all(stage, ec);
+            res.error = "split APK bundle contains no .apk payloads";
+            return res;
+        }
+        // Place base APK first (prefer base.apk or the APK containing classes.dex)
+        std::stable_sort(apks.begin(), apks.end(), [](const std::string& a, const std::string& b) {
+            const bool a_base = ends_with_ci(a, "base.apk");
+            const bool b_base = ends_with_ci(b, "base.apk");
+            if (a_base != b_base) return a_base;
+            return a < b;
+        });
+        res = install_android_splits(apks, android_root);
+        if (res.ok && !obbs.empty()) {
+            const fs::path obb_dir = fs::path(res.app.install_dir) / "obb";
+            fs::create_directories(obb_dir, ec);
+            for (const auto& obb : obbs) {
+                fs::copy_file(obb, obb_dir / obb.filename(),
+                              fs::copy_options::overwrite_existing, ec);
+                res.log.push_back("Installed OBB -> " + (obb_dir / obb.filename()).string());
+            }
+        }
+        fs::remove_all(stage, ec);
+        return res;
+    }
+
     const ApkInfo apk = inspect_apk(path);
     if (!apk.valid) {
         res.error = apk.error.empty() ? "not a valid APK" : apk.error;
@@ -371,6 +430,56 @@ AndroidInstallResult install_android_package(const std::string& path,
     }
     res.app = std::move(app);
     res.ok = true;
+    return res;
+}
+
+AndroidInstallResult install_android_splits(const std::vector<std::string>& apk_paths,
+                                            const std::string& android_root) {
+    AndroidInstallResult res;
+    if (apk_paths.empty()) {
+        res.error = "no APK files provided for split install";
+        return res;
+    }
+    std::size_t base_idx = 0;
+    for (std::size_t i = 0; i < apk_paths.size(); ++i) {
+        const ApkInfo info = inspect_apk(apk_paths[i]);
+        if (info.valid && (!info.manifest.main_activity().empty() || !info.dex_files.empty())) {
+            base_idx = i;
+            break;
+        }
+    }
+    res = install_android_package(apk_paths[base_idx], android_root);
+    if (!res.ok) return res;
+
+    std::error_code ec;
+    const fs::path splits_dir = fs::path(res.app.install_dir) / "splits";
+    for (std::size_t i = 0; i < apk_paths.size(); ++i) {
+        if (i == base_idx) continue;
+        fs::create_directories(splits_dir, ec);
+        const fs::path src(apk_paths[i]);
+        const fs::path dst = splits_dir / src.filename();
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        if (!ec) {
+            res.log.push_back("Installed split APK -> " + dst.string());
+            ZipReader szip;
+            if (szip.open_file(dst.string(), nullptr)) {
+                szip.extract_all(res.app.install_dir, nullptr, nullptr);
+                if (res.app.icon_path.empty()) {
+                    const ApkInfo base_info = inspect_apk(res.app.package_path);
+                    const std::string split_icon = extract_apk_icon(
+                        szip, base_info, default_android_icons_dir(android_root), &res.log);
+                    if (!split_icon.empty()) {
+                        res.app.icon_path = split_icon;
+                        auto all = discover_installed_android_apps(android_root);
+                        for (auto& a : all) {
+                            if (a.id == res.app.id) a.icon_path = split_icon;
+                        }
+                        write_registry(default_android_registry_path(android_root), all, nullptr);
+                    }
+                }
+            }
+        }
+    }
     return res;
 }
 

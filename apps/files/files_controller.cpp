@@ -1,6 +1,7 @@
 // C++20 File Manager backend implementation for finn-files.
 
 #include "files_controller.hpp"
+#include "session/client.hpp"
 
 #include <QClipboard>
 #include <QDateTime>
@@ -178,17 +179,89 @@ void FilesController::refresh() {
     loadDirectory(current_path_, false);
 }
 
-void FilesController::activateIndex(int idx) {
+bool FilesController::isBundlePath(const QString& path) const {
+    const QFileInfo fi(path);
+    if (!fi.isDir()) return false;
+    const QString lower = fi.fileName().toLower();
+    if (lower.endsWith(QStringLiteral(".app")) &&
+        QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/Contents/Info.plist"))) {
+        return true;
+    }
+    if (lower.endsWith(QStringLiteral(".finnapp")) &&
+        QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/manifest.conf"))) {
+        return true;
+    }
+    return false;
+}
+
+void FilesController::showPackageContents(int idx) {
     if (idx < 0 || idx >= entries_.size()) return;
     const QFileInfo& fi = entries_[idx];
     if (fi.isDir()) {
         loadDirectory(fi.absoluteFilePath(), true);
-    } else {
-        const bool ok = QDesktopServices::openUrl(QUrl::fromLocalFile(fi.absoluteFilePath()));
-        if (!ok) {
-            emit toastRequested(QStringLiteral("No handler registered for %1").arg(fi.fileName()),
-                                QStringLiteral("warning"));
+    }
+}
+
+void FilesController::activateIndex(int idx) {
+    if (idx < 0 || idx >= entries_.size()) return;
+    const QFileInfo& fi = entries_[idx];
+    const QString abs = fi.absoluteFilePath();
+    const QString lower = fi.fileName().toLower();
+
+    const bool is_bundle = isBundlePath(abs);
+    const bool is_package =
+        is_bundle ||
+        lower.endsWith(QStringLiteral(".finnapp")) ||
+        lower.endsWith(QStringLiteral(".flatpakref")) ||
+        lower.endsWith(QStringLiteral(".flatpak")) ||
+        lower.endsWith(QStringLiteral(".flatpakrepo")) ||
+        lower.endsWith(QStringLiteral(".appimage")) ||
+        lower.endsWith(QStringLiteral(".apk")) ||
+        lower.endsWith(QStringLiteral(".xapk")) ||
+        lower.endsWith(QStringLiteral(".apkm")) ||
+        lower.endsWith(QStringLiteral(".apks")) ||
+        lower.endsWith(QStringLiteral(".exe")) ||
+        lower.endsWith(QStringLiteral(".msi")) ||
+        lower.endsWith(QStringLiteral(".dmg")) ||
+        lower.endsWith(QStringLiteral(".pkg")) ||
+        lower.endsWith(QStringLiteral(".mpkg")) ||
+        lower.endsWith(QStringLiteral(".hap")) ||
+        lower.endsWith(QStringLiteral(".hsp")) ||
+        (!fi.isDir() && lower.endsWith(QStringLiteral(".app")));
+
+    if (fi.isDir() && !is_bundle) {
+        loadDirectory(abs, true);
+        return;
+    }
+
+    // Route packages, bundles, and regular files through finn-session first
+    // so cross-OS installers, Finn Store --install, and native apps open seamlessly.
+    finn::SessionClient client;
+    std::string err;
+    if (client.connect(&err)) {
+        if (client.open_target(abs.toStdString(), &err)) {
+            if (is_package) {
+                emit toastRequested(QStringLiteral("Opening %1 in Finn Store...").arg(fi.fileName()),
+                                    QStringLiteral("info"));
+            }
+            return;
         }
+    }
+
+    if (is_package) {
+        QString store_bin = QStandardPaths::findExecutable(QStringLiteral("finn-store"));
+        if (store_bin.isEmpty()) store_bin = QStringLiteral("/usr/local/bin/finn-store");
+        if (QProcess::startDetached(store_bin, {QStringLiteral("--install"), abs})) {
+            emit toastRequested(QStringLiteral("Installing %1...").arg(fi.fileName()),
+                                QStringLiteral("info"));
+            return;
+        }
+    }
+
+    const bool ok = QDesktopServices::openUrl(QUrl::fromLocalFile(abs));
+    if (!ok) {
+        emit toastRequested(QStringLiteral("No handler registered for %1").arg(fi.fileName()),
+                            QStringLiteral("warning"));
     }
 }
 

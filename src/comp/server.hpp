@@ -180,6 +180,8 @@ private:
     bool dark_theme_ = false;
     bool session_locked_ = false;
     int auto_lock_minutes_ = 5;
+    std::string kb_layout_ = "us";
+    std::string kb_variant_;
     std::uint64_t last_activity_msec_ = 0;
 
     QTimer frame_timer_;

@@ -252,17 +252,21 @@ class FinnRepoToolingTest(unittest.TestCase):
     def test_gui_installer_fixes_invocation_and_zoneinfo(self):
         cpp = self.read("apps", "installer", "main.cpp")
         self.assertIn("finn::kFinnInstallBin", cpp)
-        self.assertIn("ext4 + FAT32 ESP", cpp)
+        self.assertIn("plan_install", cpp)
         self.assertNotIn("btrfs + FAT32 ESP", cpp)
-        self.assertIn("/usr/share/zoneinfo", cpp)
-        self.assertIn('"--disk"', cpp)
-        self.assertIn('"--hostname"', cpp)
-        self.assertIn('"--timezone"', cpp)
-        self.assertIn('"--ab-slots"', cpp)
-        self.assertIn('"--yes"', cpp)
+        # Pillar A: user/hostname/timezone configuration belongs strictly to OOBE, never USB Recovery install.
+        self.assertNotIn('"--hostname"', cpp)
+        self.assertNotIn('"--timezone"', cpp)
         self.assertIn("readyReadStandardError", cpp)
         self.assertIn("QProcess::NormalExit", cpp)
-        self.assertIn("setInstallRunning", cpp)
+        self.assertIn("PageInstallProgress", cpp)
+        engine = self.read("src", "recovery", "recovery_engine.cpp")
+        self.assertIn('"--disk"', engine)
+        self.assertIn('"--ab-slots"', engine)
+        self.assertIn('"--yes"', engine)
+        self.assertIn('"dualboot-resize"', engine)
+        self.assertIn('"reinstall"', engine)
+        self.assertIn('"repair-boot"', engine)
 
 
 if __name__ == "__main__":

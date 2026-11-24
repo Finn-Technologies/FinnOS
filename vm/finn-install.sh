@@ -135,9 +135,14 @@ usage() {
     cat <<EOF
 usage: finn-install --disk <device> [options]
 
-  --disk <device>      the disk to erase and install onto, e.g. /dev/nvme0n1
-  --hostname <name>    target hostname (default: finnos)
-  --timezone <tz>      IANA timezone under /usr/share/zoneinfo (default: UTC)
+  --disk <device>      the target disk, e.g. /dev/nvme0n1
+  --mode <mode>        clean (default), dualboot-resize, partition, reinstall, repair-boot
+  --root-part <dev>    target/existing FinnOS root partition (partition/reinstall/repair-boot)
+  --esp-part <dev>     existing EFI System Partition to share without formatting
+  --resize-part <dev>  existing Windows/Linux partition to shrink (dualboot-resize)
+  --resize-mb <mib>    new size in MiB for --resize-part (dualboot-resize)
+  --hostname <name>    optional CLI override (default: finnos; configured in OOBE)
+  --timezone <tz>      optional CLI override (default: UTC; configured in OOBE)
   --ab-slots           partition for OTA A/B root slots (FINNOS_A, FINNOS_B, FINNOS_DATA)
   --yes                unattended: do not ask for the device path again
   -h, --help           this
@@ -145,6 +150,12 @@ usage: finn-install --disk <device> [options]
 There is no default disk, and finn-install never picks one.
 EOF
 }
+
+INSTALL_MODE="clean"
+ROOT_PART_ARG=""
+ESP_PART_ARG=""
+RESIZE_PART_ARG=""
+RESIZE_MB_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -156,6 +167,35 @@ while [ $# -gt 0 ]; do
         --disk=*)
             DISK_ARG="${1#*=}"
             shift
+            ;;
+        --mode)
+            [ $# -ge 2 ] || die "--mode needs a value"
+            INSTALL_MODE="$2"
+            shift 2
+            ;;
+        --mode=*)
+            INSTALL_MODE="${1#*=}"
+            shift
+            ;;
+        --root-part)
+            [ $# -ge 2 ] || die "--root-part needs a partition device"
+            ROOT_PART_ARG="$2"
+            shift 2
+            ;;
+        --esp-part)
+            [ $# -ge 2 ] || die "--esp-part needs a partition device"
+            ESP_PART_ARG="$2"
+            shift 2
+            ;;
+        --resize-part)
+            [ $# -ge 2 ] || die "--resize-part needs a partition device"
+            RESIZE_PART_ARG="$2"
+            shift 2
+            ;;
+        --resize-mb)
+            [ $# -ge 2 ] || die "--resize-mb needs a size in MiB"
+            RESIZE_MB_ARG="$2"
+            shift 2
             ;;
         --hostname)
             [ $# -ge 2 ] || die "--hostname needs a value"
@@ -502,6 +542,95 @@ else
     fi
 fi
 
+# Non-destructive dual-boot, reinstall, and bootloader repair modes.
+if [ "$INSTALL_MODE" = "repair-boot" ]; then
+    [ -b "$ROOT_PART_ARG" ] || die "--root-part is required for repair-boot"
+    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for repair-boot"
+    step "[2/4] MOUNT FOR BOOTLOADER REPAIR"
+    umount -R /mnt 2>/dev/null || true
+    mount "$ROOT_PART_ARG" /mnt || die "could not mount $ROOT_PART_ARG"
+    mkdir -p /mnt/boot
+    mount "$ESP_PART_ARG" /mnt/boot || die "could not mount $ESP_PART_ARG"
+    ROOTUUID="$(findmnt -no UUID /mnt || true)"
+    [ -n "$ROOTUUID" ] || die "root partition has no UUID"
+    step "[3/4] REPAIR BOOTLOADER"
+    arch-chroot /mnt /bin/bash -c "
+        set -euo pipefail
+        mkinitcpio -P 2>&1 | tail -5
+        bootctl --esp-path=/boot install 2>&1 | tail -5 || true
+        if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
+            install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
+            install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
+        elif [ -f /usr/share/finn/boot/finn-bootaa64.efi ]; then
+            install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/BOOT/BOOTAA64.EFI
+            install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/systemd/systemd-bootaa64.efi
+        fi
+        mkdir -p /boot/loader/entries
+        printf 'default finnos.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
+        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3\n' '$ROOTUUID' > /boot/loader/entries/finnos.conf
+    "
+    umount -R /mnt
+    step "[4/4] REPAIR COMPLETE"
+    echo "FINN_BOOT_REPAIR_COMPLETE"
+    exit 0
+fi
+
+if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
+    [ -b "$RESIZE_PART_ARG" ] || die "--resize-part is required for dualboot-resize"
+    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for dualboot-resize"
+    [ -n "$RESIZE_MB_ARG" ] || die "--resize-mb is required for dualboot-resize"
+    step "[2/8] DUAL-BOOT NON-DESTRUCTIVE RESIZE"
+    FS_KIND="$(blkid -s TYPE -o value "$RESIZE_PART_ARG" 2>/dev/null || true)"
+    case "$FS_KIND" in
+        ntfs)
+            command -v ntfsresize >/dev/null || die "ntfsresize is required to shrink NTFS"
+            ntfsresize --force --size "${RESIZE_MB_ARG}M" "$RESIZE_PART_ARG" || die "ntfsresize failed"
+            ;;
+        ext4|ext3|ext2)
+            e2fsck -f -p "$RESIZE_PART_ARG" || true
+            resize2fs "$RESIZE_PART_ARG" "${RESIZE_MB_ARG}M" || die "resize2fs failed"
+            ;;
+        *)
+            die "cannot safely shrink filesystem type '$FS_KIND' on $RESIZE_PART_ARG"
+            ;;
+    esac
+    PART_NUM="$(lsblk -no PARTN "$RESIZE_PART_ARG" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$PART_NUM" ] || die "could not determine partition number for $RESIZE_PART_ARG"
+    START_MB="$(parted -ms "$DISK" unit MiB print | awk -F: -v n="$PART_NUM" '$1==n {gsub(/MiB/,"",$2); print int($2)}')"
+    END_MB=$((START_MB + RESIZE_MB_ARG))
+    printf 'Yes\n' | parted ---pretend-input-tty "$DISK" unit MiB resizepart "$PART_NUM" "${END_MB}MiB" || die "parted resizepart failed"
+    parted -s "$DISK" unit MiB mkpart FinnOS ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
+    partprobe "$DISK" 2>/dev/null || true
+    udevadm settle --timeout=30 2>/dev/null || true
+    ROOT="$(lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{p=$1} END{print p}')"
+    ESP="$ESP_PART_ARG"
+    step "[3/8] FORMAT FINNOS ROOT (PRESERVING ESP)"
+    mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
+    step "[4/8] MOUNT"
+    mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
+    mkdir -p /mnt/boot
+    mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+    findmnt -o TARGET,SOURCE,FSTYPE /mnt
+    findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
+elif [ "$INSTALL_MODE" = "partition" ] || [ "$INSTALL_MODE" = "reinstall" ]; then
+    [ -b "$ROOT_PART_ARG" ] || die "--root-part is required for $INSTALL_MODE"
+    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for $INSTALL_MODE"
+    ROOT="$ROOT_PART_ARG"
+    ESP="$ESP_PART_ARG"
+    if [ "$INSTALL_MODE" = "partition" ]; then
+        step "[3/8] FORMAT SELECTED PARTITION (PRESERVING ESP)"
+        mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
+    else
+        step "[3/8] REINSTALL (PRESERVING USER DATA ON $ROOT)"
+    fi
+    step "[4/8] MOUNT"
+    mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
+    mkdir -p /mnt/boot
+    mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+    findmnt -o TARGET,SOURCE,FSTYPE /mnt
+    findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
+else
+# Clean whole-disk erase path below.
 # The signatures go first, and only on this device and its own partitions:
 # wiping the table does not touch what is inside a partition, and a stale
 # filesystem superblock is what makes a machine come back as what it was.
@@ -587,6 +716,7 @@ fi
 findmnt -o TARGET,SOURCE,FSTYPE /mnt
 findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
 post
+fi
 
 # 5. the base system.
 step "[5/8] PACSTRAP"

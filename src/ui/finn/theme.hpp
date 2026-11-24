@@ -43,6 +43,8 @@ public:
     QString lockWallpaperPath() const { return QString::fromStdString(settings_.lock_wallpaper); }
     QString avatarColor() const { return QString::fromStdString(settings_.avatar_color); }
     QString formFactorSetting() const { return QString::fromStdString(settings_.form_factor); }
+    QString keyboardLayout() const { return QString::fromStdString(settings_.kb_layout); }
+    QString keyboardVariant() const { return QString::fromStdString(settings_.kb_variant); }
     QString alertSound() const { return QString::fromStdString(settings_.alert_sound); }
     int alertVolume() const { return settings_.alert_volume; }
     bool startupSound() const { return settings_.startup_sound; }
@@ -77,6 +79,7 @@ public:
     bool setWallpaper(const QString& path);
     bool setLockWallpaper(const QString& path);
     bool setFormFactor(const QString& form_factor);
+    bool setKeyboardLayout(const QString& layout, const QString& variant = {});
     bool setAlertSound(const QString& name);
     bool setAlertVolume(int volume_percent);
     bool setStartupSound(bool enabled);

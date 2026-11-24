@@ -76,17 +76,37 @@ ApkPackageType classify_apk_path(const std::string& path) {
         std::string clean = path;
         const std::size_t q = clean.find_first_of("?#");
         if (q != std::string::npos) clean.resize(q);
-        return ends_with_ci(clean, ".apk") ? ApkPackageType::Apk : ApkPackageType::Unknown;
+        if (ends_with_ci(clean, ".apk")) return ApkPackageType::Apk;
+        if (ends_with_ci(clean, ".xapk")) return ApkPackageType::Xapk;
+        if (ends_with_ci(clean, ".apkm")) return ApkPackageType::Apkm;
+        if (ends_with_ci(clean, ".apks")) return ApkPackageType::Apks;
+        return ApkPackageType::Unknown;
     }
     std::error_code ec;
     if (fs::is_directory(path, ec) || !fs::is_regular_file(path, ec)) {
         return ApkPackageType::Unknown;
     }
-    if (!ends_with_ci(path, ".apk")) return ApkPackageType::Unknown;
+    const bool is_apk = ends_with_ci(path, ".apk");
+    const bool is_xapk = ends_with_ci(path, ".xapk");
+    const bool is_apkm = ends_with_ci(path, ".apkm");
+    const bool is_apks = ends_with_ci(path, ".apks");
+    if (!is_apk && !is_xapk && !is_apkm && !is_apks) return ApkPackageType::Unknown;
+
     std::vector<std::string> names;
     if (!read_zip_entry_names(path, &names)) return ApkPackageType::Unknown;
+    if (is_apk) {
+        for (const auto& n : names) {
+            if (n == "AndroidManifest.xml") return ApkPackageType::Apk;
+        }
+        return ApkPackageType::Unknown;
+    }
+    // Split APK bundles (.xapk / .apkm / .apks) contain embedded .apk files
     for (const auto& n : names) {
-        if (n == "AndroidManifest.xml") return ApkPackageType::Apk;
+        if (ends_with_ci(n, ".apk") || n == "manifest.json") {
+            if (is_xapk) return ApkPackageType::Xapk;
+            if (is_apkm) return ApkPackageType::Apkm;
+            return ApkPackageType::Apks;
+        }
     }
     return ApkPackageType::Unknown;
 }

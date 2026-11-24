@@ -42,6 +42,8 @@
 
 #ifdef FINN_HAVE_QT_WAYLAND_COMPOSITOR
 #include <QtWaylandCompositor/QWaylandBufferRef>
+#include <QtWaylandCompositor/QWaylandKeymap>
+#include <QtWaylandCompositor/QWaylandSeat>
 #include <QtWaylandCompositor/QWaylandView>
 #endif
 
@@ -408,6 +410,12 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                 });
 
         wayland_compositor_->create();
+        if (auto* seat = wayland_compositor_->defaultSeat()) {
+            if (auto* km = seat->keymap()) {
+                km->setLayout(QString::fromStdString(kb_layout_.empty() ? "us" : kb_layout_));
+                km->setVariant(QString::fromStdString(kb_variant_));
+            }
+        }
         ensureWaylandSocketPermissions();
         startXwaylandIfEnabled();
     }
@@ -595,6 +603,20 @@ void CompositorServer::pollSettingsAndIdle() {
     workspace_.set_form_factor_override(s.form_factor);
     if (workspace_.form_factor() != prev_ff) {
         dirty = true;
+    }
+    if (kb_layout_ != s.kb_layout || kb_variant_ != s.kb_variant) {
+        kb_layout_ = s.kb_layout.empty() ? "us" : s.kb_layout;
+        kb_variant_ = s.kb_variant;
+#ifdef FINN_HAVE_QT_WAYLAND_COMPOSITOR
+        if (wayland_compositor_) {
+            if (auto* seat = wayland_compositor_->defaultSeat()) {
+                if (auto* km = seat->keymap()) {
+                    km->setLayout(QString::fromStdString(kb_layout_));
+                    km->setVariant(QString::fromStdString(kb_variant_));
+                }
+            }
+        }
+#endif
     }
 
     if (InputRouter::should_auto_lock(monotonic_now_ms(), last_activity_msec_,

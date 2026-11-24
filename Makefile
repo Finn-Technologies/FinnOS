@@ -5,7 +5,7 @@ DESTDIR   ?=
 VM        ?= finn@10.211.55.6
 CMAKE_FLAGS ?= -DCMAKE_BUILD_TYPE=Release -DQT_NO_PRIVATE_MODULE_WARNING=ON
 
-.PHONY: all configure ui qtplugin compositor session darwin ohos android shell apps tools \
+.PHONY: all configure ui qtplugin compositor session boot darwin ohos android shell apps tools \
         test test-unit bench check lint install clean deploy help
 
 all: session configure
@@ -30,6 +30,9 @@ compositor: configure
 session:
 	$(MAKE) -C src/session
 
+boot:
+	$(MAKE) -C src/boot
+
 darwin:
 	$(MAKE) -C src/darwin
 
@@ -45,7 +48,9 @@ shell: configure
 apps: configure
 	cmake --build $(BUILD_DIR) --target \
 		finn-wallpaper finn-files finn-settings finn-terminal \
-		finn-notes finn-store finn-viewer finn-monitor
+		finn-notes finn-store finn-viewer finn-monitor \
+		finn-calculator finn-archive finn-capture \
+		finn-installer finn-oobe
 
 tools: configure
 	cmake --build $(BUILD_DIR) --target finn-open finn-cursors
@@ -99,6 +104,8 @@ install: all
 	install -m755 tools/finn-sdk $(DESTDIR)$(PREFIX)/bin/finn-sdk
 	install -m755 tools/finn-win $(DESTDIR)$(PREFIX)/bin/finn-win
 	install -m755 tools/finn-emulator $(DESTDIR)$(PREFIX)/bin/finn-emulator
+	install -d $(DESTDIR)$(PREFIX)/libexec
+	install -m755 tools/finn-oobe-apply $(DESTDIR)$(PREFIX)/libexec/finn-oobe-apply
 	install -d $(DESTDIR)$(PREFIX)/share/applications
 	install -m644 assets/finn-win.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-win.desktop
 	install -m644 assets/finn-flatpak.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-flatpak.desktop
@@ -110,6 +117,11 @@ install: all
 	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/
 	install -d $(DESTDIR)/usr/share/finn/ota
 	install -m644 ota/grub-ab.cfg $(DESTDIR)/usr/share/finn/ota/grub-ab.cfg
+	@if [ -f src/boot/finn-bootx64.efi ] || [ -f src/boot/finn-bootaa64.efi ]; then \
+		install -d $(DESTDIR)/usr/share/finn/boot; \
+		[ -f src/boot/finn-bootx64.efi ] && install -m644 src/boot/finn-bootx64.efi $(DESTDIR)/usr/share/finn/boot/finn-bootx64.efi || true; \
+		[ -f src/boot/finn-bootaa64.efi ] && install -m644 src/boot/finn-bootaa64.efi $(DESTDIR)/usr/share/finn/boot/finn-bootaa64.efi || true; \
+	fi
 	install -d $(DESTDIR)/usr/lib/systemd/system
 	install -m644 base/finn-update-check.service \
 		$(DESTDIR)/usr/lib/systemd/system/finn-update-check.service

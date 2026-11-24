@@ -1,6 +1,7 @@
 // Implements FinnThemeManager: live file watcher, cached SVG renderer, settings writer.
 
 #include "ui/finn/theme.hpp"
+#include "ui/finn/animation.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -126,6 +127,7 @@ FinnThemeManager::FinnThemeManager(QObject* parent) : QObject(parent) {
     settings_ = finn::sys::load_merged_settings();
     tokens_ = tokens_from_settings(settings_);
     set_active_text_scale(tokens_.text_scale);
+    set_reduced_motion_override(tokens_.reduced_motion);
     if (QCoreApplication::instance()) {
         setupWatcher();
     }
@@ -192,6 +194,8 @@ void FinnThemeManager::reload() {
         next_settings.avatar_color == settings_.avatar_color &&
         next_settings.wallpaper == settings_.wallpaper &&
         next_settings.lock_wallpaper == settings_.lock_wallpaper &&
+        next_settings.kb_layout == settings_.kb_layout &&
+        next_settings.kb_variant == settings_.kb_variant &&
         std::abs(next_settings.scale - settings_.scale) < 1e-3 &&
         next_settings.dock_pins == settings_.dock_pins;
     if (same) return;
@@ -199,6 +203,7 @@ void FinnThemeManager::reload() {
     settings_ = next_settings;
     tokens_ = tokens_from_settings(settings_);
     set_active_text_scale(tokens_.text_scale);
+    set_reduced_motion_override(tokens_.reduced_motion);
     QPixmapCache::clear();
     emit themeChanged(tokens_);
 }
@@ -216,6 +221,7 @@ bool FinnThemeManager::saveUpdated(const finn::sys::SettingsData& next) {
     settings_ = next;
     tokens_ = tokens_from_settings(settings_);
     set_active_text_scale(tokens_.text_scale);
+    set_reduced_motion_override(tokens_.reduced_motion);
     QPixmapCache::clear();
     emit themeChanged(tokens_);
     return true;
@@ -327,6 +333,14 @@ bool FinnThemeManager::setFormFactor(const QString& form_factor) {
     } else {
         next.form_factor = "auto";
     }
+    return saveUpdated(next);
+}
+
+bool FinnThemeManager::setKeyboardLayout(const QString& layout, const QString& variant) {
+    auto next = settings_;
+    const QString clean_layout = layout.trimmed().toLower();
+    next.kb_layout = clean_layout.isEmpty() ? "us" : clean_layout.toStdString();
+    next.kb_variant = variant.trimmed().toStdString();
     return saveUpdated(next);
 }
 
@@ -521,10 +535,12 @@ QPixmap FinnThemeManager::iconPixmap(const QString& name_or_path,
     const bool is_svg = path.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive);
     const bool mono = is_svg && svg_is_monochrome(path);
     const bool has_current_color = is_svg && svg_uses_current_color(path);
+    const bool explicit_tint = tint.isValid() && tint.alpha() > 0;
     QColor resolved_tint;
-    if (!is_svg || mono || has_current_color) {
-        resolved_tint =
-            tint.isValid() ? tint : ((mono || has_current_color) ? tokens_.ink : QColor());
+    if (mono || has_current_color) {
+        resolved_tint = explicit_tint ? tint : tokens_.ink;
+    } else if (!is_svg && explicit_tint) {
+        resolved_tint = tint;
     }
 
     const QString cache_key = QStringLiteral("finn_ico|%1|%2x%3|%4|%5|%6")
