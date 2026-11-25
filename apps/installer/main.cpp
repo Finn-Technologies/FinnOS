@@ -119,35 +119,6 @@ QImage box_blur_image(const QImage& src, int radius) {
     return a;
 }
 
-// Top Branding lockup matching Figma 36:45 (20x20 four-shape mark + 15px gap + "FinnOS" 20px).
-class OobeBrandingHeader final : public QWidget {
-    Q_OBJECT
-public:
-    explicit OobeBrandingHeader(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedSize(112, 24);
-        connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
-                this, qOverload<>(&QWidget::update));
-    }
-
-protected:
-    void paintEvent(QPaintEvent*) override {
-        const auto& t = FinnThemeManager::instance().tokens();
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        const QColor ink = t.ink;
-        FinnThemeManager::instance().paintIcon(
-            &p, QRectF(0.0, 2.0, 20.0, 20.0),
-            t.dark ? QStringLiteral("finn-logo-light") : QStringLiteral("finn-logo-dark"),
-            ink);
-
-        p.setFont(oobe_font(20, QFont::Normal));
-        p.setPen(ink);
-        p.drawText(QRectF(35.0, 0.0, width() - 35.0, height()),
-                   Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("FinnOS"));
-    }
-};
-
 // Exact OOBE circular 56x56 chevron navigation button (from apps/oobe/main.cpp).
 class OobeCircleNavButton final : public QAbstractButton {
     Q_OBJECT
@@ -1188,10 +1159,6 @@ public:
         stack_->addWidget(buildLogsPage());             // 7
         root->addWidget(stack_, 1);
 
-        // Top FinnOS branding lockup (matching OOBE)
-        branding_ = new OobeBrandingHeader(this);
-        branding_->raise();
-
         // Exact OOBE stationary Back/Next circular navigation bar
         shared_nav_box_ = new QWidget(this);
         shared_nav_box_->setFixedSize(132, 56);
@@ -1298,10 +1265,6 @@ protected:
 
 private:
     void positionChrome() {
-        if (branding_) {
-            branding_->move(kOobeGutter, 44);
-            branding_->raise();
-        }
         if (shared_nav_box_) {
             const int y = std::max(16, height() - 145 - 56);
             const int x = (width() - shared_nav_box_->width()) / 2;
@@ -2301,7 +2264,6 @@ private:
 
     FinnPageStack* stack_ = nullptr;
     QPointer<OobeSlideTransitionOverlay> slide_overlay_;
-    OobeBrandingHeader* branding_ = nullptr;
     QWidget* shared_nav_box_ = nullptr;
     OobeCircleNavButton* nav_back_ = nullptr;
     OobeCircleNavButton* nav_next_ = nullptr;
