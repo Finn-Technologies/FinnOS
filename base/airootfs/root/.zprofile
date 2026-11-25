@@ -19,11 +19,14 @@ if grep -qw finn.install /proc/cmdline 2>/dev/null; then
       command -v plymouth >/dev/null 2>&1 && plymouth quit --retain-splash 2>/dev/null || true
       ldconfig 2>/dev/null || true
       rc=0
-      QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=eglfs_kms QT_QPA_EGLFS_HIDECURSOR=0 \
-        /usr/local/bin/finn-installer || rc=$?
-      if [ "$rc" -ne 0 ] && [ "$rc" -ne 42 ]; then
-        rc=0
+      # Use linuxfb directly whenever /dev/fb0 exists: eglfs_kms hangs with a black
+      # screen ("Failed to create KMS FB!") on GPUs whose DRM plane format mismatches
+      # Qt's GBM surface, whereas linuxfb renders reliably on every bare-metal GPU.
+      if [ -e /dev/fb0 ]; then
         QT_QPA_PLATFORM=linuxfb /usr/local/bin/finn-installer || rc=$?
+      else
+        QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=eglfs_kms QT_QPA_EGLFS_HIDECURSOR=0 \
+          /usr/local/bin/finn-installer || rc=$?
       fi
       if [ "$rc" -eq 42 ]; then
         echo
