@@ -599,7 +599,12 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     START_MB="$(parted -ms "$DISK" unit MiB print | awk -F: -v n="$PART_NUM" '$1==n {gsub(/MiB/,"",$2); print int($2)}')"
     END_MB=$((START_MB + RESIZE_MB_ARG))
     printf 'Yes\n' | parted ---pretend-input-tty "$DISK" unit MiB resizepart "$PART_NUM" "${END_MB}MiB" || die "parted resizepart failed"
-    parted -s "$DISK" unit MiB mkpart FinnOS ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
+    PT_TYPE="$(blkid -s PTTYPE -o value "$DISK" 2>/dev/null || true)"
+    if [ "$PT_TYPE" = "dos" ]; then
+        parted -s "$DISK" unit MiB mkpart primary ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
+    else
+        parted -s "$DISK" unit MiB mkpart FinnOS ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
+    fi
     partprobe "$DISK" 2>/dev/null || true
     udevadm settle --timeout=30 2>/dev/null || true
     ROOT="$(lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{p=$1} END{print p}')"

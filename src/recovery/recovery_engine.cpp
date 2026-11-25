@@ -206,11 +206,15 @@ void classify_partition(PartitionInfo& p) {
     const std::string pl_l = to_lower(p.partlabel);
     const std::string lb_l = to_lower(p.label);
 
-    // EFI System Partition GUID: C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+    // EFI System Partition: GPT GUID C12A7328-F81F-11D2-BA4B-00A0C93EC93B,
+    // MBR type 0xef, labeled/mounted as EFI, or a small FAT32 boot partition (#1, <= 2 GiB).
+    constexpr std::uint64_t kMaxEspBytes = 2ULL * kGiB;
     if (pt_l == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ||
+        pt_l == "0xef" || pt_l == "ef" ||
         (fs_l == "vfat" && (pl_l.find("efi") != std::string::npos ||
                             lb_l.find("efi") != std::string::npos ||
-                            p.mountpoint == "/boot" || p.mountpoint == "/boot/efi"))) {
+                            p.mountpoint == "/boot" || p.mountpoint == "/boot/efi" ||
+                            (p.part_number == 1 && p.size_bytes > 0 && p.size_bytes <= kMaxEspBytes)))) {
         p.is_esp = true;
     }
 
