@@ -7,7 +7,11 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QGuiApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QUrl>
@@ -16,6 +20,7 @@
 namespace finn::apps {
 
 FilesController::FilesController(QObject* parent) : QAbstractListModel(parent) {
+    loadFolderStyles();
     loadDirectory(QDir::homePath(), true);
 }
 
@@ -34,6 +39,9 @@ QVariant FilesController::data(const QModelIndex& index, int role) const {
         case ModifiedTextRole: return fi.lastModified().toString(QStringLiteral("dd MMM yyyy, HH:mm"));
         case IconNameRole: return iconForEntry(fi);
         case ExtensionRole: return fi.suffix().toUpper();
+        case HasItemsRole: return fi.isDir() && dir_has_items_cache_.value(fi.absoluteFilePath(), false);
+        case FolderColorRole: return fi.isDir() ? resolveFolderColor(fi) : QString();
+        case FolderEmblemRole: return fi.isDir() ? resolveFolderEmblem(fi) : QString();
         default: return {};
     }
 }
@@ -47,6 +55,9 @@ QHash<int, QByteArray> FilesController::roleNames() const {
         {ModifiedTextRole, "modifiedText"},
         {IconNameRole, "iconName"},
         {ExtensionRole, "extension"},
+        {HasItemsRole, "hasItems"},
+        {FolderColorRole, "folderColor"},
+        {FolderEmblemRole, "folderEmblem"},
     };
 }
 
@@ -118,6 +129,9 @@ QVariantMap FilesController::selectedItem() const {
     m.insert(QStringLiteral("sizeText"), fi.isDir() ? QStringLiteral("Folder") : formatSize(fi.size()));
     m.insert(QStringLiteral("modifiedText"), fi.lastModified().toString(QStringLiteral("dd MMM yyyy, HH:mm")));
     m.insert(QStringLiteral("iconName"), iconForEntry(fi));
+    m.insert(QStringLiteral("hasItems"), fi.isDir() && dir_has_items_cache_.value(fi.absoluteFilePath(), false));
+    m.insert(QStringLiteral("folderColor"), fi.isDir() ? resolveFolderColor(fi) : QString());
+    m.insert(QStringLiteral("folderEmblem"), fi.isDir() ? resolveFolderEmblem(fi) : QString());
     m.insert(QStringLiteral("permissions"),
              QStringLiteral("%1%2%3")
                  .arg(fi.isReadable() ? QStringLiteral("r") : QStringLiteral("-"))
@@ -209,7 +223,10 @@ void FilesController::activateIndex(int idx) {
     const QString lower = fi.fileName().toLower();
 
     const bool is_bundle = isBundlePath(abs);
-    const bool is_package =
+    const bool is_windows_installer =
+        lower.endsWith(QStringLiteral(".exe")) ||
+        lower.endsWith(QStringLiteral(".msi"));
+    const bool is_store_package =
         is_bundle ||
         lower.endsWith(QStringLiteral(".finnapp")) ||
         lower.endsWith(QStringLiteral(".flatpakref")) ||
@@ -220,8 +237,6 @@ void FilesController::activateIndex(int idx) {
         lower.endsWith(QStringLiteral(".xapk")) ||
         lower.endsWith(QStringLiteral(".apkm")) ||
         lower.endsWith(QStringLiteral(".apks")) ||
-        lower.endsWith(QStringLiteral(".exe")) ||
-        lower.endsWith(QStringLiteral(".msi")) ||
         lower.endsWith(QStringLiteral(".dmg")) ||
         lower.endsWith(QStringLiteral(".pkg")) ||
         lower.endsWith(QStringLiteral(".mpkg")) ||
@@ -234,13 +249,16 @@ void FilesController::activateIndex(int idx) {
         return;
     }
 
-    // Route packages, bundles, and regular files through finn-session first
-    // so cross-OS installers, Finn Store --install, and native apps open seamlessly.
+    // Route packages, Windows installers, and regular files through finn-session first
+    // (finn-session sends Android/Linux packages -> finn-store --install and .exe/.msi -> finn-win).
     finn::SessionClient client;
     std::string err;
     if (client.connect(&err)) {
         if (client.open_target(abs.toStdString(), &err)) {
-            if (is_package) {
+            if (is_windows_installer) {
+                emit toastRequested(QStringLiteral("Launching Windows installer for %1...").arg(fi.fileName()),
+                                    QStringLiteral("info"));
+            } else if (is_store_package) {
                 emit toastRequested(QStringLiteral("Opening %1 in Finn Store...").arg(fi.fileName()),
                                     QStringLiteral("info"));
             }
@@ -248,11 +266,35 @@ void FilesController::activateIndex(int idx) {
         }
     }
 
-    if (is_package) {
+    if (is_windows_installer) {
+        QString win_bin = QStandardPaths::findExecutable(QStringLiteral("finn-win"));
+        if (win_bin.isEmpty()) win_bin = QStringLiteral("/usr/local/bin/finn-win");
+        if (QProcess::startDetached(win_bin, {abs})) {
+            emit toastRequested(QStringLiteral("Launching Windows installer for %1...").arg(fi.fileName()),
+                                QStringLiteral("info"));
+            return;
+        }
+        QString wine_bin = QStandardPaths::findExecutable(QStringLiteral("wine"));
+        if (!wine_bin.isEmpty()) {
+            const QStringList args = lower.endsWith(QStringLiteral(".msi"))
+                ? QStringList{QStringLiteral("msiexec"), QStringLiteral("/i"), abs}
+                : QStringList{abs};
+            if (QProcess::startDetached(wine_bin, args)) {
+                emit toastRequested(QStringLiteral("Launching Windows installer for %1...").arg(fi.fileName()),
+                                    QStringLiteral("info"));
+                return;
+            }
+        }
+        emit toastRequested(QStringLiteral("Windows installer runtime (finn-win / Wine) not available"),
+                            QStringLiteral("warning"));
+        return;
+    }
+
+    if (is_store_package) {
         QString store_bin = QStandardPaths::findExecutable(QStringLiteral("finn-store"));
         if (store_bin.isEmpty()) store_bin = QStringLiteral("/usr/local/bin/finn-store");
         if (QProcess::startDetached(store_bin, {QStringLiteral("--install"), abs})) {
-            emit toastRequested(QStringLiteral("Installing %1...").arg(fi.fileName()),
+            emit toastRequested(QStringLiteral("Opening %1 in Finn Store...").arg(fi.fileName()),
                                 QStringLiteral("info"));
             return;
         }
@@ -383,6 +425,92 @@ void FilesController::copySelectedPath() {
     emit toastRequested(QStringLiteral("Copied path to clipboard"), QStringLiteral("success"));
 }
 
+QString FilesController::folderStylesPath() {
+    const QString cfg = QStandardPaths::writableLocation(QStandardPaths::ConfigLocation);
+    return (cfg.isEmpty() ? (QDir::homePath() + QStringLiteral("/.config")) : cfg) +
+           QStringLiteral("/finn/folder-styles.json");
+}
+
+void FilesController::loadFolderStyles() {
+    folder_styles_.clear();
+    QFile f(folderStylesPath());
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    if (!doc.isObject()) return;
+    const QJsonObject root = doc.object();
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        if (!it.value().isObject()) continue;
+        const QJsonObject obj = it.value().toObject();
+        FolderStyle st;
+        st.color = obj.value(QStringLiteral("color")).toString();
+        st.emblem = obj.value(QStringLiteral("emblem")).toString();
+        folder_styles_.insert(it.key(), st);
+    }
+}
+
+void FilesController::saveFolderStyles() const {
+    const QString path = folderStylesPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonObject root;
+    for (auto it = folder_styles_.cbegin(); it != folder_styles_.cend(); ++it) {
+        QJsonObject obj;
+        obj.insert(QStringLiteral("color"), it.value().color);
+        obj.insert(QStringLiteral("emblem"), it.value().emblem);
+        root.insert(it.key(), obj);
+    }
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    }
+}
+
+bool FilesController::dirHasItems(const QString& path) {
+    QDirIterator it(path, QDir::AllEntries | QDir::NoDotAndDotDot);
+    return it.hasNext();
+}
+
+QString FilesController::resolveFolderColor(const QFileInfo& fi) const {
+    const auto it = folder_styles_.constFind(fi.absoluteFilePath());
+    if (it != folder_styles_.cend() && !it.value().color.isEmpty()) {
+        return it.value().color;
+    }
+    return QStringLiteral("#007BFF");
+}
+
+QString FilesController::resolveFolderEmblem(const QFileInfo& fi) const {
+    const auto it = folder_styles_.constFind(fi.absoluteFilePath());
+    if (it != folder_styles_.cend()) {
+        return it.value().emblem;
+    }
+    const QString lower = fi.fileName().toLower();
+    if (lower == QLatin1String("desktop")) return QStringLiteral("desktop");
+    if (lower == QLatin1String("documents")) return QStringLiteral("file-text");
+    if (lower == QLatin1String("downloads")) return QStringLiteral("download");
+    if (lower == QLatin1String("pictures") || lower == QLatin1String("photos")) return QStringLiteral("image");
+    if (lower == QLatin1String("music")) return QStringLiteral("volume-02");
+    if (lower == QLatin1String("developer") || lower == QLatin1String("code")) return QStringLiteral("code-01");
+    if (lower == QLatin1String("public") || lower == QLatin1String("shared")) return QStringLiteral("globe");
+    return {};
+}
+
+void FilesController::setFolderStyle(const QString& path, const QString& colorHex, const QString& emblemName) {
+    if (path.isEmpty()) return;
+    FolderStyle st = folder_styles_.value(path);
+    if (!colorHex.isEmpty()) st.color = colorHex;
+    st.emblem = (emblemName == QLatin1String("none")) ? QString() : emblemName;
+    folder_styles_.insert(path, st);
+    saveFolderStyles();
+
+    for (int i = 0; i < entries_.size(); ++i) {
+        if (entries_[i].absoluteFilePath() == path) {
+            const QModelIndex idx = index(i);
+            emit dataChanged(idx, idx, {FolderColorRole, FolderEmblemRole});
+            break;
+        }
+    }
+    emit selectionChanged();
+}
+
 void FilesController::loadDirectory(const QString& path, bool push_history) {
     QDir dir(path);
     if (!dir.exists()) return;
@@ -416,9 +544,17 @@ void FilesController::loadDirectory(const QString& path, bool push_history) {
         list = std::move(filtered);
     }
 
+    QHash<QString, bool> has_items;
+    for (const QFileInfo& fi : list) {
+        if (fi.isDir()) {
+            has_items.insert(fi.absoluteFilePath(), dirHasItems(fi.absoluteFilePath()));
+        }
+    }
+
     beginResetModel();
     current_path_ = abs_path;
     entries_ = std::move(list);
+    dir_has_items_cache_ = std::move(has_items);
     selected_index_ = entries_.isEmpty() ? -1 : 0;
     endResetModel();
 

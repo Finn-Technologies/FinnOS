@@ -7,6 +7,7 @@ Item {
     property string label: ""
     property string iconName: ""
     property color badgeColor: FinnTheme.accent
+    property color iconTint: "transparent"
     property bool useBadgeCircle: true
     property bool selected: false
     property bool compactRail: false
@@ -62,8 +63,10 @@ Item {
             FinnIcon {
                 anchors.centerIn: parent
                 name: root.iconName
-                size: root.useBadgeCircle ? (root.tvMode ? 20 : 16) : (root.tvMode ? 22 : 18)
-                tint: root.useBadgeCircle ? "#FFFFFF" : (root.selected ? FinnTheme.on : FinnTheme.dim)
+                size: root.useBadgeCircle ? (root.tvMode ? 20 : 16) : (root.tvMode ? 22 : 17)
+                tint: root.useBadgeCircle
+                    ? "#FFFFFF"
+                    : (root.iconTint.a > 0 ? root.iconTint : (root.selected ? FinnTheme.accent : FinnTheme.dim))
             }
         }
 

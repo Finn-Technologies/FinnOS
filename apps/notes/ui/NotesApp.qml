@@ -50,10 +50,11 @@ FinnApplicationWindow {
         FinnSquircle {
             width: 118
             height: 28
-            radius: 14
-            color: FinnTheme.surfaceCanvas
-            borderColor: FinnTheme.hairSoft
-            borderWidth: 0.7
+            radius: 6
+            color: FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"
+            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000"
+            borderWidth: 0.5
+            specularRim: false
 
             Row {
                 anchors.fill: parent
@@ -68,10 +69,10 @@ FinnApplicationWindow {
                     delegate: FinnSquircle {
                         width: (parent.width - 2) / 2
                         height: parent.height
-                        radius: 12
-                        color: win.previewMode === modelData.isPrev ? FinnTheme.surface : "transparent"
-                        borderColor: win.previewMode === modelData.isPrev ? FinnTheme.hairSoft : "transparent"
-                        borderWidth: win.previewMode === modelData.isPrev ? 0.6 : 0
+                        radius: 4
+                        color: win.previewMode === modelData.isPrev ? FinnTheme.navSel : "transparent"
+                        borderWidth: 0
+                        specularRim: false
 
                         Text {
                             anchors.centerIn: parent
@@ -197,29 +198,18 @@ FinnApplicationWindow {
             }
         }
 
-        // Spacious Kate-style Editor / Markdown Canvas with Line Numbers Gutter
+        // Clean Editor / Markdown Canvas with subtle Line Numbers Gutter
         FinnCard {
             width: parent.width
-            height: parent.height - 32 - (win.showFindBar ? 46 : 0)
-            radius: FinnTheme.radiusLg
-
-            Rectangle {
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                height: 2
-                radius: 1
-                color: FinnTheme.withAlpha("#F59E0B", 0.55)
-            }
+            height: parent.height - 30 - (win.showFindBar ? 46 : 0)
+            radius: FinnTheme.radiusSm
 
             Flickable {
                 anchors.fill: parent
                 anchors.leftMargin: 14
                 anchors.rightMargin: 20
-                anchors.topMargin: 18
-                anchors.bottomMargin: 16
+                anchors.topMargin: 14
+                anchors.bottomMargin: 14
                 contentWidth: width
                 contentHeight: Math.max(height, editorRow.implicitHeight + 32)
                 clip: true
@@ -296,53 +286,29 @@ FinnApplicationWindow {
             }
         }
 
-        // Bottom Status Strip
+        // Minimal Understated Status Strip
         Item {
             width: parent.width
-            height: 24
+            height: 22
 
-            Row {
+            Text {
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 8
-
-                FinnBadge { text: NotesCtrl.wordCount + " words" }
-                FinnBadge { text: NotesCtrl.lineCount + " lines" }
-                FinnBadge { text: win.codeMode ? "Monospace" : "Prose"; tone: "neutral" }
+                text: NotesCtrl.wordCount + " words · " + NotesCtrl.lineCount + " lines · " +
+                      (win.codeMode ? "Monospace" : "Prose") + " · " +
+                      (NotesCtrl.dirty ? "Unsaved" : "Saved")
+                color: FinnTheme.mute
+                font.family: FinnTheme.fontFamily
+                font.pixelSize: 11
             }
 
-            Row {
+            FinnButton {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: 10
-
-                Row {
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 6
-
-                    Rectangle {
-                        width: 7
-                        height: 7
-                        radius: 3.5
-                        anchors.verticalCenter: parent.verticalCenter
-                        color: NotesCtrl.dirty ? "#F59E0B" : "#10B981"
-                    }
-
-                    Text {
-                        text: NotesCtrl.dirty ? "Unsaved changes" : "Saved locally"
-                        color: FinnTheme.dim
-                        font.family: FinnTheme.fontFamily
-                        font.pixelSize: 11
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                }
-
-                FinnButton {
-                    text: "Delete"
-                    variant: "danger"
-                    implicitHeight: 22
-                    onClicked: NotesCtrl.deleteActive()
-                }
+                text: "Delete"
+                variant: "ghost"
+                implicitHeight: 22
+                onClicked: NotesCtrl.deleteActive()
             }
         }
     }

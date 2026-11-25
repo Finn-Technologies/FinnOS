@@ -20,11 +20,16 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -75,10 +80,22 @@ QString accent_for_ecosystem(StoreEcosystem eco) {
 }  // namespace
 
 StoreController::StoreController(QObject* parent)
-    : QAbstractListModel(parent), nam_(new QNetworkAccessManager(this)) {
+    : QAbstractListModel(parent),
+      nam_(new QNetworkAccessManager(this)),
+      search_debounce_(new QTimer(this)) {
+    search_debounce_->setSingleShot(true);
+    search_debounce_->setInterval(350);
+    connect(search_debounce_, &QTimer::timeout, this, [this]() {
+        const QString q = search_query_.trimmed();
+        if (q.size() >= 2) searchOnline(q);
+    });
+
     curated_ = finn::store::build_curated_catalog();
     probeRuntimes();
     rebuildCatalog();
+    fetchFlathubCollection(flathub_collection_, 1, false);
+    fetchAndroidCollection(android_collection_);
+    fetchWingetCollection(winget_collection_);
 }
 
 int StoreController::rowCount(const QModelIndex& parent) const {
@@ -159,11 +176,67 @@ void StoreController::setSearchQuery(const QString& q) {
     search_query_ = q;
     emit filterChanged();
     rebuildFiltered();
+
+    const QString needle = search_query_.trimmed().toLower();
+    if (needle.size() >= 2) {
+        // Only query online cross-OS stores if no Native FinnOS app matches (or on a non-native tab).
+        bool has_native_match = false;
+        if (active_tab_ == QLatin1String("discover") || active_tab_ == QLatin1String("native")) {
+            for (const auto& a : all_items_) {
+                if (a.ecosystem != StoreEcosystem::Native) continue;
+                if (qstr(a.name).toLower().contains(needle) ||
+                    qstr(a.subtitle).toLower().contains(needle) ||
+                    qstr(a.category).toLower().contains(needle)) {
+                    has_native_match = true;
+                    break;
+                }
+            }
+        }
+        if (!has_native_match && active_tab_ != QLatin1String("native")) {
+            search_debounce_->start();
+        } else {
+            search_debounce_->stop();
+        }
+    } else {
+        search_debounce_->stop();
+    }
+}
+
+void StoreController::setFlathubCollection(const QString& col) {
+    const QString clean = col.trimmed();
+    if (clean.isEmpty() || clean == flathub_collection_) return;
+    flathub_collection_ = clean;
+    emit flathubBrowseChanged();
+    fetchFlathubCollection(flathub_collection_, 1, false);
+}
+
+void StoreController::setAndroidCollection(const QString& col) {
+    const QString clean = col.trimmed();
+    if (clean.isEmpty() || clean == android_collection_) return;
+    android_collection_ = clean;
+    emit flathubBrowseChanged();
+    fetchAndroidCollection(android_collection_);
+}
+
+void StoreController::setWingetCollection(const QString& col) {
+    const QString clean = col.trimmed();
+    if (clean.isEmpty() || clean == winget_collection_) return;
+    winget_collection_ = clean;
+    emit flathubBrowseChanged();
+    fetchWingetCollection(winget_collection_);
+}
+
+void StoreController::loadMoreFlathub() {
+    if (busy_ || !flathubHasMore()) return;
+    fetchFlathubCollection(flathub_collection_, flathub_page_ + 1, true);
 }
 
 void StoreController::reload() {
     probeRuntimes();
     rebuildCatalog();
+    fetchFlathubCollection(flathub_collection_, 1, false);
+    fetchAndroidCollection(android_collection_);
+    fetchWingetCollection(winget_collection_);
 }
 
 void StoreController::probeRuntimes() {
@@ -189,17 +262,32 @@ void StoreController::probeRuntimes() {
 void StoreController::rebuildCatalog() {
     const auto reg = finn::AppRegistry::load_all(finn::kCataloguePath, finn::kInstalledPath);
 
-    std::vector<StoreAppItem> merged = curated_;
+    std::vector<StoreAppItem> merged;
     std::unordered_map<std::string, std::size_t> by_id;
-    for (std::size_t i = 0; i < merged.size(); ++i) {
-        by_id[merged[i].id] = i;
+
+    // Seed with curated items; when live ecosystem catalogs are loaded, skip
+    // generic-icon placeholders so real apps with real icons lead each tab.
+    const bool have_live_flathub = !remote_flathub_.empty();
+    const bool have_live_android = !remote_android_.empty();
+    const bool have_live_winget = !remote_winget_.empty();
+    for (const auto& c : curated_) {
+        if (have_live_flathub && c.ecosystem == StoreEcosystem::Flatpak) continue;
+        if (have_live_android && c.ecosystem == StoreEcosystem::Android) continue;
+        if (have_live_winget && c.ecosystem == StoreEcosystem::Windows) continue;
+        by_id[c.id] = merged.size();
+        merged.push_back(c);
     }
 
     auto upsert_remote = [&](const std::vector<StoreAppItem>& src) {
         for (const auto& r : src) {
-            if (by_id.find(r.id) == by_id.end()) {
+            const auto it = by_id.find(r.id);
+            if (it == by_id.end()) {
                 by_id[r.id] = merged.size();
                 merged.push_back(r);
+            } else if (r.icon.rfind("https://", 0) == 0) {
+                merged[it->second].icon = r.icon;
+                if (!r.developer.empty()) merged[it->second].developer = r.developer;
+                if (!r.subtitle.empty()) merged[it->second].subtitle = r.subtitle;
             }
         }
     };
@@ -273,13 +361,21 @@ void StoreController::rebuildDiscoverShelves() {
     for (const auto& a : all_items_) {
         const QVariantMap m = itemToMap(a);
         if (a.featured_hero) heroes.append(m);
+        if (a.ecosystem == StoreEcosystem::Flatpak) {
+            if (flatpak_list.size() < 6) flatpak_list.append(m);
+            continue;
+        }
+        if (a.ecosystem == StoreEcosystem::Android) {
+            if (android_list.size() < 6) android_list.append(m);
+            continue;
+        }
+        if (a.ecosystem == StoreEcosystem::Windows) {
+            if (windows_list.size() < 6) windows_list.append(m);
+            continue;
+        }
         if (!a.curated && !a.installed) continue;
-        switch (a.ecosystem) {
-            case StoreEcosystem::Native:  if (native_list.size() < 6) native_list.append(m); break;
-            case StoreEcosystem::Flatpak: if (flatpak_list.size() < 6) flatpak_list.append(m); break;
-            case StoreEcosystem::Android: if (android_list.size() < 6) android_list.append(m); break;
-            case StoreEcosystem::Windows: if (windows_list.size() < 6) windows_list.append(m); break;
-            default: break;
+        if (a.ecosystem == StoreEcosystem::Native && native_list.size() < 6) {
+            native_list.append(m);
         }
     }
 
@@ -312,35 +408,57 @@ void StoreController::rebuildDiscoverShelves() {
 
 void StoreController::rebuildFiltered() {
     const QString needle = search_query_.trimmed().toLower();
+    auto matches_query = [&](const StoreAppItem& a) -> bool {
+        if (needle.isEmpty()) return true;
+        return qstr(a.name).toLower().contains(needle) ||
+               qstr(a.subtitle).toLower().contains(needle) ||
+               qstr(a.developer).toLower().contains(needle) ||
+               qstr(a.category).toLower().contains(needle) ||
+               qstr(a.install_ref).toLower().contains(needle);
+    };
+
     std::vector<StoreAppItem> next;
-
-    for (const auto& a : all_items_) {
-        bool tab_ok = true;
-        if (active_tab_ == QLatin1String("native")) {
-            tab_ok = (a.ecosystem == StoreEcosystem::Native);
-        } else if (active_tab_ == QLatin1String("flatpak")) {
-            tab_ok = (a.ecosystem == StoreEcosystem::Flatpak);
-        } else if (active_tab_ == QLatin1String("android")) {
-            tab_ok = (a.ecosystem == StoreEcosystem::Android);
-        } else if (active_tab_ == QLatin1String("windows")) {
-            tab_ok = (a.ecosystem == StoreEcosystem::Windows);
-        } else if (active_tab_ == QLatin1String("updates")) {
-            tab_ok = a.installed || a.update_available;
-        } else if (active_tab_ == QLatin1String("installed")) {
-            tab_ok = a.installed;
+    if (!needle.isEmpty() && active_tab_ == QLatin1String("discover")) {
+        // Global search: check Native FinnOS apps first; if none match, show
+        // Linux, Windows, and Android results (with ecosystem tags in UI).
+        std::vector<StoreAppItem> native_hits, linux_hits, win_hits, android_hits;
+        for (const auto& a : all_items_) {
+            if (!matches_query(a)) continue;
+            switch (a.ecosystem) {
+                case StoreEcosystem::Native:  native_hits.push_back(a); break;
+                case StoreEcosystem::Flatpak: linux_hits.push_back(a); break;
+                case StoreEcosystem::Windows: win_hits.push_back(a); break;
+                case StoreEcosystem::Android: android_hits.push_back(a); break;
+                default: break;
+            }
         }
-        if (!tab_ok) continue;
-
-        if (!needle.isEmpty()) {
-            const bool match =
-                qstr(a.name).toLower().contains(needle) ||
-                qstr(a.subtitle).toLower().contains(needle) ||
-                qstr(a.developer).toLower().contains(needle) ||
-                qstr(a.category).toLower().contains(needle) ||
-                qstr(a.install_ref).toLower().contains(needle);
-            if (!match) continue;
+        if (!native_hits.empty()) {
+            next = std::move(native_hits);
+        } else {
+            next.reserve(linux_hits.size() + win_hits.size() + android_hits.size());
+            next.insert(next.end(), linux_hits.begin(), linux_hits.end());
+            next.insert(next.end(), win_hits.begin(), win_hits.end());
+            next.insert(next.end(), android_hits.begin(), android_hits.end());
         }
-        next.push_back(a);
+    } else {
+        for (const auto& a : all_items_) {
+            bool tab_ok = true;
+            if (active_tab_ == QLatin1String("native")) {
+                tab_ok = (a.ecosystem == StoreEcosystem::Native);
+            } else if (active_tab_ == QLatin1String("flatpak")) {
+                tab_ok = (a.ecosystem == StoreEcosystem::Flatpak);
+            } else if (active_tab_ == QLatin1String("android")) {
+                tab_ok = (a.ecosystem == StoreEcosystem::Android);
+            } else if (active_tab_ == QLatin1String("windows")) {
+                tab_ok = (a.ecosystem == StoreEcosystem::Windows);
+            } else if (active_tab_ == QLatin1String("updates")) {
+                tab_ok = a.installed || a.update_available;
+            } else if (active_tab_ == QLatin1String("installed")) {
+                tab_ok = a.installed;
+            }
+            if (!tab_ok || !matches_query(a)) continue;
+            next.push_back(a);
+        }
     }
 
     beginResetModel();
@@ -495,11 +613,66 @@ void StoreController::searchOnline(const QString& query) {
         queryFlathub(q);
     }
     if (active_tab_ == QLatin1String("android") || active_tab_ == QLatin1String("discover")) {
+        queryAndroidFDroid(q);
         queryAuroraPlay(q);
     }
     if (active_tab_ == QLatin1String("windows") || active_tab_ == QLatin1String("discover")) {
         queryWinget(q);
     }
+}
+
+void StoreController::fetchFlathubCollection(const QString& collection, int page, bool append) {
+    const bool is_special =
+        collection == QLatin1String("popular") ||
+        collection == QLatin1String("trending") ||
+        collection == QLatin1String("recently-updated") ||
+        collection == QLatin1String("recently-added");
+    const QString endpoint = is_special
+        ? (QString::fromLatin1(finn::store::kFlathubApiBase) + QStringLiteral("/collection/") +
+           collection + QStringLiteral("?page=%1&per_page=48").arg(page))
+        : (QString::fromLatin1(finn::store::kFlathubApiBase) + QStringLiteral("/collection/category/") +
+           collection + QStringLiteral("?page=%1&per_page=48").arg(page));
+
+    busy_ = true;
+    busy_message_ = QStringLiteral("Loading Flathub catalog...");
+    emit busyChanged();
+
+    QNetworkRequest req{QUrl(endpoint)};
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = nam_->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, collection, page, append]() {
+        const QByteArray raw = reply->readAll();
+        const bool ok = (reply->error() == QNetworkReply::NoError);
+        reply->deleteLater();
+        busy_ = false;
+        busy_message_.clear();
+        emit busyChanged();
+        if (!ok || raw.isEmpty() || collection != flathub_collection_) return;
+
+        auto parsed = finn::store::parse_flathub_hits_json(
+            std::string_view(raw.constData(), static_cast<std::size_t>(raw.size())));
+
+        static const QRegularExpression tpRe(QStringLiteral("\"totalPages\"\\s*:\\s*(\\d+)"));
+        static const QRegularExpression thRe(QStringLiteral("\"totalHits\"\\s*:\\s*(\\d+)"));
+        const QString text = QString::fromUtf8(raw);
+        const auto tpm = tpRe.match(text);
+        const auto thm = thRe.match(text);
+        flathub_page_ = page;
+        flathub_total_pages_ = tpm.hasMatch() ? std::max(1, tpm.captured(1).toInt()) : page;
+        flathub_total_hits_ = thm.hasMatch() ? thm.captured(1).toInt()
+                                             : static_cast<int>(parsed.size());
+
+        if (append) {
+            remote_flathub_.insert(remote_flathub_.end(),
+                                   std::make_move_iterator(parsed.begin()),
+                                   std::make_move_iterator(parsed.end()));
+        } else {
+            remote_flathub_ = std::move(parsed);
+        }
+        rebuildCatalog();
+        emit flathubBrowseChanged();
+    });
 }
 
 void StoreController::queryFlathub(const QString& query) {
@@ -542,6 +715,77 @@ void StoreController::fetchFlathubDetails(const QString& appId, const QString& f
             }
         }
         refreshSelectedDetail();
+    });
+}
+
+void StoreController::fetchAndroidCollection(const QString& collection) {
+    QString q = QStringLiteral("browser");
+    if (collection == QLatin1String("popular")) q = QStringLiteral("open");
+    else if (collection == QLatin1String("internet")) q = QStringLiteral("browser");
+    else if (collection == QLatin1String("messaging")) q = QStringLiteral("chat");
+    else if (collection == QLatin1String("media")) q = QStringLiteral("music");
+    else if (collection == QLatin1String("games")) q = QStringLiteral("game");
+    else if (collection == QLatin1String("maps")) q = QStringLiteral("map");
+    else if (collection == QLatin1String("office")) q = QStringLiteral("notes");
+    else if (collection == QLatin1String("utilities")) q = QStringLiteral("file");
+    queryAndroidFDroid(q);
+}
+
+void StoreController::queryAndroidFDroid(const QString& query) {
+    QUrl url(QStringLiteral("https://search.f-droid.org/api/search_apps"));
+    QUrlQuery uq;
+    uq.addQueryItem(QStringLiteral("q"), query);
+    url.setQuery(uq);
+    QNetworkRequest req(url);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = nam_->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        const QByteArray raw = reply->readAll();
+        const bool ok = (reply->error() == QNetworkReply::NoError);
+        reply->deleteLater();
+        if (!ok || raw.isEmpty()) return;
+
+        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+        const QJsonArray arr = doc.object().value(QStringLiteral("apps")).toArray();
+        std::vector<StoreAppItem> with_icons, fallback_icons;
+        for (const QJsonValue& v : arr) {
+            const QJsonObject obj = v.toObject();
+            const QString name = obj.value(QStringLiteral("name")).toString().trimmed();
+            const QString url_str = obj.value(QStringLiteral("url")).toString().trimmed();
+            if (name.isEmpty()) continue;
+            QString pkg = url_str.section(QLatin1Char('/'), -1);
+            if (pkg.isEmpty()) pkg = name.toLower().replace(QLatin1Char(' '), QLatin1Char('.'));
+            const QString icon = obj.value(QStringLiteral("icon")).toString().trimmed();
+            const bool is_default_icon = icon.isEmpty() || icon.contains(QLatin1String("ic_repo_app_default"));
+
+            StoreAppItem item;
+            item.id = "android:" + pkg.toStdString();
+            item.install_ref = pkg.toStdString();
+            item.name = name.toStdString();
+            item.subtitle = obj.value(QStringLiteral("summary")).toString().trimmed().toStdString();
+            if (item.subtitle.empty()) item.subtitle = "Open-source Android app";
+            item.description = item.subtitle;
+            item.developer = "F-Droid / Android";
+            item.ecosystem = StoreEcosystem::Android;
+            item.category = "Android";
+            item.icon = is_default_icon ? "android" : icon.toStdString();
+            item.verified = true;
+            item.verified_source = "F-Droid";
+            item.accent_hex = "#10b981";
+            item.permissions = {"Android Runtime (finn-android)", "APK Package"};
+
+            if (!is_default_icon) with_icons.push_back(std::move(item));
+            else fallback_icons.push_back(std::move(item));
+            if (with_icons.size() + fallback_icons.size() >= 48) break;
+        }
+        std::vector<StoreAppItem> parsed = std::move(with_icons);
+        parsed.insert(parsed.end(), std::make_move_iterator(fallback_icons.begin()),
+                      std::make_move_iterator(fallback_icons.end()));
+        if (!parsed.empty()) {
+            remote_android_ = std::move(parsed);
+            rebuildCatalog();
+        }
     });
 }
 
@@ -605,22 +849,44 @@ void StoreController::queryAuroraPlay(const QString& query) {
     });
 }
 
+void StoreController::fetchWingetCollection(const QString& collection) {
+    QString q = QStringLiteral("app");
+    if (collection == QLatin1String("popular")) q = QStringLiteral("app");
+    else if (collection == QLatin1String("developer")) q = QStringLiteral("code");
+    else if (collection == QLatin1String("browsers")) q = QStringLiteral("browser");
+    else if (collection == QLatin1String("media")) q = QStringLiteral("player");
+    else if (collection == QLatin1String("graphics")) q = QStringLiteral("editor");
+    else if (collection == QLatin1String("gaming")) q = QStringLiteral("game");
+    else if (collection == QLatin1String("utilities")) q = QStringLiteral("tool");
+    else if (collection == QLatin1String("security")) q = QStringLiteral("password");
+    queryWinget(q);
+}
+
 void StoreController::queryWinget(const QString& query) {
     QUrl url(QString::fromLatin1(finn::store::kWingetRunApiBase) + QStringLiteral("/packages"));
     QUrlQuery uq;
     uq.addQueryItem(QStringLiteral("query"), query);
-    uq.addQueryItem(QStringLiteral("take"), QStringLiteral("20"));
+    uq.addQueryItem(QStringLiteral("take"), QStringLiteral("48"));
     url.setQuery(uq);
     QNetworkRequest req(url);
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
     QNetworkReply* reply = nam_->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply]() {
         const QByteArray raw = reply->readAll();
         const bool ok = (reply->error() == QNetworkReply::NoError);
         reply->deleteLater();
         if (ok && !raw.isEmpty()) {
-            remote_winget_ = finn::store::parse_winget_search_json(
+            auto parsed = finn::store::parse_winget_search_json(
                 std::string_view(raw.constData(), static_cast<std::size_t>(raw.size())));
-            rebuildCatalog();
+            // Sort packages with real brand icons ahead of fallback icons
+            std::stable_partition(parsed.begin(), parsed.end(), [](const StoreAppItem& a) {
+                return a.icon.rfind("https://", 0) == 0 || a.icon.rfind("http://", 0) == 0;
+            });
+            if (!parsed.empty()) {
+                remote_winget_ = std::move(parsed);
+                rebuildCatalog();
+            }
         }
     });
 }
@@ -989,6 +1255,37 @@ void StoreController::updateAll() {
     runProcessInstall(QStringLiteral("__updates__"), QStringLiteral("flatpak"),
                       {QStringLiteral("update"), QStringLiteral("-y"), QStringLiteral("--user")},
                       QStringLiteral("All Flatpak apps updated"));
+}
+
+void StoreController::browseLocalPackage() {
+    const QString path = QFileDialog::getOpenFileName(
+        nullptr,
+        QStringLiteral("Install Package File"),
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation),
+        QStringLiteral("Installable Packages (*.apk *.xapk *.apkm *.apks *.flatpak *.flatpakref *.flatpakrepo *.appimage *.exe *.msi *.finnapp);;All Files (*)"));
+    if (path.isEmpty()) return;
+
+    // Windows installers (.exe / .msi) launch directly via Windows Installer (finn-win / Wine).
+    if (ends_with_ci(path, ".exe") || ends_with_ci(path, ".msi")) {
+        const auto plan = finn::compat::build_wine_launch(path.toStdString());
+        if (!plan.ok) {
+            emit toastRequested(qstr(plan.error), QStringLiteral("warning"));
+            return;
+        }
+        QStringList args;
+        for (std::size_t i = 1; i < plan.argv.size(); ++i) args.append(qstr(plan.argv[i]));
+        if (QProcess::startDetached(qstr(plan.argv[0]), args)) {
+            emit toastRequested(
+                QStringLiteral("Launching Windows installer for %1...").arg(QFileInfo(path).fileName()),
+                QStringLiteral("info"));
+        } else {
+            emit toastRequested(QStringLiteral("Could not launch Windows installer"), QStringLiteral("error"));
+        }
+        return;
+    }
+
+    // Android (.apk/.xapk) & Linux Flatpak (.flatpak/.flatpakref) open in Finn Store's install sheet.
+    inspectLocalPackage(path);
 }
 
 void StoreController::inspectLocalPackage(const QString& path) {

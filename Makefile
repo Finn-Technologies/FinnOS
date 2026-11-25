@@ -106,12 +106,14 @@ install: all
 	install -m755 tools/finn-emulator $(DESTDIR)$(PREFIX)/bin/finn-emulator
 	install -d $(DESTDIR)$(PREFIX)/libexec
 	install -m755 tools/finn-oobe-apply $(DESTDIR)$(PREFIX)/libexec/finn-oobe-apply
-	install -d $(DESTDIR)$(PREFIX)/share/applications
-	install -m644 assets/finn-win.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-win.desktop
-	install -m644 assets/finn-flatpak.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-flatpak.desktop
-	install -m644 assets/finn-darwin.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-darwin.desktop
-	install -m644 assets/finn-ohos.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-ohos.desktop
-	install -m644 assets/finn-android.desktop $(DESTDIR)$(PREFIX)/share/applications/finn-android.desktop
+	install -d $(DESTDIR)$(PREFIX)/share/applications $(DESTDIR)/usr/share/applications
+	for d in finn-win.desktop finn-flatpak.desktop finn-darwin.desktop finn-ohos.desktop finn-android.desktop; do \
+		install -m644 "assets/$$d" "$(DESTDIR)$(PREFIX)/share/applications/$$d"; \
+		install -m644 "assets/$$d" "$(DESTDIR)/usr/share/applications/$$d"; \
+	done
+	@if [ -z "$(DESTDIR)" ] && command -v update-desktop-database >/dev/null 2>&1; then \
+		update-desktop-database -q /usr/share/applications $(PREFIX)/share/applications 2>/dev/null || true; \
+	fi
 	install -m755 src/ota/finn-update $(DESTDIR)$(PREFIX)/bin/finn-update
 	install -d $(DESTDIR)$(PREFIX)/bin/finn_ota
 	install -m644 src/ota/finn_ota/*.py $(DESTDIR)$(PREFIX)/bin/finn_ota/

@@ -32,6 +32,7 @@ Item {
         anchors.fill: parent
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         // Consume clicks inside popover so backdrop doesn't close it
         MouseArea { anchors.fill: parent }

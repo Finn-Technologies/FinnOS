@@ -30,6 +30,8 @@ LaunchOptions FinnQmlApp::parseArgs(int argc, char** argv) {
             opt.form_factor = next_val().trimmed().toLower();
         } else if (arg == QLatin1String("--screenshot")) {
             opt.screenshot_path = next_val();
+        } else if (arg == QLatin1String("--screenshot-delay")) {
+            opt.screenshot_delay_ms = std::max(100, next_val().toInt());
         } else if (arg == QLatin1String("--open")) {
             opt.open_panel = next_val().trimmed().toLower();
         } else if (arg == QLatin1String("--width")) {

@@ -21,10 +21,10 @@ Item {
         asynchronous: false
     }
 
-    // Subtle dark-mode dim overlay so dark glass pops smoothly
+    // Deep dark-mode scrim so dark liquid glass stays rich obsidian instead of washed-out gray
     Rectangle {
         anchors.fill: parent
-        color: FinnTheme.dark ? FinnTheme.withAlpha("#0B0E14", 0.36) : "transparent"
+        color: FinnTheme.dark ? FinnTheme.withAlpha("#090B10", 0.62) : "transparent"
         Behavior on color {
             enabled: !FinnTheme.reducedMotion
             ColorAnimation { duration: FinnTheme.motionTheme }

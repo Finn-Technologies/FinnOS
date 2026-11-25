@@ -12,43 +12,43 @@ theme FinnTokens {
   // ---- the palette ----------------------------------------------------
   // Bone and ink. The chrome is bone; the text on it is ink.
 
-  color: bone_light #FBFBFD, bone_dark #0D0F14
-  color: tile_light #FFFFFF, tile_dark #161922
-  color: tile_on_light #DCEBFF, tile_on_dark #223B61
-  color: hair_light #14000000, hair_dark #1CFFFFFF
+  color: bone_light #FBFBFD, bone_dark #0B0D12
+  color: tile_light #FFFFFF, tile_dark #171B24
+  color: tile_on_light #DCEBFF, tile_on_dark #1F3A60
+  color: hair_light #14000000, hair_dark #22FFFFFF
   // Figma 20:106 (Window Options): the pill border is #000000@5% at 0.5 px,
   // half the weight of `hair`. Kept separate so neither border drifts.
-  color: hair_soft_light #0D000000, hair_soft_dark #0DFFFFFF
+  color: hair_soft_light #0D000000, hair_soft_dark #12FFFFFF
 
-  color: ink_light #0F141A, ink_dark #F2F4F8
-  color: mute_light #868E9B, mute_dark #8891A0
-  color: dim_light #525866, dim_dark #9EA6B5
+  color: ink_light #0F141A, ink_dark #F5F7FA
+  color: mute_light #868E9B, mute_dark #949DAE
+  color: dim_light #525866, dim_dark #B4BCCB
 
   // The family accent is the same in both appearances: it is the brand's
   // colour, not the appearance's (#007BFF in Figma).
   color: accent_light #007BFF, accent_dark #007BFF
 
-  color: track_light #80000000, track_dark #3B4048
-  color: knob_light #FFFFFF, knob_dark #EDE9E1
+  color: track_light #80000000, track_dark #33FFFFFF
+  color: knob_light #FFFFFF, knob_dark #FFFFFF
 
   // `on` and `fill` are the accent and the track at full strength.
   color: on_light #007BFF, on_dark #0A84FF
-  color: fill_light #FFFFFF, fill_dark #EDE9E1
+  color: fill_light #FFFFFF, fill_dark #FFFFFF
 
   // The tint of the frosted chrome: near-white in the light appearance,
-  // and the deep charcoal/bone in the dark one (#414141B2 in Figma dark notifications).
-  color: glass_light #FBFBFD, glass_dark #161922
-  // Figma 2:168 / 2:170 (Notifications): 70% translucent white / #414141 dark card.
-  color: notif_glass_light #B2FFFFFF, notif_glass_dark #B2414141
+  // and deep obsidian in the dark one.
+  color: glass_light #FBFBFD, glass_dark #11151E
+  // Figma 2:168 / 2:170 (Notifications): translucent white / deep obsidian dark card.
+  color: notif_glass_light #B2FFFFFF, notif_glass_dark #A8161B26
   // Figma 84:593 / 84:618 (Lock Screen): 65% white glass pills over wallpaper.
-  color: lock_pill_light #A6FFFFFF, lock_pill_dark #B8161922
+  color: lock_pill_light #A6FFFFFF, lock_pill_dark #B811151E
   color: nav_sel_light #120F141A, nav_sel_dark #24FFFFFF
   color: hero_tint_light #EBFFDF, hero_tint_dark #15221B
   color: sound_badge_light #FF0000, sound_badge_dark #FF3B30
 
   // Semantic surfaces, states, and feedback tones (synced with FinnTokens).
-  color: surface_canvas_light #F2F4F8, surface_canvas_dark #111319
-  color: surface_input_light #F4F6FA, surface_input_dark #1C202B
+  color: surface_canvas_light #F2F4F8, surface_canvas_dark #0E1117
+  color: surface_input_light #F4F6FA, surface_input_dark #1C212D
   color: surface_hover_light #0E000000, surface_hover_dark #14FFFFFF
   color: surface_pressed_light #18000000, surface_pressed_dark #22FFFFFF
   color: danger_light #EF4444, danger_dark #F87171

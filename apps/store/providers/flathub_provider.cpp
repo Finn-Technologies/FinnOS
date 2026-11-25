@@ -100,7 +100,7 @@ std::vector<StoreAppItem> parse_flathub_hits_json(std::string_view json) {
         item.description = item.subtitle;
         item.developer = json_str(obj, "developer_name");
         item.icon = json_str(obj, "icon");
-        if (item.icon.empty()) item.icon = "linux.svg";
+        if (item.icon.empty()) item.icon = "linux-app";
         item.ecosystem = StoreEcosystem::Flatpak;
         item.category = "Linux";
         item.verified = json_bool(obj, "verification_verified");
@@ -111,7 +111,7 @@ std::vector<StoreAppItem> parse_flathub_hits_json(std::string_view json) {
         item.accent_hex = "#38bdf8";
         item.permissions = {"Flatpak Sandbox", "Wayland Display", "Network Access"};
         out.push_back(std::move(item));
-        if (out.size() >= 48) break;
+        if (out.size() >= 60) break;
     }
     return out;
 }

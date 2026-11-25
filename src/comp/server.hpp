@@ -202,6 +202,8 @@ private:
     int backdrop_version_ = 0;
     QVariantList overlay_blur_rects_;
     qint64 blur_rects_mtime_ = 0;
+    qint64 blur_rects_size_ = -1;
+    QByteArray blur_rects_raw_;
 
     // Trackpad multi-finger gesture state (Qt NativeGesture / Touch + native libinput)
     int gesture_fingers_ = 0;

@@ -77,7 +77,27 @@ std::vector<StoreAppItem> parse_winget_search_json(std::string_view json) {
                 item.subtitle = json_str(obj, "Description");
                 if (item.subtitle.empty()) item.subtitle = "Windows package via winget-pkgs";
                 item.description = item.subtitle;
-                item.icon = "windows.svg";
+
+                // Prefer official IconUrl; else derive high-res brand icon from Homepage domain.
+                const std::string icon_url = json_str(obj, "IconUrl");
+                if (icon_url.rfind("https://", 0) == 0 || icon_url.rfind("http://", 0) == 0) {
+                    item.icon = icon_url;
+                } else {
+                    const std::string hp = json_str(obj, "Homepage");
+                    std::string host;
+                    const std::size_t scheme = hp.find("://");
+                    if (scheme != std::string::npos) {
+                        const std::size_t h0 = scheme + 3;
+                        const std::size_t h1 = hp.find_first_of("/?#:", h0);
+                        host = hp.substr(h0, h1 == std::string::npos ? std::string::npos : (h1 - h0));
+                    }
+                    if (!host.empty() && host.find('.') != std::string::npos &&
+                        host != "github.com" && host != "www.github.com") {
+                        item.icon = "https://www.google.com/s2/favicons?sz=128&domain=" + host;
+                    } else {
+                        item.icon = "windows";
+                    }
+                }
                 item.ecosystem = StoreEcosystem::Windows;
                 item.category = "Windows";
                 item.verified = true;
@@ -85,7 +105,7 @@ std::vector<StoreAppItem> parse_winget_search_json(std::string_view json) {
                 item.accent_hex = "#6366f1";
                 item.permissions = {"Windows Prefix (finn-win)", "SHA-256 Verified Installer"};
                 out.push_back(std::move(item));
-                if (out.size() >= 32) break;
+                if (out.size() >= 48) break;
             }
         }
     }

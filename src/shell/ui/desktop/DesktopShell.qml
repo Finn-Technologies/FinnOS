@@ -46,6 +46,16 @@ Item {
         z: 20
     }
 
+    // Notification Center Popover (380x440 aligned right of dock, 15px gap above dock)
+    NotificationCenterPopover {
+        id: notificationCenter
+        x: Math.min(parent.width - width - 16, Math.max(16, dock.x + dock.width - width))
+        anchors.bottom: dock.top
+        anchors.bottomMargin: 15
+        shown: ShellCorona.activePanel === "notifications"
+        z: 20
+    }
+
     // Open Windows Overview Popover
     OverviewPopover {
         id: overview

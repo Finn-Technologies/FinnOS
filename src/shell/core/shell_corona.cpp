@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <pwd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef FINN_HAVE_QT_DBUS
@@ -449,6 +450,7 @@ ShellCorona::ShellCorona(QObject* parent)
 
     connect(this, &ShellCorona::panelChanged, this, &ShellCorona::updateInputRegion);
     connect(this, &ShellCorona::lockStateChanged, this, &ShellCorona::updateInputRegion);
+    connect(this, &ShellCorona::oobeActiveChanged, this, &ShellCorona::updateInputRegion);
     connect(this, &ShellCorona::windowsChanged, this, &ShellCorona::updateInputRegion);
     connect(notif_model_, &NotificationListModel::countChanged, this,
             &ShellCorona::updateInputRegion);
@@ -476,7 +478,7 @@ void ShellCorona::updateInputRegion() {
 
     // Compute exact Dock pill rects for both Wayland input mask & real-time compositor blur
     const QVariantList items = dockItems();
-    const int n_items = std::max(6, static_cast<int>(items.size()));
+    const int n_items = static_cast<int>(items.size());
     bool has_sep = false;
     for (const QVariant& iv : items) {
         if (iv.toMap().value(QStringLiteral("separatorBefore")).toBool()) {
@@ -490,31 +492,72 @@ void ShellCorona::updateInputRegion() {
     constexpr int kTimeW = 154;
     constexpr int kGap = 15;
     constexpr int kDockH = 44;
+    constexpr int kDockBottomMargin = 15;
     const int dock_total_w = apps_pill_w + kGap + kHomeW + kGap + kHwW + kGap + kTimeW;
     const int dock_x = std::max(0, (w - dock_total_w) / 2);
-    const int dock_y = std::max(0, h - 15 - kDockH);
+    const int dock_y = std::max(0, h - kDockBottomMargin - kDockH);
 
-    // Publish exact frosted-glass rects so finn-comp blurs windows + wallpaper behind them in real time
+    // Publish exact frosted-glass rects matching DesktopShell.qml / popover QML geometry
+    // so finn-comp blurs windows + wallpaper behind every glass surface in real time.
     {
         QByteArray out;
         auto addRect = [&out](int rx, int ry, int rw, int rh, int rr) {
+            if (rw <= 0 || rh <= 0) return;
             out += QByteArray::number(rx) + '\t' + QByteArray::number(ry) + '\t' +
                    QByteArray::number(rw) + '\t' + QByteArray::number(rh) + '\t' +
                    QByteArray::number(rr) + '\n';
         };
-        if (!locked_) {
+        if (!locked_ && !oobe_active_) {
+            // 1. DesktopDock 4 frosted glass pills (radiusLg = 12)
             addRect(dock_x, dock_y, apps_pill_w, kDockH, 12);
             addRect(dock_x + apps_pill_w + kGap, dock_y, kHomeW, kDockH, 12);
             addRect(dock_x + apps_pill_w + kGap + kHomeW + kGap, dock_y, kHwW, kDockH, 12);
             addRect(dock_x + apps_pill_w + kGap + kHomeW + kGap + kHwW + kGap, dock_y, kTimeW, kDockH, 12);
+
+            // 2. Active desktop popover (exact QML positions, sizes, and radii)
             if (active_panel_ == QLatin1String("home")) {
-                addRect((w - 580) / 2, std::max(12, dock_y - 436 - 14), 580, 436, 16);
+                // HomeMenuPopover.qml: 585x460, centered, 15px above dock, r=12
+                addRect((w - 585) / 2, std::max(0, dock_y - 15 - 460), 585, 460, 12);
             } else if (active_panel_ == QLatin1String("search")) {
-                addRect((w - 540) / 2, std::max(12, dock_y - 360 - 14), 540, 360, 16);
+                // SpotlightPopover.qml: centered at y=max(96, round(h*0.28)), spacing=14
+                // Top search pill (300x44, r=22) + recommendations/results card (350x228, r=12)
+                const int spot_y = std::max(96, static_cast<int>(std::lround(h * 0.28)));
+                addRect((w - 300) / 2, spot_y, 300, 44, 22);
+                addRect((w - 350) / 2, spot_y + 44 + 14, 350, 228, 12);
             } else if (active_panel_ == QLatin1String("control")) {
-                addRect((w - 340) / 2 + 120, std::max(12, dock_y - 380 - 14), 340, 380, 16);
+                // ControlCenterPopover.qml: 444x300, aligned to dock right edge, 15px above dock, r=12
+                const int cc_x = std::min(w - 444 - 16, std::max(16, dock_x + dock_total_w - 444));
+                addRect(cc_x, std::max(0, dock_y - 15 - 300), 444, 300, 12);
+            } else if (active_panel_ == QLatin1String("notifications")) {
+                // NotificationCenterPopover.qml: 380x440, aligned to dock right edge, 15px above dock, r=12
+                const int nc_x = std::min(w - 380 - 16, std::max(16, dock_x + dock_total_w - 380));
+                addRect(nc_x, std::max(0, dock_y - 15 - 440), 380, 440, 12);
             } else if (active_panel_ == QLatin1String("windows")) {
-                addRect((w - 560) / 2, std::max(12, dock_y - 320 - 14), 560, 320, 16);
+                // OverviewPopover.qml: 532x312 with shadow=true (6px inset -> 520x300 glass body),
+                // centered, 12px above dock (body bottom is 18px above dock), r=12
+                addRect((w - 520) / 2, std::max(0, dock_y - 18 - 300), 520, 300, 12);
+            }
+
+            // 3. NotificationStack.qml: top-right (18px inset), 340x80 cards with shadow=true
+            // (6px inset -> 328x68 glass body), r=20, receding 3-card stack
+            if (notif_model_ && notif_model_->count() > 0) {
+                const int count = notif_model_->count();
+                addRect(std::max(0, w - 18 - 340 + 6), 18 + 6, 328, 68, 20);
+                if (count >= 2) {
+                    addRect(std::max(0, w - 18 - 170 - 148), 18 + 15 + 6, 295, 61, 18);
+                }
+                if (count >= 3) {
+                    addRect(std::max(0, w - 18 - 170 - 133), 18 + 29 + 6, 266, 55, 16);
+                }
+            }
+
+            // 4. Dock hover app-name bubble (only when no popover is open)
+            if (active_panel_.isEmpty() && hover_blur_rect_.width() > 1.0 && hover_blur_rect_.height() > 1.0) {
+                addRect(static_cast<int>(std::lround(hover_blur_rect_.x())),
+                        static_cast<int>(std::lround(hover_blur_rect_.y())),
+                        static_cast<int>(std::lround(hover_blur_rect_.width())),
+                        static_cast<int>(std::lround(hover_blur_rect_.height())),
+                        static_cast<int>(std::lround(hover_blur_radius_)));
             }
         }
         const QString dir = QString::fromLatin1(finn::kCompositorStateDir);
@@ -524,8 +567,8 @@ void ShellCorona::updateInputRegion() {
         if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             f.write(out);
             f.close();
-            QFile::remove(dst);
-            QFile::rename(tmp, dst);
+            ::chmod(tmp.toUtf8().constData(), 0644);
+            ::rename(tmp.toUtf8().constData(), dst.toUtf8().constData());
         }
     }
 
@@ -1040,6 +1083,23 @@ void ShellCorona::closePanels() {
     if (active_panel_.isEmpty()) return;
     active_panel_.clear();
     emit panelChanged();
+}
+
+void ShellCorona::setHoverBlurRect(double x, double y, double w, double h, double radius) {
+    const QRectF next(x, y, w, h);
+    if (hover_blur_rect_ == next && qFuzzyCompare(hover_blur_radius_ + 1.0, radius + 1.0)) {
+        return;
+    }
+    hover_blur_rect_ = next;
+    hover_blur_radius_ = radius;
+    updateInputRegion();
+}
+
+void ShellCorona::clearHoverBlurRect() {
+    if (hover_blur_rect_.isEmpty()) return;
+    hover_blur_rect_ = QRectF();
+    hover_blur_radius_ = 0.0;
+    updateInputRegion();
 }
 
 void ShellCorona::launchApp(const QString& appId) {

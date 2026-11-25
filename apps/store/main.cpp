@@ -16,7 +16,7 @@
 int main(int argc, char** argv) {
     QString install_path;
     QString initial_tab;
-    QString screenshot_path;
+    QString initial_search;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--version") == 0) {
@@ -27,8 +27,8 @@ int main(int argc, char** argv) {
             install_path = QString::fromLocal8Bit(argv[++i]);
         } else if (std::strcmp(argv[i], "--tab") == 0 && i + 1 < argc) {
             initial_tab = QString::fromLocal8Bit(argv[++i]);
-        } else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
-            screenshot_path = QString::fromLocal8Bit(argv[++i]);
+        } else if (std::strcmp(argv[i], "--search") == 0 && i + 1 < argc) {
+            initial_search = QString::fromLocal8Bit(argv[++i]);
         }
     }
 
@@ -39,25 +39,13 @@ int main(int argc, char** argv) {
 
     auto* ctrl = new finn::apps::StoreController(&app.engine());
     if (!initial_tab.isEmpty()) ctrl->setActiveTab(initial_tab);
+    if (!initial_search.isEmpty()) ctrl->setSearchQuery(initial_search);
     if (!install_path.isEmpty()) ctrl->inspectLocalPackage(install_path);
     app.setContextProperty(QStringLiteral("StoreCtrl"), ctrl);
 
     if (!app.load(QUrl(QStringLiteral("qrc:/qt/qml/FinnStore/StoreApp.qml")))) {
         std::fprintf(stderr, "finn-store: failed to load StoreApp.qml\n");
         return 1;
-    }
-
-    if (!screenshot_path.isEmpty()) {
-        QTimer::singleShot(450, &app.engine(), [&app, screenshot_path]() {
-            const auto roots = app.engine().rootObjects();
-            if (!roots.isEmpty()) {
-                if (auto* win = qobject_cast<QQuickWindow*>(roots.first())) {
-                    const QImage img = win->grabWindow();
-                    if (!img.isNull()) img.save(screenshot_path);
-                }
-            }
-            QCoreApplication::quit();
-        });
     }
 
     return app.exec();

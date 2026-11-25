@@ -14,7 +14,7 @@ FinnApplicationWindow {
     navItems: []
     showSidebarSearch: false
     fullBleedContent: true
-    windowContentColor: "#CC11141B"
+    windowContentColor: "#B80E121B"
 
     property int nextTabId: 2
     property int activeTabIndex: 0

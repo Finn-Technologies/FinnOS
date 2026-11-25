@@ -2,6 +2,7 @@
 
 #include "comp/backdrop_item.hpp"
 
+#include "common/liquid_glass.hpp"
 #include "comp/server.hpp"
 
 #include <QPainter>
@@ -98,9 +99,22 @@ void CompositorBackdropItem::paint(QPainter* p) {
     p->setRenderHint(QPainter::Antialiasing, true);
     p->setRenderHint(QPainter::SmoothPixmapTransform, true);
     const QRectF body(0.0, 0.0, w, h);
+    const QPainterPath outer_path = rounded_backdrop_path(body, radius_);
+
+    // Render continuous SDF Liquid Glass refraction at half resolution for fast real-time compositing
+    const int rw = std::max(2, static_cast<int>(std::lround(w * 0.5)));
+    const int rh = std::max(2, static_cast<int>(std::lround(h * 0.5)));
+    const QImage refracted = finn::glass::render_liquid_glass(
+        blur, QRectF(0.0, 0.0, blur.width(), blur.height()),
+        rw, rh, radius_ * 0.5, srv->darkTheme());
+
     p->save();
-    p->setClipPath(rounded_backdrop_path(body, radius_));
-    p->drawImage(body, blur, QRectF(0.0, 0.0, blur.width(), blur.height()));
+    p->setClipPath(outer_path);
+    if (!refracted.isNull()) {
+        p->drawImage(body, refracted);
+    } else {
+        p->drawImage(body, blur, QRectF(0.0, 0.0, blur.width(), blur.height()));
+    }
     p->restore();
 }
 

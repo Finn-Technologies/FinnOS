@@ -52,6 +52,7 @@ Column {
         width: 300
         height: 44
         fontSize: 15
+        backdropBlur: !ShellCorona.waylandSession
         placeholderText: "Search or ask anything"
         onTextEdited: (t) => {
             root.queryText = t
@@ -71,6 +72,7 @@ Column {
         height: 228
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         MouseArea { anchors.fill: parent }
 

@@ -17,7 +17,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.version = "1.0.0";
         a.category = "Productivity";
         a.ecosystem = StoreEcosystem::Native;
-        a.icon = "folder";
+        a.icon = "files";
         a.rating = 4.9;
         a.review_count = 1240;
         a.size_label = "4.2 MB";
@@ -66,7 +66,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.version = "1.0.0";
         a.category = "Productivity";
         a.ecosystem = StoreEcosystem::Native;
-        a.icon = "file-text";
+        a.icon = "notes";
         a.rating = 4.8;
         a.review_count = 740;
         a.size_label = "2.9 MB";
@@ -89,7 +89,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.version = "1.0.0";
         a.category = "Media";
         a.ecosystem = StoreEcosystem::Native;
-        a.icon = "image";
+        a.icon = "viewer";
         a.rating = 4.8;
         a.review_count = 510;
         a.size_label = "3.1 MB";
@@ -112,7 +112,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.version = "1.0.0";
         a.category = "System";
         a.ecosystem = StoreEcosystem::Native;
-        a.icon = "activity";
+        a.icon = "monitor";
         a.rating = 4.9;
         a.review_count = 620;
         a.size_label = "3.4 MB";
@@ -122,6 +122,29 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.accent_hex = "#14b8a6";
         a.permissions = {"Native Wayland", "System Telemetry (/proc)"};
         a.install_ref = "monitor";
+        out.push_back(std::move(a));
+    }
+    {
+        StoreAppItem a;
+        a.id = "calculator";
+        a.session_app_id = "calculator";
+        a.name = "Finn Calculator";
+        a.subtitle = "Standard & scientific calculator with history";
+        a.description = "Clean native calculator with keyboard entry, memory registers, scientific functions, and expression history.";
+        a.developer = "FinnOS Core";
+        a.version = "1.0.0";
+        a.category = "Utilities";
+        a.ecosystem = StoreEcosystem::Native;
+        a.icon = "calculator";
+        a.rating = 4.8;
+        a.review_count = 410;
+        a.size_label = "2.1 MB";
+        a.verified = true;
+        a.verified_source = "FinnOS Core";
+        a.curated = true;
+        a.accent_hex = "#334155";
+        a.permissions = {"Native Wayland"};
+        a.install_ref = "calculator";
         out.push_back(std::move(a));
     }
 
@@ -139,7 +162,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.developer = dev;
         a.category = cat;
         a.ecosystem = StoreEcosystem::Flatpak;
-        a.icon = "linux.svg";
+        a.icon = "linux-app";
         a.rating = rating;
         a.size_label = sz;
         a.verified = true;
@@ -185,7 +208,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.developer = dev;
         a.category = cat;
         a.ecosystem = StoreEcosystem::Android;
-        a.icon = "android.svg";
+        a.icon = "android";
         a.rating = rating;
         a.size_label = sz;
         a.verified = true;
@@ -223,7 +246,7 @@ std::vector<StoreAppItem> build_curated_catalog() {
         a.developer = dev;
         a.category = cat;
         a.ecosystem = StoreEcosystem::Windows;
-        a.icon = "windows.svg";
+        a.icon = "windows";
         a.rating = rating;
         a.size_label = sz;
         a.verified = true;

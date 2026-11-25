@@ -22,6 +22,7 @@ set(SHELL_QML_FILES
     ui/desktop/HomeMenuPopover.qml
     ui/desktop/SpotlightPopover.qml
     ui/desktop/ControlCenterPopover.qml
+    ui/desktop/NotificationCenterPopover.qml
     ui/desktop/OverviewPopover.qml
     ui/tablet/TabletShell.qml
     ui/mobile/MobileShell.qml

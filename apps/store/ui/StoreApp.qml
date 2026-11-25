@@ -1,31 +1,34 @@
-// Finn Store — macOS App Store-inspired Native Qt 6 / FinnUI Software Center.
-// Clearly separates Native FinnOS, Linux (Flatpak), Android (Aurora/Play),
-// Windows (winget/finn-win), and Updates & Installed, with rich detail sheets
-// and local --install cross-OS package sideloading.
+// Finn Store — Settings-consistent Native Qt 6 / FinnUI Software Center.
+// Uses FinnApplicationWindow directly for 100% consistent sidebar (250px, flat right
+// edge, 26px circular badge Hugeicons, 14px Regular labels), bare full-color app
+// icons with zero background boxes, and clean hairline-separated shelves.
 
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Window
 import FinnUI 1.0
 
-Window {
+FinnApplicationWindow {
     id: win
-    title: "Finn Store"
-    width: 1180
-    height: 760
-    minimumWidth: 880
-    minimumHeight: 580
-    visible: true
-    color: FinnTheme.bone
+    width: FinnLaunchWidth > 0 ? FinnLaunchWidth : 1060
+    height: FinnLaunchHeight > 0 ? FinnLaunchHeight : 680
+    appTitle: "Finn Store"
+    pageTitle: StoreCtrl.searchQuery.trim().length > 0
+        ? ("Results for \"" + StoreCtrl.searchQuery.trim() + "\"")
+        : tabTitle(StoreCtrl.activeTab)
+    activeNavId: StoreCtrl.activeTab
+    showSidebarSearch: true
+    mobileDetailOpen: true
 
-    readonly property var navItems: [
-        { id: "discover", label: "Discover",            icon: "search-01",  badge: "" },
-        { id: "native",   label: "Native FinnOS",       icon: "app-grid",   badge: "Core" },
-        { id: "flatpak",  label: "Linux (Flatpak)",     icon: "linux",      badge: "Flathub" },
-        { id: "android",  label: "Android",             icon: "android",    badge: "Aurora" },
-        { id: "windows",  label: "Windows",             icon: "windows",    badge: "winget" },
-        { id: "updates",  label: "Updates & Installed", icon: "download",   badge: StoreCtrl.updatesCount > 0 ? String(StoreCtrl.updatesCount) : "" }
+    readonly property var primaryHero: StoreCtrl.heroItems.length > 0 ? StoreCtrl.heroItems[0] : null
+
+    // Exact Settings sidebar badge style (26px circular colored badge + white Hugeicons + 14px Regular)
+    navItems: [
+        { id: "discover", label: "Discover",      icon: "compass",    badgeColor: "#007BFF", section: "browse" },
+        { id: "native",   label: "Native FinnOS", icon: "grid",       badgeColor: "#6366F1", section: "ecosystems" },
+        { id: "flatpak",  label: "Linux",         icon: "package",    badgeColor: "#0EA5E9", section: "ecosystems" },
+        { id: "android",  label: "Android",       icon: "smartphone", badgeColor: "#10B981", section: "ecosystems" },
+        { id: "windows",  label: "Windows",       icon: "window",     badgeColor: "#2563EB", section: "ecosystems" },
+        { id: "updates",  label: "Updates",       icon: "download",   badgeColor: "#F59E0B", section: "manage" }
     ]
 
     function tabTitle(tabId) {
@@ -35,569 +38,381 @@ Window {
         return "Discover"
     }
 
-    function tabSubtitle(tabId) {
-        if (tabId === "native")  return "First-party & FinnSDK Wayland applications built natively for FinnOS"
-        if (tabId === "flatpak") return "Sandboxed Linux desktop applications powered by Flathub API v2"
-        if (tabId === "android") return "Android apps via Aurora anonymous Play API into finn-android"
-        if (tabId === "windows") return "Windows apps via microsoft/winget-pkgs (SHA-256 verified) into finn-win"
-        if (tabId === "updates") return StoreCtrl.installedCount + " installed apps · " + StoreCtrl.updatesCount + " updates available"
-        return "Curated native & cross-OS apps across every ecosystem"
+    onNavSelected: (id) => {
+        StoreCtrl.activeTab = id
+        StoreCtrl.searchQuery = ""
     }
+    onSidebarSearchTextChanged: StoreCtrl.searchQuery = sidebarSearchText
 
     Connections {
         target: StoreCtrl
         function onToastRequested(message, severity) {
-            toast.showToast(message, severity || "info", 2800)
+            win.showToast(message, severity || "info")
         }
     }
 
-    // Main split layout: macOS App Store frosted sidebar + editorial content
-    RowLayout {
+    headerActions: [
+        FinnButton {
+            text: "Install File"
+            iconName: "plus"
+            variant: "secondary"
+            implicitHeight: 28
+            radius: 6
+            onClicked: StoreCtrl.browseLocalPackage()
+        },
+        FinnButton {
+            visible: StoreCtrl.activeTab === "updates"
+            text: "Check Updates"
+            variant: "secondary"
+            implicitHeight: 28
+            radius: 6
+            onClicked: StoreCtrl.checkForUpdates()
+        },
+        FinnButton {
+            visible: StoreCtrl.activeTab === "updates" && StoreCtrl.updatesCount > 0
+            text: "Update All"
+            variant: "primary"
+            implicitHeight: 28
+            radius: 6
+            onClicked: StoreCtrl.updateAll()
+        },
+        FinnButton {
+            visible: StoreCtrl.searchQuery.length >= 2 && StoreCtrl.activeTab !== "native"
+            text: StoreCtrl.busy ? "Searching..." : "Search Online"
+            variant: "primary"
+            implicitHeight: 28
+            radius: 6
+            enabled: !StoreCtrl.busy
+            onClicked: StoreCtrl.searchOnline(StoreCtrl.searchQuery)
+        }
+    ]
+
+    Flickable {
+        id: scroller
         anchors.fill: parent
-        spacing: 0
+        contentWidth: width
+        contentHeight: contentCol.implicitHeight + 32
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
-        // ── Left Frosted Sidebar ─────────────────────────────────────────────
-        Rectangle {
-            Layout.fillHeight: true
-            Layout.preferredWidth: 248
-            color: FinnTheme.tile
+        ColumnLayout {
+            id: contentCol
+            width: parent.width
+            spacing: 18
 
-            Rectangle {
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                anchors.right: parent.right
-                width: 1
-                color: FinnTheme.hair
-            }
-
+            // ── DISCOVER VIEW ────────────────────────────────────────────────
             ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 16
-                spacing: 12
+                Layout.fillWidth: true
+                spacing: 16
+                visible: StoreCtrl.activeTab === "discover" && StoreCtrl.searchQuery.trim().length === 0
 
+                // 1. Editorial Hero Banner with actual bare FinnOS app icons
+                Rectangle {
+                    id: heroBanner
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 204
+                    radius: FinnTheme.radiusSm
+                    clip: true
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0;  color: "#0066FF" }
+                        GradientStop { position: 0.55; color: "#2563EB" }
+                        GradientStop { position: 1.0;  color: "#4F46E5" }
+                    }
+
+                    ColumnLayout {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 22
+                        width: parent.width * 0.46
+                        spacing: 5
+
+                        Text {
+                            text: "Featured"
+                            color: "#CCFFFFFF"
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 12
+                            font.weight: Font.Normal
+                        }
+
+                        Text {
+                            text: "FinnOS Essentials"
+                            color: "#FFFFFF"
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 22
+                            font.weight: Font.Medium
+                        }
+
+                        Text {
+                            text: "Native Wayland apps built for everyday work on FinnOS."
+                            color: "#E0FFFFFF"
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 13
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+
+                        Item { Layout.fillHeight: true }
+
+                        Rectangle {
+                            implicitWidth: heroBtnTxt.implicitWidth + 22
+                            implicitHeight: 28
+                            radius: 6
+                            color: heroBtnMa.containsMouse ? "#45FFFFFF" : "#2AFFFFFF"
+
+                            Text {
+                                id: heroBtnTxt
+                                anchors.centerIn: parent
+                                text: "View All"
+                                color: "#FFFFFF"
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                            }
+
+                            MouseArea {
+                                id: heroBtnMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: StoreCtrl.activeTab = "native"
+                            }
+                        }
+                    }
+
+                    // Actual FinnOS app icons fanned cleanly (zero wrapper boxes)
+                    Item {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 28
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 284
+                        height: 156
+
+                        Repeater {
+                            model: [
+                                { icon: "files",    x: 4,   y: 58, rot: -14 },
+                                { icon: "notes",    x: 58,  y: 34, rot: -7 },
+                                { icon: "terminal", x: 112, y: 18, rot: 0 },
+                                { icon: "viewer",   x: 166, y: 16, rot: 7 },
+                                { icon: "flourish", x: 214, y: 30, rot: 14 }
+                            ]
+                            delegate: FinnIcon {
+                                required property var modelData
+                                x: modelData.x
+                                y: modelData.y
+                                size: 64
+                                name: modelData.icon
+                                monochrome: false
+                                rotation: modelData.rot
+                            }
+                        }
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        z: -1
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (win.primaryHero) StoreCtrl.openAppDetail(win.primaryHero.appId)
+                            else StoreCtrl.activeTab = "native"
+                        }
+                    }
+                }
+
+                // 2. Two-Column Ecosystem Cards with actual bare app icons
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10
-                    Rectangle {
-                        width: 28; height: 28; radius: 8
-                        color: FinnTheme.accent
-                        FinnIcon {
-                            anchors.centerIn: parent
-                            name: "app-grid"
-                            size: 16
-                            tint: "#ffffff"
-                        }
-                    }
-                    Text {
-                        text: "Finn Store"
-                        color: FinnTheme.ink
-                        font.family: FinnTheme.fontFamily
-                        font.pixelSize: 16
-                        font.weight: Font.Bold
-                    }
-                }
-
-                // Store search bar
-                FinnSearchField {
-                    id: searchBox
-                    Layout.fillWidth: true
-                    implicitHeight: 34
-                    placeholderText: "Search all stores..."
-                    text: StoreCtrl.searchQuery
-                    onTextEdited: function(t) { StoreCtrl.searchQuery = t }
-                    onAccepted: StoreCtrl.searchOnline(text)
-                }
-
-                // Navigation list
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 4
 
                     Repeater {
-                        model: win.navItems
-                        delegate: Rectangle {
-                            id: navRow
+                        model: [
+                            {
+                                eyebrow: "Cross-OS",
+                                title: "Linux, Android & Windows",
+                                body: "Install Flathub, Aurora Play, and winget packages side by side.",
+                                icons: ["linux-app", "android", "windows"],
+                                targetTab: "flatpak"
+                            },
+                            {
+                                eyebrow: "First-Party",
+                                title: "Built for FinnOS",
+                                body: "Files, Terminal, Notes, Viewer, Monitor, and Calculator.",
+                                icons: ["files", "notes", "monitor"],
+                                targetTab: "native"
+                            }
+                        ]
+                        delegate: FinnSquircle {
+                            id: storyCard
                             required property var modelData
-                            readonly property bool active: StoreCtrl.activeTab === modelData.id
                             Layout.fillWidth: true
-                            height: 38
-                            radius: 10
-                            color: active
-                                ? Qt.rgba(FinnTheme.accent.r, FinnTheme.accent.g, FinnTheme.accent.b, 0.18)
-                                : (navMouse.containsMouse ? FinnTheme.surfaceHover : "transparent")
+                            Layout.preferredHeight: 112
+                            radius: FinnTheme.radiusSm
+                            color: storyMa.containsMouse
+                                ? (FinnTheme.dark ? "#1C2230" : "#F5F6F8")
+                                : (FinnTheme.dark ? FinnTheme.tile : "#FFFFFF")
+                            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000"
+                            borderWidth: 0.5
+                            specularRim: false
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 10
-                                spacing: 10
+                                anchors.margins: 14
+                                spacing: 12
 
-                                FinnIcon {
-                                    name: navRow.modelData.icon
-                                    size: 17
-                                    tint: navRow.active ? FinnTheme.accent : FinnTheme.dim
-                                }
-
-                                Text {
-                                    text: navRow.modelData.label
-                                    color: navRow.active ? FinnTheme.ink : FinnTheme.dim
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 13
-                                    font.weight: navRow.active ? Font.DemiBold : Font.Medium
+                                ColumnLayout {
                                     Layout.fillWidth: true
-                                    elide: Text.ElideRight
-                                }
-
-                                Rectangle {
-                                    visible: navRow.modelData.badge.length > 0
-                                    radius: 8
-                                    color: navRow.active ? FinnTheme.accent : FinnTheme.surfaceInput
-                                    implicitWidth: badgeTxt.implicitWidth + 12
-                                    implicitHeight: 19
+                                    Layout.fillHeight: true
+                                    spacing: 3
 
                                     Text {
-                                        id: badgeTxt
-                                        anchors.centerIn: parent
-                                        text: navRow.modelData.badge
-                                        color: navRow.active ? "#ffffff" : FinnTheme.mute
+                                        text: storyCard.modelData.eyebrow
+                                        color: FinnTheme.mute
                                         font.family: FinnTheme.fontFamily
-                                        font.pixelSize: 10
-                                        font.weight: Font.DemiBold
+                                        font.pixelSize: 12
+                                        font.weight: Font.Normal
+                                    }
+
+                                    Text {
+                                        text: storyCard.modelData.title
+                                        color: FinnTheme.ink
+                                        font.family: FinnTheme.fontFamily
+                                        font.pixelSize: 15
+                                        font.weight: Font.Medium
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+
+                                    Text {
+                                        text: storyCard.modelData.body
+                                        color: FinnTheme.dim
+                                        font.family: FinnTheme.fontFamily
+                                        font.pixelSize: 12
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
+                                        maximumLineCount: 2
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Item { Layout.fillHeight: true }
+                                }
+
+                                // Bare app icon cluster (no background box)
+                                Item {
+                                    Layout.preferredWidth: 102
+                                    Layout.preferredHeight: 54
+
+                                    FinnIcon {
+                                        x: 0; y: 10; size: 38; rotation: -10
+                                        name: storyCard.modelData.icons[0]
+                                        monochrome: false
+                                    }
+                                    FinnIcon {
+                                        x: 30; y: 2; size: 44
+                                        name: storyCard.modelData.icons[1]
+                                        monochrome: false
+                                    }
+                                    FinnIcon {
+                                        x: 64; y: 10; size: 38; rotation: 10
+                                        name: storyCard.modelData.icons[2]
+                                        monochrome: false
                                     }
                                 }
                             }
 
                             MouseArea {
-                                id: navMouse
+                                id: storyMa
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: StoreCtrl.activeTab = navRow.modelData.id
+                                onClicked: StoreCtrl.activeTab = storyCard.modelData.targetTab
                             }
                         }
                     }
                 }
 
-                Item { Layout.fillHeight: true }
-
-                // Runtime status card (honest probe of Flatpak / Android / Windows / macOS)
-                Rectangle {
-                    Layout.fillWidth: true
-                    radius: 12
-                    color: FinnTheme.surfaceInput
-                    border.width: 1
-                    border.color: FinnTheme.hair
-                    implicitHeight: rtCol.implicitHeight + 20
-
-                    ColumnLayout {
-                        id: rtCol
-                        anchors.fill: parent
-                        anchors.margins: 10
-                        spacing: 6
-
-                        Text {
-                            text: "COMPATIBILITY RUNTIMES"
-                            color: FinnTheme.mute
-                            font.family: FinnTheme.fontFamily
-                            font.pixelSize: 10
-                            font.weight: Font.Bold
-                            font.letterSpacing: 0.7
-                        }
-
-                        Repeater {
-                            model: [
-                                { name: "Flatpak", ok: !!StoreCtrl.runtimeStatus.flatpakReady },
-                                { name: "Android", ok: !!StoreCtrl.runtimeStatus.androidReady },
-                                { name: "Windows", ok: !!StoreCtrl.runtimeStatus.windowsReady },
-                                { name: "macOS",   ok: !!StoreCtrl.runtimeStatus.macosReady }
-                            ]
-                            delegate: RowLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 8
-                                Rectangle {
-                                    width: 7; height: 7; radius: 4
-                                    color: modelData.ok ? "#22c55e" : "#64748b"
-                                }
-                                Text {
-                                    text: modelData.name
-                                    color: FinnTheme.dim
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 11
-                                    Layout.fillWidth: true
-                                }
-                                Text {
-                                    text: modelData.ok ? "Ready" : "Offline"
-                                    color: modelData.ok ? "#22c55e" : FinnTheme.mute
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 11
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Main Content Area ────────────────────────────────────────────────
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            Flickable {
-                id: scroller
-                anchors.fill: parent
-                contentWidth: width
-                contentHeight: contentCol.implicitHeight + 56
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
-
-                ColumnLayout {
-                    id: contentCol
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.margins: 28
-                    spacing: 24
-
-                    // Page header
-                    RowLayout {
+                // 3. Borderless App Shelves & Ranked Charts (bare app icons, zero backgrounds)
+                Repeater {
+                    model: StoreCtrl.discoverShelves
+                    delegate: ColumnLayout {
+                        id: shelf
+                        required property var modelData
+                        required property int index
+                        readonly property bool rankedStyle: index >= 2
                         Layout.fillWidth: true
-                        spacing: 16
+                        spacing: 8
 
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
+                        FinnDivider { Layout.fillWidth: true }
 
-                            Text {
-                                text: win.tabTitle(StoreCtrl.activeTab)
-                                color: FinnTheme.ink
-                                font.family: FinnTheme.fontFamily
-                                font.pixelSize: 30
-                                font.weight: Font.Bold
-                            }
-
-                            Text {
-                                text: win.tabSubtitle(StoreCtrl.activeTab)
-                                color: FinnTheme.dim
-                                font.family: FinnTheme.fontFamily
-                                font.pixelSize: 13
-                            }
-                        }
-
-                        FinnButton {
-                            visible: StoreCtrl.activeTab === "updates"
-                            text: "Check Updates"
-                            variant: "secondary"
-                            onClicked: StoreCtrl.checkForUpdates()
-                        }
-
-                        FinnButton {
-                            visible: StoreCtrl.activeTab === "updates" && StoreCtrl.updatesCount > 0
-                            text: "Update All"
-                            variant: "primary"
-                            onClicked: StoreCtrl.updateAll()
-                        }
-
-                        FinnButton {
-                            visible: StoreCtrl.searchQuery.length >= 2 && StoreCtrl.activeTab !== "native"
-                            text: StoreCtrl.busy ? "Searching..." : "Search Online"
-                            variant: "primary"
-                            enabled: !StoreCtrl.busy
-                            onClicked: StoreCtrl.searchOnline(StoreCtrl.searchQuery)
-                        }
-                    }
-
-                    // ── DISCOVER EDITORIAL VIEW ──────────────────────────────
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 24
-                        visible: StoreCtrl.activeTab === "discover" && StoreCtrl.searchQuery.trim().length === 0
-
-                        // Featured Editorial Hero Row
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: 18
+
+                            Text {
+                                text: shelf.modelData.title
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 16
+                                font.weight: Font.Medium
+                                Layout.fillWidth: true
+                            }
+
+                            Text {
+                                text: "See All"
+                                color: FinnTheme.accent
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: Font.Normal
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: StoreCtrl.activeTab = shelf.modelData.tabId
+                                }
+                            }
+                        }
+
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: 2
+                            columnSpacing: 22
+                            rowSpacing: 0
 
                             Repeater {
-                                model: StoreCtrl.heroItems
-                                delegate: Rectangle {
-                                    id: heroCard
+                                model: shelf.modelData.items
+                                delegate: Item {
+                                    id: shelfRow
                                     required property var modelData
+                                    required property int index
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: 204
-                                    radius: 18
-                                    clip: true
-                                    gradient: Gradient {
-                                        orientation: Gradient.Horizontal
-                                        GradientStop { position: 0.0; color: Qt.darker(heroCard.modelData.accentHex || "#3b82f6", 1.7) }
-                                        GradientStop { position: 1.0; color: Qt.darker(heroCard.modelData.accentHex || "#3b82f6", 2.9) }
-                                    }
-                                    border.width: 1
-                                    border.color: Qt.rgba(1, 1, 1, 0.14)
-
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 22
-                                        spacing: 8
-
-                                        Text {
-                                            text: heroCard.modelData.editorialTag || "FEATURED"
-                                            color: Qt.rgba(1, 1, 1, 0.78)
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 11
-                                            font.weight: Font.Bold
-                                            font.letterSpacing: 1.0
-                                        }
-
-                                        Text {
-                                            text: heroCard.modelData.name
-                                            color: "#ffffff"
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 24
-                                            font.weight: Font.Bold
-                                        }
-
-                                        Text {
-                                            text: heroCard.modelData.subtitle
-                                            color: Qt.rgba(1, 1, 1, 0.85)
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 13
-                                            wrapMode: Text.WordWrap
-                                            Layout.fillWidth: true
-                                            maximumLineCount: 2
-                                            elide: Text.ElideRight
-                                        }
-
-                                        Item { Layout.fillHeight: true }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 10
-
-                                            Rectangle {
-                                                radius: 8
-                                                color: Qt.rgba(1, 1, 1, 0.16)
-                                                implicitWidth: ecoTag.implicitWidth + 14
-                                                implicitHeight: 24
-                                                Text {
-                                                    id: ecoTag
-                                                    anchors.centerIn: parent
-                                                    text: heroCard.modelData.ecosystemLabel
-                                                    color: "#ffffff"
-                                                    font.family: FinnTheme.fontFamily
-                                                    font.pixelSize: 11
-                                                    font.weight: Font.Medium
-                                                }
-                                            }
-
-                                            Item { Layout.fillWidth: true }
-
-                                            FinnButton {
-                                                text: heroCard.modelData.installed ? "Open" : "Get"
-                                                variant: "primary"
-                                                onClicked: {
-                                                    if (heroCard.modelData.installed)
-                                                        StoreCtrl.launchApp(heroCard.modelData.appId)
-                                                    else
-                                                        StoreCtrl.installApp(heroCard.modelData.appId)
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        z: -1
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: StoreCtrl.openAppDetail(heroCard.modelData.appId)
-                                    }
-                                }
-                            }
-                        }
-
-                        // Separated Ecosystem Shelves
-                        Repeater {
-                            model: StoreCtrl.discoverShelves
-                            delegate: ColumnLayout {
-                                id: shelf
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 12
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-                                        Text {
-                                            text: shelf.modelData.title
-                                            color: FinnTheme.ink
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 18
-                                            font.weight: Font.Bold
-                                        }
-                                        Text {
-                                            text: shelf.modelData.subtitle
-                                            color: FinnTheme.mute
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 12
-                                        }
-                                    }
-                                    FinnButton {
-                                        text: "See All"
-                                        variant: "ghost"
-                                        onClicked: StoreCtrl.activeTab = shelf.modelData.tabId
-                                    }
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: win.width >= 1060 ? 3 : 2
-                                    columnSpacing: 14
-                                    rowSpacing: 12
-
-                                    Repeater {
-                                        model: shelf.modelData.items
-                                        delegate: Rectangle {
-                                            id: shelfCard
-                                            required property var modelData
-                                            Layout.fillWidth: true
-                                            implicitHeight: 82
-                                            radius: 14
-                                            clip: true
-                                            color: shelfHover.containsMouse ? FinnTheme.surfaceHover : FinnTheme.tile
-                                            border.width: 1
-                                            border.color: FinnTheme.hair
-
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 12
-                                                spacing: 10
-
-                                                Rectangle {
-                                                    width: 46; height: 46; radius: 12
-                                                    Layout.preferredWidth: 46
-                                                    Layout.preferredHeight: 46
-                                                    color: FinnTheme.surfaceInput
-                                                    FinnIcon {
-                                                        anchors.centerIn: parent
-                                                        name: shelfCard.modelData.iconName
-                                                        size: 26
-                                                    }
-                                                }
-
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    Layout.minimumWidth: 0
-                                                    spacing: 2
-                                                    RowLayout {
-                                                        Layout.fillWidth: true
-                                                        spacing: 4
-                                                        Text {
-                                                            text: shelfCard.modelData.name
-                                                            color: FinnTheme.ink
-                                                            font.family: FinnTheme.fontFamily
-                                                            font.pixelSize: 13
-                                                            font.weight: Font.DemiBold
-                                                            elide: Text.ElideRight
-                                                            Layout.fillWidth: true
-                                                            Layout.minimumWidth: 0
-                                                        }
-                                                        Text {
-                                                            visible: !!shelfCard.modelData.verified
-                                                            text: "✓"
-                                                            color: "#38bdf8"
-                                                            font.pixelSize: 12
-                                                            font.weight: Font.Bold
-                                                        }
-                                                    }
-                                                    Text {
-                                                        text: shelfCard.modelData.subtitle
-                                                        color: FinnTheme.mute
-                                                        font.family: FinnTheme.fontFamily
-                                                        font.pixelSize: 11
-                                                        elide: Text.ElideRight
-                                                        Layout.fillWidth: true
-                                                    }
-                                                    Text {
-                                                        text: (shelfCard.modelData.rating > 0 ? "★ " + Number(shelfCard.modelData.rating).toFixed(1) + " · " : "") +
-                                                              (shelfCard.modelData.sizeLabel || shelfCard.modelData.developer)
-                                                        color: FinnTheme.dim
-                                                        font.family: FinnTheme.fontFamily
-                                                        font.pixelSize: 10
-                                                        elide: Text.ElideRight
-                                                        Layout.fillWidth: true
-                                                    }
-                                                }
-
-                                                FinnButton {
-                                                    Layout.preferredWidth: 62
-                                                    text: shelfCard.modelData.installed ? "Open" : "Get"
-                                                    variant: shelfCard.modelData.installed ? "secondary" : "primary"
-                                                    onClicked: {
-                                                        if (shelfCard.modelData.installed)
-                                                            StoreCtrl.launchApp(shelfCard.modelData.appId)
-                                                        else
-                                                            StoreCtrl.installApp(shelfCard.modelData.appId)
-                                                    }
-                                                }
-                                            }
-
-                                            MouseArea {
-                                                id: shelfHover
-                                                anchors.fill: parent
-                                                z: -1
-                                                hoverEnabled: true
-                                                cursorShape: Qt.PointingHandCursor
-                                                onClicked: StoreCtrl.openAppDetail(shelfCard.modelData.appId)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── ECOSYSTEM / SEARCH / UPDATES GRID VIEW ───────────────
-                    GridLayout {
-                        Layout.fillWidth: true
-                        visible: StoreCtrl.activeTab !== "discover" || StoreCtrl.searchQuery.trim().length > 0
-                        columns: win.width >= 1060 ? 3 : 2
-                        columnSpacing: 16
-                        rowSpacing: 14
-
-                        Repeater {
-                            model: StoreCtrl
-                            delegate: Rectangle {
-                                id: appCard
-                                Layout.fillWidth: true
-                                implicitHeight: 112
-                                radius: 14
-                                clip: true
-                                color: cardArea.containsMouse ? FinnTheme.surfaceHover : FinnTheme.tile
-                                border.width: 1
-                                border.color: FinnTheme.hair
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 14
-                                    spacing: 10
+                                    implicitHeight: 66
 
                                     RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 10
+                                        anchors.fill: parent
+                                        anchors.topMargin: 8
+                                        anchors.bottomMargin: 8
+                                        spacing: 12
 
-                                        Rectangle {
-                                            width: 46; height: 46; radius: 12
+                                        // Bare actual app icon — zero background box or border
+                                        FinnIcon {
                                             Layout.preferredWidth: 46
                                             Layout.preferredHeight: 46
-                                            color: FinnTheme.surfaceInput
-                                            FinnIcon {
-                                                anchors.centerIn: parent
-                                                name: model.iconName
-                                                size: 26
-                                            }
+                                            size: 46
+                                            name: shelfRow.modelData.iconName
+                                            fallbackName: shelfRow.modelData.ecosystemId === "flatpak" ? "linux-app"
+                                                : (shelfRow.modelData.ecosystemId === "android" ? "android"
+                                                : (shelfRow.modelData.ecosystemId === "windows" ? "windows" : "files"))
+                                            monochrome: false
+                                        }
+
+                                        Text {
+                                            visible: shelf.rankedStyle
+                                            text: String(shelfRow.index + 1)
+                                            color: FinnTheme.ink
+                                            font.family: FinnTheme.fontFamily
+                                            font.pixelSize: 14
+                                            font.weight: Font.Medium
+                                            Layout.preferredWidth: 16
+                                            horizontalAlignment: Text.AlignHCenter
                                         }
 
                                         ColumnLayout {
@@ -605,107 +420,460 @@ Window {
                                             Layout.minimumWidth: 0
                                             spacing: 2
 
-                                            RowLayout {
+                                            Text {
+                                                text: shelfRow.modelData.name
+                                                color: FinnTheme.ink
+                                                font.family: FinnTheme.fontFamily
+                                                font.pixelSize: 14
+                                                font.weight: Font.Normal
+                                                elide: Text.ElideRight
                                                 Layout.fillWidth: true
-                                                spacing: 4
-                                                Text {
-                                                    text: model.name
-                                                    color: FinnTheme.ink
-                                                    font.family: FinnTheme.fontFamily
-                                                    font.pixelSize: 13
-                                                    font.weight: Font.DemiBold
-                                                    elide: Text.ElideRight
-                                                    Layout.fillWidth: true
-                                                    Layout.minimumWidth: 0
-                                                }
-                                                Text {
-                                                    visible: model.verified
-                                                    text: "✓"
-                                                    color: "#38bdf8"
-                                                    font.pixelSize: 12
-                                                    font.weight: Font.Bold
-                                                }
                                             }
 
                                             Text {
-                                                text: model.subtitle
+                                                text: shelfRow.modelData.subtitle
                                                 color: FinnTheme.mute
                                                 font.family: FinnTheme.fontFamily
-                                                font.pixelSize: 11
+                                                font.pixelSize: 12
                                                 elide: Text.ElideRight
                                                 Layout.fillWidth: true
                                             }
+                                        }
+
+                                        Rectangle {
+                                            Layout.preferredWidth: 58
+                                            Layout.preferredHeight: 26
+                                            radius: 6
+                                            color: getBtnMa.containsMouse
+                                                ? (FinnTheme.dark ? "#283954" : "#DCEBFF")
+                                                : (FinnTheme.dark ? "#1E2B40" : "#EEF5FF")
 
                                             Text {
-                                                text: model.ecosystemLabel + (model.developer.length > 0 ? " · " + model.developer : "")
-                                                color: FinnTheme.dim
-                                                font.family: FinnTheme.fontFamily
-                                                font.pixelSize: 10
-                                                elide: Text.ElideRight
-                                                Layout.fillWidth: true
-                                            }
-                                        }
-
-                                        FinnButton {
-                                            visible: model.taskProgress < 0
-                                            Layout.preferredWidth: 62
-                                            text: model.updateAvailable ? "Update" : (model.installed ? "Open" : "Get")
-                                            variant: model.installed && !model.updateAvailable ? "secondary" : "primary"
-                                            onClicked: {
-                                                if (model.installed && !model.updateAvailable)
-                                                    StoreCtrl.launchApp(model.appId)
-                                                else
-                                                    StoreCtrl.installApp(model.appId)
-                                            }
-                                        }
-                                    }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        visible: model.taskProgress >= 0
-                                        spacing: 8
-                                        Rectangle {
-                                            Layout.fillWidth: true
-                                            height: 6
-                                            radius: 3
-                                            color: FinnTheme.surfaceInput
-                                            Rectangle {
-                                                width: parent.width * Math.max(0.08, Math.min(1.0, model.taskProgress))
-                                                height: parent.height
-                                                radius: 3
+                                                anchors.centerIn: parent
+                                                text: shelfRow.modelData.installed ? "Open" : "Get"
                                                 color: FinnTheme.accent
+                                                font.family: FinnTheme.fontFamily
+                                                font.pixelSize: 12
+                                                font.weight: Font.Medium
+                                            }
+
+                                            MouseArea {
+                                                id: getBtnMa
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (shelfRow.modelData.installed)
+                                                        StoreCtrl.launchApp(shelfRow.modelData.appId)
+                                                    else
+                                                        StoreCtrl.installApp(shelfRow.modelData.appId)
+                                                }
                                             }
                                         }
-                                        Text {
-                                            text: model.taskState
-                                            color: FinnTheme.dim
-                                            font.family: FinnTheme.fontFamily
-                                            font.pixelSize: 10
-                                        }
                                     }
-                                }
 
-                                MouseArea {
-                                    id: cardArea
-                                    anchors.fill: parent
-                                    z: -1
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: StoreCtrl.openAppDetail(model.appId)
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 58
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        height: 0.5
+                                        color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000"
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        z: -1
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: StoreCtrl.openAppDetail(shelfRow.modelData.appId)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // ── FLATHUB CATEGORY / COLLECTION FILTER BAR (Linux tab) ─────────
+            Flickable {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                visible: StoreCtrl.activeTab === "flatpak" && StoreCtrl.searchQuery.trim().length === 0
+                contentWidth: fhCats.implicitWidth
+                clip: true
+
+                Row {
+                    id: fhCats
+                    spacing: 6
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Repeater {
+                        model: [
+                            { id: "popular",          label: "Popular" },
+                            { id: "trending",         label: "Trending" },
+                            { id: "recently-updated", label: "Updated" },
+                            { id: "Development",      label: "Developer" },
+                            { id: "Graphics",         label: "Graphics" },
+                            { id: "Game",             label: "Games" },
+                            { id: "Network",          label: "Internet" },
+                            { id: "AudioVideo",       label: "Media" },
+                            { id: "Office",           label: "Office" },
+                            { id: "Utility",          label: "Utilities" }
+                        ]
+                        delegate: FinnSquircle {
+                            required property var modelData
+                            readonly property bool active: StoreCtrl.flathubCollection === modelData.id
+                            width: catTxt.implicitWidth + 18
+                            height: 26
+                            radius: 6
+                            color: active
+                                ? FinnTheme.accent
+                                : (catMa.containsMouse ? FinnTheme.surfaceHover : (FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"))
+                            borderColor: active ? "transparent" : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000")
+                            borderWidth: active ? 0 : 0.5
+                            specularRim: false
+
+                            Text {
+                                id: catTxt
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: active ? "#FFFFFF" : FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: active ? Font.Medium : Font.Normal
+                            }
+
+                            MouseArea {
+                                id: catMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: StoreCtrl.flathubCollection = modelData.id
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── ANDROID CATEGORY FILTER BAR ──────────────────────────────────
+            Flickable {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                visible: StoreCtrl.activeTab === "android" && StoreCtrl.searchQuery.trim().length === 0
+                contentWidth: andCats.implicitWidth
+                clip: true
+
+                Row {
+                    id: andCats
+                    spacing: 6
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Repeater {
+                        model: [
+                            { id: "popular",   label: "Popular" },
+                            { id: "internet",  label: "Internet" },
+                            { id: "messaging", label: "Messaging" },
+                            { id: "media",     label: "Media" },
+                            { id: "games",     label: "Games" },
+                            { id: "maps",      label: "Maps" },
+                            { id: "office",    label: "Office" },
+                            { id: "utilities", label: "Utilities" }
+                        ]
+                        delegate: FinnSquircle {
+                            required property var modelData
+                            readonly property bool active: StoreCtrl.androidCollection === modelData.id
+                            width: andCatTxt.implicitWidth + 18
+                            height: 26
+                            radius: 6
+                            color: active
+                                ? FinnTheme.accent
+                                : (andCatMa.containsMouse ? FinnTheme.surfaceHover : (FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"))
+                            borderColor: active ? "transparent" : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000")
+                            borderWidth: active ? 0 : 0.5
+                            specularRim: false
+
+                            Text {
+                                id: andCatTxt
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: active ? "#FFFFFF" : FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: active ? Font.Medium : Font.Normal
+                            }
+
+                            MouseArea {
+                                id: andCatMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: StoreCtrl.androidCollection = modelData.id
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── WINDOWS CATEGORY FILTER BAR ──────────────────────────────────
+            Flickable {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                visible: StoreCtrl.activeTab === "windows" && StoreCtrl.searchQuery.trim().length === 0
+                contentWidth: winCats.implicitWidth
+                clip: true
+
+                Row {
+                    id: winCats
+                    spacing: 6
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Repeater {
+                        model: [
+                            { id: "popular",   label: "Popular" },
+                            { id: "developer", label: "Developer" },
+                            { id: "browsers",  label: "Browsers" },
+                            { id: "media",     label: "Media" },
+                            { id: "graphics",  label: "Graphics" },
+                            { id: "gaming",    label: "Gaming" },
+                            { id: "utilities", label: "Utilities" },
+                            { id: "security",  label: "Security" }
+                        ]
+                        delegate: FinnSquircle {
+                            required property var modelData
+                            readonly property bool active: StoreCtrl.wingetCollection === modelData.id
+                            width: winCatTxt.implicitWidth + 18
+                            height: 26
+                            radius: 6
+                            color: active
+                                ? FinnTheme.accent
+                                : (winCatMa.containsMouse ? FinnTheme.surfaceHover : (FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"))
+                            borderColor: active ? "transparent" : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000")
+                            borderWidth: active ? 0 : 0.5
+                            specularRim: false
+
+                            Text {
+                                id: winCatTxt
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: active ? "#FFFFFF" : FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: active ? Font.Medium : Font.Normal
+                            }
+
+                            MouseArea {
+                                id: winCatMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: StoreCtrl.wingetCollection = modelData.id
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── ECOSYSTEM / SEARCH / UPDATES LIST VIEW ───────────────────────
+            GridLayout {
+                Layout.fillWidth: true
+                visible: StoreCtrl.activeTab !== "discover" || StoreCtrl.searchQuery.trim().length > 0
+                columns: 2
+                columnSpacing: 22
+                rowSpacing: 0
+
+                Repeater {
+                    model: StoreCtrl
+                    delegate: Item {
+                        id: appRow
+                        Layout.fillWidth: true
+                        implicitHeight: model.taskProgress >= 0 ? 80 : 66
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            spacing: 6
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+
+                                // Bare actual app icon — zero background box or border
+                                FinnIcon {
+                                    Layout.preferredWidth: 46
+                                    Layout.preferredHeight: 46
+                                    size: 46
+                                    name: model.iconName
+                                    fallbackName: model.ecosystemId === "flatpak" ? "linux-app"
+                                        : (model.ecosystemId === "android" ? "android"
+                                        : (model.ecosystemId === "windows" ? "windows" : "files"))
+                                    monochrome: false
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    spacing: 2
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+
+                                        Text {
+                                            text: model.name
+                                            color: FinnTheme.ink
+                                            font.family: FinnTheme.fontFamily
+                                            font.pixelSize: 14
+                                            font.weight: Font.Normal
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                            Layout.minimumWidth: 0
+                                        }
+
+                                        // Ecosystem tag shown during search (FinnOS / Linux / Windows / Android)
+                                        Rectangle {
+                                            visible: StoreCtrl.searchQuery.trim().length > 0
+                                            readonly property color tagAccent: model.ecosystemId === "native" ? "#007BFF"
+                                                : (model.ecosystemId === "flatpak" ? "#0EA5E9"
+                                                : (model.ecosystemId === "android" ? "#10B981" : "#6366F1"))
+                                            radius: 4
+                                            color: FinnTheme.withAlpha(tagAccent, FinnTheme.dark ? 0.22 : 0.12)
+                                            implicitWidth: ecoTagTxt.implicitWidth + 10
+                                            implicitHeight: 18
+
+                                            Text {
+                                                id: ecoTagTxt
+                                                anchors.centerIn: parent
+                                                text: model.ecosystemId === "native" ? "FinnOS"
+                                                    : (model.ecosystemId === "flatpak" ? "Linux"
+                                                    : (model.ecosystemId === "android" ? "Android" : "Windows"))
+                                                color: parent.tagAccent
+                                                font.family: FinnTheme.fontFamily
+                                                font.pixelSize: 10
+                                                font.weight: Font.Medium
+                                            }
+                                        }
+                                    }
+
+                                    Text {
+                                        text: model.subtitle
+                                        color: FinnTheme.mute
+                                        font.family: FinnTheme.fontFamily
+                                        font.pixelSize: 12
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                }
+
+                                Rectangle {
+                                    visible: model.taskProgress < 0
+                                    Layout.preferredWidth: 62
+                                    Layout.preferredHeight: 26
+                                    radius: 6
+                                    color: actMa.containsMouse
+                                        ? (FinnTheme.dark ? "#283954" : "#DCEBFF")
+                                        : (FinnTheme.dark ? "#1E2B40" : "#EEF5FF")
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: model.updateAvailable ? "Update" : (model.installed ? "Open" : "Get")
+                                        color: FinnTheme.accent
+                                        font.family: FinnTheme.fontFamily
+                                        font.pixelSize: 12
+                                        font.weight: Font.Medium
+                                    }
+
+                                    MouseArea {
+                                        id: actMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            if (model.installed && !model.updateAvailable)
+                                                StoreCtrl.launchApp(model.appId)
+                                            else
+                                                StoreCtrl.installApp(model.appId)
+                                        }
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: model.taskProgress >= 0
+                                spacing: 8
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: 4
+                                    radius: 2
+                                    color: FinnTheme.surfaceInput
+                                    Rectangle {
+                                        width: parent.width * Math.max(0.08, Math.min(1.0, model.taskProgress))
+                                        height: parent.height
+                                        radius: 2
+                                        color: FinnTheme.accent
+                                    }
+                                }
+                                Text {
+                                    text: model.taskState
+                                    color: FinnTheme.mute
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 58
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: 0.5
+                            color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#0D000000"
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            z: -1
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: StoreCtrl.openAppDetail(model.appId)
+                        }
+                    }
+                }
+            }
+
+            // ── LOAD MORE FLATHUB FOOTER (browse entire Flathub library) ─────
+            RowLayout {
+                Layout.fillWidth: true
+                visible: StoreCtrl.activeTab === "flatpak" && StoreCtrl.searchQuery.trim().length === 0 && StoreCtrl.flathubTotalHits > 0
+                spacing: 12
+
+                Text {
+                    text: "Showing " + StoreCtrl.totalCount + " of " + StoreCtrl.flathubTotalHits + " Flathub apps"
+                    color: FinnTheme.mute
+                    font.family: FinnTheme.fontFamily
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                }
+
+                FinnButton {
+                    visible: StoreCtrl.flathubHasMore
+                    text: StoreCtrl.busy ? "Loading..." : "Load More"
+                    variant: "secondary"
+                    implicitHeight: 28
+                    radius: 6
+                    enabled: !StoreCtrl.busy
+                    onClicked: StoreCtrl.loadMoreFlathub()
+                }
+            }
         }
     }
 
-    // ── Rich App Detail Modal Sheet ──────────────────────────────────────────
+    // ── App Detail Modal Sheet ───────────────────────────────────────────────
     Rectangle {
         anchors.fill: parent
         visible: StoreCtrl.detailOpen
-        color: Qt.rgba(0, 0, 0, 0.56)
+        color: Qt.rgba(0, 0, 0, 0.42)
         z: 50
 
         MouseArea {
@@ -713,79 +881,62 @@ Window {
             onClicked: StoreCtrl.closeAppDetail()
         }
 
-        Rectangle {
+        FinnSquircle {
             anchors.centerIn: parent
-            width: Math.min(parent.width - 80, 680)
-            height: Math.min(parent.height - 80, 560)
-            radius: 18
-            color: FinnTheme.tile
-            border.width: 1
-            border.color: FinnTheme.hair
+            width: Math.min(parent.width - 64, 580)
+            height: Math.min(parent.height - 64, 460)
+            radius: FinnTheme.radiusLg
+            color: FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"
+            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.10) : "#0D000000"
+            borderWidth: 0.5
+            specularRim: false
 
             MouseArea { anchors.fill: parent }
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 24
-                spacing: 16
+                anchors.margins: 20
+                spacing: 14
 
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 16
+                    spacing: 14
 
-                    Rectangle {
-                        width: 72; height: 72; radius: 16
-                        color: FinnTheme.surfaceInput
-                        FinnIcon {
-                            anchors.centerIn: parent
-                            name: StoreCtrl.selectedApp.iconName || "app-grid"
-                            size: 44
-                        }
+                    FinnIcon {
+                        Layout.preferredWidth: 60
+                        Layout.preferredHeight: 60
+                        size: 60
+                        name: StoreCtrl.selectedApp.iconName || "files"
+                        monochrome: false
                     }
 
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: 4
+                        spacing: 3
 
-                        RowLayout {
-                            spacing: 8
-                            Text {
-                                text: StoreCtrl.selectedApp.name || ""
-                                color: FinnTheme.ink
-                                font.family: FinnTheme.fontFamily
-                                font.pixelSize: 22
-                                font.weight: Font.Bold
-                            }
-                            Rectangle {
-                                visible: !!StoreCtrl.selectedApp.verified
-                                radius: 6
-                                color: Qt.rgba(0.22, 0.74, 0.97, 0.16)
-                                implicitWidth: verTxt.implicitWidth + 12
-                                implicitHeight: 20
-                                Text {
-                                    id: verTxt
-                                    anchors.centerIn: parent
-                                    text: "✓ " + (StoreCtrl.selectedApp.verifiedSource || "Verified")
-                                    color: "#38bdf8"
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 10
-                                    font.weight: Font.DemiBold
-                                }
-                            }
+                        Text {
+                            text: StoreCtrl.selectedApp.name || ""
+                            color: FinnTheme.ink
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 16
+                            font.weight: Font.Medium
                         }
 
                         Text {
                             text: (StoreCtrl.selectedApp.developer || "") + " · " + (StoreCtrl.selectedApp.ecosystemLabel || "")
-                            color: FinnTheme.dim
+                            color: FinnTheme.mute
                             font.family: FinnTheme.fontFamily
-                            font.pixelSize: 13
+                            font.pixelSize: 12
                         }
 
                         RowLayout {
-                            spacing: 10
+                            spacing: 8
+                            Layout.topMargin: 4
                             FinnButton {
-                                text: StoreCtrl.selectedApp.installed ? "Open" : "Install"
+                                text: StoreCtrl.selectedApp.installed ? "Open" : "Get"
                                 variant: "primary"
+                                implicitHeight: 28
+                                radius: 6
                                 onClicked: {
                                     if (StoreCtrl.selectedApp.installed)
                                         StoreCtrl.launchApp(StoreCtrl.selectedApp.appId)
@@ -797,107 +948,66 @@ Window {
                                 visible: !!StoreCtrl.selectedApp.installed
                                 text: "Uninstall"
                                 variant: "secondary"
+                                implicitHeight: 28
+                                radius: 6
                                 onClicked: StoreCtrl.uninstallApp(StoreCtrl.selectedApp.appId)
                             }
                         }
                     }
 
-                    FinnButton {
-                        text: "Close"
-                        variant: "ghost"
+                    FinnIconButton {
+                        iconName: "x"
+                        buttonSize: 28
+                        iconSize: 14
+                        radius: 6
                         Layout.alignment: Qt.AlignTop
                         onClicked: StoreCtrl.closeAppDetail()
                     }
                 }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    height: 56
-                    radius: 12
-                    color: FinnTheme.surfaceInput
+                FinnDivider { Layout.fillWidth: true }
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        Repeater {
-                            model: [
-                                { k: "RATING",   v: (StoreCtrl.selectedApp.rating > 0) ? ("★ " + Number(StoreCtrl.selectedApp.rating).toFixed(1)) : "—" },
-                                { k: "CATEGORY", v: StoreCtrl.selectedApp.category || "App" },
-                                { k: "SIZE",     v: StoreCtrl.selectedApp.sizeLabel || "—" },
-                                { k: "VERSION",  v: StoreCtrl.selectedApp.version || "Latest" }
-                            ]
-                            delegate: ColumnLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 2
-                                Text {
-                                    text: modelData.k
-                                    color: FinnTheme.mute
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 10
-                                    font.weight: Font.Bold
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
-                                Text {
-                                    text: modelData.v
-                                    color: FinnTheme.ink
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 13
-                                    font.weight: Font.DemiBold
-                                    Layout.alignment: Qt.AlignHCenter
-                                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Repeater {
+                        model: [
+                            { k: "Rating",   v: (StoreCtrl.selectedApp.rating > 0) ? Number(StoreCtrl.selectedApp.rating).toFixed(1) : "—" },
+                            { k: "Category", v: StoreCtrl.selectedApp.category || "App" },
+                            { k: "Size",     v: StoreCtrl.selectedApp.sizeLabel || "—" },
+                            { k: "Version",  v: StoreCtrl.selectedApp.version || "Latest" }
+                        ]
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: modelData.k
+                                color: FinnTheme.mute
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                Layout.alignment: Qt.AlignHCenter
+                            }
+                            Text {
+                                text: modelData.v
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                                Layout.alignment: Qt.AlignHCenter
                             }
                         }
                     }
                 }
+
+                FinnDivider { Layout.fillWidth: true }
 
                 Text {
                     text: StoreCtrl.selectedApp.description || StoreCtrl.selectedApp.subtitle || ""
                     color: FinnTheme.dim
                     font.family: FinnTheme.fontFamily
                     font.pixelSize: 13
+                    lineHeight: 1.4
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
-                }
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    visible: (StoreCtrl.selectedApp.permissions || []).length > 0
-
-                    Text {
-                        text: "PERMISSIONS & RUNTIME"
-                        color: FinnTheme.mute
-                        font.family: FinnTheme.fontFamily
-                        font.pixelSize: 10
-                        font.weight: Font.Bold
-                        font.letterSpacing: 0.7
-                    }
-
-                    Flow {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        Repeater {
-                            model: StoreCtrl.selectedApp.permissions || []
-                            delegate: Rectangle {
-                                required property string modelData
-                                radius: 8
-                                color: FinnTheme.surfaceInput
-                                border.width: 1
-                                border.color: FinnTheme.hair
-                                implicitWidth: permTxt.implicitWidth + 14
-                                implicitHeight: 24
-                                Text {
-                                    id: permTxt
-                                    anchors.centerIn: parent
-                                    text: modelData
-                                    color: FinnTheme.dim
-                                    font.family: FinnTheme.fontFamily
-                                    font.pixelSize: 11
-                                }
-                            }
-                        }
-                    }
                 }
 
                 Item { Layout.fillHeight: true }
@@ -909,43 +1019,43 @@ Window {
     Rectangle {
         anchors.fill: parent
         visible: StoreCtrl.localPackageOpen
-        color: Qt.rgba(0, 0, 0, 0.58)
+        color: Qt.rgba(0, 0, 0, 0.42)
         z: 60
 
-        Rectangle {
+        FinnSquircle {
             anchors.centerIn: parent
-            width: Math.min(parent.width - 80, 520)
-            implicitHeight: pkgCol.implicitHeight + 48
-            radius: 18
-            color: FinnTheme.tile
-            border.width: 1
-            border.color: FinnTheme.hair
+            width: Math.min(parent.width - 64, 480)
+            implicitHeight: pkgCol.implicitHeight + 40
+            radius: FinnTheme.radiusLg
+            color: FinnTheme.dark ? FinnTheme.tile : "#FFFFFF"
+            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.10) : "#0D000000"
+            borderWidth: 0.5
+            specularRim: false
 
             ColumnLayout {
                 id: pkgCol
                 anchors.fill: parent
-                anchors.margins: 24
-                spacing: 14
+                anchors.margins: 20
+                spacing: 12
 
                 Text {
                     text: "Install Package"
                     color: FinnTheme.ink
                     font.family: FinnTheme.fontFamily
-                    font.pixelSize: 20
-                    font.weight: Font.Bold
+                    font.pixelSize: 16
+                    font.weight: Font.Medium
                 }
 
                 Text {
                     text: StoreCtrl.localPackage.appName || StoreCtrl.localPackage.filename || ""
                     color: FinnTheme.accent
                     font.family: FinnTheme.fontFamily
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
+                    font.pixelSize: 14
                 }
 
                 Text {
                     text: (StoreCtrl.localPackage.formatLabel || "") + " · " + (StoreCtrl.localPackage.ecosystemLabel || "")
-                    color: FinnTheme.dim
+                    color: FinnTheme.mute
                     font.family: FinnTheme.fontFamily
                     font.pixelSize: 12
                 }
@@ -967,11 +1077,15 @@ Window {
                     FinnButton {
                         text: "Cancel"
                         variant: "secondary"
+                        implicitHeight: 28
+                        radius: 6
                         onClicked: StoreCtrl.closeLocalPackage()
                     }
                     FinnButton {
                         text: "Install"
                         variant: "primary"
+                        implicitHeight: 28
+                        radius: 6
                         enabled: !!StoreCtrl.localPackage.valid && !!StoreCtrl.localPackage.runtimeReady
                         onClicked: StoreCtrl.confirmInstallLocalPackage()
                     }
@@ -979,6 +1093,4 @@ Window {
             }
         }
     }
-
-    FinnToast { id: toast }
 }

@@ -32,7 +32,7 @@ Window {
     Rectangle {
         anchors.fill: parent
         z: 1001
-        color: FinnComp.darkTheme ? FinnTheme.withAlpha("#0D0F14", 0.35) : "transparent"
+        color: FinnComp.darkTheme ? FinnTheme.withAlpha("#090B10", 0.62) : "transparent"
         Behavior on color {
             enabled: !FinnTheme.reducedMotion
             ColorAnimation { duration: FinnTheme.motionTheme }

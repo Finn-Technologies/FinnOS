@@ -26,8 +26,9 @@ Window {
     property bool mobileDetailOpen: false
     property bool fullBleedContent: false
     property real customSidebarWidth: 0
+    property real sidebarWidthOverride: 0
     property color windowContentColor: FinnTheme.dark ? FinnTheme.bone : "#FFFFFF"
-    property color windowSidebarTint: FinnTheme.dark ? "#9E161922" : "#96F8FAFC"
+    property color windowSidebarTint: FinnTheme.dark ? "#850E121B" : "#78FFFFFF"
 
     default property alias pageContent: contentArea.data
     property alias headerActions: headerActionRow.data
@@ -54,19 +55,20 @@ Window {
         navSelected(id)
     }
 
-    // All 4 corners strictly rounded (r=12); finn-comp provides real-time behind-window blur
+    // All 4 corners strictly rounded (r=12); finn-comp provides real-time behind-window Liquid Glass
     FinnSquircle {
         id: frameBg
         anchors.fill: parent
         radius: root.isEdgeToEdge ? 0 : FinnTheme.radiusLg
         color: root.windowContentColor
-        borderColor: root.isEdgeToEdge ? "transparent" : (FinnTheme.dark ? FinnTheme.hair : "#14000000")
-        borderWidth: root.isEdgeToEdge ? 0 : 0.5
+        borderColor: "transparent"
+        borderWidth: 0
         specularRim: false
         shadow: false
         sidebarWidth: sidebarPane.visible ? sidebarPane.width : root.customSidebarWidth
         sidebarColor: root.windowSidebarTint
-        sidebarBlur: false
+        sidebarBlur: !FinnTheme.waylandSession
+        backdropBlur: !FinnTheme.waylandSession && root.windowContentColor.a < 0.99
     }
 
     Item {
@@ -102,7 +104,7 @@ Window {
             anchors.left: parent.left
             width: root.isMobile
                 ? parent.width
-                : (root.isTablet && root.width < 840 ? 68 : (root.isTv ? 300 : 250))
+                : (root.isTablet && root.width < 840 ? 68 : (root.isTv ? 300 : (root.sidebarWidthOverride > 0 ? root.sidebarWidthOverride : 250)))
 
             Behavior on width {
                 enabled: !FinnTheme.reducedMotion
@@ -176,7 +178,20 @@ Window {
                                     visible: index > 0 && itemData.section !== undefined &&
                                              root.navItems[index - 1].section !== itemData.section
                                     width: 1
-                                    height: root.isTv ? 18 : 15
+                                    height: root.isTv ? 18 : 14
+                                }
+
+                                Text {
+                                    visible: itemData.sectionLabel !== undefined &&
+                                             !(root.isTablet && root.width < 760) &&
+                                             (index === 0 || root.navItems[index - 1].section !== itemData.section)
+                                    text: itemData.sectionLabel || ""
+                                    color: FinnTheme.mute
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 11
+                                    font.weight: Font.Medium
+                                    leftPadding: 8
+                                    bottomPadding: 4
                                 }
 
                                 FinnNavItem {
@@ -184,6 +199,7 @@ Window {
                                     label: itemData.label
                                     iconName: itemData.icon || "info"
                                     badgeColor: itemData.badgeColor || FinnTheme.accent
+                                    iconTint: itemData.iconTint !== undefined ? itemData.iconTint : "transparent"
                                     useBadgeCircle: itemData.badgeColor !== undefined
                                     selected: root.activeNavId === itemData.id
                                     compactRail: root.isTablet && root.width < 760

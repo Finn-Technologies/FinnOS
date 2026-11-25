@@ -28,6 +28,7 @@ Item {
         anchors.fill: parent
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         MouseArea { anchors.fill: parent }
 

@@ -40,10 +40,6 @@ FinnApplicationWindow {
             iconSize: 15
             onClicked: ViewerCtrl.nextImage()
         },
-        FinnBadge {
-            text: Math.round(ViewerCtrl.zoom * 100) + "%"
-            tone: "accent"
-        },
         FinnButton {
             text: win.slideshowActive ? "Stop" : "Slideshow"
             variant: win.slideshowActive ? "primary" : "secondary"
@@ -51,14 +47,9 @@ FinnApplicationWindow {
             onClicked: win.slideshowActive = !win.slideshowActive
         },
         FinnButton {
-            text: "Flip H"
+            text: "Flip"
             implicitHeight: 28
             onClicked: ViewerCtrl.toggleFlipH()
-        },
-        FinnButton {
-            text: "Rotate"
-            implicitHeight: 28
-            onClicked: ViewerCtrl.rotateRight()
         }
     ]
 

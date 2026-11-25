@@ -29,6 +29,7 @@ class FinnThemeBridge final : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(bool dark READ dark WRITE setDark NOTIFY changed)
+    Q_PROPERTY(bool waylandSession READ waylandSession CONSTANT)
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY changed)
     Q_PROPERTY(bool highContrast READ highContrast WRITE setHighContrast NOTIFY changed)
     Q_PROPERTY(double textScale READ textScale NOTIFY changed)
@@ -107,6 +108,7 @@ public:
     explicit FinnThemeBridge(QObject* parent = nullptr);
 
     bool dark() const { return tokens_.dark; }
+    bool waylandSession() const;
     void setDark(bool dark);
     bool reducedMotion() const { return tokens_.reduced_motion; }
     void setReducedMotion(bool reduced);

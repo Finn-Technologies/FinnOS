@@ -41,8 +41,9 @@ Item {
             FinnGlassPanel {
                 anchors.fill: parent
                 radius: FinnTheme.radiusXl
+                backdropBlur: !ShellCorona.waylandSession
                 fillColor: depthIdx === 0 || root.expanded
-                    ? FinnTheme.withAlpha(FinnTheme.dark ? "#3B3B3B" : "#FFFFFF", FinnTheme.dark ? 0.84 : 0.88)
+                    ? FinnTheme.withAlpha(FinnTheme.dark ? "#161B26" : "#FFFFFF", FinnTheme.dark ? 0.68 : 0.64)
                     : FinnTheme.notifGlass
                 borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.14) : FinnTheme.withAlpha("#000000", 0.08)
                 shadow: true

@@ -10,6 +10,7 @@ Row {
     height: 44
 
     readonly property var dockList: ShellCorona.dockItems
+    property var hoveredTile: null
 
     // 1. Pinned & Live Open/Minimized Apps Taskbar Pill (Figma 11:46: 254x44 base, expands smoothly for unpinned open apps)
     FinnGlassPanel {
@@ -19,6 +20,7 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         Behavior on width {
             enabled: !FinnTheme.reducedMotion
@@ -52,9 +54,73 @@ Row {
                         height: 36
                         anchors.verticalCenter: parent.verticalCenter
 
-                        FinnSpring { id: liftSpring; preset: "snappy" }
                         FinnSpring { id: scaleSpring; preset: "bouncy" }
-                        Component.onCompleted: { liftSpring.snap(0.0); scaleSpring.snap(1.0) }
+                        Component.onCompleted: scaleSpring.snap(1.0)
+
+                        readonly property bool showTooltip: iconMa.containsMouse && ShellCorona.activePanel.length === 0 && (modelData.name || "").length > 0
+
+                        onShowTooltipChanged: {
+                            if (showTooltip) {
+                                root.hoveredTile = tileWrap
+                                const pt = tooltipBubble.mapToItem(null, 0, 0)
+                                ShellCorona.setHoverBlurRect(pt.x, pt.y, tooltipBubble.width, tooltipBubble.height, tooltipBubble.radius)
+                            } else if (root.hoveredTile === tileWrap) {
+                                root.hoveredTile = null
+                                ShellCorona.clearHoverBlurRect()
+                            }
+                        }
+
+                        Component.onDestruction: {
+                            if (root.hoveredTile === tileWrap) {
+                                root.hoveredTile = null
+                                ShellCorona.clearHoverBlurRect()
+                            }
+                        }
+
+                        // Floating app-name bubble above the hovered dock icon
+                        FinnGlassPanel {
+                            id: tooltipBubble
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.top
+                            anchors.bottomMargin: 12
+                            width: tooltipText.implicitWidth + 20
+                            height: 28
+                            radius: FinnTheme.radiusMd
+                            fillColor: FinnTheme.dark ? "#D6161922" : "#E6F8FAFC"
+                            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.16) : "#1A000000"
+                            borderWidth: 0.6
+                            shadow: false
+                            backdropBlur: !ShellCorona.waylandSession
+                            z: 50
+                            visible: opacity > 0.01
+                            opacity: tileWrap.showTooltip ? 1.0 : 0.0
+
+                            Behavior on opacity {
+                                enabled: !FinnTheme.reducedMotion
+                                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                            }
+
+                            Text {
+                                id: tooltipText
+                                anchors.centerIn: parent
+                                text: modelData.name || ""
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                            }
+                        }
+
+                        // Subtle hover highlight when not active
+                        Rectangle {
+                            visible: iconMa.containsMouse && modelData.active !== true
+                            x: -3
+                            y: 0
+                            width: 38
+                            height: 36
+                            radius: 9
+                            color: FinnTheme.surfaceHover
+                        }
 
                         // Active focused window luminous pill highlight behind icon
                         Rectangle {
@@ -77,7 +143,7 @@ Row {
                             width: 32
                             height: 32
                             anchors.horizontalCenter: parent.horizontalCenter
-                            y: 1 + liftSpring.value
+                            y: 1
                             scale: scaleSpring.value
                             opacity: modelData.minimized === true ? 0.52 : 1.0
 
@@ -119,11 +185,10 @@ Row {
                         }
 
                         MouseArea {
+                            id: iconMa
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onEntered: liftSpring.target = -4.0
-                            onExited: liftSpring.target = 0.0
                             onPressed: { scaleSpring.preset = "snappy"; scaleSpring.target = 0.90 }
                             onReleased: { scaleSpring.preset = "bouncy"; scaleSpring.target = 1.0 }
                             onClicked: {
@@ -145,6 +210,7 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         readonly property int activeNavIdx: {
             if (ShellCorona.activePanel === "search") return 0
@@ -214,6 +280,7 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
 
         // Selected highlight inset (Figma 11:204: 124x38 at 3,3, r=9)
         FinnSquircle {
@@ -257,7 +324,7 @@ Row {
         }
     }
 
-    // 4. Date & Time Pill (Figma 11:21: 154x44, "Sat 31 Oct  12:48" 16px Regular, 100% ink)
+    // 4. Date & Time Pill (Figma 11:21: 154x44 -> Notification Center)
     FinnGlassPanel {
         id: timePill
         width: 154
@@ -265,6 +332,19 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         radius: FinnTheme.radiusLg
         shadow: false
+        backdropBlur: !ShellCorona.waylandSession
+
+        // Selected highlight inset when Notification Center is open
+        FinnSquircle {
+            visible: ShellCorona.activePanel === "notifications"
+            anchors.fill: parent
+            anchors.margins: 3
+            radius: 9
+            color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.25) : "#FFFFFF"
+            borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.10) : "#0D000000"
+            borderWidth: 0.5
+            specularRim: false
+        }
 
         Row {
             anchors.centerIn: parent
@@ -290,7 +370,7 @@ Row {
         MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: ShellCorona.togglePanel("control")
+            onClicked: ShellCorona.togglePanel("notifications")
         }
     }
 }

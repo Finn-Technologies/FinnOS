@@ -10,6 +10,7 @@ Item {
     property string placeholderText: "Search anything"
     property int fontSize: 12
     property bool glassStyle: true
+    property bool backdropBlur: false
     property bool showClear: true
 
     signal accepted()
@@ -25,13 +26,14 @@ Item {
     FinnSquircle {
         anchors.fill: parent
         radius: root.height / 2
-        backdropBlur: root.glassStyle
+        backdropBlur: root.backdropBlur
+        specularRim: root.glassStyle
         color: root.glassStyle
-            ? FinnTheme.withAlpha(FinnTheme.tile, FinnTheme.dark ? 0.72 : 0.70)
+            ? FinnTheme.withAlpha(FinnTheme.dark ? "#0E121B" : "#FFFFFF", FinnTheme.dark ? 0.48 : 0.38)
             : FinnTheme.surfaceInput
         borderColor: input.activeFocus && input.text.length > 0
             ? FinnTheme.accent
-            : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.08) : "#1A000000")
+            : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.10) : FinnTheme.withAlpha("#000000", 0.06))
         borderWidth: input.activeFocus && input.text.length > 0 ? 1.2 : 0.5
     }
 

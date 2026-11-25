@@ -15,6 +15,7 @@
 #include <QFileSystemWatcher>
 #include <QObject>
 #include <QProcess>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -225,6 +226,8 @@ public:
     Q_INVOKABLE void togglePanel(const QString& panelName);
     Q_INVOKABLE void openPanel(const QString& panelName);
     Q_INVOKABLE void closePanels();
+    Q_INVOKABLE void setHoverBlurRect(double x, double y, double w, double h, double radius);
+    Q_INVOKABLE void clearHoverBlurRect();
 
     Q_INVOKABLE void launchApp(const QString& appId);
     Q_INVOKABLE void handleDockAppClick(const QString& appId, const QString& windowId);
@@ -325,6 +328,8 @@ private:
     QProcess* auth_proc_ = nullptr;
     QProcess* oobe_proc_ = nullptr;
     bool oobe_active_ = false;
+    QRectF hover_blur_rect_;
+    double hover_blur_radius_ = 0.0;
     QQuickWindow* shell_window_ = nullptr;
 };
 

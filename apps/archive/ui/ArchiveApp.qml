@@ -50,41 +50,58 @@ FinnApplicationWindow {
     FinnCard {
         visible: win.activeNavId === "local"
         anchors.fill: parent
-        radius: FinnTheme.radiusLg
+        radius: FinnTheme.radiusSm
 
         ListView {
             visible: ArchiveCtrl.recentArchives.length > 0
             anchors.fill: parent
-            anchors.margins: 10
+            anchors.margins: 6
             model: ArchiveCtrl.recentArchives
-            spacing: 4
+            spacing: 0
             clip: true
 
-            delegate: FinnSquircle {
+            delegate: Item {
                 width: ListView.view.width
-                height: 44
-                radius: 10
-                color: aMa.containsMouse ? FinnTheme.surfaceHover : FinnTheme.surfaceCanvas
-                borderWidth: 0
+                height: 40
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 6
+                    color: aMa.containsMouse ? FinnTheme.surfaceHover : "transparent"
+                }
 
                 Row {
                     anchors.fill: parent
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
                     spacing: 10
 
-                    FinnIcon { name: "layers"; size: 18; tint: "#D97706"; anchors.verticalCenter: parent.verticalCenter }
+                    FinnIcon { name: "layers"; size: 16; tint: "#D97706"; anchors.verticalCenter: parent.verticalCenter }
                     Text {
                         text: modelData.name
                         color: FinnTheme.ink
                         font.family: FinnTheme.fontFamily
                         font.pixelSize: 13
-                        font.weight: Font.Medium
-                        width: Math.max(80, parent.width - 130)
+                        font.weight: Font.Normal
+                        width: Math.max(80, parent.width - 110)
                         elide: Text.ElideRight
                         anchors.verticalCenter: parent.verticalCenter
                     }
-                    FinnBadge { text: modelData.sizeText; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        text: modelData.sizeText
+                        color: FinnTheme.mute
+                        font.family: FinnTheme.fontFamily
+                        font.pixelSize: 11
+                        width: 72
+                        horizontalAlignment: Text.AlignRight
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                FinnDivider {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
                 }
 
                 MouseArea {

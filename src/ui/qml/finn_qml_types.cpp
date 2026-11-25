@@ -1,11 +1,13 @@
 #include "ui/qml/finn_qml_types.hpp"
 
+#include "common/liquid_glass.hpp"
 #include "common/paths.hpp"
 #include "ui/finn/components.hpp"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QPainter>
 #include <QPainterPath>
 #include <QQmlContext>
@@ -93,9 +95,10 @@ void box_blur_vertical(const QRgb* src, QRgb* dst, int w, int h, int r) {
     }
 }
 
-const QImage& blurred_wallpaper_for_size(const QSize& screen_size) {
+const QImage& blurred_wallpaper_for_size(const QSize& screen_size, bool dark_mode) {
     static QString cached_path;
     static QSize cached_size;
+    static bool cached_dark = false;
     static QImage cached_blur;
 
     if (screen_size.width() <= 0 || screen_size.height() <= 0) {
@@ -107,7 +110,8 @@ const QImage& blurred_wallpaper_for_size(const QSize& screen_size) {
         QStringLiteral("wallpaper/default.webp"));
     if (wp_path.isEmpty()) return cached_blur;
 
-    if (wp_path == cached_path && screen_size == cached_size && !cached_blur.isNull()) {
+    if (wp_path == cached_path && screen_size == cached_size &&
+        dark_mode == cached_dark && !cached_blur.isNull()) {
         return cached_blur;
     }
 
@@ -119,17 +123,24 @@ const QImage& blurred_wallpaper_for_size(const QSize& screen_size) {
                                     Qt::SmoothTransformation);
     const int cx = std::max(0, (cover.width() - screen_size.width()) / 2);
     const int cy = std::max(0, (cover.height() - screen_size.height()) / 2);
-    const QImage cropped = cover.copy(cx, cy, screen_size.width(), screen_size.height());
+    QImage cropped = cover.copy(cx, cy, screen_size.width(), screen_size.height())
+                          .convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
-    // Downsample 4x, run 3-pass separable Gaussian approximation (r=9 at 1/4 scale == r=36 at 1x)
-    const int sw = std::max(16, screen_size.width() / 4);
-    const int sh = std::max(16, screen_size.height() / 4);
+    if (dark_mode) {
+        QPainter dp(&cropped);
+        dp.fillRect(cropped.rect(), QColor(9, 11, 16, 158));  // 62% obsidian scrim matching WallpaperLayer
+    }
+
+    // Downsample 2x and run 2-pass separable box blur (r=3 at 1/2 scale == ~7-8px crisp optical blur)
+    // so colors and forms behind Liquid Glass stay luminous and recognizable.
+    const int sw = std::max(16, screen_size.width() / 2);
+    const int sh = std::max(16, screen_size.height() / 2);
     QImage small = cropped.scaled(sw, sh, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
                        .convertToFormat(QImage::Format_RGB32);
     QImage scratch(sw, sh, QImage::Format_RGB32);
-    const int rad = std::clamp(finn::ui::blur::blur_glass / 4, 4, 14);
+    const int rad = 3;
 
-    for (int pass = 0; pass < 3; ++pass) {
+    for (int pass = 0; pass < 2; ++pass) {
         box_blur_horizontal(reinterpret_cast<const QRgb*>(small.constBits()),
                             reinterpret_cast<QRgb*>(scratch.bits()), sw, sh, rad);
         box_blur_vertical(reinterpret_cast<const QRgb*>(scratch.constBits()),
@@ -139,6 +150,7 @@ const QImage& blurred_wallpaper_for_size(const QSize& screen_size) {
     cached_blur = small.scaled(screen_size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     cached_path = wp_path;
     cached_size = screen_size;
+    cached_dark = dark_mode;
     return cached_blur;
 }
 
@@ -216,6 +228,11 @@ void FinnThemeBridge::syncFromManager() {
     tokens_ = tokens_from_settings(s);
     finn::ui::set_reduced_motion_override(tokens_.reduced_motion);
     emit changed();
+}
+
+bool FinnThemeBridge::waylandSession() const {
+    return QGuiApplication::platformName().contains(QStringLiteral("wayland"),
+                                                    Qt::CaseInsensitive);
 }
 
 void FinnThemeBridge::setDark(bool dark) {
@@ -645,14 +662,24 @@ void FinnSquircle::paint(QPainter* p) {
         p->fillRect(main_rect, color_);
         if (sidebar_blur_ && window()) {
             const LiveWindowDesktopPos lp = resolve_live_window_pos(window());
-            const QImage& blur_img = blurred_wallpaper_for_size(lp.output_size);
+            const bool is_dark = sidebar_color_.lightness() < 128;
+            const QImage& blur_img = blurred_wallpaper_for_size(lp.output_size, is_dark);
             if (!blur_img.isNull()) {
                 const QPointF scene_pt = mapToScene(sb_rect.topLeft());
                 const qreal sx = std::clamp(lp.window_pos.x() + scene_pt.x(),
                                             0.0, std::max<qreal>(0.0, blur_img.width() - sw));
                 const qreal sy = std::clamp(lp.window_pos.y() + scene_pt.y(),
                                             0.0, std::max<qreal>(0.0, blur_img.height() - sb_rect.height()));
-                p->drawImage(sb_rect, blur_img, QRectF(sx, sy, sw, sb_rect.height()));
+                const QRectF src_rect(sx, sy, sw, sb_rect.height());
+                const int rw = std::max(2, static_cast<int>(std::lround(sw)));
+                const int rh = std::max(2, static_cast<int>(std::lround(sb_rect.height())));
+                const QImage refracted = finn::glass::render_liquid_glass(
+                    blur_img, src_rect, rw, rh, eff_r, is_dark, /*flat_right=*/true);
+                if (!refracted.isNull()) {
+                    p->drawImage(sb_rect, refracted);
+                } else {
+                    p->drawImage(sb_rect, blur_img, src_rect);
+                }
             }
         }
         p->fillRect(sb_rect, sidebar_color_);
@@ -661,28 +688,40 @@ void FinnSquircle::paint(QPainter* p) {
         p->drawLine(QPointF(body.left() + sw, body.top()),
                     QPointF(body.left() + sw, body.bottom()));
     } else {
+        const bool is_dark = color_.lightness() < 128;
         if (backdrop_blur_ && window()) {
-            const QSize win_sz = window()->size();
+            const bool is_fs = (window()->visibility() == QWindow::FullScreen);
             const QPointF scene_pt = mapToScene(body.topLeft());
-            const QImage& blur_img = blurred_wallpaper_for_size(win_sz);
+            QSize target_sz = window()->size();
+            QPointF origin = scene_pt;
+            if (!is_fs) {
+                const LiveWindowDesktopPos lp = resolve_live_window_pos(window());
+                target_sz = lp.output_size;
+                origin = QPointF(lp.window_pos.x() + scene_pt.x(),
+                                 lp.window_pos.y() + scene_pt.y());
+            }
+            const QImage& blur_img = blurred_wallpaper_for_size(target_sz, is_dark);
             if (!blur_img.isNull()) {
-                p->drawImage(body, blur_img,
-                             QRectF(scene_pt.x(), scene_pt.y(), body.width(), body.height()));
+                const qreal sx = std::clamp(origin.x(), 0.0,
+                                            std::max<qreal>(0.0, blur_img.width() - body.width()));
+                const qreal sy = std::clamp(origin.y(), 0.0,
+                                            std::max<qreal>(0.0, blur_img.height() - body.height()));
+                const QRectF src_rect(sx, sy, body.width(), body.height());
+                const int rw = std::max(2, static_cast<int>(std::lround(body.width())));
+                const int rh = std::max(2, static_cast<int>(std::lround(body.height())));
+                const QImage refracted = finn::glass::render_liquid_glass(
+                    blur_img, src_rect, rw, rh, eff_r, is_dark);
+                if (!refracted.isNull()) {
+                    p->drawImage(body, refracted);
+                } else {
+                    p->drawImage(body, blur_img, src_rect);
+                }
             }
         }
         p->fillRect(body, color_);
     }
 
     p->restore();
-
-    if (specular_rim_) {
-        QColor spec(255, 255, 255, color_.lightness() < 128 ? 24 : 150);
-        p->setPen(QPen(spec, 1.0));
-        p->setBrush(Qt::NoBrush);
-        p->drawPath(make_squircle_or_capsule_path(
-            body.adjusted(1.0, 1.0, -1.0, -1.0),
-            std::max<qreal>(0.0, eff_r - 1.0)));
-    }
 
     if (border_width_ > 0.0 && border_color_.alpha() > 0) {
         const qreal inset = border_width_ * 0.5;

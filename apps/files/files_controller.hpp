@@ -6,6 +6,7 @@
 
 #include <QAbstractListModel>
 #include <QFileInfo>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -40,7 +41,10 @@ public:
         SizeTextRole,
         ModifiedTextRole,
         IconNameRole,
-        ExtensionRole
+        ExtensionRole,
+        HasItemsRole,
+        FolderColorRole,
+        FolderEmblemRole
     };
 
     explicit FilesController(QObject* parent = nullptr);
@@ -85,6 +89,7 @@ public:
     Q_INVOKABLE void openInTerminal();
     Q_INVOKABLE void deleteSelected();
     Q_INVOKABLE void copySelectedPath();
+    Q_INVOKABLE void setFolderStyle(const QString& path, const QString& colorHex, const QString& emblemName);
 
 signals:
     void pathChanged();
@@ -96,7 +101,18 @@ signals:
     void toastRequested(const QString& message, const QString& severity);
 
 private:
+    struct FolderStyle {
+        QString color;
+        QString emblem;
+    };
+
     void loadDirectory(const QString& path, bool push_history);
+    void loadFolderStyles();
+    void saveFolderStyles() const;
+    static QString folderStylesPath();
+    static bool dirHasItems(const QString& path);
+    QString resolveFolderColor(const QFileInfo& fi) const;
+    QString resolveFolderEmblem(const QFileInfo& fi) const;
     static QString iconForEntry(const QFileInfo& fi);
     static QString formatSize(qint64 bytes);
 
@@ -109,6 +125,8 @@ private:
     QString clipboard_path_;
     bool clipboard_cut_ = false;
     QList<QFileInfo> entries_;
+    QHash<QString, bool> dir_has_items_cache_;
+    QHash<QString, FolderStyle> folder_styles_;
     int selected_index_ = -1;
 };
 

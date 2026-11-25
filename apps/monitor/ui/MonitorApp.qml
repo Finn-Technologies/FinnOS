@@ -86,49 +86,43 @@ FinnApplicationWindow {
         FinnCard {
             width: parent.width
             height: 126
-            radius: FinnTheme.radiusLg
+            radius: FinnTheme.radiusSm
 
             Column {
                 anchors.fill: parent
-                anchors.margins: 14
+                anchors.margins: 12
                 spacing: 8
 
                 Row {
                     width: parent.width
 
-                    Row {
-                        width: parent.width - 76
-                        spacing: 8
-
-                        Rectangle {
-                            width: 8
-                            height: 8
-                            radius: 4
-                            color: "#0D9488"
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Text {
-                            text: "CPU Activity History"
-                            color: FinnTheme.ink
-                            font.family: FinnTheme.fontFamily
-                            font.pixelSize: 13
-                            font.weight: Font.Medium
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
+                    Text {
+                        text: "CPU History"
+                        color: FinnTheme.mute
+                        font.family: FinnTheme.fontFamily
+                        font.pixelSize: 12
+                        font.weight: Font.Normal
+                        width: parent.width - 48
+                        anchors.verticalCenter: parent.verticalCenter
                     }
 
-                    FinnBadge {
+                    Text {
                         text: Math.round(MonitorCtrl.cpuPercent) + "%"
-                        tone: "accent"
+                        color: FinnTheme.ink
+                        font.family: FinnTheme.fontFamily
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                        width: 48
+                        horizontalAlignment: Text.AlignRight
+                        anchors.verticalCenter: parent.verticalCenter
                     }
                 }
 
                 CpuSparkline {
                     width: parent.width
-                    height: parent.height - 30
+                    height: parent.height - 26
                     samples: MonitorCtrl.cpuHistory
-                    lineColor: "#0D9488"
+                    lineColor: FinnTheme.accent
                 }
             }
         }
@@ -137,7 +131,7 @@ FinnApplicationWindow {
         FinnCard {
             width: parent.width
             height: Math.max(120, parent.height - 322)
-            radius: FinnTheme.radiusLg
+            radius: FinnTheme.radiusSm
 
             Column {
                 anchors.fill: parent

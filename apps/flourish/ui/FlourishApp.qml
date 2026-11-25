@@ -16,8 +16,8 @@ FinnApplicationWindow {
     showSidebarSearch: false
     fullBleedContent: true
     customSidebarWidth: 0
-    // Continuous frosted glass tint across the entire L-shaped sidebar + top bar + outer frame
-    windowContentColor: FinnTheme.dark ? "#9E161922" : "#96F8FAFC"
+    // Continuous Liquid Glass tint across the entire L-shaped sidebar + top bar + outer frame
+    windowContentColor: FinnTheme.dark ? "#850E121B" : "#78FFFFFF"
 
     property bool sidebarCollapsed: false
     property bool splitView: false

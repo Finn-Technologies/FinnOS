@@ -467,6 +467,9 @@ void CompositorServer::attachOutputWindow(QQuickWindow* window) {
 
 void CompositorServer::setOutputSize(int width, int height) {
     if (width <= 0 || height <= 0) return;
+    const bool size_changed = workspace_.outputs().empty() ||
+                              workspace_.outputs().front().geometry.width != width ||
+                              workspace_.outputs().front().geometry.height != height;
     OutputInfo out;
     out.id = 1;
     out.name = "primary";
@@ -474,6 +477,9 @@ void CompositorServer::setOutputSize(int width, int height) {
     out.usable_area = RectI{0, 0, width, std::max(100, height - 59)};
     out.primary = true;
     workspace_.set_outputs({out});
+    if (size_changed) {
+        scheduleBackdropRefresh();
+    }
     emit stateChanged();
 }
 
@@ -590,9 +596,16 @@ void CompositorServer::pollWindowCommands() {
 void CompositorServer::pollSettingsAndIdle() {
     const auto s = finn::sys::load_merged_settings();
     bool dirty = false;
+    bool backdrop_dirty = false;
     if (dark_theme_ != s.dark) {
         dark_theme_ = s.dark;
         dirty = true;
+        backdrop_dirty = true;
+    }
+    const QString configured_wp = QString::fromStdString(s.wallpaper);
+    if (!configured_wp.isEmpty() && configured_wp != wallpaper_path_cache_ &&
+        QFileInfo::exists(configured_wp)) {
+        backdrop_dirty = true;
     }
     if (workspace_.reduced_motion() != s.reduced_motion) {
         workspace_.set_reduced_motion(s.reduced_motion);
@@ -624,6 +637,9 @@ void CompositorServer::pollSettingsAndIdle() {
         request_lock();
     }
 
+    if (backdrop_dirty) {
+        scheduleBackdropRefresh();
+    }
     if (dirty) emit stateChanged();
 }
 
@@ -1031,7 +1047,7 @@ void CompositorServer::reloadWallpaperQuarter() {
     }
     if (dark_theme_) {
         QPainter dp(&qimg);
-        dp.fillRect(qimg.rect(), QColor(13, 15, 20, 90));
+        dp.fillRect(qimg.rect(), QColor(9, 11, 16, 158));
     }
 
     wallpaper_quarter_ = std::move(qimg);
@@ -1086,14 +1102,21 @@ void CompositorServer::pollOverlayBlurRects() {
     QFileInfo fi(path);
     if (!fi.exists()) return;
     const qint64 mt = fi.lastModified().toMSecsSinceEpoch();
-    if (mt == blur_rects_mtime_) return;
-    blur_rects_mtime_ = mt;
+    const qint64 sz = fi.size();
+    if (mt == blur_rects_mtime_ && sz == blur_rects_size_) return;
 
     QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QByteArray raw = f.readAll();
+    blur_rects_mtime_ = mt;
+    blur_rects_size_ = sz;
+    if (raw == blur_rects_raw_) return;
+    blur_rects_raw_ = raw;
+
     QVariantList next;
-    while (!f.atEnd()) {
-        const QString line = QString::fromUtf8(f.readLine()).trimmed();
+    const QList<QByteArray> lines = raw.split('\n');
+    for (const QByteArray& raw_line : lines) {
+        const QString line = QString::fromUtf8(raw_line).trimmed();
         if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
         const QStringList p = line.split(QLatin1Char('\t'));
         if (p.size() < 5) continue;
@@ -1222,8 +1245,9 @@ QImage CompositorServer::sampleBlurredBackdrop(quint64 excludeWindowId,
         }
     };
 
-    box_blur_pass(crop, 4);
-    box_blur_pass(crop, 3);
+    // Crisp 2-pass separable box blur (radius=2 at 1/4 res == ~9-10px spatial optical blur)
+    box_blur_pass(crop, 2);
+    box_blur_pass(crop, 2);
     return crop.copy(kMargin, kMargin, qw, qh);
 }
 
