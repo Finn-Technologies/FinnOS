@@ -130,6 +130,8 @@ jobs:
             opt/finnos/base/airootfs/etc/issue \
             opt/finnos/base/airootfs/etc/motd \
             opt/finnos/base/airootfs/etc/hostname \
+            opt/finnos/base/airootfs/etc/plymouth/plymouthd.conf \
+            opt/finnos/base/airootfs/usr/share/plymouth/themes/finnos \
             opt/finnos/base/airootfs/etc/systemd/system/finn-comp.service \
             opt/finnos/base/airootfs/etc/systemd/system/finn-session.service \
             opt/finnos/base/airootfs/etc/systemd/system/finn-shell.service \
@@ -138,6 +140,9 @@ jobs:
             opt/finnos/base/airootfs/usr/local/bin/finn-install \
             usr/local/bin/finn-install \
             etc/os-release etc/issue etc/motd etc/hostname \
+            etc/mkinitcpio.conf \
+            etc/plymouth/plymouthd.conf \
+            usr/share/plymouth/themes/finnos \
             etc/systemd/system/finn-comp.service \
             etc/systemd/system/finn-session.service \
             etc/systemd/system/finn-shell.service \
