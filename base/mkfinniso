@@ -446,6 +446,50 @@ stage_sources() {
   rm -f "$files"
 }
 
+# Build and install FinnOS Recovery Mode (finn-installer + libfinnui + assets)
+# into the live ISO root so booting "Install FinnOS" opens the graphical
+# recovery/installer UI directly on KMS/framebuffer.
+stage_live_recovery() {
+  local dest="$1"
+  local have_qt=0
+  if [ "$ARCH" = "$(uname -m)" ] && command -v cmake >/dev/null 2>&1 &&
+     [ -f /usr/lib/cmake/Qt6Core/Qt6CoreConfig.cmake ]; then
+    have_qt=1
+  fi
+  if [ "$have_qt" = 0 ]; then
+    if [ "${FINN_REQUIRE_LIVE_RECOVERY:-0}" = 1 ]; then
+      die "FINN_REQUIRE_LIVE_RECOVERY=1 but cmake/Qt6Core is missing on this build host"
+    fi
+    return 0
+  fi
+  say "building FinnOS Recovery Mode (finn-installer) for the live ISO"
+  local bdir="$WORK/live-recovery-build"
+  local gen=()
+  command -v ninja >/dev/null 2>&1 && gen=(-G Ninja)
+  cmake -S "$ROOT" -B "$bdir" "${gen[@]}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DFINN_RECOVERY_ONLY=ON \
+    -DFINN_BUILD_COMPOSITOR=OFF \
+    -DFINN_BUILD_SHELL=OFF \
+    -DFINN_BUILD_QT_PLUGIN=OFF \
+    -DFINN_BUILD_TOOLS=OFF \
+    -DFINN_STRICT_WARNINGS=OFF
+  cmake --build "$bdir" --target finn-installer -j"$(nproc 2>/dev/null || echo 2)"
+  install -d "$dest/usr/local/bin" "$dest/usr/local/lib" "$dest/etc/ld.so.conf.d" \
+             "$dest/usr/share/fonts/OTF" "$dest/usr/share/finn/icons" \
+             "$dest/usr/share/finn/wallpaper"
+  install -m755 "$bdir/apps/installer/finn-installer" "$dest/usr/local/bin/finn-installer"
+  ln -sf finn-installer "$dest/usr/local/bin/finn-recovery"
+  cp -a "$bdir/src/ui"/libfinnui.so* "$dest/usr/local/lib/"
+  printf '%s\n' '/usr/local/lib' > "$dest/etc/ld.so.conf.d/finn.conf"
+  install -m644 "$ROOT"/assets/fonts/FixelDisplay/*.otf "$dest/usr/share/fonts/OTF/"
+  install -m644 "$ROOT"/assets/icons/shell/*.svg "$ROOT"/assets/icons/apps/*.svg \
+                "$dest/usr/share/finn/icons/"
+  install -m644 "$ROOT"/assets/wallpaper/default.webp "$ROOT"/assets/wallpaper/setup.webp \
+                "$dest/usr/share/finn/wallpaper/"
+}
+
 # The boot menus live under boot/ so that the three of them sit together;
 # archiso reads grub/, syslinux/ and efiboot/ from the profile directory, so
 # the staged copy is arranged the way it expects. syslinux only exists for
@@ -515,6 +559,7 @@ build_native() {
   cp -a "$HERE/airootfs" "$profile/airootfs"
   stage_boot_menus "$profile"
   stage_sources "$profile/airootfs/opt/finnos"
+  stage_live_recovery "$profile/airootfs"
 
   mkdir -p "$WORK/out"
   say "running mkarchiso"

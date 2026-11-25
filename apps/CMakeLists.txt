@@ -1,3 +1,8 @@
+if(FINN_RECOVERY_ONLY)
+    add_subdirectory(installer)
+    return()
+endif()
+
 add_subdirectory(wallpaper)
 add_subdirectory(files)
 add_subdirectory(settings)

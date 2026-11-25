@@ -399,6 +399,11 @@ public:
         auto* l_reb = new QuietLink(QStringLiteral("Restart"), false, footer_links_);
         auto* l_off = new QuietLink(QStringLiteral("Shut Down"), false, footer_links_);
         connect(l_term, &QAbstractButton::clicked, this, []() {
+            const QString plat = QGuiApplication::platformName();
+            if (plat == QLatin1String("eglfs") || plat == QLatin1String("linuxfb")) {
+                QCoreApplication::exit(42);
+                return;
+            }
             QProcess::startDetached(QString::fromUtf8(finn::kFinnTerminalBin), {});
         });
         connect(l_reb, &QAbstractButton::clicked, this, []() {
@@ -1286,9 +1291,15 @@ int main(int argc, char** argv) {
 
     FinnApplication app(argc, argv, QStringLiteral("installer"));
     RecoveryWindow w;
-    w.resize(1280, 832);
     if (!initial_page.isEmpty()) w.openPage(initial_page);
-    w.show();
+    const QString plat = QGuiApplication::platformName();
+    if (screenshot_path.isEmpty() &&
+        (plat == QLatin1String("eglfs") || plat == QLatin1String("linuxfb"))) {
+        w.showFullScreen();
+    } else {
+        w.resize(1280, 832);
+        w.show();
+    }
 
     if (!screenshot_path.isEmpty()) {
         QTimer::singleShot(250, &w, [&w, screenshot_path]() {

@@ -301,7 +301,8 @@ def wait_for_installer(server, serial, timeout, process=None):
         for body in list(server.posts):
             if "payload found in the live root" in body:
                 return True
-        if "Disk to install onto" in serial_text(serial):
+        text = serial_text(serial)
+        if "Disk to install onto" in text or "FinnOS Recovery Mode" in text:
             return True
         if process is not None and process.poll() is not None:
             return False

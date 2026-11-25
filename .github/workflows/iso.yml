@@ -81,9 +81,10 @@ jobs:
         run: |
           mkdir -p out
           docker run --privileged --rm \
+            -e FINN_REQUIRE_LIVE_RECOVERY=1 \
             -v "$PWD:/build" -w /build archlinux:latest \
             bash -c 'pacman-key --init && pacman-key --populate && \
-              pacman -Sy --noconfirm archiso && \
+              pacman -Sy --noconfirm archiso base-devel cmake ninja qt6-base qt6-svg && \
               ./base/mkfinniso /build/out/finnos.iso'
           mv out/finnos.iso finnos.iso
       - name: the disc is bootable
@@ -109,7 +110,8 @@ jobs:
                    opt/finnos/base/airootfs/etc/systemd/system/finn-wallpaper.service \
                    opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
                    opt/finnos/base/airootfs/usr/local/bin/finn-install \
-                   usr/local/bin/finn-install etc/os-release etc/issue etc/motd etc/hostname \
+                   usr/local/bin/finn-install usr/local/bin/finn-installer \
+                   etc/os-release etc/issue etc/motd etc/hostname \
                    etc/systemd/system/finn-comp.service \
                    etc/systemd/system/finn-session.service \
                    etc/systemd/system/finn-shell.service \
