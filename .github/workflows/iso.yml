@@ -140,7 +140,7 @@ jobs:
             opt/finnos/base/airootfs/etc/systemd/system/finn-wallpaper.service \
             opt/finnos/base/airootfs/usr/lib/tmpfiles.d/finn.conf \
             opt/finnos/base/airootfs/usr/local/bin/finn-install \
-            usr/local/bin/finn-install \
+            usr/local/bin/finn-install usr/local/bin/finn-installer \
             etc/os-release etc/issue etc/motd etc/hostname \
             etc/mkinitcpio.conf \
             etc/plymouth/plymouthd.conf \
@@ -156,6 +156,7 @@ jobs:
           test -x /tmp/live/opt/finnos/vm/finn-chroot.sh
           test -x /tmp/live/opt/finnos/base/mkfinniso
           test -x /tmp/live/usr/local/bin/finn-install
+          test -x /tmp/live/usr/local/bin/finn-installer
           # The live shell is what starts the installer, so the hook has to
           # be in the file that shell reads: the live environment's root
           # shell is zsh.
