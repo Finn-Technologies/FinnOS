@@ -13,6 +13,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QScreen>
 #include <QStandardPaths>
@@ -504,33 +506,85 @@ void SettingsController::applyLockWallpaper(const QString& path) {
 }
 
 void SettingsController::checkForUpdates() {
-    if (update_checking_) return;
-    const QString updater = QStandardPaths::findExecutable(QStringLiteral("finn-update"));
+    if (update_checking_ || update_applying_) return;
+    QString updater = QStandardPaths::findExecutable(QStringLiteral("finn-update"));
+    if (updater.isEmpty() && QFileInfo::exists(QStringLiteral("/usr/local/bin/finn-update"))) {
+        updater = QStringLiteral("/usr/local/bin/finn-update");
+    }
     if (updater.isEmpty()) {
         update_status_ = QStringLiteral("finn-update tool is not installed on this host");
         emit updateChanged();
         return;
     }
     update_checking_ = true;
-    update_status_ = QStringLiteral("Checking update channels...");
+    update_available_ = false;
+    available_version_.clear();
+    update_status_ = QStringLiteral("Checking FinnOS OTA channel...");
     emit updateChanged();
 
     auto* proc = new QProcess(this);
     connect(proc, &QProcess::finished, this, [this, proc](int code, QProcess::ExitStatus) {
         update_checking_ = false;
-        const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+        const QByteArray raw = proc->readAllStandardOutput().trimmed();
         const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
-        if (code == 0 && !out.isEmpty()) {
-            update_status_ = out.section(QLatin1Char('\n'), 0, 0);
+        proc->deleteLater();
+
+        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+        if (code == 0 && doc.isObject()) {
+            const QJsonObject obj = doc.object();
+            const bool avail = obj.value(QStringLiteral("available")).toBool(false);
+            const QString target_ver = obj.value(QStringLiteral("target_version")).toString();
+            const QString reason = obj.value(QStringLiteral("reason")).toString();
+            update_available_ = avail;
+            available_version_ = target_ver;
+            if (avail && !target_ver.isEmpty()) {
+                update_status_ = QStringLiteral("FinnOS %1 is available").arg(target_ver);
+            } else if (!reason.isEmpty()) {
+                update_status_ = reason;
+            } else {
+                update_status_ = QStringLiteral("FinnOS is up to date");
+            }
         } else if (!err.isEmpty()) {
             update_status_ = err.section(QLatin1Char('\n'), 0, 0);
         } else {
-            update_status_ = QStringLiteral("System is up to date");
+            update_status_ = QStringLiteral("Unable to reach update channel");
         }
         emit updateChanged();
-        proc->deleteLater();
     });
-    proc->start(updater, {QStringLiteral("status")});
+    proc->start(updater, {QStringLiteral("--json"), QStringLiteral("check")});
+}
+
+void SettingsController::applyUpdate() {
+    if (update_applying_ || update_checking_) return;
+    QString updater = QStandardPaths::findExecutable(QStringLiteral("finn-update"));
+    if (updater.isEmpty() && QFileInfo::exists(QStringLiteral("/usr/local/bin/finn-update"))) {
+        updater = QStringLiteral("/usr/local/bin/finn-update");
+    }
+    if (updater.isEmpty()) {
+        emit toastRequested(QStringLiteral("finn-update is not installed"), QStringLiteral("warning"));
+        return;
+    }
+    update_applying_ = true;
+    update_status_ = QStringLiteral("Downloading and staging A/B update...");
+    emit updateChanged();
+
+    auto* proc = new QProcess(this);
+    connect(proc, &QProcess::finished, this, [this, proc](int code, QProcess::ExitStatus) {
+        update_applying_ = false;
+        const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+        proc->deleteLater();
+        if (code == 0) {
+            update_available_ = false;
+            update_status_ = QStringLiteral("Update staged to inactive slot — restart to apply");
+            emit toastRequested(update_status_, QStringLiteral("success"));
+        } else {
+            update_status_ = err.isEmpty() ? QStringLiteral("Update failed (exit %1)").arg(code)
+                                           : err.section(QLatin1Char('\n'), -1);
+            emit toastRequested(update_status_, QStringLiteral("error"));
+        }
+        emit updateChanged();
+    });
+    proc->start(updater, {QStringLiteral("--json"), QStringLiteral("apply")});
 }
 
 void SettingsController::copySystemSummary() {

@@ -795,6 +795,20 @@ FinnApplicationWindow {
                                 onClicked: win.selectNav("appearance")
                             }
                         }
+
+                        FinnDivider { width: parent.width }
+
+                        FinnSettingRow {
+                            width: parent.width
+                            title: "Software Update"
+                            subtitle: SettingsCtrl.updateStatus
+                            iconName: "update"
+                            tvMode: win.isTv
+                            FinnButton {
+                                text: "Open"
+                                onClicked: win.selectNav("updates")
+                            }
+                        }
                     }
                 }
             }
@@ -813,8 +827,15 @@ FinnApplicationWindow {
                     title: SettingsCtrl.osName + " " + SettingsCtrl.osVersion
                     subtitle: SettingsCtrl.updateStatus
                     tvMode: win.isTv
-                    actionText: SettingsCtrl.updateChecking ? "Checking..." : "Check Now"
-                    onActionClicked: SettingsCtrl.checkForUpdates()
+                    actionText: SettingsCtrl.updateApplying
+                        ? "Installing..."
+                        : (SettingsCtrl.updateAvailable
+                            ? "Install " + SettingsCtrl.availableVersion
+                            : (SettingsCtrl.updateChecking ? "Checking..." : "Check Now"))
+                    onActionClicked: {
+                        if (SettingsCtrl.updateAvailable) SettingsCtrl.applyUpdate()
+                        else SettingsCtrl.checkForUpdates()
+                    }
                 }
             }
 

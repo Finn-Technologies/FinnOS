@@ -76,6 +76,9 @@ class SettingsController : public QObject {
     Q_PROPERTY(QVariantList compatRuntimes READ compatRuntimes CONSTANT)
     Q_PROPERTY(QString updateStatus READ updateStatus NOTIFY updateChanged)
     Q_PROPERTY(bool updateChecking READ updateChecking NOTIFY updateChanged)
+    Q_PROPERTY(bool updateAvailable READ updateAvailable NOTIFY updateChanged)
+    Q_PROPERTY(bool updateApplying READ updateApplying NOTIFY updateChanged)
+    Q_PROPERTY(QString availableVersion READ availableVersion NOTIFY updateChanged)
 
 public:
     explicit SettingsController(QObject* parent = nullptr);
@@ -142,6 +145,9 @@ public:
     QVariantList compatRuntimes() const { return compat_runtimes_; }
     QString updateStatus() const { return update_status_; }
     bool updateChecking() const { return update_checking_; }
+    bool updateAvailable() const { return update_available_; }
+    bool updateApplying() const { return update_applying_; }
+    QString availableVersion() const { return available_version_; }
 
     Q_INVOKABLE void refreshHardware();
     Q_INVOKABLE void toggleWifi();
@@ -155,6 +161,7 @@ public:
     Q_INVOKABLE void applyWallpaper(const QString& path);
     Q_INVOKABLE void applyLockWallpaper(const QString& path);
     Q_INVOKABLE void checkForUpdates();
+    Q_INVOKABLE void applyUpdate();
     Q_INVOKABLE void copySystemSummary();
 
 signals:
@@ -205,6 +212,9 @@ private:
     QVariantList compat_runtimes_;
     QString update_status_;
     bool update_checking_ = false;
+    bool update_available_ = false;
+    bool update_applying_ = false;
+    QString available_version_;
 };
 
 }  // namespace finn::apps

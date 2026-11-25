@@ -1,14 +1,14 @@
 // FinnOS Recovery & USB Installer (finn-installer / finn-recovery).
-// Matches the exact minimalist split-canvas visual language of FinnOS OOBE:
+// Pixel-aligned with FinnOS OOBE (apps/oobe/main.cpp):
 //   - Full-bleed bone canvas (zero top menu bar, zero outer glass box)
-//   - Left column: 46x46 monochrome icon + short conversational 24px prompt
-//   - Right column: clean borderless OOBE list rows (white pill on selection)
-//   - Bottom center: minimal < / > chevron navigation
+//   - Outer gutter 80px; left column (80px inset, 46x46 Hugeicons glyph + 40px gap
+//     + 24px Regular prompt); 132px center gap; right 350px column at y=195
+//   - 350x37 OobeListRow pills (10px radius, 14px Regular, white pill when selected)
+//   - 56x56 circular < / > chevrons centered at y = height - 201 (20px spacing)
 //
-// Strictly handles storage, OS detection, clean/dual-boot installation,
-// reinstall preserving data, disk utility, bootloader repair, and system logs.
-// All user/system personalization (language, region, keyboard, Wi-Fi, account,
-// hostname, appearance) happens strictly on first normal boot in OOBE.
+// Handles storage, real GPT partitioning (create, delete, format, first aid, wipe),
+// OS detection, clean/A-B/dual-boot/manual installation, reinstall preserving data,
+// bootloader repair, and system logs.
 
 #include <FinnSDK/FinnSDK.hpp>
 
@@ -42,12 +42,15 @@ namespace {
 using namespace finn::ui;
 using namespace finn::recovery;
 
+constexpr int kOobeGutter = 80;
+constexpr int kOobeContentWidth = 350;
+constexpr int kOobeRowHeight = 37;
+
 QFont rec_font(int px, QFont::Weight w = QFont::Normal) {
     return finn_font_px(px, w);
 }
 
-// Borderless OOBE-style selectable row: transparent by default, crisp white
-// pill (or dark tile) ONLY when selected or hovered. No borders, no icon boxes.
+// Exact OOBE selectable 350x37 row (matching OobeOptionRow in apps/oobe/main.cpp).
 class OobeListRow final : public QAbstractButton {
     Q_OBJECT
 public:
@@ -55,8 +58,7 @@ public:
         : QAbstractButton(parent), label_(std::move(label)), meta_(std::move(meta)) {
         setCheckable(true);
         setCursor(Qt::PointingHandCursor);
-        setFixedHeight(44);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setFixedSize(kOobeContentWidth, kOobeRowHeight);
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
                 this, qOverload<>(&QWidget::update));
     }
@@ -83,26 +85,26 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
 
         if (isChecked() || hovered_) {
-            QColor fill = t.dark ? t.tile : QColor(0xFF, 0xFF, 0xFF);
-            if (!isChecked() && hovered_) fill.setAlpha(t.dark ? 160 : 185);
+            QColor fill = t.dark ? t.tile_on : QColor(0xFF, 0xFF, 0xFF);
+            if (!isChecked() && hovered_) fill.setAlpha(t.dark ? 140 : 165);
             p.setBrush(fill);
             p.setPen(Qt::NoPen);
             p.drawRoundedRect(rect(), 10.0, 10.0);
         }
 
-        const QRect text_rect = rect().adjusted(16, 0, -16, 0);
-        p.setFont(rec_font(15, isChecked() ? QFont::Medium : QFont::Normal));
-        p.setPen(isEnabled() ? t.ink : t.mute);
-
+        const QRect text_rect = rect().adjusted(14, 0, -14, 0);
         if (meta_.isEmpty()) {
-            p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, label_);
+            p.setFont(rec_font(14, QFont::Normal));
+            p.setPen(isEnabled() ? t.ink : t.mute);
+            p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft,
+                       p.fontMetrics().elidedText(label_, Qt::ElideRight, text_rect.width()));
         } else {
             p.setFont(rec_font(12, QFont::Normal));
-            const int meta_w = p.fontMetrics().horizontalAdvance(meta_) + 12;
+            const int meta_w = p.fontMetrics().horizontalAdvance(meta_) + 10;
             p.setPen(t.mute);
             p.drawText(text_rect, Qt::AlignVCenter | Qt::AlignRight, meta_);
 
-            p.setFont(rec_font(15, isChecked() ? QFont::Medium : QFont::Normal));
+            p.setFont(rec_font(14, QFont::Normal));
             p.setPen(isEnabled() ? t.ink : t.mute);
             const QRect left_r = text_rect.adjusted(0, 0, -meta_w, 0);
             p.drawText(left_r, Qt::AlignVCenter | Qt::AlignLeft,
@@ -116,7 +118,7 @@ private:
     bool hovered_ = false;
 };
 
-// Minimal OOBE chevron navigation button (< or >), zero background/border.
+// Exact OOBE 56x56 circular chevron navigation button (< or >).
 class OobeNavChevron final : public QAbstractButton {
     Q_OBJECT
 public:
@@ -141,7 +143,7 @@ protected:
             QColor bg = t.dark ? QColor(255, 255, 255, 18) : QColor(0, 0, 0, 12);
             p.setBrush(bg);
             p.setPen(Qt::NoPen);
-            p.drawEllipse(rect().adjusted(6, 6, -6, -6));
+            p.drawEllipse(rect().adjusted(4, 4, -4, -4));
         }
 
         const QColor col = isEnabled() ? t.ink : t.mute;
@@ -168,19 +170,24 @@ private:
     bool hovered_ = false;
 };
 
-// Quiet text-only footer link (e.g. Terminal, Restart, Shut Down).
+// Quiet OOBE text-only inline action link.
 class QuietLink final : public QAbstractButton {
     Q_OBJECT
 public:
-    explicit QuietLink(QString text, QWidget* parent = nullptr)
-        : QAbstractButton(parent), text_(std::move(text)) {
+    explicit QuietLink(QString text, bool destructive = false, QWidget* parent = nullptr)
+        : QAbstractButton(parent), text_(std::move(text)), destructive_(destructive) {
         setCursor(Qt::PointingHandCursor);
-        setFixedHeight(28);
+        setFixedHeight(26);
         setFont(rec_font(12, QFont::Normal));
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     }
+    void setLabelText(const QString& t) {
+        text_ = t;
+        updateGeometry();
+        update();
+    }
     QSize sizeHint() const override {
-        return QSize(fontMetrics().horizontalAdvance(text_) + 12, 28);
+        return QSize(fontMetrics().horizontalAdvance(text_) + 10, 26);
     }
 protected:
     void enterEvent(QEnterEvent* e) override { hovered_ = true; update(); QAbstractButton::enterEvent(e); }
@@ -189,20 +196,23 @@ protected:
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setFont(font());
-        p.setPen(hovered_ ? t.ink : t.mute);
+        QColor col = destructive_ ? (hovered_ ? t.danger : t.mute) : (hovered_ ? t.ink : t.mute);
+        if (!isEnabled()) col = t.mute;
+        p.setPen(col);
         p.drawText(rect(), Qt::AlignCenter, text_);
     }
 private:
     QString text_;
+    bool destructive_ = false;
     bool hovered_ = false;
 };
 
-// Minimalist thin proportional disk partition bar (no heavy chrome).
+// Minimalist thin proportional disk partition bar (zero extra chrome).
 class SlimPartitionBar final : public QWidget {
     Q_OBJECT
 public:
     explicit SlimPartitionBar(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedHeight(10);
+        setFixedSize(kOobeContentWidth, 8);
     }
     void setDisk(const DiskInfo& d) { disk_ = d; update(); }
 protected:
@@ -210,7 +220,7 @@ protected:
         const auto& t = FinnThemeManager::instance().tokens();
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF full = QRectF(rect()).adjusted(0, 1, 0, -1);
+        const QRectF full = QRectF(rect());
         QPainterPath clip;
         clip.addRoundedRect(full, 4.0, 4.0);
         p.setClipPath(clip);
@@ -246,8 +256,11 @@ std::vector<DiskInfo> probe_system_disks() {
     return parse_lsblk_json(std::string_view(raw.constData(), static_cast<std::size_t>(raw.size())));
 }
 
-// Exact OOBE split page: 46x46 monochrome icon + 40px gap + 24px prompt on left,
-// clean borderless list/controls on right.
+// Exact pixel-for-pixel OOBE split page (matching createSplitStepPage in apps/oobe/main.cpp):
+//   - Outer gutter: 80px left/right, 0 top/bottom
+//   - Left column: 80px left / 20px right inset, 49/51 stretch, 46x46 icon + 40px gap + 24px prompt (w=380)
+//   - Center spacing: 132px
+//   - Right column: 350px wide at top=195px, right=45px
 QWidget* make_oobe_split_page(const QString& icon_name,
                               const QString& prompt_text,
                               const QString& sub_caption,
@@ -256,28 +269,31 @@ QWidget* make_oobe_split_page(const QString& icon_name,
     auto* page = new QWidget();
     page->setAutoFillBackground(false);
 
-    auto* row = new QHBoxLayout(page);
-    row->setContentsMargins(80, 56, 80, 120);
-    row->setSpacing(48);
+    auto* main_col = new QVBoxLayout(page);
+    main_col->setContentsMargins(kOobeGutter, 0, kOobeGutter, 0);
+    main_col->setSpacing(0);
 
-    // Left column (centered vertically, identical to OOBE)
+    auto* row = new QHBoxLayout();
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(32);
+
     auto* left_host = new QWidget(page);
     auto* left = new QVBoxLayout(left_host);
-    left->setContentsMargins(0, 0, 0, 0);
+    left->setContentsMargins(80, 0, 20, 0);
     left->setSpacing(0);
-    left->addStretch(48);
+    left->addStretch(49);
 
     auto* icon_lbl = new QLabel(left_host);
     icon_lbl->setFixedSize(46, 46);
     icon_lbl->setAlignment(Qt::AlignCenter);
     left->addWidget(icon_lbl, 0, Qt::AlignHCenter);
-    left->addSpacing(36);
+    left->addSpacing(40);
 
     auto* title_lbl = new QLabel(prompt_text, left_host);
     title_lbl->setFont(rec_font(24, QFont::Normal));
     title_lbl->setAlignment(Qt::AlignCenter);
     title_lbl->setWordWrap(true);
-    title_lbl->setFixedWidth(300);
+    title_lbl->setFixedWidth(380);
     title_lbl->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
     left->addWidget(title_lbl, 0, Qt::AlignHCenter);
 
@@ -285,7 +301,7 @@ QWidget* make_oobe_split_page(const QString& icon_name,
     if (!sub_caption.isEmpty() || out_sub != nullptr) {
         left->addSpacing(10);
         sub_lbl = new QLabel(sub_caption, left_host);
-        sub_lbl->setFont(rec_font(13, QFont::Normal));
+        sub_lbl->setFont(rec_font(14, QFont::Normal));
         sub_lbl->setAlignment(Qt::AlignCenter);
         sub_lbl->setWordWrap(true);
         sub_lbl->setFixedWidth(280);
@@ -294,7 +310,7 @@ QWidget* make_oobe_split_page(const QString& icon_name,
         left->addWidget(sub_lbl, 0, Qt::AlignHCenter);
         if (out_sub) *out_sub = sub_lbl;
     }
-    left->addStretch(52);
+    left->addStretch(51);
 
     auto sync_colors = [icon_lbl, icon_name, title_lbl, sub_lbl]() {
         const auto& t = FinnThemeManager::instance().tokens();
@@ -305,7 +321,7 @@ QWidget* make_oobe_split_page(const QString& icon_name,
         title_lbl->setPalette(p1);
         if (sub_lbl) {
             QPalette p2 = sub_lbl->palette();
-            p2.setColor(QPalette::WindowText, t.mute);
+            p2.setColor(QPalette::WindowText, t.dim);
             sub_lbl->setPalette(p2);
         }
     };
@@ -313,20 +329,18 @@ QWidget* make_oobe_split_page(const QString& icon_name,
                      page, sync_colors);
     sync_colors();
 
-    row->addWidget(left_host, 1);
-
-    // Right column (380px wide, clean vertically centered list)
     auto* right_host = new QWidget(page);
-    right_host->setFixedWidth(400);
     auto* right_col = new QVBoxLayout(right_host);
-    right_col->setContentsMargins(0, 0, 0, 0);
+    right_col->setContentsMargins(0, 195, 45, 160);
     right_col->setSpacing(0);
-    right_col->addStretch(1);
     right_content->setParent(right_host);
-    right_col->addWidget(right_content);
-    right_col->addStretch(1);
+    right_content->setFixedWidth(kOobeContentWidth);
+    right_col->addWidget(right_content, 1, Qt::AlignRight | Qt::AlignTop);
 
-    row->addWidget(right_host, 0);
+    row->addWidget(left_host, 1);
+    row->addSpacing(132);
+    row->addWidget(right_host, 1, Qt::AlignRight);
+    main_col->addLayout(row, 1);
     return page;
 }
 
@@ -370,7 +384,7 @@ public:
         stack_->addWidget(buildLogsPage());             // 7
         root->addWidget(stack_, 1);
 
-        // Floating OOBE chevron navigation bar at bottom center
+        // Exact OOBE floating chevron navigation bar (56x56, 20px gap, y = height - 201)
         nav_back_ = new OobeNavChevron(false, this);
         nav_next_ = new OobeNavChevron(true, this);
         connect(nav_back_, &QAbstractButton::clicked, this, &RecoveryWindow::goBack);
@@ -381,9 +395,9 @@ public:
         auto* fl = new QHBoxLayout(footer_links_);
         fl->setContentsMargins(0, 0, 0, 0);
         fl->setSpacing(14);
-        auto* l_term = new QuietLink(QStringLiteral("Terminal"), footer_links_);
-        auto* l_reb = new QuietLink(QStringLiteral("Restart"), footer_links_);
-        auto* l_off = new QuietLink(QStringLiteral("Shut Down"), footer_links_);
+        auto* l_term = new QuietLink(QStringLiteral("Terminal"), false, footer_links_);
+        auto* l_reb = new QuietLink(QStringLiteral("Restart"), false, footer_links_);
+        auto* l_off = new QuietLink(QStringLiteral("Shut Down"), false, footer_links_);
         connect(l_term, &QAbstractButton::clicked, this, []() {
             QProcess::startDetached(QString::fromUtf8(finn::kFinnTerminalBin), {});
         });
@@ -410,7 +424,8 @@ public:
             selected_mode_ = InstallMode::ReinstallPreserveData;
             refreshTargets();
             goTo(PageInstallTarget);
-        } else if (p == QLatin1String("disk") || p == QLatin1String("disks")) {
+        } else if (p == QLatin1String("disk") || p == QLatin1String("disks") || p == QLatin1String("partition")) {
+            du_return_to_target_ = false;
             refreshDiskUtility();
             goTo(PageDiskUtility);
         } else if (p == QLatin1String("boot") || p == QLatin1String("bootloader")) {
@@ -432,12 +447,13 @@ protected:
 
     void resizeEvent(QResizeEvent* e) override {
         FinnLayerWindow::resizeEvent(e);
-        const int y = height() - 96;
+        // Exact OOBE chevron position: 145px above bottom edge (y = height - 145 - 56)
+        const int y = std::max(16, height() - 145 - 56);
         const int cx = width() / 2;
         nav_back_->move(cx - 56 - 10, y);
         nav_next_->move(cx + 10, y);
         footer_links_->adjustSize();
-        footer_links_->move(36, height() - 44);
+        footer_links_->move(kOobeGutter, height() - 48);
     }
 
     void keyPressEvent(QKeyEvent* e) override {
@@ -480,6 +496,13 @@ private:
 
     void goBack() {
         const int idx = stack_->currentIndex();
+        if (idx == PageDiskUtility && du_return_to_target_) {
+            du_return_to_target_ = false;
+            disks_ = probe_system_disks();
+            refreshTargets();
+            goTo(PageInstallTarget);
+            return;
+        }
         if (idx == PageInstallMode || idx == PageDiskUtility ||
             idx == PageBootRepair || idx == PageLogs) {
             goTo(PageHub);
@@ -499,6 +522,7 @@ private:
                 refreshTargets();
                 goTo(PageInstallTarget);
             } else if (hub_choice_ == 2) {
+                du_return_to_target_ = false;
                 refreshDiskUtility();
                 goTo(PageDiskUtility);
             } else if (hub_choice_ == 3) {
@@ -520,17 +544,17 @@ private:
         }
     }
 
-    // ── Page 0: Recovery Hub (matches OOBE Language step 1:1) ────────────────
+    // ── Page 0: Recovery Hub (exact OOBE Language step geometry) ─────────────
     QWidget* buildHubPage() {
         auto* list = new QWidget();
         auto* col = new QVBoxLayout(list);
         col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(6);
+        col->setSpacing(4);
 
         const QStringList items = {
             QStringLiteral("Install FinnOS"),
             QStringLiteral("Reinstall FinnOS"),
-            QStringLiteral("Disk Utility"),
+            QStringLiteral("Partition & Disks"),
             QStringLiteral("Repair Startup"),
             QStringLiteral("System Logs"),
         };
@@ -548,6 +572,7 @@ private:
             hub_rows_.push_back(row);
             col->addWidget(row);
         }
+        col->addStretch(1);
 
         QString sub;
         if (!detected_oses_.empty()) {
@@ -565,14 +590,14 @@ private:
         auto* list = new QWidget();
         auto* col = new QVBoxLayout(list);
         col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(6);
+        col->setSpacing(4);
 
         struct Opt { InstallMode mode; const char* title; const char* meta; };
         const Opt opts[] = {
             {InstallMode::CleanErase, "Erase disk", "Clean"},
             {InstallMode::CleanEraseAB, "Erase disk (A/B updates)", "Rollback"},
             {InstallMode::DualBootResize, "Install alongside existing OS", "Dual-boot"},
-            {InstallMode::TargetPartition, "Use an existing partition", "Manual"},
+            {InstallMode::TargetPartition, "Use a specific partition", "Manual"},
         };
         for (int i = 0; i < 4; ++i) {
             auto* row = new OobeListRow(QString::fromUtf8(opts[i].title),
@@ -588,6 +613,7 @@ private:
             mode_rows_.push_back(row);
             col->addWidget(row);
         }
+        col->addStretch(1);
 
         return make_oobe_split_page(QStringLiteral("download"),
                                     QStringLiteral("How should we install?"),
@@ -605,7 +631,7 @@ private:
         target_list_host_ = new QWidget(host);
         target_list_lay_ = new QVBoxLayout(target_list_host_);
         target_list_lay_->setContentsMargins(0, 0, 0, 0);
-        target_list_lay_->setSpacing(6);
+        target_list_lay_->setSpacing(4);
         col->addWidget(target_list_host_);
 
         target_bar_ = new SlimPartitionBar(host);
@@ -613,7 +639,7 @@ private:
 
         resize_host_ = new QWidget(host);
         auto* rl = new QVBoxLayout(resize_host_);
-        rl->setContentsMargins(4, 8, 4, 0);
+        rl->setContentsMargins(2, 6, 2, 0);
         rl->setSpacing(6);
         resize_label_ = new QLabel(resize_host_);
         resize_label_->setFont(rec_font(12, QFont::Normal));
@@ -629,8 +655,17 @@ private:
         resize_host_->setVisible(false);
         col->addWidget(resize_host_);
 
+        auto* edit_parts = new QuietLink(QStringLiteral("Partition drive..."), false, host);
+        connect(edit_parts, &QAbstractButton::clicked, this, [this]() {
+            du_return_to_target_ = true;
+            refreshDiskUtility();
+            goTo(PageDiskUtility);
+        });
+        col->addWidget(edit_parts, 0, Qt::AlignLeft);
+        col->addStretch(1);
+
         refreshTargets();
-        return make_oobe_split_page(QStringLiteral("folder"),
+        return make_oobe_split_page(QStringLiteral("hard-drive"),
                                     QStringLiteral("Pick a drive"),
                                     {}, host, &target_sub_lbl_);
     }
@@ -642,6 +677,7 @@ private:
             delete it;
         }
         target_rows_.clear();
+        target_part_paths_.clear();
 
         if (disks_.empty()) {
             auto* empty = new QLabel(QStringLiteral("No internal drives found."), target_list_host_);
@@ -652,22 +688,64 @@ private:
             return;
         }
 
-        if (selected_disk_idx_ >= static_cast<int>(disks_.size())) selected_disk_idx_ = 0;
-        for (int i = 0; i < static_cast<int>(disks_.size()); ++i) {
-            const auto& d = disks_[static_cast<std::size_t>(i)];
-            const QString label = QString::fromStdString(d.model.empty() ? d.path : d.model);
-            const QString meta = QString::fromStdString(format_bytes(d.size_bytes));
-            auto* row = new OobeListRow(label, meta, target_list_host_);
-            row->setChecked(i == selected_disk_idx_);
-            connect(row, &QAbstractButton::clicked, this, [this, i]() {
-                selected_disk_idx_ = i;
-                for (int j = 0; j < static_cast<int>(target_rows_.size()); ++j) {
-                    target_rows_[static_cast<std::size_t>(j)]->setChecked(j == i);
+        const bool pick_partition =
+            (selected_mode_ == InstallMode::TargetPartition ||
+             selected_mode_ == InstallMode::ReinstallPreserveData);
+
+        if (pick_partition) {
+            int row_idx = 0;
+            for (int di = 0; di < static_cast<int>(disks_.size()); ++di) {
+                const auto& d = disks_[static_cast<std::size_t>(di)];
+                for (const auto& part : d.partitions) {
+                    if (part.is_esp) continue;
+                    const int idx = row_idx++;
+                    const QString lbl = QString::fromStdString(part.path + (part.fstype.empty() ? "" : "  " + part.fstype));
+                    const QString meta = QString::fromStdString(format_bytes(part.size_bytes));
+                    auto* row = new OobeListRow(lbl, meta, target_list_host_);
+                    row->setChecked(idx == 0);
+                    const std::string ppath = part.path;
+                    connect(row, &QAbstractButton::clicked, this, [this, idx, di, ppath]() {
+                        selected_disk_idx_ = di;
+                        selected_partition_path_ = ppath;
+                        for (int j = 0; j < static_cast<int>(target_rows_.size()); ++j) {
+                            target_rows_[static_cast<std::size_t>(j)]->setChecked(j == idx);
+                        }
+                        syncTargetDetails();
+                    });
+                    if (idx == 0) {
+                        selected_disk_idx_ = di;
+                        selected_partition_path_ = ppath;
+                    }
+                    target_part_paths_.push_back(ppath);
+                    target_rows_.push_back(row);
+                    target_list_lay_->addWidget(row);
                 }
-                syncTargetDetails();
-            });
-            target_rows_.push_back(row);
-            target_list_lay_->addWidget(row);
+            }
+            if (target_rows_.empty()) {
+                auto* empty = new QLabel(QStringLiteral("No partitions found. Use Partition drive first."), target_list_host_);
+                empty->setFont(rec_font(13, QFont::Normal));
+                empty->setWordWrap(true);
+                target_list_lay_->addWidget(empty);
+            }
+        } else {
+            selected_partition_path_.clear();
+            if (selected_disk_idx_ >= static_cast<int>(disks_.size())) selected_disk_idx_ = 0;
+            for (int i = 0; i < static_cast<int>(disks_.size()); ++i) {
+                const auto& d = disks_[static_cast<std::size_t>(i)];
+                const QString label = QString::fromStdString(d.model.empty() ? d.path : d.model);
+                const QString meta = QString::fromStdString(format_bytes(d.size_bytes));
+                auto* row = new OobeListRow(label, meta, target_list_host_);
+                row->setChecked(i == selected_disk_idx_);
+                connect(row, &QAbstractButton::clicked, this, [this, i]() {
+                    selected_disk_idx_ = i;
+                    for (int j = 0; j < static_cast<int>(target_rows_.size()); ++j) {
+                        target_rows_[static_cast<std::size_t>(j)]->setChecked(j == i);
+                    }
+                    syncTargetDetails();
+                });
+                target_rows_.push_back(row);
+                target_list_lay_->addWidget(row);
+            }
         }
         syncTargetDetails();
         updateChrome();
@@ -698,8 +776,9 @@ private:
         review_label_->setFont(rec_font(14, QFont::Normal));
         review_label_->setWordWrap(true);
         col->addWidget(review_label_);
+        col->addStretch(1);
 
-        return make_oobe_split_page(QStringLiteral("check-circle"),
+        return make_oobe_split_page(QStringLiteral("shield"),
                                     QStringLiteral("Ready to install?"),
                                     QStringLiteral("Press > to begin."),
                                     host);
@@ -720,9 +799,16 @@ private:
                     const std::uint64_t new_bytes = (p.size_bytes > want) ? (p.size_bytes - want) : (p.size_bytes / 2);
                     req.resize_new_size_mb = new_bytes / (1024ULL * 1024ULL);
                 }
-                if ((req.mode == InstallMode::TargetPartition || req.mode == InstallMode::ReinstallPreserveData) &&
-                    req.target_partition.empty() && !p.is_esp) {
-                    req.target_partition = p.path;
+            }
+            if (req.mode == InstallMode::TargetPartition || req.mode == InstallMode::ReinstallPreserveData) {
+                req.target_partition = selected_partition_path_;
+                if (req.target_partition.empty()) {
+                    for (const auto& p : d.partitions) {
+                        if (!p.is_esp) {
+                            req.target_partition = p.path;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -752,9 +838,10 @@ private:
         install_log_ = new QPlainTextEdit(host);
         install_log_->setReadOnly(true);
         install_log_->setFrameShape(QFrame::NoFrame);
-        install_log_->setFixedHeight(260);
+        install_log_->setFixedHeight(280);
         install_log_->setFont(finn_mono_font(11.0, QFont::Normal));
         col->addWidget(install_log_);
+        col->addStretch(1);
 
         return make_oobe_split_page(QStringLiteral("download"),
                                     QStringLiteral("Installing FinnOS"),
@@ -792,7 +879,7 @@ private:
         proc->start(QString::fromUtf8(finn::kFinnInstallBin), args);
     }
 
-    // ── Page 5: Disk Utility (OOBE minimal list + quiet inline actions) ──────
+    // ── Page 5: Partition & Disk Utility (100% OOBE-aligned, real partitioning) ─
     QWidget* buildDiskUtilityPage() {
         auto* host = new QWidget();
         auto* col = new QVBoxLayout(host);
@@ -808,35 +895,87 @@ private:
         du_bar_ = new SlimPartitionBar(host);
         col->addWidget(du_bar_);
 
+        // Quiet OOBE-style inline partitioning action bar
         auto* act_row = new QHBoxLayout();
-        act_row->setSpacing(14);
-        auto* b_check = new QuietLink(QStringLiteral("First Aid"), host);
-        auto* b_fmt = new QuietLink(QStringLiteral("Format ext4"), host);
-        auto* b_mnt = new QuietLink(QStringLiteral("Mount"), host);
-        auto* b_ref = new QuietLink(QStringLiteral("Refresh"), host);
-        connect(b_check, &QAbstractButton::clicked, this, [this]() { runDiskAction(DiskOpKind::FirstAidCheck); });
+        act_row->setSpacing(10);
+        auto* b_new = new QuietLink(QStringLiteral("New"), false, host);
+        auto* b_del = new QuietLink(QStringLiteral("Delete"), true, host);
+        auto* b_fmt = new QuietLink(QStringLiteral("Format"), false, host);
+        auto* b_chk = new QuietLink(QStringLiteral("First Aid"), false, host);
+        auto* b_gpt = new QuietLink(QStringLiteral("New GPT"), true, host);
+        auto* b_ref = new QuietLink(QStringLiteral("Refresh"), false, host);
+        connect(b_new, &QAbstractButton::clicked, this, [this]() {
+            du_create_panel_->setVisible(!du_create_panel_->isVisible());
+        });
+        connect(b_del, &QAbstractButton::clicked, this, &RecoveryWindow::deleteSelectedPartition);
         connect(b_fmt, &QAbstractButton::clicked, this, [this]() { runDiskAction(DiskOpKind::FormatExt4); });
-        connect(b_mnt, &QAbstractButton::clicked, this, [this]() { runDiskAction(DiskOpKind::Mount); });
+        connect(b_chk, &QAbstractButton::clicked, this, [this]() { runDiskAction(DiskOpKind::FirstAidCheck); });
+        connect(b_gpt, &QAbstractButton::clicked, this, &RecoveryWindow::wipeDiskGpt);
         connect(b_ref, &QAbstractButton::clicked, this, [this]() {
             disks_ = probe_system_disks();
             refreshDiskUtility();
+            du_status_->setText(QStringLiteral("Refreshed disk table."));
         });
-        act_row->addWidget(b_check);
+        act_row->addWidget(b_new);
+        act_row->addWidget(b_del);
         act_row->addWidget(b_fmt);
-        act_row->addWidget(b_mnt);
+        act_row->addWidget(b_chk);
+        act_row->addWidget(b_gpt);
         act_row->addWidget(b_ref);
         act_row->addStretch(1);
         col->addLayout(act_row);
+
+        // Minimal OOBE inline New Partition panel (hidden until "New" is clicked)
+        du_create_panel_ = new QWidget(host);
+        auto* cp = new QVBoxLayout(du_create_panel_);
+        cp->setContentsMargins(0, 4, 0, 4);
+        cp->setSpacing(6);
+
+        du_new_size_lbl_ = new QLabel(QStringLiteral("New partition: 32 GiB (ext4)"), du_create_panel_);
+        du_new_size_lbl_->setFont(rec_font(12, QFont::Normal));
+        du_new_size_slider_ = new QSlider(Qt::Horizontal, du_create_panel_);
+        du_new_size_slider_->setRange(1, 512);
+        du_new_size_slider_->setValue(32);
+        connect(du_new_size_slider_, &QSlider::valueChanged, this, [this](int gb) {
+            du_new_size_gib_ = gb;
+            du_new_size_lbl_->setText(
+                QStringLiteral("New partition: %1 GiB (%2)").arg(gb).arg(du_new_fs_));
+        });
+
+        auto* cp_row = new QHBoxLayout();
+        cp_row->setSpacing(12);
+        auto* b_fs = new QuietLink(QStringLiteral("Filesystem: ext4"), false, du_create_panel_);
+        connect(b_fs, &QAbstractButton::clicked, this, [this, b_fs]() {
+            du_new_fs_ = (du_new_fs_ == QLatin1String("ext4")) ? QStringLiteral("btrfs")
+                       : (du_new_fs_ == QLatin1String("btrfs")) ? QStringLiteral("fat32")
+                       : QStringLiteral("ext4");
+            b_fs->setLabelText(QStringLiteral("Filesystem: %1").arg(du_new_fs_));
+            du_new_size_lbl_->setText(
+                QStringLiteral("New partition: %1 GiB (%2)").arg(du_new_size_gib_).arg(du_new_fs_));
+        });
+        auto* b_apply = new QuietLink(QStringLiteral("Create partition"), false, du_create_panel_);
+        connect(b_apply, &QAbstractButton::clicked, this, &RecoveryWindow::createNewPartition);
+        cp_row->addWidget(b_fs);
+        cp_row->addWidget(b_apply);
+        cp_row->addStretch(1);
+
+        cp->addWidget(du_new_size_lbl_);
+        cp->addWidget(du_new_size_slider_);
+        cp->addLayout(cp_row);
+        du_create_panel_->setVisible(false);
+        col->addWidget(du_create_panel_);
 
         du_status_ = new QLabel(host);
         du_status_->setFont(rec_font(12, QFont::Normal));
         du_status_->setWordWrap(true);
         col->addWidget(du_status_);
+        col->addStretch(1);
 
         refreshDiskUtility();
         return make_oobe_split_page(QStringLiteral("hard-drive"),
                                     QStringLiteral("Disks"),
-                                    {}, host);
+                                    QStringLiteral("Create, delete, or format partitions."),
+                                    host);
     }
 
     void refreshDiskUtility() {
@@ -854,17 +993,23 @@ private:
             du_list_lay_->addWidget(l);
             return;
         }
-        du_bar_->setDisk(disks_.front());
-        for (const auto& d : disks_) {
+        if (du_selected_disk_ >= static_cast<int>(disks_.size())) du_selected_disk_ = 0;
+        du_bar_->setDisk(disks_[static_cast<std::size_t>(du_selected_disk_)]);
+
+        for (int di = 0; di < static_cast<int>(disks_.size()); ++di) {
+            const auto& d = disks_[static_cast<std::size_t>(di)];
             for (const auto& part : d.partitions) {
                 const int idx = static_cast<int>(du_parts_.size());
                 du_parts_.push_back(part);
-                const QString lbl = QString::fromStdString(part.path + "  " + part.fstype);
+                const QString lbl = QString::fromStdString(
+                    part.path + (part.fstype.empty() ? "" : "  " + part.fstype));
                 const QString meta = QString::fromStdString(format_bytes(part.size_bytes));
                 auto* row = new OobeListRow(lbl, meta, du_list_host_);
-                row->setChecked(idx == 0);
-                connect(row, &QAbstractButton::clicked, this, [this, idx]() {
+                row->setChecked(idx == du_selected_part_);
+                connect(row, &QAbstractButton::clicked, this, [this, idx, di]() {
                     du_selected_part_ = idx;
+                    du_selected_disk_ = di;
+                    du_bar_->setDisk(disks_[static_cast<std::size_t>(di)]);
                     for (int j = 0; j < static_cast<int>(du_part_rows_.size()); ++j) {
                         du_part_rows_[static_cast<std::size_t>(j)]->setChecked(j == idx);
                     }
@@ -873,6 +1018,86 @@ private:
                 du_list_lay_->addWidget(row);
             }
         }
+        if (du_parts_.empty()) {
+            // Disk exists but has no partitions yet (unpartitioned/blank drive)
+            const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
+            auto* row = new OobeListRow(
+                QString::fromStdString(d.path + "  (unpartitioned)"),
+                QString::fromStdString(format_bytes(d.size_bytes)),
+                du_list_host_);
+            row->setChecked(true);
+            du_part_rows_.push_back(row);
+            du_list_lay_->addWidget(row);
+        }
+    }
+
+    void runDiskCommand(const QString& program, const QStringList& args, const QString& ok_msg) {
+        if (QStandardPaths::findExecutable(program).isEmpty()) {
+            du_status_->setText(QStringLiteral("%1 is not available on this host.").arg(program));
+            return;
+        }
+        du_status_->setText(QStringLiteral("Running %1...").arg(program));
+        auto* proc = new QProcess(this);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, proc, ok_msg](int code, QProcess::ExitStatus st) {
+                    const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    proc->deleteLater();
+                    if (st == QProcess::NormalExit && code == 0) {
+                        QProcess::execute(QStringLiteral("partprobe"), {});
+                        disks_ = probe_system_disks();
+                        detected_oses_ = detect_oses(disks_);
+                        refreshDiskUtility();
+                        du_status_->setText(ok_msg);
+                    } else {
+                        du_status_->setText(err.isEmpty()
+                            ? QStringLiteral("Operation failed (exit %1).").arg(code)
+                            : err.section(QLatin1Char('\n'), -1));
+                    }
+                });
+        proc->start(program, args);
+    }
+
+    void createNewPartition() {
+        if (disks_.empty()) {
+            du_status_->setText(QStringLiteral("No target disk available."));
+            return;
+        }
+        const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
+        const QString disk_path = QString::fromStdString(d.path);
+        const QString type_guid = (du_new_fs_ == QLatin1String("fat32"))
+            ? QStringLiteral("0700")
+            : QStringLiteral("8300");
+        const QString size_arg = QStringLiteral("0:0:+%1G").arg(du_new_size_gib_);
+        du_create_panel_->setVisible(false);
+        runDiskCommand(QStringLiteral("sgdisk"),
+                       {QStringLiteral("-n"), size_arg, QStringLiteral("-t"),
+                        QStringLiteral("0:") + type_guid, disk_path},
+                       QStringLiteral("Created %1 GiB partition on %2.").arg(du_new_size_gib_).arg(disk_path));
+    }
+
+    void deleteSelectedPartition() {
+        if (du_parts_.empty() || du_selected_part_ >= static_cast<int>(du_parts_.size())) {
+            du_status_->setText(QStringLiteral("Select a partition to delete."));
+            return;
+        }
+        const auto& part = du_parts_[static_cast<std::size_t>(du_selected_part_)];
+        if (part.part_number <= 0 || part.parent_disk.empty()) {
+            du_status_->setText(QStringLiteral("Cannot determine partition number."));
+            return;
+        }
+        runDiskCommand(QStringLiteral("parted"),
+                       {QStringLiteral("-s"), QString::fromStdString(part.parent_disk),
+                        QStringLiteral("rm"), QString::number(part.part_number)},
+                       QStringLiteral("Deleted %1.").arg(QString::fromStdString(part.path)));
+    }
+
+    void wipeDiskGpt() {
+        if (disks_.empty()) return;
+        const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
+        const QString disk_path = QString::fromStdString(d.path);
+        runDiskCommand(QStringLiteral("sgdisk"),
+                       {QStringLiteral("--zap-all"), disk_path},
+                       QStringLiteral("Created clean GPT table on %1.").arg(disk_path));
     }
 
     void runDiskAction(DiskOpKind kind) {
@@ -886,7 +1111,9 @@ private:
             du_status_->setText(QString::fromStdString(plan.error));
             return;
         }
-        du_status_->setText(QString::fromStdString(plan.summary));
+        QStringList args;
+        for (const auto& a : plan.args) args << QString::fromStdString(a);
+        runDiskCommand(QString::fromStdString(plan.program), args, QString::fromStdString(plan.summary));
     }
 
     // ── Page 6: Bootloader Repair ────────────────────────────────────────────
@@ -894,10 +1121,10 @@ private:
         auto* host = new QWidget();
         auto* col = new QVBoxLayout(host);
         col->setContentsMargins(0, 0, 0, 0);
-        col->setSpacing(6);
+        col->setSpacing(4);
 
         const QStringList opts = {
-            QStringLiteral("Reinstall graphical UEFI bootloader"),
+            QStringLiteral("Reinstall UEFI bootloader"),
             QStringLiteral("Rescan Windows, macOS & Linux entries"),
             QStringLiteral("Verify /loader/entries/*.conf"),
         };
@@ -919,6 +1146,7 @@ private:
         boot_status_->setWordWrap(true);
         col->addSpacing(8);
         col->addWidget(boot_status_);
+        col->addStretch(1);
 
         return make_oobe_split_page(QStringLiteral("shield"),
                                     QStringLiteral("Repair startup"),
@@ -927,7 +1155,30 @@ private:
     }
 
     void runBootRepair() {
-        boot_status_->setText(QStringLiteral("Bootloader repair queued for EFI System Partition (finn-boot / systemd-boot)."));
+        const QString bootctl = QStandardPaths::findExecutable(QStringLiteral("bootctl"));
+        if (bootctl.isEmpty()) {
+            boot_status_->setText(QStringLiteral("bootctl is not available on this host."));
+            return;
+        }
+        QStringList args = {QStringLiteral("status")};
+        if (boot_choice_ == 0) args = {QStringLiteral("install")};
+        else if (boot_choice_ == 1) args = {QStringLiteral("update")};
+        boot_status_->setText(QStringLiteral("Running bootctl..."));
+        auto* proc = new QProcess(this);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, proc](int code, QProcess::ExitStatus st) {
+                    const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                    const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+                    proc->deleteLater();
+                    if (st == QProcess::NormalExit && code == 0) {
+                        boot_status_->setText(out.isEmpty() ? QStringLiteral("Startup repair complete.")
+                                                            : out.section(QLatin1Char('\n'), 0, 0));
+                    } else {
+                        boot_status_->setText(err.isEmpty() ? QStringLiteral("Repair failed (exit %1).").arg(code)
+                                                            : err.section(QLatin1Char('\n'), -1));
+                    }
+                });
+        proc->start(bootctl, args);
     }
 
     // ── Page 7: System Logs ──────────────────────────────────────────────────
@@ -943,9 +1194,10 @@ private:
         logs_edit_->setFixedHeight(320);
         logs_edit_->setFont(finn_mono_font(11.0, QFont::Normal));
         col->addWidget(logs_edit_);
+        col->addStretch(1);
 
         refreshLogs();
-        return make_oobe_split_page(QStringLiteral("terminal"),
+        return make_oobe_split_page(QStringLiteral("terminal-square"),
                                     QStringLiteral("System logs"),
                                     {}, host);
     }
@@ -976,10 +1228,12 @@ private:
     std::vector<OobeListRow*> mode_rows_;
 
     int selected_disk_idx_ = 0;
+    std::string selected_partition_path_;
     int resize_gib_ = 40;
     QWidget* target_list_host_ = nullptr;
     QVBoxLayout* target_list_lay_ = nullptr;
     std::vector<OobeListRow*> target_rows_;
+    std::vector<std::string> target_part_paths_;
     SlimPartitionBar* target_bar_ = nullptr;
     QWidget* resize_host_ = nullptr;
     QLabel* resize_label_ = nullptr;
@@ -990,12 +1244,19 @@ private:
     QLabel* review_label_ = nullptr;
     QPlainTextEdit* install_log_ = nullptr;
 
+    bool du_return_to_target_ = false;
+    int du_selected_disk_ = 0;
+    int du_selected_part_ = 0;
+    int du_new_size_gib_ = 32;
+    QString du_new_fs_ = QStringLiteral("ext4");
     QWidget* du_list_host_ = nullptr;
     QVBoxLayout* du_list_lay_ = nullptr;
     std::vector<OobeListRow*> du_part_rows_;
     std::vector<PartitionInfo> du_parts_;
-    int du_selected_part_ = 0;
     SlimPartitionBar* du_bar_ = nullptr;
+    QWidget* du_create_panel_ = nullptr;
+    QLabel* du_new_size_lbl_ = nullptr;
+    QSlider* du_new_size_slider_ = nullptr;
     QLabel* du_status_ = nullptr;
 
     int boot_choice_ = 0;
