@@ -157,6 +157,7 @@ zstd
 arch-install-scripts
 dosfstools
 e2fsprogs
+ntfs-3g
 parted
 gptfdisk
 
