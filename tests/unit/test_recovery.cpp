@@ -350,6 +350,71 @@ void test_mbr_esp_and_live_usb_protection() {
            del.args[0] == "-d" && del.args[1] == "2" && del.args[2] == "/dev/sda");
 }
 
+void test_windows_bios_mbr_dualboot_and_largest_shrinkable() {
+    constexpr const char* kWinBiosMbr = R"json({
+      "blockdevices": [
+        {
+          "name": "sda",
+          "path": "/dev/sda",
+          "size": 256000000000,
+          "type": "disk",
+          "model": "Windows BIOS MBR SSD",
+          "tran": "sata",
+          "rm": false,
+          "ro": false,
+          "children": [
+            {
+              "name": "sda1",
+              "path": "/dev/sda1",
+              "size": 104857600,
+              "type": "part",
+              "fstype": "ntfs",
+              "label": "System Reserved"
+            },
+            {
+              "name": "sda2",
+              "path": "/dev/sda2",
+              "size": 240000000000,
+              "type": "part",
+              "fstype": "ntfs",
+              "label": "Windows"
+            },
+            {
+              "name": "sda3",
+              "path": "/dev/sda3",
+              "size": 524288000,
+              "type": "part",
+              "fstype": "ntfs",
+              "label": "Recovery"
+            }
+          ]
+        }
+      ]
+    })json";
+
+    const auto disks = parse_lsblk_json(kWinBiosMbr);
+    assert(disks.size() == 1);
+    assert(disks[0].esp_partition_path.empty());  // Pure BIOS/MBR disk has no ESP.
+
+    // Must pick the 240 GB Windows C: partition, NEVER the 100 MB System Reserved partition.
+    const PartitionInfo* best = find_best_shrinkable_partition(disks[0]);
+    assert(best != nullptr);
+    assert(best->path == "/dev/sda2");
+
+    // DualBootResize on BIOS/MBR without ESP must succeed and omit --esp-part.
+    InstallRequest db;
+    db.mode = InstallMode::DualBootResize;
+    db.resize_partition = best->path;
+    db.resize_new_size_mb = 160000;
+    db.confirmed = true;
+    const auto plan = plan_install(db, disks);
+    assert(plan.valid);
+    assert(std::find(plan.finn_install_args.begin(), plan.finn_install_args.end(), "--esp-part") ==
+           plan.finn_install_args.end());
+    assert(std::find(plan.finn_install_args.begin(), plan.finn_install_args.end(), "/dev/sda2") !=
+           plan.finn_install_args.end());
+}
+
 }  // namespace
 
 int main() {
@@ -358,6 +423,7 @@ int main() {
     test_install_plans_and_no_user_config();
     test_disk_ops_and_bls();
     test_mbr_esp_and_live_usb_protection();
+    test_windows_bios_mbr_dualboot_and_largest_shrinkable();
     std::puts("test_recovery: ok");
     return 0;
 }

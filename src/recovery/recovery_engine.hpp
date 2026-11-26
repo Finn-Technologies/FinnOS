@@ -130,6 +130,10 @@ std::vector<DetectedOs> probe_os_directory(const std::string& mount_root,
 // Aggregate detected OSes from parsed disk/partition metadata and mounted paths.
 std::vector<DetectedOs> detect_oses(const std::vector<DiskInfo>& disks);
 
+// Return the largest safely shrinkable partition on a disk (or nullptr if none).
+// Avoids picking tiny Windows System Reserved / Recovery NTFS partitions.
+const PartitionInfo* find_best_shrinkable_partition(const DiskInfo& disk) noexcept;
+
 // Validate and generate an installation / dual-boot / recovery execution plan.
 // Never includes user account, hostname, or timezone flags (strictly OOBE).
 InstallPlan plan_install(const InstallRequest& req,

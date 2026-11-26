@@ -19,7 +19,7 @@ add_executable(recovery-mode
 target_include_directories(recovery-mode PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src
 )
-target_link_libraries(recovery-mode PRIVATE FinnSDK::FinnUI)
+target_link_libraries(recovery-mode PRIVATE FinnSDK::FinnUI ${CMAKE_DL_LIBS})
 if(UNIX AND NOT APPLE)
     target_link_libraries(recovery-mode PRIVATE util)
 endif()

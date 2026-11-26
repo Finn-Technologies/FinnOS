@@ -287,6 +287,22 @@ fi
 
 # 0. the payload.
 step "[0/8] FIND THE PAYLOAD"
+OFFLINE_ROOT=""
+OFFLINE_KERNEL=""
+if [ -d /run/archiso/airootfs/usr/bin ] && [ -d /run/archiso/airootfs/var/lib/pacman/local ]; then
+    OFFLINE_ROOT="/run/archiso/airootfs"
+    for kcand in \
+        "/run/archiso/bootmnt/finn/boot/$(uname -m)/vmlinuz-linux" \
+        "/run/archiso/bootmnt/finn/boot/$(uname -m)/vmlinuz-linux-aarch64" \
+        /run/archiso/airootfs/usr/lib/modules/*/vmlinuz \
+        /usr/lib/modules/*/vmlinuz; do
+        if [ -f "$kcand" ]; then
+            OFFLINE_KERNEL="$kcand"
+            break
+        fi
+    done
+    echo "offline live image found: $OFFLINE_ROOT (kernel: ${OFFLINE_KERNEL:-in-root})"
+fi
 # The bootable disc carries the tree in the live root, which is where the
 # installer normally runs from. A separate data disc labelled FINNOS still
 # works for the two-disc flow, and the host server is the last resort.
@@ -364,8 +380,10 @@ elif [ -n "${FINN_ARCH_FALLBACK_MIRROR:-}" ]; then
         printf 'Server = %s\n' "$FINN_ARCH_FALLBACK_MIRROR"
     } > /etc/pacman.d/mirrorlist
 fi
-if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/mirrorlist 2>/dev/null; then
-    die "no fallback mirror configured in /etc/pacman.d/mirrorlist (set FINN_ARCH_FALLBACK_MIRROR or populate /etc/pacman.d/mirrorlist)"
+if [ -z "$OFFLINE_ROOT" ] && [ "$INSTALL_MODE" != "repair-boot" ]; then
+    if ! grep -qE '^[[:space:]]*Server[[:space:]]*=' /etc/pacman.d/mirrorlist 2>/dev/null; then
+        die "no fallback mirror configured in /etc/pacman.d/mirrorlist (set FINN_ARCH_FALLBACK_MIRROR or populate /etc/pacman.d/mirrorlist)"
+    fi
 fi
 # Wine's 32-bit GL and Vulkan stack lives in [multilib]. The live root is
 # Arch's, and its pacman.conf may have the section or not; the disc carries
@@ -396,17 +414,19 @@ fi
 # keyring is empty and a signed pacman sync fails. Initializing it here is
 # the recovery; disabling signature checking is not. An install whose
 # packages were not verified is not an install this script will perform.
-if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
-    echo "the live keyring is empty; initializing it"
-    if ! pacman-key --init 2>&1 | tail -5; then
-        die "the live keyring could not be initialized; refusing to install without signature checking"
+if [ -z "$OFFLINE_ROOT" ] && [ "$INSTALL_MODE" != "repair-boot" ]; then
+    if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ]; then
+        echo "the live keyring is empty; initializing it"
+        if ! pacman-key --init 2>&1 | tail -5; then
+            die "the live keyring could not be initialized; refusing to install without signature checking"
+        fi
+        if ! pacman-key --populate 2>&1 | tail -5; then
+            die "the live keyring could not be populated; refusing to install without signature checking"
+        fi
     fi
-    if ! pacman-key --populate 2>&1 | tail -5; then
-        die "the live keyring could not be populated; refusing to install without signature checking"
-    fi
+    [ -s /etc/pacman.d/gnupg/pubring.gpg ] ||
+        die "the live keyring is not initialized; refusing to install without signature checking"
 fi
-[ -s /etc/pacman.d/gnupg/pubring.gpg ] ||
-    die "the live keyring is not initialized; refusing to install without signature checking"
 # If the live medium's /etc/pacman.conf enables [finnos] against an offline
 # repo.finnos.org placeholder (and no FINN_REPO_URL override is set), disable
 # [finnos] in the live pacman.conf so pacman -Sy / pacstrap can fall back to
@@ -430,14 +450,16 @@ if grep -qE '^\[finnos\][[:space:]]*$' /etc/pacman.conf 2>/dev/null; then
         ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
     fi
 fi
-if ! command -v pacstrap >/dev/null 2>&1 ||
-   ! command -v mkfs.vfat >/dev/null 2>&1 ||
-   ! command -v parted >/dev/null 2>&1; then
-    if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
-        die "the installer's own tools did not install; the live keyring or a mirror is broken"
+if [ -z "$OFFLINE_ROOT" ] && [ "$INSTALL_MODE" != "repair-boot" ]; then
+    if ! command -v pacstrap >/dev/null 2>&1 ||
+       ! command -v mkfs.vfat >/dev/null 2>&1 ||
+       ! command -v parted >/dev/null 2>&1; then
+        if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
+            die "the installer's own tools did not install; the live keyring or a mirror is broken"
+        fi
     fi
+    command -v pacstrap >/dev/null || die "pacstrap is not on this live system"
 fi
-command -v pacstrap >/dev/null || die "pacstrap is not on this live system"
 command -v mkfs.vfat >/dev/null || die "mkfs.vfat is not on this live system"
 post
 
@@ -549,12 +571,14 @@ fi
 # Non-destructive dual-boot, reinstall, and bootloader repair modes.
 if [ "$INSTALL_MODE" = "repair-boot" ]; then
     [ -b "$ROOT_PART_ARG" ] || die "--root-part is required for repair-boot"
-    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for repair-boot"
     step "[2/4] MOUNT FOR BOOTLOADER REPAIR"
     umount -R /mnt 2>/dev/null || true
     mount "$ROOT_PART_ARG" /mnt || die "could not mount $ROOT_PART_ARG"
     mkdir -p /mnt/boot
-    mount "$ESP_PART_ARG" /mnt/boot || die "could not mount $ESP_PART_ARG"
+    if [ -n "$ESP_PART_ARG" ]; then
+        [ -b "$ESP_PART_ARG" ] || die "ESP partition $ESP_PART_ARG is not a block device"
+        mount "$ESP_PART_ARG" /mnt/boot || die "could not mount $ESP_PART_ARG"
+    fi
     ROOTUUID="$(findmnt -no UUID /mnt || true)"
     [ -n "$ROOTUUID" ] || die "root partition has no UUID"
     PT_TYPE="$(blkid -s PTTYPE -o value "$DISK" 2>/dev/null || true)"
@@ -563,7 +587,7 @@ if [ "$INSTALL_MODE" = "repair-boot" ]; then
         set -euo pipefail
         mkinitcpio -P 2>&1 | tail -5
         efi_ok=0
-        if [ -d /sys/firmware/efi ] && [ '$PT_TYPE' != 'dos' ] &&
+        if [ -n '$ESP_PART_ARG' ] && [ -d /sys/firmware/efi ] && [ '$PT_TYPE' != 'dos' ] &&
            command -v bootctl >/dev/null 2>&1 &&
            bootctl --esp-path=/boot install 2>&1 | tail -5; then
             if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
@@ -577,7 +601,7 @@ if [ "$INSTALL_MODE" = "repair-boot" ]; then
             printf 'default finnos.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
             printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3\n' '$ROOTUUID' > /boot/loader/entries/finnos.conf
             efi_ok=1
-        elif [ -d /sys/firmware/efi ] && command -v grub-install >/dev/null 2>&1; then
+        elif [ -n '$ESP_PART_ARG' ] && [ -d /sys/firmware/efi ] && command -v grub-install >/dev/null 2>&1; then
             EFI_TARGET=x86_64-efi
             [ \"\$(uname -m)\" = 'aarch64' ] && EFI_TARGET=arm64-efi
             if grub-install --target=\"\$EFI_TARGET\" --efi-directory=/boot --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
@@ -602,14 +626,17 @@ fi
 
 if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     [ -b "$RESIZE_PART_ARG" ] || die "--resize-part is required for dualboot-resize"
-    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for dualboot-resize"
     [ -n "$RESIZE_MB_ARG" ] || die "--resize-mb is required for dualboot-resize"
+    if [ -n "$ESP_PART_ARG" ]; then
+        [ -b "$ESP_PART_ARG" ] || die "ESP partition $ESP_PART_ARG is not a block device"
+    fi
     step "[2/8] DUAL-BOOT NON-DESTRUCTIVE RESIZE"
     FS_KIND="$(blkid -s TYPE -o value "$RESIZE_PART_ARG" 2>/dev/null || true)"
     case "$FS_KIND" in
         ntfs)
             command -v ntfsresize >/dev/null || die "ntfsresize is required to shrink NTFS"
-            ntfsresize --force --size "${RESIZE_MB_ARG}M" "$RESIZE_PART_ARG" || die "ntfsresize failed"
+            ntfsfix -d "$RESIZE_PART_ARG" >/dev/null 2>&1 || true
+            printf 'y\n' | ntfsresize --force --force --size "${RESIZE_MB_ARG}M" "$RESIZE_PART_ARG" || die "ntfsresize failed (disable Windows Fast Startup / hibernation first)"
             ;;
         ext4|ext3|ext2)
             e2fsck -f -p "$RESIZE_PART_ARG" || true
@@ -634,14 +661,15 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     PART_NUM="$(lsblk -no PARTN "$RESIZE_PART_ARG" 2>/dev/null | tr -d '[:space:]')"
     [ -n "$PART_NUM" ] || die "could not determine partition number for $RESIZE_PART_ARG"
     START_MB="$(parted -ms "$DISK" unit MiB print | awk -F: -v n="$PART_NUM" '$1==n {gsub(/MiB/,"",$2); print int($2)}')"
-    END_MB=$((START_MB + RESIZE_MB_ARG))
+    # Leave a 4 MiB safety cushion after the shrunk filesystem so resizepart never clips trailing blocks.
+    END_MB=$((START_MB + RESIZE_MB_ARG + 4))
     PARTS_BEFORE="$(mktemp "${TMPDIR:-/tmp}/finn-parts-before.XXXXXX")"
     PARTS_AFTER="$(mktemp "${TMPDIR:-/tmp}/finn-parts-after.XXXXXX")"
     lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{print $1}' | sort > "$PARTS_BEFORE"
-    printf 'Yes\n' | parted ---pretend-input-tty "$DISK" unit MiB resizepart "$PART_NUM" "${END_MB}MiB" || die "parted resizepart failed"
+    printf 'Yes\nYes\n' | parted ---pretend-input-tty "$DISK" unit MiB resizepart "$PART_NUM" "${END_MB}MiB" || die "parted resizepart failed"
     PT_TYPE="$(blkid -s PTTYPE -o value "$DISK" 2>/dev/null || true)"
     if [ "$PT_TYPE" = "dos" ]; then
-        parted -s "$DISK" unit MiB mkpart primary ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
+        parted -s "$DISK" unit MiB mkpart primary ext4 "${END_MB}MiB" 100% || die "parted mkpart failed (MBR disks allow at most 4 primary partitions)"
     else
         parted -s "$DISK" unit MiB mkpart FinnOS ext4 "${END_MB}MiB" 100% || die "parted mkpart failed"
     fi
@@ -652,21 +680,25 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     rm -f "$PARTS_BEFORE" "$PARTS_AFTER"
     [ -b "$ROOT" ] || ROOT="$(lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{p=$1} END{print p}')"
     ESP="$ESP_PART_ARG"
-    step "[3/8] FORMAT FINNOS ROOT (PRESERVING ESP)"
+    step "[3/8] FORMAT FINNOS ROOT (PRESERVING EXISTING OS)"
     mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
     step "[4/8] MOUNT"
     mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
     mkdir -p /mnt/boot
-    mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+    if [ -n "$ESP" ]; then
+        mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+        findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
+    fi
     findmnt -o TARGET,SOURCE,FSTYPE /mnt
-    findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
 elif [ "$INSTALL_MODE" = "partition" ] || [ "$INSTALL_MODE" = "reinstall" ]; then
     [ -b "$ROOT_PART_ARG" ] || die "--root-part is required for $INSTALL_MODE"
-    [ -b "$ESP_PART_ARG" ] || die "--esp-part is required for $INSTALL_MODE"
+    if [ -n "$ESP_PART_ARG" ]; then
+        [ -b "$ESP_PART_ARG" ] || die "ESP partition $ESP_PART_ARG is not a block device"
+    fi
     ROOT="$ROOT_PART_ARG"
     ESP="$ESP_PART_ARG"
     if [ "$INSTALL_MODE" = "partition" ]; then
-        step "[3/8] FORMAT SELECTED PARTITION (PRESERVING ESP)"
+        step "[3/8] FORMAT SELECTED PARTITION (PRESERVING OTHER OSES)"
         mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"
     else
         step "[3/8] REINSTALL (PRESERVING USER DATA ON $ROOT)"
@@ -674,9 +706,11 @@ elif [ "$INSTALL_MODE" = "partition" ] || [ "$INSTALL_MODE" = "reinstall" ]; the
     step "[4/8] MOUNT"
     mount "$ROOT" /mnt || die "could not mount $ROOT at /mnt"
     mkdir -p /mnt/boot
-    mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+    if [ -n "$ESP" ]; then
+        mount "$ESP" /mnt/boot || die "could not mount $ESP at /mnt/boot"
+        findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
+    fi
     findmnt -o TARGET,SOURCE,FSTYPE /mnt
-    findmnt -o TARGET,SOURCE,FSTYPE /mnt/boot
 else
 # Clean whole-disk erase path below.
 # The signatures go first, and only on this device and its own partitions:
@@ -767,7 +801,44 @@ post
 fi
 
 # 5. the base system.
-step "[5/8] PACSTRAP"
+step "[5/8] BASE SYSTEM"
+if [ -n "$OFFLINE_ROOT" ]; then
+    echo "installing FinnOS offline directly from live image ($OFFLINE_ROOT) — no internet required"
+    if [ "$INSTALL_MODE" = "reinstall" ]; then
+        # Refresh system directories while preserving /home, OOBE marker, and Wi-Fi profiles.
+        for d in usr bin lib lib64 sbin var/lib/pacman opt/finnos; do
+            if [ -e "$OFFLINE_ROOT/$d" ]; then
+                mkdir -p "/mnt/$(dirname "$d")"
+                cp -a "$OFFLINE_ROOT/$d" "/mnt/$(dirname "$d")/" || die "offline copy failed on $d"
+            fi
+        done
+    else
+        cp -a "$OFFLINE_ROOT/." /mnt/ || die "offline copy from $OFFLINE_ROOT to /mnt failed"
+    fi
+    mkdir -p /mnt/boot /mnt/dev /mnt/proc /mnt/sys /mnt/run /mnt/tmp
+    chmod 1777 /mnt/tmp
+    if [ -n "$OFFLINE_KERNEL" ] && [ -f "$OFFLINE_KERNEL" ]; then
+        install -m 644 "$OFFLINE_KERNEL" /mnt/boot/vmlinuz-linux
+    elif [ ! -f /mnt/boot/vmlinuz-linux ]; then
+        for kcand in /mnt/usr/lib/modules/*/vmlinuz; do
+            if [ -f "$kcand" ]; then
+                install -m 644 "$kcand" /mnt/boot/vmlinuz-linux
+                break
+            fi
+        done
+    fi
+    [ -f /mnt/boot/vmlinuz-linux ] || die "kernel vmlinuz-linux missing after offline copy"
+    # Strip live-ISO-only hooks/units so the installed machine boots into FinnOS desktop, not live recovery.
+    rm -f /mnt/root/.zprofile /mnt/root/.bash_profile /mnt/root/.hushlogin
+    rm -rf /mnt/etc/systemd/system/getty@tty1.service.d
+    rm -f /mnt/etc/systemd/system/multi-user.target.wants/pacman-init.service \
+          /mnt/etc/systemd/system/pacman-init.service \
+          /mnt/etc/systemd/system/etc-pacman.d-gnupg.mount \
+          /mnt/etc/mkinitcpio.conf.d/archiso.conf \
+          /mnt/etc/machine-id
+    echo "offline base system deployment complete"
+else
+# Online fallback when not booted from the live squashfs image.
 # The toolchain is in the base install, because the chroot builds the
 # compositor: the disc carries the sources, and the machine they land on is
 # the one that can build them. The dev loop builds there too, so removing
@@ -838,6 +909,7 @@ for try in 1 2 3; do
     echo "pacstrap failed on try $try; retrying"
 done
 [ "$staged" = 1 ] || die "the base system did not install"
+fi
 post
 
 # 6. the fstab, and the UUID the boot entries will name. The UUID is read

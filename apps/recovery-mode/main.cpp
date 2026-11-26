@@ -17,6 +17,7 @@
 #include "finn_terminal_widget.hpp"
 #include "recovery/recovery_engine.hpp"
 #include "system/sys_files.hpp"
+#include "world_keyboards.hpp"
 
 #include <QAbstractButton>
 #include <QDialog>
@@ -1093,6 +1094,16 @@ public:
         detected_oses_ = detect_oses(disks_);
         selected_disk_idx_ = first_installable_disk_index(disks_);
         du_selected_disk_ = selected_disk_idx_;
+        world_kb_layouts_ = load_world_keyboard_layouts();
+        xkb_filter_ = new LiveXkbKeymapFilter(this);
+        if (auto* core = QCoreApplication::instance()) {
+            core->installEventFilter(xkb_filter_);
+        }
+        // If an existing OS is detected, default to Dual-Boot instead of Erase Disk
+        // so nobody can accidentally wipe an existing system.
+        if (!detected_oses_.empty()) {
+            selected_mode_ = InstallMode::DualBootResize;
+        }
 
         auto* root = new QVBoxLayout(this);
         root->setContentsMargins(0, 0, 0, 0);
@@ -1249,6 +1260,8 @@ protected:
                 FinnLayerWindow::keyPressEvent(e);
                 return;
             }
+            // Never auto-start a destructive install from an accidental Enter press.
+            if (stack_->currentIndex() == PageInstallReview) return;
             if (nav_next_->isVisible() && nav_next_->isEnabled()) goNext();
             return;
         }
@@ -1289,43 +1302,23 @@ private:
         }
     }
 
-    struct KbLayoutDef {
-        const char* loadkeys_code;
-        const char* xkb_code;
-        const char* short_label;
-        const char* full_name;
-    };
-
-    static const std::vector<KbLayoutDef>& keyboardLayouts() {
-        static const std::vector<KbLayoutDef> kLayouts = {
-            {"us", "us", "US", "English (US)"},
-            {"uk", "gb", "UK", "English (UK)"},
-            {"it", "it", "IT", "Italiano"},
-            {"de", "de", "DE", "Deutsch"},
-            {"fr", "fr", "FR", "Français"},
-            {"es", "es", "ES", "Español"},
-            {"pt-latin1", "pt", "PT", "Português"},
-            {"nl", "nl", "NL", "Nederlands"},
-            {"sv-latin1", "se", "SE", "Svenska"},
-            {"sg", "ch", "CH", "Schweiz / Suisse"},
-            {"jp106", "jp", "JP", "日本語"},
-        };
-        return kLayouts;
-    }
-
     void applyKeyboardLayout(int idx) {
-        const auto& layouts = keyboardLayouts();
-        if (idx < 0 || idx >= static_cast<int>(layouts.size())) return;
+        if (idx < 0 || idx >= static_cast<int>(world_kb_layouts_.size())) return;
         kb_idx_ = idx;
-        const auto& kb = layouts[static_cast<std::size_t>(idx)];
-        kb_link_->setLabelText(QStringLiteral("Keyboard: %1").arg(QString::fromLatin1(kb.short_label)));
+        const auto& kb = world_kb_layouts_[static_cast<std::size_t>(idx)];
+        kb_link_->setLabelText(QStringLiteral("Keyboard: %1").arg(kb.code_badge));
         footer_links_->adjustSize();
-        for (int j = 0; j < static_cast<int>(kb_rows_.size()); ++j) {
-            kb_rows_[static_cast<std::size_t>(j)]->setSelected(j == idx);
+        for (const auto& pair : kb_rows_) {
+            pair.second->setSelected(pair.first == idx);
         }
         if (kb_blur_ov_) kb_blur_ov_->invalidateCache();
-        QProcess::startDetached(QStringLiteral("loadkeys"), {QString::fromLatin1(kb.loadkeys_code)});
-        FinnThemeManager::instance().setKeyboardLayout(QString::fromLatin1(kb.xkb_code), {});
+        QProcess::startDetached(QStringLiteral("loadkeys"), {kb.loadkeys_name});
+        QProcess::startDetached(QStringLiteral("localectl"),
+                                {QStringLiteral("--no-convert"), QStringLiteral("set-keymap"), kb.loadkeys_name});
+        FinnThemeManager::instance().setKeyboardLayout(kb.xkb_layout, kb.xkb_variant);
+        if (xkb_filter_) {
+            xkb_filter_->setLayout(kb.xkb_layout, kb.xkb_variant);
+        }
     }
 
     QPixmap grabTransparentStack() const {
@@ -1396,7 +1389,11 @@ private:
                 !disks_[static_cast<std::size_t>(selected_disk_idx_)].is_live_medium;
             nav_next_->setEnabled(has_valid);
         } else if (idx == PageInstallReview) {
-            nav_next_->setEnabled(current_plan_.valid);
+            const bool needs_confirm =
+                (selected_mode_ == InstallMode::CleanErase ||
+                 selected_mode_ == InstallMode::CleanEraseAB ||
+                 selected_mode_ == InstallMode::TargetPartition);
+            nav_next_->setEnabled(current_plan_.valid && (!needs_confirm || destructive_confirmed_));
         } else {
             nav_next_->setEnabled(true);
         }
@@ -1531,10 +1528,10 @@ private:
             {InstallMode::TargetPartition, "Specific partition", "Manual"},
         };
         for (int i = 0; i < 4; ++i) {
+            const InstallMode m = opts[i].mode;
             auto* row = new OobeOptionRow(QString::fromUtf8(opts[i].title),
                                           QString::fromUtf8(opts[i].meta),
-                                          i == 0, prog_list->hostWidget());
-            const InstallMode m = opts[i].mode;
+                                          m == selected_mode_, prog_list->hostWidget());
             connect(row, &OobeOptionRow::clicked, this, [this, i, m, blur_ov]() {
                 selected_mode_ = m;
                 for (int j = 0; j < static_cast<int>(mode_rows_.size()); ++j) {
@@ -1697,14 +1694,30 @@ private:
         const bool is_dual = (selected_mode_ == InstallMode::DualBootResize);
         resize_host_->setVisible(is_dual);
         if (is_dual) {
-            const int max_gb = std::max(16, static_cast<int>(d.size_bytes / (1024ULL * 1024ULL * 1024ULL)) - 16);
-            resize_slider_->setRange(16, std::max(16, max_gb));
-            resize_slider_->setValue(std::clamp(resize_gib_, 16, std::max(16, max_gb)));
-            resize_label_->setText(QStringLiteral("Space for FinnOS: %1 GiB").arg(resize_slider_->value()));
+            const PartitionInfo* best = find_best_shrinkable_partition(d);
+            if (!best) {
+                resize_slider_->setEnabled(false);
+                resize_label_->setText(QStringLiteral("No shrinkable NTFS/ext4/btrfs partition on %1.")
+                                           .arg(QString::fromStdString(d.path)));
+            } else {
+                constexpr std::uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
+                const int max_free_gb = static_cast<int>((best->size_bytes - best->min_size_bytes) / kGiB);
+                const int hi = std::max(12, max_free_gb);
+                resize_slider_->setEnabled(true);
+                resize_slider_->setRange(12, hi);
+                const int def_gb = std::clamp(resize_gib_, 12, hi);
+                resize_slider_->setValue(def_gb);
+                resize_gib_ = def_gb;
+                resize_label_->setText(
+                    QStringLiteral("Shrink %1 (%2) — Free %3 GiB for FinnOS")
+                        .arg(QString::fromStdString(best->path),
+                             QString::fromStdString(format_bytes(best->size_bytes)))
+                        .arg(def_gb));
+            }
         }
     }
 
-    // ── Page 3: Quiet Install Summary ────────────────────────────────────────
+    // ── Page 3: Quiet Install Summary + Explicit Destructive Confirmation ────
     QWidget* buildInstallReviewPage() {
         auto* host = new QWidget();
         host->setFixedWidth(kOobeContentWidth + 6);
@@ -1716,27 +1729,49 @@ private:
         review_label_->setFont(oobe_font(15, QFont::Normal));
         review_label_->setWordWrap(true);
         col->addWidget(review_label_);
+
+        review_confirm_host_ = new QWidget(host);
+        review_confirm_lay_ = new QVBoxLayout(review_confirm_host_);
+        review_confirm_lay_->setContentsMargins(0, 6, 0, 0);
+        review_confirm_lay_->setSpacing(4);
+        col->addWidget(review_confirm_host_);
+
         col->addStretch(1);
 
         return create_oobe_split_page(QStringLiteral("shield"),
                                       QStringLiteral("Ready to install?"),
-                                      QStringLiteral("Press > to begin."),
+                                      QStringLiteral("Review carefully before proceeding."),
                                       host);
     }
 
     void refreshReview() {
+        destructive_confirmed_ = false;
+        if (review_confirm_lay_) {
+            while (QLayoutItem* it = review_confirm_lay_->takeAt(0)) {
+                if (it->widget()) it->widget()->deleteLater();
+                delete it;
+            }
+        }
+
         InstallRequest req;
         req.mode = selected_mode_;
+        std::string destructive_target;
         if (!disks_.empty()) {
             const auto& d = disks_[static_cast<std::size_t>(selected_disk_idx_)];
             req.target_disk = d.path;
+            destructive_target = d.path + " (" + format_bytes(d.size_bytes) + ")";
             for (const auto& p : d.partitions) {
                 if (p.is_esp && req.esp_partition.empty()) req.esp_partition = p.path;
-                if (req.mode == InstallMode::DualBootResize && req.resize_partition.empty() &&
-                    (p.fstype == "ntfs" || p.fstype == "ext4" || p.fstype == "btrfs")) {
-                    req.resize_partition = p.path;
-                    const std::uint64_t want = static_cast<std::uint64_t>(resize_gib_) * 1024ULL * 1024ULL * 1024ULL;
-                    const std::uint64_t new_bytes = (p.size_bytes > want) ? (p.size_bytes - want) : (p.size_bytes / 2);
+            }
+            if (req.mode == InstallMode::DualBootResize) {
+                if (const PartitionInfo* best = find_best_shrinkable_partition(d)) {
+                    req.resize_partition = best->path;
+                    constexpr std::uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
+                    const std::uint64_t want = static_cast<std::uint64_t>(resize_gib_) * kGiB;
+                    const std::uint64_t new_bytes =
+                        (best->size_bytes > want && (best->size_bytes - want) >= best->min_size_bytes)
+                            ? (best->size_bytes - want)
+                            : best->min_size_bytes;
                     req.resize_new_size_mb = new_bytes / (1024ULL * 1024ULL);
                 }
             }
@@ -1750,6 +1785,7 @@ private:
                         }
                     }
                 }
+                destructive_target = req.target_partition;
             }
         }
         req.confirmed = true;
@@ -1762,8 +1798,26 @@ private:
             for (const auto& step : current_plan_.steps) {
                 lines << QStringLiteral("• ") + QString::fromStdString(step);
             }
-            lines << QStringLiteral("\nLanguage, Wi-Fi, account, and hostname will be configured on first boot.");
+            for (const auto& warn : current_plan_.warnings) {
+                lines << QStringLiteral("⚠ ") + QString::fromStdString(warn);
+            }
             review_label_->setText(lines.join(QLatin1Char('\n')));
+
+            const bool needs_confirm =
+                (selected_mode_ == InstallMode::CleanErase ||
+                 selected_mode_ == InstallMode::CleanEraseAB ||
+                 selected_mode_ == InstallMode::TargetPartition);
+            if (needs_confirm && review_confirm_lay_) {
+                auto* row = new OobeOptionRow(
+                    QStringLiteral("Confirm erase %1").arg(QString::fromStdString(destructive_target)),
+                    QStringLiteral("Required"), false, review_confirm_host_);
+                connect(row, &OobeOptionRow::clicked, this, [this, row]() {
+                    destructive_confirmed_ = !destructive_confirmed_;
+                    row->setSelected(destructive_confirmed_);
+                    updateChrome();
+                });
+                review_confirm_lay_->addWidget(row);
+            }
         }
         updateChrome();
     }
@@ -2401,38 +2455,79 @@ private:
         logs_edit_->setPlainText(txt);
     }
 
-    // ── Page 8: Keyboard Layout Picker (Exact OOBE Split Layout) ─────────────
+    // ── Page 8: World Keyboard Layout Picker (Searchable, All XKB Layouts) ───
     QWidget* buildKeyboardPage() {
-        auto* list_wrap = new QWidget();
+        auto* host = new QWidget();
+        host->setFixedWidth(kOobeContentWidth + 6);
+        host->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        host->setAttribute(Qt::WA_TranslucentBackground, true);
+
+        auto* col = new QVBoxLayout(host);
+        col->setContentsMargins(0, 0, 0, 0);
+        col->setSpacing(10);
+
+        auto* search = new QLineEdit(host);
+        search->setPlaceholderText(QStringLiteral("Search all keyboard layouts (e.g. it, de, ara, jp)..."));
+        search->setFixedSize(kOobeContentWidth, 36);
+        search->setFont(oobe_font(14, QFont::Normal));
+        connect(search, &QLineEdit::textChanged, this, &RecoveryWindow::rebuildKeyboardList);
+        col->addWidget(search);
+
+        auto* list_wrap = new QWidget(host);
         list_wrap->setFixedWidth(kOobeContentWidth + 6);
         list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
         list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
 
-        auto* prog_list = new OobeProgressiveList(list_wrap);
-        kb_blur_ov_ = new ProgressiveBlurOverlay(prog_list, list_wrap);
+        kb_prog_list_ = new OobeProgressiveList(list_wrap);
+        kb_blur_ov_ = new ProgressiveBlurOverlay(kb_prog_list_, list_wrap);
         auto* stack_lay = new QGridLayout(list_wrap);
         stack_lay->setContentsMargins(0, 0, 0, 0);
-        stack_lay->addWidget(prog_list, 0, 0);
+        stack_lay->addWidget(kb_prog_list_, 0, 0);
         stack_lay->addWidget(kb_blur_ov_, 0, 0);
+        col->addWidget(list_wrap, 1);
 
-        const auto& layouts = keyboardLayouts();
-        for (int i = 0; i < static_cast<int>(layouts.size()); ++i) {
-            const auto& kb = layouts[static_cast<std::size_t>(i)];
-            auto* row = new OobeOptionRow(QString::fromUtf8(kb.full_name),
-                                          QString::fromLatin1(kb.short_label),
-                                          i == kb_idx_, prog_list->hostWidget());
+        rebuildKeyboardList({});
+
+        return create_oobe_split_page(
+            QStringLiteral("keyboard"),
+            QStringLiteral("Keyboard layout"),
+            QStringLiteral("%1 world layouts available. Applied live.").arg(world_kb_layouts_.size()),
+            host);
+    }
+
+    void rebuildKeyboardList(const QString& filter) {
+        if (!kb_prog_list_) return;
+        auto* lay = kb_prog_list_->listLayout();
+        while (QLayoutItem* it = lay->takeAt(0)) {
+            if (QWidget* w = it->widget()) w->deleteLater();
+            delete it;
+        }
+        kb_rows_.clear();
+
+        const QString q = filter.trimmed();
+        int shown = 0;
+        for (int i = 0; i < static_cast<int>(world_kb_layouts_.size()); ++i) {
+            const auto& kb = world_kb_layouts_[static_cast<std::size_t>(i)];
+            if (!q.isEmpty() &&
+                !kb.display_name.contains(q, Qt::CaseInsensitive) &&
+                !kb.xkb_layout.contains(q, Qt::CaseInsensitive) &&
+                !kb.code_badge.contains(q, Qt::CaseInsensitive)) {
+                continue;
+            }
+            auto* row = new OobeOptionRow(kb.display_name, kb.code_badge,
+                                          i == kb_idx_, kb_prog_list_->hostWidget());
             connect(row, &OobeOptionRow::clicked, this, [this, i]() {
                 applyKeyboardLayout(i);
             });
-            kb_rows_.push_back(row);
-            prog_list->listLayout()->addWidget(row);
+            kb_rows_.emplace_back(i, row);
+            lay->addWidget(row);
+            ++shown;
         }
-        prog_list->listLayout()->addStretch(1);
-
-        return create_oobe_split_page(QStringLiteral("keyboard"),
-                                      QStringLiteral("Keyboard layout"),
-                                      QStringLiteral("Applied immediately to Recovery Mode and Terminal."),
-                                      list_wrap);
+        lay->addStretch(1);
+        if (kb_blur_ov_) {
+            kb_blur_ov_->setVisible(shown > 6);
+            kb_blur_ov_->invalidateCache();
+        }
     }
 
     // ── Page 9: Network / Wi-Fi Setup (Exact OOBE Wi-Fi Layout) ──────────────
@@ -2703,7 +2798,10 @@ private:
     Page prev_utility_page_ = PageHub;
     RecoveryTerminalWindow* terminal_win_ = nullptr;
 
-    std::vector<OobeOptionRow*> kb_rows_;
+    std::vector<WorldKeyboardLayout> world_kb_layouts_;
+    LiveXkbKeymapFilter* xkb_filter_ = nullptr;
+    OobeProgressiveList* kb_prog_list_ = nullptr;
+    std::vector<std::pair<int, OobeOptionRow*>> kb_rows_;
     ProgressiveBlurOverlay* kb_blur_ov_ = nullptr;
 
     OobeProgressiveList* net_prog_list_ = nullptr;
@@ -2730,7 +2828,10 @@ private:
     QLabel* target_sub_lbl_ = nullptr;
 
     InstallPlan current_plan_;
+    bool destructive_confirmed_ = false;
     QLabel* review_label_ = nullptr;
+    QWidget* review_confirm_host_ = nullptr;
+    QVBoxLayout* review_confirm_lay_ = nullptr;
     QPlainTextEdit* install_log_ = nullptr;
 
     bool du_return_to_target_ = false;

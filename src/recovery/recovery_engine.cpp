@@ -510,6 +510,17 @@ std::vector<DetectedOs> detect_oses(const std::vector<DiskInfo>& disks) {
     return out;
 }
 
+const PartitionInfo* find_best_shrinkable_partition(const DiskInfo& disk) noexcept {
+    const PartitionInfo* best = nullptr;
+    for (const auto& p : disk.partitions) {
+        if (!p.can_shrink) continue;
+        if (!best || p.size_bytes > best->size_bytes) {
+            best = &p;
+        }
+    }
+    return best;
+}
+
 InstallPlan plan_install(const InstallRequest& req,
                          const std::vector<DiskInfo>& disks) {
     InstallPlan plan;
@@ -598,31 +609,37 @@ InstallPlan plan_install(const InstallRequest& req,
                 return plan;
             }
             const std::string esp = req.esp_partition.empty() ? disk->esp_partition_path : req.esp_partition;
-            if (esp.empty()) {
-                plan.error = "No EFI System Partition found on " + disk->path + " to share for dual-boot.";
-                return plan;
-            }
 
             plan.valid = true;
             plan.summary = "Shrink " + part->path + " (" + part->fstype + ") to " +
                            format_bytes(new_bytes) + ", install FinnOS into " +
-                           format_bytes(part->size_bytes - new_bytes) + " freed space, and preserve ESP " + esp + ".";
-            plan.warnings.push_back("Existing EFI bootloaders on " + esp + " (Windows/macOS/Linux) will be preserved untouched.");
+                           format_bytes(part->size_bytes - new_bytes) + " freed space" +
+                           (esp.empty() ? " (BIOS/MBR bootloader)." : (", and preserve ESP " + esp + "."));
+            if (!esp.empty()) {
+                plan.warnings.push_back("Existing EFI bootloaders on " + esp + " (Windows/macOS/Linux) will be preserved untouched.");
+            } else {
+                plan.warnings.push_back("No EFI System Partition detected — installing BIOS/MBR GRUB bootloader on " + disk->path + ".");
+            }
             plan.warnings.push_back("User account, hostname, Wi-Fi, and preferences will be set on first normal boot in OOBE.");
             plan.steps = {
                 "Verify & shrink " + part->path + " (" + part->fstype + ") to " + std::to_string(req.resize_new_size_mb) + " MiB",
                 "Create new ext4 FinnOS root partition in the freed space on " + disk->path,
-                "Mount existing ESP " + esp + " at /mnt/boot without formatting",
-                "Deploy FinnOS and register graphical dual-boot UEFI picker (finn-boot / systemd-boot)",
+                esp.empty()
+                    ? ("Install BIOS/MBR bootloader on " + disk->path)
+                    : ("Mount existing ESP " + esp + " at /mnt/boot without formatting"),
+                "Deploy FinnOS offline from live media and register dual-boot bootloader",
             };
             plan.finn_install_args = {
                 "--disk", disk->path,
                 "--mode", "dualboot-resize",
                 "--resize-part", part->path,
                 "--resize-mb", std::to_string(req.resize_new_size_mb),
-                "--esp-part", esp,
-                "--yes",
             };
+            if (!esp.empty()) {
+                plan.finn_install_args.push_back("--esp-part");
+                plan.finn_install_args.push_back(esp);
+            }
+            plan.finn_install_args.push_back("--yes");
             return plan;
         }
 
@@ -646,27 +663,29 @@ InstallPlan plan_install(const InstallRequest& req,
                 return plan;
             }
             const std::string esp = req.esp_partition.empty() ? disk->esp_partition_path : req.esp_partition;
-            if (esp.empty()) {
-                plan.error = "Select an EFI System Partition (ESP) for UEFI boot registration.";
-                return plan;
-            }
 
             plan.valid = true;
-            plan.summary = "Format " + part->path + " as ext4, install FinnOS, and share existing ESP " + esp + ".";
-            plan.warnings.push_back("Data on " + part->path + " will be erased; other partitions and bootloaders on " + esp + " are preserved.");
+            plan.summary = "Format " + part->path + " as ext4, install FinnOS" +
+                           (esp.empty() ? " (BIOS/MBR bootloader)." : (", and share existing ESP " + esp + "."));
+            plan.warnings.push_back("Data on " + part->path + " will be erased; other partitions are preserved.");
             plan.steps = {
                 "Format " + part->path + " as ext4 (label finnos)",
-                "Mount existing ESP " + esp + " at /mnt/boot without formatting",
-                "Deploy FinnOS base system and userland",
-                "Register FinnOS + existing OSes in graphical UEFI bootloader",
+                esp.empty()
+                    ? ("Install BIOS/MBR bootloader on " + disk->path)
+                    : ("Mount existing ESP " + esp + " at /mnt/boot without formatting"),
+                "Deploy FinnOS base system and userland offline",
+                "Register FinnOS + existing OSes in bootloader",
             };
             plan.finn_install_args = {
                 "--disk", disk->path,
                 "--mode", "partition",
                 "--root-part", part->path,
-                "--esp-part", esp,
-                "--yes",
             };
+            if (!esp.empty()) {
+                plan.finn_install_args.push_back("--esp-part");
+                plan.finn_install_args.push_back(esp);
+            }
+            plan.finn_install_args.push_back("--yes");
             return plan;
         }
 
@@ -682,26 +701,27 @@ InstallPlan plan_install(const InstallRequest& req,
                 return plan;
             }
             const std::string esp = req.esp_partition.empty() ? disk->esp_partition_path : req.esp_partition;
-            if (esp.empty()) {
-                plan.error = "No EFI System Partition found for " + part->path + ".";
-                return plan;
-            }
 
             plan.valid = true;
             plan.summary = "Reinstall FinnOS system files on " + part->path + " while preserving /home and user settings.";
             plan.steps = {
-                "Mount " + part->path + " and ESP " + esp + " without formatting",
+                esp.empty()
+                    ? ("Mount " + part->path + " without formatting")
+                    : ("Mount " + part->path + " and ESP " + esp + " without formatting"),
                 "Preserve /home, /var/lib/finn/oobe_complete, and NetworkManager profiles",
-                "Refresh FinnOS kernel, initramfs, and userland binaries",
-                "Verify graphical UEFI bootloader entries",
+                "Refresh FinnOS kernel, initramfs, and userland binaries offline",
+                "Verify bootloader entries",
             };
             plan.finn_install_args = {
                 "--disk", disk->path,
                 "--mode", "reinstall",
                 "--root-part", part->path,
-                "--esp-part", esp,
-                "--yes",
             };
+            if (!esp.empty()) {
+                plan.finn_install_args.push_back("--esp-part");
+                plan.finn_install_args.push_back(esp);
+            }
+            plan.finn_install_args.push_back("--yes");
             return plan;
         }
 
@@ -713,27 +733,31 @@ InstallPlan plan_install(const InstallRequest& req,
                 return plan;
             }
             const std::string esp = req.esp_partition.empty() ? disk->esp_partition_path : req.esp_partition;
-            if (esp.empty()) {
-                plan.error = "No EFI System Partition found on " + disk->path + ".";
-                return plan;
-            }
 
             plan.valid = true;
-            plan.summary = "Repair UEFI graphical bootloader (finn-boot / systemd-boot) on " + esp +
-                           " and rebuild initramfs for " + part->path + ".";
+            plan.summary = esp.empty()
+                ? ("Repair BIOS/MBR GRUB bootloader on " + disk->path + " and rebuild initramfs for " + part->path + ".")
+                : ("Repair UEFI graphical bootloader (finn-boot / systemd-boot) on " + esp + " and rebuild initramfs for " + part->path + ".");
             plan.steps = {
-                "Mount " + part->path + " at /mnt and ESP " + esp + " at /mnt/boot",
-                "Reinstall FinnOS graphical UEFI bootloader (EFI/BOOT and EFI/systemd)",
-                "Regenerate /boot/loader/loader.conf and UAPI BLS entries preserving dual-boot OSes",
+                esp.empty()
+                    ? ("Mount " + part->path + " at /mnt")
+                    : ("Mount " + part->path + " at /mnt and ESP " + esp + " at /mnt/boot"),
+                esp.empty()
+                    ? ("Reinstall GRUB BIOS bootloader on " + disk->path)
+                    : "Reinstall FinnOS graphical UEFI bootloader (EFI/BOOT and EFI/systemd)",
+                "Regenerate boot entries preserving dual-boot OSes",
                 "Rebuild initramfs (mkinitcpio -P)",
             };
             plan.finn_install_args = {
                 "--disk", disk->path,
                 "--mode", "repair-boot",
                 "--root-part", part->path,
-                "--esp-part", esp,
-                "--yes",
             };
+            if (!esp.empty()) {
+                plan.finn_install_args.push_back("--esp-part");
+                plan.finn_install_args.push_back(esp);
+            }
+            plan.finn_install_args.push_back("--yes");
             return plan;
         }
     }
