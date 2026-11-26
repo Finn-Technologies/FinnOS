@@ -1,5 +1,5 @@
 if(FINN_RECOVERY_ONLY)
-    add_subdirectory(installer)
+    add_subdirectory(recovery-mode)
     return()
 endif()
 
@@ -14,7 +14,7 @@ add_subdirectory(monitor)
 add_subdirectory(calculator)
 add_subdirectory(archive)
 add_subdirectory(capture)
-add_subdirectory(installer)
+add_subdirectory(recovery-mode)
 add_subdirectory(oobe)
 
 find_package(Qt6 COMPONENTS WebEngineQuick QUIET)

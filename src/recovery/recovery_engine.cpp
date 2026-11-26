@@ -375,7 +375,7 @@ std::vector<DiskInfo> parse_lsblk_json(std::string_view json,
                 p.partuuid = ch.str("partuuid");
                 p.parttype = to_lower(ch.str("parttype"));
                 p.mountpoint = ch.str("mountpoint");
-                if (p.mountpoint == "/run/archiso/bootmnt" || p.mountpoint == "/run/archiso") {
+                if (p.mountpoint.rfind("/run/archiso", 0) == 0) {
                     d.is_live_medium = true;
                 }
                 classify_partition(p);
@@ -875,6 +875,129 @@ DiskOpPlan plan_disk_op(DiskOpKind op,
     }
 
     plan.error = "Unknown disk operation.";
+    return plan;
+}
+
+DiskOpPlan plan_disk_wipe_gpt(const DiskInfo& disk) {
+    DiskOpPlan plan;
+    if (disk.path.empty()) {
+        plan.error = "No target disk selected.";
+        return plan;
+    }
+    if (disk.is_live_medium) {
+        plan.error = "Cannot wipe the active Live USB drive (" + disk.path + ").";
+        return plan;
+    }
+    if (disk.read_only) {
+        plan.error = "Target disk " + disk.path + " is read-only.";
+        return plan;
+    }
+    plan.valid = true;
+    plan.program = "bash";
+    plan.args = {
+        "-c",
+        "set -e; DISK=\"$1\"; "
+        "wipefs -a \"$DISK\" 2>/dev/null || true; "
+        "sgdisk --zap-all \"$DISK\"; "
+        "sgdisk -o \"$DISK\"; "
+        "partprobe \"$DISK\" 2>/dev/null || true; "
+        "udevadm settle --timeout=10 2>/dev/null || true",
+        "_",
+        disk.path,
+    };
+    plan.summary = "Created clean GPT table on " + disk.path + ".";
+    return plan;
+}
+
+DiskOpPlan plan_disk_delete_partition(const DiskInfo& disk, const PartitionInfo& part) {
+    DiskOpPlan plan;
+    if (disk.is_live_medium) {
+        plan.error = "Cannot modify the active Live USB drive (" + disk.path + ").";
+        return plan;
+    }
+    if (disk.read_only) {
+        plan.error = "Target disk " + disk.path + " is read-only.";
+        return plan;
+    }
+    if (part.path.empty() || part.part_number <= 0 || part.parent_disk.empty()) {
+        plan.error = "Cannot determine partition number.";
+        return plan;
+    }
+    plan.valid = true;
+    plan.program = "sgdisk";
+    plan.args = {"-d", std::to_string(part.part_number), part.parent_disk};
+    plan.summary = "Deleted " + part.path + ".";
+    return plan;
+}
+
+DiskOpPlan plan_disk_create_partition(const DiskInfo& disk,
+                                      std::uint64_t size_gib,
+                                      bool use_all_remaining,
+                                      std::string_view fstype) {
+    DiskOpPlan plan;
+    if (disk.path.empty()) {
+        plan.error = "No target disk available.";
+        return plan;
+    }
+    if (disk.is_live_medium) {
+        plan.error = "Cannot partition the active Live USB drive (" + disk.path + ").";
+        return plan;
+    }
+    if (disk.read_only) {
+        plan.error = "Target disk " + disk.path + " is read-only.";
+        return plan;
+    }
+    const std::string fs = to_lower(fstype);
+    std::string type_guid;
+    std::string mkfs_cmd;
+    std::string size_arg;
+    if (fs == "efi") {
+        type_guid = "ef00";
+        mkfs_cmd = "mkfs.vfat -F32 -n FINNOS_EFI \"$NEWPART\"";
+        size_arg = "0:0:+512M";
+    } else if (fs == "ext4") {
+        type_guid = "8300";
+        mkfs_cmd = "mkfs.ext4 -F \"$NEWPART\"";
+    } else if (fs == "btrfs") {
+        type_guid = "8300";
+        mkfs_cmd = "mkfs.btrfs -f \"$NEWPART\"";
+    } else if (fs == "fat32" || fs == "vfat") {
+        type_guid = "ef00";
+        mkfs_cmd = "mkfs.vfat -F32 -n FINNOS_EFI \"$NEWPART\"";
+    } else {
+        plan.error = "Unsupported filesystem '" + std::string(fstype) + "'.";
+        return plan;
+    }
+    if (size_arg.empty()) {
+        if (!use_all_remaining && size_gib == 0) {
+            plan.error = "Partition size must be at least 1 GiB.";
+            return plan;
+        }
+        size_arg = use_all_remaining
+            ? "0:0:0"
+            : ("0:0:+" + std::to_string(size_gib) + "G");
+    }
+
+    // Record partitions before and after via temp files (no /dev/fd dependency)
+    // so the newly created partition is always formatted even when gaps exist.
+    const std::string script =
+        "set -e; "
+        "DISK=\"$1\"; SIZE=\"$2\"; TYPE=\"$3\"; "
+        "sgdisk -p \"$DISK\" >/dev/null 2>&1 || sgdisk -o \"$DISK\"; "
+        "BEFORE=$(mktemp); AFTER=$(mktemp); trap 'rm -f \"$BEFORE\" \"$AFTER\"' EXIT; "
+        "lsblk -lno PATH,TYPE \"$DISK\" | awk '$2==\"part\"{print $1}' | sort > \"$BEFORE\"; "
+        "sgdisk -n \"$SIZE\" -t \"0:$TYPE\" \"$DISK\"; "
+        "partprobe \"$DISK\" 2>/dev/null || true; "
+        "udevadm settle --timeout=10 2>/dev/null || true; "
+        "lsblk -lno PATH,TYPE \"$DISK\" | awk '$2==\"part\"{print $1}' | sort > \"$AFTER\"; "
+        "NEWPART=$(comm -13 \"$BEFORE\" \"$AFTER\" | head -n1); "
+        "[ -b \"$NEWPART\" ] || NEWPART=$(lsblk -lno PATH,TYPE \"$DISK\" | awk '$2==\"part\"{p=$1} END{print p}'); "
+        "if [ -b \"$NEWPART\" ]; then " + mkfs_cmd + "; fi";
+
+    plan.valid = true;
+    plan.program = "bash";
+    plan.args = {"-c", script, "_", disk.path, size_arg, type_guid};
+    plan.summary = "Created & formatted " + fs + " partition on " + disk.path + ".";
     return plan;
 }
 

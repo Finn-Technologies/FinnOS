@@ -50,7 +50,7 @@ apps: configure
 		finn-wallpaper finn-files finn-settings finn-terminal \
 		finn-notes finn-store finn-viewer finn-monitor \
 		finn-calculator finn-archive finn-capture \
-		finn-installer finn-oobe
+		recovery-mode finn-oobe
 
 tools: configure
 	cmake --build $(BUILD_DIR) --target finn-open finn-cursors

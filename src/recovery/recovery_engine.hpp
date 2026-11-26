@@ -141,6 +141,15 @@ DiskOpPlan plan_disk_op(DiskOpKind op,
                         std::uint64_t new_size_mb = 0,
                         const std::string& new_label = {});
 
+// Build safe Disk Utility whole-disk / partition-table command plans.
+// Every plan refuses the active live/recovery medium and read-only disks.
+DiskOpPlan plan_disk_wipe_gpt(const DiskInfo& disk);
+DiskOpPlan plan_disk_delete_partition(const DiskInfo& disk, const PartitionInfo& part);
+DiskOpPlan plan_disk_create_partition(const DiskInfo& disk,
+                                      std::uint64_t size_gib,
+                                      bool use_all_remaining,
+                                      std::string_view fstype);
+
 // Format byte count as human-readable IEC/decimal size (e.g. "256.0 GB").
 std::string format_bytes(std::uint64_t bytes);
 

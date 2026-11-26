@@ -12,7 +12,7 @@ option(FINN_BUILD_APPS "Build native FinnOS Qt6 applications" ON)
 option(FINN_BUILD_QT_PLUGIN "Build FinnOS Qt6 platform theme & style plugins" ON)
 option(FINN_BUILD_TOOLS "Build finn-open CLI and SDK helpers" ON)
 option(FINN_BUILD_BENCHMARKS "Build host-only performance microbenchmarks" OFF)
-option(FINN_RECOVERY_ONLY "Build only libfinnui and finn-installer for the live ISO" OFF)
+option(FINN_RECOVERY_ONLY "Build only libfinnui and recovery-mode for the live ISO" OFF)
 option(FINN_STRICT_WARNINGS "Treat C++ compiler warnings as errors during build" ON)
 
 if(FINN_STRICT_WARNINGS)

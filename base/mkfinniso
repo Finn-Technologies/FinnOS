@@ -446,7 +446,7 @@ stage_sources() {
   rm -f "$files"
 }
 
-# Build and install FinnOS Recovery Mode (finn-installer + libfinnui + assets)
+# Build and install FinnOS Recovery Mode (recovery-mode + libfinnui + assets)
 # into the live ISO root so booting "Install FinnOS" opens the graphical
 # recovery/installer UI directly on KMS/framebuffer.
 stage_live_recovery() {
@@ -462,7 +462,7 @@ stage_live_recovery() {
     fi
     return 0
   fi
-  say "building FinnOS Recovery Mode (finn-installer) for the live ISO"
+  say "building FinnOS Recovery Mode (recovery-mode) for the live ISO"
   local bdir="$WORK/live-recovery-build"
   local gen=()
   command -v ninja >/dev/null 2>&1 && gen=(-G Ninja)
@@ -475,12 +475,12 @@ stage_live_recovery() {
     -DFINN_BUILD_QT_PLUGIN=OFF \
     -DFINN_BUILD_TOOLS=OFF \
     -DFINN_STRICT_WARNINGS=OFF
-  cmake --build "$bdir" --target finn-installer -j"$(nproc 2>/dev/null || echo 2)"
+  cmake --build "$bdir" --target recovery-mode -j"$(nproc 2>/dev/null || echo 2)"
   install -d "$dest/usr/local/bin" "$dest/usr/local/lib" "$dest/etc/ld.so.conf.d" \
              "$dest/usr/share/fonts/OTF" "$dest/usr/share/finn/icons" \
              "$dest/usr/share/finn/wallpaper"
-  install -m755 "$bdir/apps/installer/finn-installer" "$dest/usr/local/bin/finn-installer"
-  ln -sf finn-installer "$dest/usr/local/bin/finn-recovery"
+  install -m755 "$bdir/apps/recovery-mode/recovery-mode" "$dest/usr/local/bin/recovery-mode"
+  ln -sf recovery-mode "$dest/usr/local/bin/finn-recovery"
   cp -a "$bdir/src/ui"/libfinnui.so* "$dest/usr/local/lib/"
   printf '%s\n' '/usr/local/lib' > "$dest/etc/ld.so.conf.d/finn.conf"
   install -m644 "$ROOT"/assets/fonts/FixelDisplay/*.otf "$dest/usr/share/fonts/OTF/"

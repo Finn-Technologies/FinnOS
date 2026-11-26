@@ -430,8 +430,12 @@ if grep -qE '^\[finnos\][[:space:]]*$' /etc/pacman.conf 2>/dev/null; then
         ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
     fi
 fi
-if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
-    die "the installer's own tools did not install; the live keyring or a mirror is broken"
+if ! command -v pacstrap >/dev/null 2>&1 ||
+   ! command -v mkfs.vfat >/dev/null 2>&1 ||
+   ! command -v parted >/dev/null 2>&1; then
+    if ! pacman -Sy --noconfirm arch-install-scripts dosfstools parted 2>&1 | tail -5; then
+        die "the installer's own tools did not install; the live keyring or a mirror is broken"
+    fi
 fi
 command -v pacstrap >/dev/null || die "pacstrap is not on this live system"
 command -v mkfs.vfat >/dev/null || die "mkfs.vfat is not on this live system"
@@ -553,21 +557,42 @@ if [ "$INSTALL_MODE" = "repair-boot" ]; then
     mount "$ESP_PART_ARG" /mnt/boot || die "could not mount $ESP_PART_ARG"
     ROOTUUID="$(findmnt -no UUID /mnt || true)"
     [ -n "$ROOTUUID" ] || die "root partition has no UUID"
+    PT_TYPE="$(blkid -s PTTYPE -o value "$DISK" 2>/dev/null || true)"
     step "[3/4] REPAIR BOOTLOADER"
     arch-chroot /mnt /bin/bash -c "
         set -euo pipefail
         mkinitcpio -P 2>&1 | tail -5
-        bootctl --esp-path=/boot install 2>&1 | tail -5 || true
-        if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
-            install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
-            install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
-        elif [ -f /usr/share/finn/boot/finn-bootaa64.efi ]; then
-            install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/BOOT/BOOTAA64.EFI
-            install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/systemd/systemd-bootaa64.efi
+        efi_ok=0
+        if [ -d /sys/firmware/efi ] && [ '$PT_TYPE' != 'dos' ] &&
+           command -v bootctl >/dev/null 2>&1 &&
+           bootctl --esp-path=/boot install 2>&1 | tail -5; then
+            if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
+                install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
+                install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
+            elif [ -f /usr/share/finn/boot/finn-bootaa64.efi ]; then
+                install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/BOOT/BOOTAA64.EFI
+                install -Dm644 /usr/share/finn/boot/finn-bootaa64.efi /boot/EFI/systemd/systemd-bootaa64.efi
+            fi
+            mkdir -p /boot/loader/entries
+            printf 'default finnos.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
+            printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3\n' '$ROOTUUID' > /boot/loader/entries/finnos.conf
+            efi_ok=1
+        elif [ -d /sys/firmware/efi ] && command -v grub-install >/dev/null 2>&1; then
+            EFI_TARGET=x86_64-efi
+            [ \"\$(uname -m)\" = 'aarch64' ] && EFI_TARGET=arm64-efi
+            if grub-install --target=\"\$EFI_TARGET\" --efi-directory=/boot --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
+                grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 || true
+                efi_ok=1
+            fi
         fi
-        mkdir -p /boot/loader/entries
-        printf 'default finnos.conf\ntimeout 3\nconsole-mode max\neditor no\nauto-entries yes\nauto-firmware yes\n' > /boot/loader/loader.conf
-        printf 'title FinnOS\nlinux /vmlinuz-linux\ninitrd /initramfs-linux.img\noptions root=UUID=%s rw quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3\n' '$ROOTUUID' > /boot/loader/entries/finnos.conf
+        bios_ok=0
+        if [ \"\$(uname -m)\" = 'x86_64' ] && command -v grub-install >/dev/null 2>&1; then
+            if grub-install --target=i386-pc --recheck '$DISK' 2>&1 | tail -5; then
+                grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 || true
+                bios_ok=1
+            fi
+        fi
+        [ \"\$efi_ok\" = 1 ] || [ \"\$bios_ok\" = 1 ] || { echo 'error: bootloader repair failed for both UEFI and BIOS' >&2; exit 1; }
     "
     umount -R /mnt
     step "[4/4] REPAIR COMPLETE"
@@ -590,6 +615,18 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
             e2fsck -f -p "$RESIZE_PART_ARG" || true
             resize2fs "$RESIZE_PART_ARG" "${RESIZE_MB_ARG}M" || die "resize2fs failed"
             ;;
+        btrfs)
+            command -v btrfs >/dev/null || die "btrfs-progs is required to shrink btrfs"
+            TMP_BTRFS="$(mktemp -d "${TMPDIR:-/tmp}/finn-btrfs.XXXXXX")"
+            mount "$RESIZE_PART_ARG" "$TMP_BTRFS" || { rmdir "$TMP_BTRFS" 2>/dev/null || true; die "could not mount $RESIZE_PART_ARG for btrfs resize"; }
+            if ! btrfs filesystem resize "${RESIZE_MB_ARG}M" "$TMP_BTRFS"; then
+                umount "$TMP_BTRFS" 2>/dev/null || true
+                rmdir "$TMP_BTRFS" 2>/dev/null || true
+                die "btrfs filesystem resize failed"
+            fi
+            umount "$TMP_BTRFS" || die "could not unmount $TMP_BTRFS"
+            rmdir "$TMP_BTRFS" 2>/dev/null || true
+            ;;
         *)
             die "cannot safely shrink filesystem type '$FS_KIND' on $RESIZE_PART_ARG"
             ;;
@@ -598,6 +635,9 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     [ -n "$PART_NUM" ] || die "could not determine partition number for $RESIZE_PART_ARG"
     START_MB="$(parted -ms "$DISK" unit MiB print | awk -F: -v n="$PART_NUM" '$1==n {gsub(/MiB/,"",$2); print int($2)}')"
     END_MB=$((START_MB + RESIZE_MB_ARG))
+    PARTS_BEFORE="$(mktemp "${TMPDIR:-/tmp}/finn-parts-before.XXXXXX")"
+    PARTS_AFTER="$(mktemp "${TMPDIR:-/tmp}/finn-parts-after.XXXXXX")"
+    lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{print $1}' | sort > "$PARTS_BEFORE"
     printf 'Yes\n' | parted ---pretend-input-tty "$DISK" unit MiB resizepart "$PART_NUM" "${END_MB}MiB" || die "parted resizepart failed"
     PT_TYPE="$(blkid -s PTTYPE -o value "$DISK" 2>/dev/null || true)"
     if [ "$PT_TYPE" = "dos" ]; then
@@ -607,7 +647,10 @@ if [ "$INSTALL_MODE" = "dualboot-resize" ]; then
     fi
     partprobe "$DISK" 2>/dev/null || true
     udevadm settle --timeout=30 2>/dev/null || true
-    ROOT="$(lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{p=$1} END{print p}')"
+    lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{print $1}' | sort > "$PARTS_AFTER"
+    ROOT="$(comm -13 "$PARTS_BEFORE" "$PARTS_AFTER" | head -n1 || true)"
+    rm -f "$PARTS_BEFORE" "$PARTS_AFTER"
+    [ -b "$ROOT" ] || ROOT="$(lsblk -lno PATH,TYPE "$DISK" | awk '$2=="part"{p=$1} END{print p}')"
     ESP="$ESP_PART_ARG"
     step "[3/8] FORMAT FINNOS ROOT (PRESERVING ESP)"
     mkfs.ext4 -F -L finnos "$ROOT" || die "mkfs.ext4 failed on $ROOT"

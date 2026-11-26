@@ -1,23 +1,25 @@
-// FinnOS Recovery & USB Installer (finn-installer / finn-recovery).
+// FinnOS Recovery Mode (recovery-mode).
 // Built directly on the FinnOS OOBE design system and transition engine
 // (apps/oobe/main.cpp):
-//   - Full-bleed bone canvas with OobeBrandingHeader lockup
+//   - Full-bleed bone canvas with NO top-left branding header on split pages
 //   - Exact OOBE split two-column layout (80px gutter, 46x46 icon + 40px gap +
 //     24px Regular prompt, 132px center gap, right 350px column at y=195)
 //   - Exact OobeOptionRow (350x37, 18px Regular, 60fps hover/select interpolation)
 //   - Exact OobeProgressiveList + ProgressiveBlurOverlay
 //   - Exact OobeCircleNavButton (56x56 circular Figma bezier chevron, 60fps spring)
 //   - Exact OobeSlideTransitionOverlay (0.52s sequential fade + whisper optical blur)
-//   - Embedded draggable RecoveryTerminalWindow (works on eglfs, linuxfb, Wayland)
-//   - Live keyboard layout switcher + bulletproof GPT/partition management.
+//   - Real PTY VT100/ANSI Finn Terminal floating window (draggable + resizable)
+//   - Built-in Keyboard layout & Network/Wi-Fi pickers, Disk Utility, Boot Repair, Logs.
 
 #include <FinnSDK/FinnSDK.hpp>
 
 #include "common/paths.hpp"
+#include "finn_terminal_widget.hpp"
 #include "recovery/recovery_engine.hpp"
 #include "system/sys_files.hpp"
 
 #include <QAbstractButton>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEnterEvent>
@@ -760,13 +762,16 @@ private:
     DiskInfo disk_;
 };
 
-// Embedded interactive draggable Terminal window inside Recovery Mode
-// (works identically on eglfs, linuxfb, and Wayland — never exits the UI).
+// Embedded interactive draggable & resizable Finn Terminal floating window
+// backed by a real POSIX PTY + VT100/ANSI emulator (FinnTerminalWidget).
+// Works identically on linuxfb, eglfs, Wayland, and offscreen — never exits the UI.
 class RecoveryTerminalWindow final : public QWidget {
     Q_OBJECT
 public:
     explicit RecoveryTerminalWindow(QWidget* parent = nullptr) : QWidget(parent) {
-        setFixedSize(760, 480);
+        resize(780, 490);
+        setMinimumSize(460, 280);
+        setMouseTracking(true);
         setAttribute(Qt::WA_StyledBackground, false);
 
         auto* root = new QVBoxLayout(this);
@@ -780,19 +785,18 @@ public:
         tb->setContentsMargins(14, 0, 10, 0);
         tb->setSpacing(8);
 
-        auto* title_lbl = new QLabel(QStringLiteral("Terminal"), titlebar_);
-        title_lbl->setFont(oobe_font(13, QFont::Medium));
-        title_lbl->setStyleSheet(QStringLiteral("color: #EAEAEA; background: transparent;"));
-        tb->addWidget(title_lbl);
+        title_lbl_ = new QLabel(QStringLiteral("Finn Terminal"), titlebar_);
+        title_lbl_->setFont(oobe_font(13, QFont::Medium));
+        title_lbl_->setStyleSheet(QStringLiteral("color: #EAEAEA; background: transparent;"));
+        tb->addWidget(title_lbl_);
         tb->addStretch(1);
 
-        // Simple painted header pill buttons
         class MiniTermBtn final : public QAbstractButton {
         public:
             MiniTermBtn(QString label, QColor hover_bg, QWidget* p)
                 : QAbstractButton(p), label_(std::move(label)), hover_bg_(hover_bg) {
                 setCursor(Qt::PointingHandCursor);
-                setFixedSize(label_.size() <= 1 ? 26 : (label_.size() * 8 + 16), 24);
+                setFixedSize(label_.size() <= 1 ? 26 : (static_cast<int>(label_.size()) * 8 + 16), 24);
             }
         protected:
             void enterEvent(QEnterEvent*) override { hov_ = true; update(); }
@@ -821,56 +825,39 @@ public:
         tb->addWidget(btn_cls);
         root->addWidget(titlebar_);
 
-        output_ = new QPlainTextEdit(this);
-        output_->setReadOnly(true);
-        output_->setFrameShape(QFrame::NoFrame);
-        output_->setFont(finn_mono_font(12.0, QFont::Normal));
-        output_->setStyleSheet(QStringLiteral(
-            "QPlainTextEdit { background: #141416; color: #F2F2F2; border: none; padding: 10px 14px; }"));
-        output_->setMaximumBlockCount(2000);
-        root->addWidget(output_, 1);
+        term_ = new FinnTerminalWidget(this);
+        root->addWidget(term_, 1);
 
-        // Input prompt bar
-        auto* in_bar = new QWidget(this);
-        in_bar->setFixedHeight(40);
-        in_bar->setStyleSheet(QStringLiteral(
-            "background: #1C1C20; border-bottom-left-radius: 13px; border-bottom-right-radius: 13px;"));
-        auto* il = new QHBoxLayout(in_bar);
-        il->setContentsMargins(14, 0, 14, 0);
-        il->setSpacing(8);
+        // Bottom status + resize handle strip
+        auto* foot = new QWidget(this);
+        foot->setFixedHeight(16);
+        foot->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        root->addWidget(foot);
 
-        auto* prompt_lbl = new QLabel(QStringLiteral("#"), in_bar);
-        prompt_lbl->setFont(finn_mono_font(12.5, QFont::Bold));
-        prompt_lbl->setStyleSheet(QStringLiteral("color: #60A5FA; background: transparent;"));
-        il->addWidget(prompt_lbl);
-
-        input_ = new QLineEdit(in_bar);
-        input_->setFrame(false);
-        input_->setFont(finn_mono_font(12.5, QFont::Normal));
-        input_->setPlaceholderText(QStringLiteral("Type a command (e.g. lsblk, loadkeys it, finn-install)..."));
-        input_->setStyleSheet(QStringLiteral(
-            "QLineEdit { background: transparent; color: #FFFFFF; border: none; }"));
-        input_->installEventFilter(this);
-        il->addWidget(input_, 1);
-        root->addWidget(in_bar);
-
-        connect(input_, &QLineEdit::returnPressed, this, &RecoveryTerminalWindow::runInputLine);
-        connect(btn_clr, &QAbstractButton::clicked, output_, &QPlainTextEdit::clear);
-        connect(btn_int, &QAbstractButton::clicked, this, &RecoveryTerminalWindow::sendInterrupt);
+        connect(term_, &FinnTerminalWidget::titleChanged, this, [this](const QString& t) {
+            if (title_lbl_ && !t.isEmpty()) title_lbl_->setText(t);
+        });
+        connect(term_, &FinnTerminalWidget::shellExited, this, [this](int) {
+            QTimer::singleShot(150, this, [this]() {
+                if (term_ && !term_->running()) term_->startShell();
+            });
+        });
+        connect(btn_int, &QAbstractButton::clicked, this, [this]() {
+            if (term_) { term_->sendControl(QStringLiteral("ctrl_c")); term_->setFocus(); }
+        });
+        connect(btn_clr, &QAbstractButton::clicked, this, [this]() {
+            if (term_) { term_->clearScreen(); term_->setFocus(); }
+        });
         connect(btn_cls, &QAbstractButton::clicked, this, &QWidget::hide);
 
-        startShell();
+        term_->startShell();
     }
 
-    ~RecoveryTerminalWindow() override {
-        if (shell_) {
-            shell_->kill();
-            shell_->waitForFinished(300);
+    void focusTerminal() {
+        if (term_) {
+            if (!term_->running()) term_->startShell();
+            term_->setFocus(Qt::OtherFocusReason);
         }
-    }
-
-    void focusInput() {
-        if (input_) input_->setFocus();
     }
 
 protected:
@@ -878,23 +865,53 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
-        p.setBrush(QColor(0x18, 0x18, 0x1B, 248));
-        p.setPen(QPen(QColor(255, 255, 255, 36), 1.0));
+        p.setBrush(QColor(0x16, 0x18, 0x1F, 252));
+        p.setPen(QPen(QColor(255, 255, 255, 42), 1.0));
         p.drawRoundedRect(r, 14.0, 14.0);
+
+        // Subtle resize grip lines in the bottom-right corner
+        p.setPen(QPen(QColor(255, 255, 255, 85), 1.2, Qt::SolidLine, Qt::RoundCap));
+        const int w = width();
+        const int h = height();
+        p.drawLine(w - 13, h - 5, w - 5, h - 13);
+        p.drawLine(w - 9, h - 5, w - 5, h - 9);
+    }
+
+    bool inResizeZone(const QPointF& pos) const {
+        return pos.x() >= width() - 20 && pos.y() >= height() - 20;
     }
 
     void mousePressEvent(QMouseEvent* e) override {
-        if (e->button() == Qt::LeftButton && e->position().y() <= 38.0) {
-            dragging_ = true;
-            drag_offset_ = e->globalPosition().toPoint() - pos();
+        if (e->button() == Qt::LeftButton) {
             raise();
-            e->accept();
-            return;
+            if (inResizeZone(e->position())) {
+                resizing_ = true;
+                resize_start_global_ = e->globalPosition().toPoint();
+                resize_start_size_ = size();
+                e->accept();
+                return;
+            }
+            if (e->position().y() <= 38.0) {
+                dragging_ = true;
+                drag_offset_ = e->globalPosition().toPoint() - pos();
+                e->accept();
+                return;
+            }
         }
         QWidget::mousePressEvent(e);
     }
 
     void mouseMoveEvent(QMouseEvent* e) override {
+        if (resizing_ && parentWidget()) {
+            const QPoint delta = e->globalPosition().toPoint() - resize_start_global_;
+            const int max_w = std::max(minimumWidth(), parentWidget()->width() - x() - 12);
+            const int max_h = std::max(minimumHeight(), parentWidget()->height() - y() - 12);
+            const int nw = std::clamp(resize_start_size_.width() + delta.x(), minimumWidth(), max_w);
+            const int nh = std::clamp(resize_start_size_.height() + delta.y(), minimumHeight(), max_h);
+            resize(nw, nh);
+            e->accept();
+            return;
+        }
         if (dragging_ && parentWidget()) {
             QPoint next = e->globalPosition().toPoint() - drag_offset_;
             const int max_x = std::max(0, parentWidget()->width() - width());
@@ -905,92 +922,25 @@ protected:
             e->accept();
             return;
         }
+        setCursor(inResizeZone(e->position()) ? Qt::SizeFDiagCursor : Qt::ArrowCursor);
         QWidget::mouseMoveEvent(e);
     }
 
     void mouseReleaseEvent(QMouseEvent* e) override {
         dragging_ = false;
+        resizing_ = false;
         QWidget::mouseReleaseEvent(e);
     }
 
-    bool eventFilter(QObject* obj, QEvent* ev) override {
-        if (obj == input_ && ev->type() == QEvent::KeyPress) {
-            auto* ke = static_cast<QKeyEvent*>(ev);
-            if ((ke->modifiers() & Qt::ControlModifier) && ke->key() == Qt::Key_C) {
-                sendInterrupt();
-                return true;
-            }
-            if (ke->key() == Qt::Key_Up && !history_.isEmpty()) {
-                hist_idx_ = std::max(0, hist_idx_ - 1);
-                input_->setText(history_[hist_idx_]);
-                return true;
-            }
-            if (ke->key() == Qt::Key_Down && !history_.isEmpty()) {
-                hist_idx_ = std::min(static_cast<int>(history_.size()), hist_idx_ + 1);
-                input_->setText(hist_idx_ < history_.size() ? history_[hist_idx_] : QString());
-                return true;
-            }
-        }
-        return QWidget::eventFilter(obj, ev);
-    }
-
 private:
-    void startShell() {
-        shell_ = new QProcess(this);
-        shell_->setProcessChannelMode(QProcess::MergedChannels);
-        connect(shell_, &QProcess::readyReadStandardOutput, this, [this]() {
-            const QString chunk = QString::fromUtf8(shell_->readAllStandardOutput());
-            if (!chunk.isEmpty()) {
-                output_->moveCursor(QTextCursor::End);
-                output_->insertPlainText(chunk);
-                output_->verticalScrollBar()->setValue(output_->verticalScrollBar()->maximum());
-            }
-        });
-        connect(shell_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                this, [this]() {
-                    output_->appendPlainText(QStringLiteral("\n[shell exited — restarting]"));
-                    shell_->deleteLater();
-                    shell_ = nullptr;
-                    QTimer::singleShot(150, this, &RecoveryTerminalWindow::startShell);
-                });
-        const QString sh = QFile::exists(QStringLiteral("/bin/bash"))
-            ? QStringLiteral("/bin/bash") : QStringLiteral("/bin/sh");
-        shell_->start(sh, {});
-        output_->appendPlainText(QStringLiteral("FinnOS Recovery Terminal (bash). Type commands below.\n"));
-    }
-
-    void runInputLine() {
-        if (!shell_ || shell_->state() != QProcess::Running) return;
-        const QString cmd = input_->text();
-        input_->clear();
-        if (cmd.trimmed() == QLatin1String("clear")) {
-            output_->clear();
-            return;
-        }
-        if (!cmd.trimmed().isEmpty()) {
-            history_.push_back(cmd);
-            hist_idx_ = history_.size();
-        }
-        output_->moveCursor(QTextCursor::End);
-        output_->insertPlainText(QStringLiteral("# %1\n").arg(cmd));
-        shell_->write((cmd + QLatin1Char('\n')).toUtf8());
-    }
-
-    void sendInterrupt() {
-        if (shell_ && shell_->processId() > 0) {
-            ::kill(static_cast<pid_t>(shell_->processId()), SIGINT);
-            output_->appendPlainText(QStringLiteral("^C"));
-        }
-    }
-
     QWidget* titlebar_ = nullptr;
-    QPlainTextEdit* output_ = nullptr;
-    QLineEdit* input_ = nullptr;
-    QProcess* shell_ = nullptr;
-    QStringList history_;
-    int hist_idx_ = 0;
+    QLabel* title_lbl_ = nullptr;
+    FinnTerminalWidget* term_ = nullptr;
     bool dragging_ = false;
+    bool resizing_ = false;
     QPoint drag_offset_;
+    QPoint resize_start_global_;
+    QSize resize_start_size_;
 };
 
 // Detect the live USB/ISO backing disk so we NEVER default to it or wipe it.
@@ -1128,14 +1078,16 @@ public:
         PageDiskUtility = 5,
         PageBootRepair = 6,
         PageLogs = 7,
+        PageKeyboard = 8,
+        PageNetwork = 9,
     };
 
     RecoveryWindow()
-        : FinnLayerWindow(Layer::Overlay, QStringLiteral("finn-recovery")) {
+        : FinnLayerWindow(Layer::Overlay, QStringLiteral("recovery-mode")) {
         setAnchors(AnchorTop | AnchorBottom | AnchorLeft | AnchorRight);
         setExclusiveZone(-1);
         setKeyboardMode(KeyboardMode::Exclusive);
-        setAccessibleName(QStringLiteral("FinnOS Recovery"));
+        setAccessibleName(QStringLiteral("FinnOS Recovery Mode"));
 
         disks_ = probe_system_disks();
         detected_oses_ = detect_oses(disks_);
@@ -1157,6 +1109,8 @@ public:
         stack_->addWidget(buildDiskUtilityPage());      // 5
         stack_->addWidget(buildBootRepairPage());       // 6
         stack_->addWidget(buildLogsPage());             // 7
+        stack_->addWidget(buildKeyboardPage());         // 8
+        stack_->addWidget(buildNetworkPage());          // 9
         root->addWidget(stack_, 1);
 
         // Exact OOBE stationary Back/Next circular navigation bar
@@ -1173,18 +1127,39 @@ public:
         nav_row->addWidget(nav_next_);
         shared_nav_box_->raise();
 
-        // Bottom-left utility links (always available: Terminal window, Keyboard layout, Restart, Shut Down)
+        // Bottom-left utility links (always available: Terminal, Network/Wi-Fi, Keyboard, Restart, Shut Down)
         footer_links_ = new QWidget(this);
         auto* fl = new QHBoxLayout(footer_links_);
         fl->setContentsMargins(0, 0, 0, 0);
         fl->setSpacing(10);
         auto* l_term = new QuietLink(QStringLiteral("Terminal"), false, footer_links_);
+        net_link_ = new QuietLink(QStringLiteral("Network"), false, footer_links_);
         kb_link_ = new QuietLink(QStringLiteral("Keyboard: US"), false, footer_links_);
         auto* l_reb = new QuietLink(QStringLiteral("Restart"), false, footer_links_);
         auto* l_off = new QuietLink(QStringLiteral("Shut Down"), false, footer_links_);
 
         connect(l_term, &QAbstractButton::clicked, this, &RecoveryWindow::toggleTerminalWindow);
-        connect(kb_link_, &QAbstractButton::clicked, this, &RecoveryWindow::cycleKeyboardLayout);
+        connect(net_link_, &QAbstractButton::clicked, this, [this]() {
+            if (stack_->currentIndex() == PageNetwork) {
+                goBack();
+                return;
+            }
+            if (stack_->currentIndex() != PageKeyboard) {
+                prev_utility_page_ = static_cast<Page>(stack_->currentIndex());
+            }
+            refreshNetwork();
+            goTo(PageNetwork);
+        });
+        connect(kb_link_, &QAbstractButton::clicked, this, [this]() {
+            if (stack_->currentIndex() == PageKeyboard) {
+                goBack();
+                return;
+            }
+            if (stack_->currentIndex() != PageNetwork) {
+                prev_utility_page_ = static_cast<Page>(stack_->currentIndex());
+            }
+            goTo(PageKeyboard);
+        });
         connect(l_reb, &QAbstractButton::clicked, this, []() {
             QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("reboot")});
         });
@@ -1192,6 +1167,7 @@ public:
             QProcess::startDetached(QStringLiteral("systemctl"), {QStringLiteral("poweroff")});
         });
         fl->addWidget(l_term);
+        fl->addWidget(net_link_);
         fl->addWidget(kb_link_);
         fl->addWidget(l_reb);
         fl->addWidget(l_off);
@@ -1207,6 +1183,12 @@ public:
         const QString p = page.trimmed().toLower();
         if (p == QLatin1String("install")) {
             goTo(PageInstallMode, false);
+        } else if (p == QLatin1String("target") || p == QLatin1String("drive")) {
+            refreshTargets();
+            goTo(PageInstallTarget, false);
+        } else if (p == QLatin1String("review")) {
+            refreshReview();
+            goTo(PageInstallReview, false);
         } else if (p == QLatin1String("reinstall")) {
             selected_mode_ = InstallMode::ReinstallPreserveData;
             refreshTargets();
@@ -1220,8 +1202,19 @@ public:
         } else if (p == QLatin1String("logs") || p == QLatin1String("info")) {
             refreshLogs();
             goTo(PageLogs, false);
+        } else if (p == QLatin1String("keyboard") || p == QLatin1String("kb")) {
+            goTo(PageKeyboard, false);
+        } else if (p == QLatin1String("network") || p == QLatin1String("wifi")) {
+            refreshNetwork();
+            goTo(PageNetwork, false);
         } else {
             goTo(PageHub, false);
+        }
+    }
+
+    void openTerminalOverlay() {
+        if (!terminal_win_ || !terminal_win_->isVisible()) {
+            toggleTerminalWindow();
         }
     }
 
@@ -1248,8 +1241,7 @@ protected:
                 terminal_win_->hide();
                 return;
             }
-            if (stack_->currentIndex() == PageHub) close();
-            else goBack();
+            if (stack_->currentIndex() != PageHub) goBack();
             return;
         }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
@@ -1293,26 +1285,47 @@ private:
             terminal_win_->move(x, y);
             terminal_win_->show();
             terminal_win_->raise();
-            terminal_win_->focusInput();
+            terminal_win_->focusTerminal();
         }
     }
 
-    void cycleKeyboardLayout() {
-        struct Kb { const char* code; const char* label; };
-        static constexpr Kb kLayouts[] = {
-            {"us", "Keyboard: US"},
-            {"it", "Keyboard: IT"},
-            {"de", "Keyboard: DE"},
-            {"fr", "Keyboard: FR"},
-            {"es", "Keyboard: ES"},
-            {"uk", "Keyboard: UK"},
+    struct KbLayoutDef {
+        const char* loadkeys_code;
+        const char* xkb_code;
+        const char* short_label;
+        const char* full_name;
+    };
+
+    static const std::vector<KbLayoutDef>& keyboardLayouts() {
+        static const std::vector<KbLayoutDef> kLayouts = {
+            {"us", "us", "US", "English (US)"},
+            {"uk", "gb", "UK", "English (UK)"},
+            {"it", "it", "IT", "Italiano"},
+            {"de", "de", "DE", "Deutsch"},
+            {"fr", "fr", "FR", "Français"},
+            {"es", "es", "ES", "Español"},
+            {"pt-latin1", "pt", "PT", "Português"},
+            {"nl", "nl", "NL", "Nederlands"},
+            {"sv-latin1", "se", "SE", "Svenska"},
+            {"sg", "ch", "CH", "Schweiz / Suisse"},
+            {"jp106", "jp", "JP", "日本語"},
         };
-        kb_idx_ = (kb_idx_ + 1) % static_cast<int>(sizeof(kLayouts) / sizeof(kLayouts[0]));
-        const QString code = QString::fromLatin1(kLayouts[kb_idx_].code);
-        kb_link_->setLabelText(QString::fromLatin1(kLayouts[kb_idx_].label));
+        return kLayouts;
+    }
+
+    void applyKeyboardLayout(int idx) {
+        const auto& layouts = keyboardLayouts();
+        if (idx < 0 || idx >= static_cast<int>(layouts.size())) return;
+        kb_idx_ = idx;
+        const auto& kb = layouts[static_cast<std::size_t>(idx)];
+        kb_link_->setLabelText(QStringLiteral("Keyboard: %1").arg(QString::fromLatin1(kb.short_label)));
         footer_links_->adjustSize();
-        QProcess::startDetached(QStringLiteral("loadkeys"), {code});
-        FinnThemeManager::instance().setKeyboardLayout(code == QLatin1String("uk") ? QStringLiteral("gb") : code, {});
+        for (int j = 0; j < static_cast<int>(kb_rows_.size()); ++j) {
+            kb_rows_[static_cast<std::size_t>(j)]->setSelected(j == idx);
+        }
+        if (kb_blur_ov_) kb_blur_ov_->invalidateCache();
+        QProcess::startDetached(QStringLiteral("loadkeys"), {QString::fromLatin1(kb.loadkeys_code)});
+        FinnThemeManager::instance().setKeyboardLayout(QString::fromLatin1(kb.xkb_code), {});
     }
 
     QPixmap grabTransparentStack() const {
@@ -1374,7 +1387,8 @@ private:
         const bool is_prog = (idx == PageInstallProgress);
         shared_nav_box_->setVisible(!is_prog);
         nav_back_->setVisible(!is_hub && !is_prog);
-        nav_next_->setVisible(!is_prog && idx != PageDiskUtility && idx != PageLogs);
+        nav_next_->setVisible(!is_prog && idx != PageDiskUtility && idx != PageLogs &&
+                              idx != PageKeyboard && idx != PageNetwork);
         if (idx == PageHub) {
             nav_next_->setEnabled(hub_choice_ >= 0);
         } else if (idx == PageInstallTarget) {
@@ -1391,6 +1405,10 @@ private:
 
     void goBack() {
         const int idx = stack_->currentIndex();
+        if (idx == PageKeyboard || idx == PageNetwork) {
+            goTo(prev_utility_page_);
+            return;
+        }
         if (idx == PageDiskUtility && du_return_to_target_) {
             du_return_to_target_ = false;
             disks_ = probe_system_disks();
@@ -1774,18 +1792,26 @@ private:
 
     void startInstall() {
         if (!current_plan_.valid || current_plan_.finn_install_args.empty()) return;
+        if (!disks_.empty() && selected_disk_idx_ >= 0 &&
+            selected_disk_idx_ < static_cast<int>(disks_.size())) {
+            unmountDiskPartitions(disks_[static_cast<std::size_t>(selected_disk_idx_)]);
+        }
         goTo(PageInstallProgress);
         install_log_->clear();
         install_log_->appendPlainText(QStringLiteral("Running installer..."));
 
         auto* proc = new QProcess(this);
-        proc->setProcessChannelMode(QProcess::MergedChannels);
         QStringList args;
         for (const auto& a : current_plan_.finn_install_args) {
             args << QString::fromStdString(a);
         }
         connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc]() {
-            install_log_->appendPlainText(QString::fromUtf8(proc->readAllStandardOutput()).trimmed());
+            const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+            if (!out.isEmpty()) install_log_->appendPlainText(out);
+        });
+        connect(proc, &QProcess::readyReadStandardError, this, [this, proc]() {
+            const QString err = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+            if (!err.isEmpty()) install_log_->appendPlainText(err);
         });
         connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
                 this, [this, proc](int code, QProcess::ExitStatus st) {
@@ -1884,15 +1910,36 @@ private:
             du_new_fs_ = (du_new_fs_ == QLatin1String("ext4")) ? QStringLiteral("btrfs")
                        : (du_new_fs_ == QLatin1String("btrfs")) ? QStringLiteral("fat32")
                        : QStringLiteral("ext4");
-            b_fs->setLabelText(QStringLiteral("Filesystem: %1").arg(du_new_fs_));
+            const QString fs_lbl = (du_new_fs_ == QLatin1String("fat32"))
+                ? QStringLiteral("fat32 (EFI)") : du_new_fs_;
+            b_fs->setLabelText(QStringLiteral("Filesystem: %1").arg(fs_lbl));
             const bool is_max = (du_new_size_gib_ >= du_new_size_slider_->maximum());
             du_new_size_lbl_->setText(is_max
-                ? QStringLiteral("New partition: All remaining space (%1)").arg(du_new_fs_)
-                : QStringLiteral("New partition: %1 GiB (%2)").arg(du_new_size_gib_).arg(du_new_fs_));
+                ? QStringLiteral("New partition: All remaining space (%1)").arg(fs_lbl)
+                : QStringLiteral("New partition: %1 GiB (%2)").arg(du_new_size_gib_).arg(fs_lbl));
+        });
+        auto* b_efi = new QuietLink(QStringLiteral("+512M EFI"), false, du_create_panel_);
+        connect(b_efi, &QAbstractButton::clicked, this, [this]() {
+            if (disks_.empty()) {
+                du_status_->setText(QStringLiteral("No target disk available."));
+                return;
+            }
+            const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
+            const auto plan = plan_disk_create_partition(d, 0, false, "efi");
+            if (!plan.valid) {
+                du_status_->setText(QString::fromStdString(plan.error));
+                return;
+            }
+            unmountDiskPartitions(d);
+            du_create_panel_->setVisible(false);
+            QStringList args;
+            for (const auto& a : plan.args) args << QString::fromStdString(a);
+            runDiskCommand(QString::fromStdString(plan.program), args, QString::fromStdString(plan.summary));
         });
         auto* b_apply = new QuietLink(QStringLiteral("Create & Format"), false, du_create_panel_);
         connect(b_apply, &QAbstractButton::clicked, this, &RecoveryWindow::createNewPartition);
         cp_row->addWidget(b_fs);
+        cp_row->addWidget(b_efi);
         cp_row->addWidget(b_apply);
         cp_row->addStretch(1);
 
@@ -2052,39 +2099,19 @@ private:
             return;
         }
         const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
-        if (d.is_live_medium) {
-            du_status_->setText(QStringLiteral("Cannot partition the active Live USB drive."));
+        const bool use_all = (du_new_size_gib_ >= du_new_size_slider_->maximum());
+        const auto plan = plan_disk_create_partition(
+            d, static_cast<std::uint64_t>(std::max(1, du_new_size_gib_)),
+            use_all, du_new_fs_.toStdString());
+        if (!plan.valid) {
+            du_status_->setText(QString::fromStdString(plan.error));
             return;
         }
         unmountDiskPartitions(d);
-        const QString disk_path = QString::fromStdString(d.path);
-        const QString type_guid = (du_new_fs_ == QLatin1String("fat32"))
-            ? QStringLiteral("ef00")
-            : QStringLiteral("8300");
-        const bool use_all = (du_new_size_gib_ >= du_new_size_slider_->maximum());
-        const QString size_arg = use_all
-            ? QStringLiteral("0:0:0")
-            : QStringLiteral("0:0:+%1G").arg(du_new_size_gib_);
-        const QString mkfs_cmd = (du_new_fs_ == QLatin1String("fat32"))
-            ? QStringLiteral("mkfs.vfat -F32 \"$NEWPART\"")
-            : (du_new_fs_ == QLatin1String("btrfs"))
-            ? QStringLiteral("mkfs.btrfs -f \"$NEWPART\"")
-            : QStringLiteral("mkfs.ext4 -F \"$NEWPART\"");
-
-        const QString script = QStringLiteral(
-            "set -e; "
-            "DISK=\"$1\"; SIZE=\"$2\"; TYPE=\"$3\"; "
-            "sgdisk -p \"$DISK\" >/dev/null 2>&1 || sgdisk -o \"$DISK\"; "
-            "sgdisk -n \"$SIZE\" -t \"0:$TYPE\" \"$DISK\"; "
-            "partprobe \"$DISK\" 2>/dev/null || true; "
-            "udevadm settle --timeout=10 2>/dev/null || true; "
-            "NEWPART=$(lsblk -lno PATH,TYPE \"$DISK\" | awk '$2==\"part\"{p=$1} END{print p}'); "
-            "if [ -b \"$NEWPART\" ]; then %1; fi").arg(mkfs_cmd);
-
         du_create_panel_->setVisible(false);
-        runDiskCommand(QStringLiteral("bash"),
-                       {QStringLiteral("-c"), script, QStringLiteral("_"), disk_path, size_arg, type_guid},
-                       QStringLiteral("Created & formatted %1 partition on %2.").arg(du_new_fs_, disk_path));
+        QStringList args;
+        for (const auto& a : plan.args) args << QString::fromStdString(a);
+        runDiskCommand(QString::fromStdString(plan.program), args, QString::fromStdString(plan.summary));
     }
 
     void deleteSelectedPartition() {
@@ -2093,41 +2120,31 @@ private:
             return;
         }
         const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
-        if (d.is_live_medium) {
-            du_status_->setText(QStringLiteral("Cannot modify the active Live USB drive."));
-            return;
-        }
         const auto& part = du_parts_[static_cast<std::size_t>(du_selected_part_)];
-        if (part.part_number <= 0 || part.parent_disk.empty()) {
-            du_status_->setText(QStringLiteral("Cannot determine partition number."));
+        const auto plan = plan_disk_delete_partition(d, part);
+        if (!plan.valid) {
+            du_status_->setText(QString::fromStdString(plan.error));
             return;
         }
         QProcess::execute(QStringLiteral("swapoff"), {QString::fromStdString(part.path)});
         QProcess::execute(QStringLiteral("umount"), {QStringLiteral("-f"), QString::fromStdString(part.path)});
-        runDiskCommand(QStringLiteral("sgdisk"),
-                       {QStringLiteral("-d"), QString::number(part.part_number),
-                        QString::fromStdString(part.parent_disk)},
-                       QStringLiteral("Deleted %1.").arg(QString::fromStdString(part.path)));
+        QStringList args;
+        for (const auto& a : plan.args) args << QString::fromStdString(a);
+        runDiskCommand(QString::fromStdString(plan.program), args, QString::fromStdString(plan.summary));
     }
 
     void wipeDiskGpt() {
         if (disks_.empty()) return;
         const auto& d = disks_[static_cast<std::size_t>(du_selected_disk_)];
-        if (d.is_live_medium) {
-            du_status_->setText(QStringLiteral("Cannot wipe the active Live USB drive."));
+        const auto plan = plan_disk_wipe_gpt(d);
+        if (!plan.valid) {
+            du_status_->setText(QString::fromStdString(plan.error));
             return;
         }
         unmountDiskPartitions(d);
-        const QString disk_path = QString::fromStdString(d.path);
-        const QString script = QStringLiteral(
-            "set -e; DISK=\"$1\"; "
-            "wipefs -a \"$DISK\" 2>/dev/null || true; "
-            "sgdisk --zap-all \"$DISK\"; "
-            "sgdisk -o \"$DISK\"; "
-            "partprobe \"$DISK\" 2>/dev/null || true");
-        runDiskCommand(QStringLiteral("bash"),
-                       {QStringLiteral("-c"), script, QStringLiteral("_"), disk_path},
-                       QStringLiteral("Created clean GPT table on %1.").arg(disk_path));
+        QStringList args;
+        for (const auto& a : plan.args) args << QString::fromStdString(a);
+        runDiskCommand(QString::fromStdString(plan.program), args, QString::fromStdString(plan.summary));
     }
 
     void runDiskAction(DiskOpKind kind) {
@@ -2194,9 +2211,64 @@ private:
     }
 
     void runBootRepair() {
+        disks_ = probe_system_disks();
+        detected_oses_ = detect_oses(disks_);
+
+        if (boot_choice_ == 0) {
+            // Find detected FinnOS root partition (or first non-ESP ext4/btrfs partition on a non-live disk)
+            InstallRequest req;
+            req.mode = InstallMode::RepairBootloader;
+            req.confirmed = true;
+            for (const auto& os : detected_oses_) {
+                if (os.kind == OsKind::FinnOS && !os.partition_path.empty()) {
+                    req.target_partition = os.partition_path;
+                    req.esp_partition = os.esp_path;
+                    break;
+                }
+            }
+            if (req.target_partition.empty()) {
+                for (const auto& d : disks_) {
+                    if (d.is_live_medium) continue;
+                    for (const auto& p : d.partitions) {
+                        if (!p.is_esp && (p.fstype == "ext4" || p.fstype == "btrfs")) {
+                            req.target_partition = p.path;
+                            req.esp_partition = d.esp_partition_path;
+                            break;
+                        }
+                    }
+                    if (!req.target_partition.empty()) break;
+                }
+            }
+
+            const auto plan = plan_install(req, disks_);
+            const QString install_bin = QString::fromUtf8(finn::kFinnInstallBin);
+            if (plan.valid && QFileInfo(install_bin).isExecutable()) {
+                boot_status_->setText(QString::fromStdString("Running: " + plan.summary));
+                auto* proc = new QProcess(this);
+                proc->setProcessChannelMode(QProcess::MergedChannels);
+                QStringList args;
+                for (const auto& a : plan.finn_install_args) args << QString::fromStdString(a);
+                connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                        this, [this, proc](int code, QProcess::ExitStatus st) {
+                            const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                            proc->deleteLater();
+                            if (st == QProcess::NormalExit && code == 0) {
+                                boot_status_->setText(QStringLiteral("Bootloader & initramfs repair complete."));
+                            } else {
+                                const QString tail = out.section(QLatin1Char('\n'), -1).trimmed();
+                                boot_status_->setText(tail.isEmpty()
+                                    ? QStringLiteral("Boot repair failed (exit %1).").arg(code)
+                                    : tail);
+                            }
+                        });
+                proc->start(install_bin, args);
+                return;
+            }
+        }
+
         const QString bootctl = QStandardPaths::findExecutable(QStringLiteral("bootctl"));
         if (bootctl.isEmpty()) {
-            boot_status_->setText(QStringLiteral("bootctl is not available on this host."));
+            boot_status_->setText(QStringLiteral("Neither finn-install nor bootctl is available on this host."));
             return;
         }
         QStringList args = {QStringLiteral("status")};
@@ -2228,10 +2300,30 @@ private:
         col->setContentsMargins(0, 0, 6, 0);
         col->setSpacing(8);
 
+        auto* tabs = new QHBoxLayout();
+        tabs->setSpacing(4);
+        const QStringList sources = {
+            QStringLiteral("Summary"),
+            QStringLiteral("dmesg"),
+            QStringLiteral("journal"),
+            QStringLiteral("lsblk"),
+            QStringLiteral("Install"),
+        };
+        for (int i = 0; i < sources.size(); ++i) {
+            auto* b = new QuietLink(sources[i], false, host);
+            connect(b, &QAbstractButton::clicked, this, [this, i]() {
+                log_source_idx_ = i;
+                refreshLogs();
+            });
+            tabs->addWidget(b);
+        }
+        tabs->addStretch(1);
+        col->addLayout(tabs);
+
         logs_edit_ = new QPlainTextEdit(host);
         logs_edit_->setReadOnly(true);
         logs_edit_->setFrameShape(QFrame::NoFrame);
-        logs_edit_->setFixedHeight(320);
+        logs_edit_->setFixedHeight(310);
         logs_edit_->setFont(finn_mono_font(11.0, QFont::Normal));
         col->addWidget(logs_edit_);
         col->addStretch(1);
@@ -2239,15 +2331,60 @@ private:
         refreshLogs();
         return create_oobe_split_page(QStringLiteral("terminal-square"),
                                       QStringLiteral("System logs"),
-                                      {}, host);
+                                      QStringLiteral("Kernel, journal, storage & install logs."),
+                                      host);
     }
 
     void refreshLogs() {
         if (!logs_edit_) return;
-        QProcess p;
-        p.start(QStringLiteral("uname"), {QStringLiteral("-a")});
-        p.waitForFinished(1000);
-        QString txt = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        auto run_cap = [](const QString& prog, const QStringList& args) -> QString {
+            if (QStandardPaths::findExecutable(prog).isEmpty()) {
+                return QStringLiteral("%1 is not available on this host.").arg(prog);
+            }
+            QProcess p;
+            p.setProcessChannelMode(QProcess::MergedChannels);
+            p.start(prog, args);
+            if (!p.waitForFinished(2500)) {
+                p.kill();
+                return QStringLiteral("%1 timed out.").arg(prog);
+            }
+            const QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+            return out.isEmpty() ? QStringLiteral("(no output)") : out;
+        };
+
+        if (log_source_idx_ == 1) {
+            logs_edit_->setPlainText(run_cap(QStringLiteral("dmesg"), {QStringLiteral("--color=never")}));
+            logs_edit_->verticalScrollBar()->setValue(logs_edit_->verticalScrollBar()->maximum());
+            return;
+        }
+        if (log_source_idx_ == 2) {
+            logs_edit_->setPlainText(run_cap(QStringLiteral("journalctl"),
+                                             {QStringLiteral("-b"), QStringLiteral("-n"),
+                                              QStringLiteral("200"), QStringLiteral("--no-pager")}));
+            logs_edit_->verticalScrollBar()->setValue(logs_edit_->verticalScrollBar()->maximum());
+            return;
+        }
+        if (log_source_idx_ == 3) {
+            logs_edit_->setPlainText(run_cap(QStringLiteral("lsblk"),
+                                             {QStringLiteral("-o"),
+                                              QStringLiteral("NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT")}));
+            return;
+        }
+        if (log_source_idx_ == 4) {
+            QFile f(QStringLiteral("/tmp/finn-install.log"));
+            if (!f.exists()) {
+                logs_edit_->setPlainText(QStringLiteral("No /tmp/finn-install.log found yet."));
+            } else if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QString body = QString::fromUtf8(f.readAll());
+                logs_edit_->setPlainText(body.isEmpty() ? QStringLiteral("Install log is empty.") : body);
+                logs_edit_->verticalScrollBar()->setValue(logs_edit_->verticalScrollBar()->maximum());
+            } else {
+                logs_edit_->setPlainText(QStringLiteral("Could not open /tmp/finn-install.log."));
+            }
+            return;
+        }
+
+        QString txt = run_cap(QStringLiteral("uname"), {QStringLiteral("-a")});
         txt += QStringLiteral("\nDetected disks: %1\nDetected OSes: %2\n")
                    .arg(disks_.size()).arg(detected_oses_.size());
         for (const auto& d : disks_) {
@@ -2256,7 +2393,299 @@ private:
                             QString::fromStdString(format_bytes(d.size_bytes)),
                             d.is_live_medium ? QStringLiteral(" [LIVE USB]") : QString());
         }
+        for (const auto& os : detected_oses_) {
+            txt += QStringLiteral("  OS: %1 — %2\n")
+                       .arg(QString::fromStdString(os.name),
+                            QString::fromStdString(os.detail));
+        }
         logs_edit_->setPlainText(txt);
+    }
+
+    // ── Page 8: Keyboard Layout Picker (Exact OOBE Split Layout) ─────────────
+    QWidget* buildKeyboardPage() {
+        auto* list_wrap = new QWidget();
+        list_wrap->setFixedWidth(kOobeContentWidth + 6);
+        list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
+
+        auto* prog_list = new OobeProgressiveList(list_wrap);
+        kb_blur_ov_ = new ProgressiveBlurOverlay(prog_list, list_wrap);
+        auto* stack_lay = new QGridLayout(list_wrap);
+        stack_lay->setContentsMargins(0, 0, 0, 0);
+        stack_lay->addWidget(prog_list, 0, 0);
+        stack_lay->addWidget(kb_blur_ov_, 0, 0);
+
+        const auto& layouts = keyboardLayouts();
+        for (int i = 0; i < static_cast<int>(layouts.size()); ++i) {
+            const auto& kb = layouts[static_cast<std::size_t>(i)];
+            auto* row = new OobeOptionRow(QString::fromUtf8(kb.full_name),
+                                          QString::fromLatin1(kb.short_label),
+                                          i == kb_idx_, prog_list->hostWidget());
+            connect(row, &OobeOptionRow::clicked, this, [this, i]() {
+                applyKeyboardLayout(i);
+            });
+            kb_rows_.push_back(row);
+            prog_list->listLayout()->addWidget(row);
+        }
+        prog_list->listLayout()->addStretch(1);
+
+        return create_oobe_split_page(QStringLiteral("keyboard"),
+                                      QStringLiteral("Keyboard layout"),
+                                      QStringLiteral("Applied immediately to Recovery Mode and Terminal."),
+                                      list_wrap);
+    }
+
+    // ── Page 9: Network / Wi-Fi Setup (Exact OOBE Wi-Fi Layout) ──────────────
+    QWidget* buildNetworkPage() {
+        auto* host = new QWidget();
+        host->setFixedWidth(kOobeContentWidth + 6);
+        host->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        host->setAttribute(Qt::WA_TranslucentBackground, true);
+        auto* col = new QVBoxLayout(host);
+        col->setContentsMargins(0, 0, 0, 0);
+        col->setSpacing(8);
+
+        auto* list_wrap = new QWidget(host);
+        list_wrap->setFixedWidth(kOobeContentWidth + 6);
+        list_wrap->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+        list_wrap->setAttribute(Qt::WA_TranslucentBackground, true);
+
+        net_prog_list_ = new OobeProgressiveList(list_wrap);
+        net_blur_ov_ = new ProgressiveBlurOverlay(net_prog_list_, list_wrap);
+        auto* stack_lay = new QGridLayout(list_wrap);
+        stack_lay->setContentsMargins(0, 0, 0, 0);
+        stack_lay->addWidget(net_prog_list_, 0, 0);
+        stack_lay->addWidget(net_blur_ov_, 0, 0);
+        col->addWidget(list_wrap, 1);
+
+        auto* bar = new QHBoxLayout();
+        bar->setSpacing(10);
+        auto* rescan = new QuietLink(QStringLiteral("Rescan Wi-Fi"), false, host);
+        connect(rescan, &QAbstractButton::clicked, this, &RecoveryWindow::refreshNetwork);
+        net_status_lbl_ = new QLabel(host);
+        net_status_lbl_->setFont(oobe_font(12, QFont::Normal));
+        net_status_lbl_->setWordWrap(true);
+        bar->addWidget(rescan);
+        bar->addWidget(net_status_lbl_, 1);
+        col->addLayout(bar);
+
+        return create_oobe_split_page(QStringLiteral("wifi-02"),
+                                      QStringLiteral("Where do we connect?"),
+                                      QStringLiteral("Connect to Ethernet or Wi-Fi before installing."),
+                                      host);
+    }
+
+    QString promptWifiPassphrase(const QString& ssid) {
+        const auto& t = FinnThemeManager::instance().tokens();
+        QDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("Wi-Fi Password"));
+        dlg.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+        dlg.setModal(true);
+
+        auto* root = new QVBoxLayout(&dlg);
+        root->setContentsMargins(22, 20, 22, 20);
+        root->setSpacing(12);
+
+        auto* title = new QLabel(QStringLiteral("Connect to %1").arg(ssid), &dlg);
+        title->setFont(oobe_font(17, QFont::Medium));
+        root->addWidget(title);
+
+        auto* edit = new QLineEdit(&dlg);
+        edit->setEchoMode(QLineEdit::Password);
+        edit->setPlaceholderText(QStringLiteral("Wi-Fi Password"));
+        edit->setMinimumWidth(280);
+        edit->setFixedHeight(36);
+        edit->setFont(oobe_font(14, QFont::Normal));
+        root->addWidget(edit);
+
+        auto* btn_row = new QHBoxLayout();
+        btn_row->setSpacing(10);
+        btn_row->addStretch(1);
+        auto* cancel_btn = new QuietLink(QStringLiteral("Cancel"), false, &dlg);
+        auto* join_btn = new QuietLink(QStringLiteral("Connect"), false, &dlg);
+        btn_row->addWidget(cancel_btn);
+        btn_row->addWidget(join_btn);
+        root->addLayout(btn_row);
+
+        QPalette dpal = dlg.palette();
+        dpal.setColor(QPalette::Window, t.tile);
+        dpal.setColor(QPalette::WindowText, t.ink);
+        dlg.setPalette(dpal);
+        dlg.setAutoFillBackground(true);
+
+        connect(cancel_btn, &QAbstractButton::clicked, &dlg, &QDialog::reject);
+        connect(join_btn, &QAbstractButton::clicked, &dlg, &QDialog::accept);
+        connect(edit, &QLineEdit::returnPressed, &dlg, &QDialog::accept);
+        edit->setFocus();
+
+        return (dlg.exec() == QDialog::Accepted) ? edit->text() : QString();
+    }
+
+    void connectWifiNetwork(const QString& ssid, bool secured) {
+        QString pwd;
+        if (secured) {
+            pwd = promptWifiPassphrase(ssid);
+            if (pwd.isEmpty()) return;
+        }
+        if (net_status_lbl_) net_status_lbl_->setText(QStringLiteral("Connecting to %1...").arg(ssid));
+        auto* proc = new QProcess(this);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        QStringList args = {QStringLiteral("dev"), QStringLiteral("wifi"),
+                            QStringLiteral("connect"), ssid};
+        if (!pwd.isEmpty()) {
+            args << QStringLiteral("password") << pwd;
+        }
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, proc, ssid](int code, QProcess::ExitStatus st) {
+                    const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                    proc->deleteLater();
+                    if (st == QProcess::NormalExit && code == 0) {
+                        if (net_status_lbl_) net_status_lbl_->setText(QStringLiteral("Connected to %1.").arg(ssid));
+                        refreshNetwork();
+                    } else {
+                        const QString tail = out.section(QLatin1Char('\n'), -1).trimmed();
+                        if (net_status_lbl_) {
+                            net_status_lbl_->setText(tail.isEmpty()
+                                ? QStringLiteral("Failed to connect (exit %1).").arg(code)
+                                : tail);
+                        }
+                    }
+                });
+        proc->start(QStringLiteral("nmcli"), args);
+    }
+
+    void refreshNetwork() {
+        if (!net_prog_list_) return;
+        auto* lay = net_prog_list_->listLayout();
+        while (QLayoutItem* it = lay->takeAt(0)) {
+            if (QWidget* w = it->widget()) w->deleteLater();
+            delete it;
+        }
+
+        if (QStandardPaths::findExecutable(QStringLiteral("nmcli")).isEmpty()) {
+            auto* row = new OobeOptionRow(QStringLiteral("NetworkManager unavailable"),
+                                          QStringLiteral("Offline"), false,
+                                          net_prog_list_->hostWidget());
+            row->setEnabled(false);
+            lay->addWidget(row);
+            lay->addStretch(1);
+            if (net_status_lbl_) {
+                net_status_lbl_->setText(QStringLiteral("nmcli is not installed on this host."));
+            }
+            if (net_blur_ov_) {
+                net_blur_ov_->setVisible(false);
+                net_blur_ov_->invalidateCache();
+            }
+            return;
+        }
+
+        if (net_status_lbl_) net_status_lbl_->setText(QStringLiteral("Scanning networks..."));
+
+        // 1. Check Ethernet status
+        bool wired_ok = false;
+        QString wired_name;
+        {
+            QProcess p;
+            p.start(QStringLiteral("nmcli"),
+                    {QStringLiteral("-t"), QStringLiteral("-f"), QStringLiteral("TYPE,STATE,CONNECTION"),
+                     QStringLiteral("dev"), QStringLiteral("status")});
+            if (p.waitForFinished(1500)) {
+                const QStringList lines = QString::fromUtf8(p.readAllStandardOutput()).split(QLatin1Char('\n'));
+                for (const QString& ln : lines) {
+                    const QStringList cols = ln.split(QLatin1Char(':'));
+                    if (cols.size() >= 3 && cols[0] == QLatin1String("ethernet") &&
+                        cols[1] == QLatin1String("connected")) {
+                        wired_ok = true;
+                        wired_name = cols[2];
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 2. Scan Wi-Fi asynchronously so the UI stays responsive
+        auto* proc = new QProcess(this);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                this, [this, proc, wired_ok, wired_name](int, QProcess::ExitStatus) {
+                    const QString raw = QString::fromUtf8(proc->readAllStandardOutput());
+                    proc->deleteLater();
+                    if (!net_prog_list_) return;
+                    auto* list_lay = net_prog_list_->listLayout();
+                    while (QLayoutItem* it = list_lay->takeAt(0)) {
+                        if (QWidget* w = it->widget()) w->deleteLater();
+                        delete it;
+                    }
+
+                    int row_count = 0;
+                    QString active_ssid;
+                    if (wired_ok) {
+                        auto* eth = new OobeOptionRow(QStringLiteral("Ethernet"),
+                                                      wired_name.isEmpty() ? QStringLiteral("Connected") : wired_name,
+                                                      true, net_prog_list_->hostWidget());
+                        list_lay->addWidget(eth);
+                        ++row_count;
+                    }
+
+                    QStringList seen;
+                    for (const QString& ln : raw.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                        const QStringList cols = ln.split(QLatin1Char(':'));
+                        if (cols.size() < 4) continue;
+                        const bool active = (cols[0] == QLatin1String("yes"));
+                        const QString ssid = cols[1].trimmed();
+                        const QString sig = cols[2].trimmed();
+                        const QString sec = cols[3].trimmed();
+                        if (ssid.isEmpty() || seen.contains(ssid)) continue;
+                        seen.append(ssid);
+                        if (active) active_ssid = ssid;
+                        const bool secured = !sec.isEmpty() && sec != QLatin1String("--");
+                        const QString detail = active
+                            ? QStringLiteral("Connected")
+                            : QStringLiteral("%1%%2").arg(sig, secured ? QStringLiteral(" · Lock") : QString());
+                        auto* row = new OobeOptionRow(ssid, detail, active, net_prog_list_->hostWidget());
+                        connect(row, &OobeOptionRow::clicked, this, [this, ssid, active, secured]() {
+                            if (!active) connectWifiNetwork(ssid, secured);
+                        });
+                        list_lay->addWidget(row);
+                        ++row_count;
+                    }
+
+                    if (row_count == 0) {
+                        auto* empty = new OobeOptionRow(QStringLiteral("No Wi-Fi networks found"),
+                                                        QStringLiteral("Offline"), false,
+                                                        net_prog_list_->hostWidget());
+                        empty->setEnabled(false);
+                        list_lay->addWidget(empty);
+                        ++row_count;
+                    }
+                    list_lay->addStretch(1);
+
+                    if (net_link_) {
+                        if (!active_ssid.isEmpty()) {
+                            net_link_->setLabelText(QStringLiteral("Wi-Fi: %1").arg(active_ssid));
+                        } else if (wired_ok) {
+                            net_link_->setLabelText(QStringLiteral("Network: Ethernet"));
+                        } else {
+                            net_link_->setLabelText(QStringLiteral("Network"));
+                        }
+                        footer_links_->adjustSize();
+                    }
+                    if (net_status_lbl_) {
+                        net_status_lbl_->setText(
+                            !active_ssid.isEmpty() ? QStringLiteral("Connected to %1.").arg(active_ssid)
+                            : wired_ok ? QStringLiteral("Ethernet connected.")
+                            : QStringLiteral("Select a Wi-Fi network or plug in Ethernet."));
+                    }
+                    if (net_blur_ov_) {
+                        net_blur_ov_->setVisible(row_count > 6);
+                        net_blur_ov_->invalidateCache();
+                    }
+                });
+        proc->start(QStringLiteral("nmcli"),
+                    {QStringLiteral("-t"), QStringLiteral("-f"),
+                     QStringLiteral("ACTIVE,SSID,SIGNAL,SECURITY"),
+                     QStringLiteral("dev"), QStringLiteral("wifi"),
+                     QStringLiteral("list"), QStringLiteral("--rescan"), QStringLiteral("auto")});
     }
 
     std::vector<DiskInfo> disks_;
@@ -2268,9 +2697,18 @@ private:
     OobeCircleNavButton* nav_back_ = nullptr;
     OobeCircleNavButton* nav_next_ = nullptr;
     QWidget* footer_links_ = nullptr;
+    QuietLink* net_link_ = nullptr;
     QuietLink* kb_link_ = nullptr;
     int kb_idx_ = 0;
+    Page prev_utility_page_ = PageHub;
     RecoveryTerminalWindow* terminal_win_ = nullptr;
+
+    std::vector<OobeOptionRow*> kb_rows_;
+    ProgressiveBlurOverlay* kb_blur_ov_ = nullptr;
+
+    OobeProgressiveList* net_prog_list_ = nullptr;
+    ProgressiveBlurOverlay* net_blur_ov_ = nullptr;
+    QLabel* net_status_lbl_ = nullptr;
 
     int hub_choice_ = 0;
     std::vector<OobeOptionRow*> hub_rows_;
@@ -2317,6 +2755,7 @@ private:
     std::vector<OobeOptionRow*> boot_rows_;
     QLabel* boot_status_ = nullptr;
 
+    int log_source_idx_ = 0;
     QPlainTextEdit* logs_edit_ = nullptr;
 };
 
@@ -2325,20 +2764,23 @@ private:
 int main(int argc, char** argv) {
     QString initial_page;
     QString screenshot_path;
+    bool open_terminal = false;
     for (int i = 1; i < argc; ++i) {
         const QString arg = QString::fromUtf8(argv[i]);
         if (arg == QLatin1String("--version")) {
-            std::puts("finn-recovery 1.0.0");
+            std::puts("recovery-mode 1.0.0");
             return 0;
         }
         if (arg == QLatin1String("--page") && i + 1 < argc) {
             initial_page = QString::fromUtf8(argv[++i]);
         } else if (arg == QLatin1String("--screenshot") && i + 1 < argc) {
             screenshot_path = QString::fromUtf8(argv[++i]);
+        } else if (arg == QLatin1String("--open-terminal")) {
+            open_terminal = true;
         }
     }
 
-    FinnApplication app(argc, argv, QStringLiteral("installer"));
+    FinnApplication app(argc, argv, QStringLiteral("recovery-mode"));
     RecoveryWindow w;
     if (!initial_page.isEmpty()) w.openPage(initial_page);
     const QString plat = QGuiApplication::platformName();
@@ -2349,9 +2791,12 @@ int main(int argc, char** argv) {
         w.resize(1280, 832);
         w.show();
     }
+    if (open_terminal) {
+        w.openTerminalOverlay();
+    }
 
     if (!screenshot_path.isEmpty()) {
-        QTimer::singleShot(250, &w, [&w, screenshot_path]() {
+        QTimer::singleShot(350, &w, [&w, screenshot_path]() {
             w.grab().save(screenshot_path);
             QCoreApplication::quit();
         });

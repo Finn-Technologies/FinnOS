@@ -62,11 +62,10 @@ window text. `assets/wallpaper/setup.webp` stays as the first-boot wallpaper.
 
 ## Recovery mode
 
-Recovery (`finn-installer`) has no Figma frame of its own, so it borrows the
-parts of OOBE that make FinnOS recognisable: the four-diamond brand lockup and
-wordmark, the pure-black / warm-bone canvas, generous quiet space, a single
-hairline card, and the circular next control. The install wizard carries a four
-segment step rail instead of separate screens. It keeps the same one-accent /
+Recovery (`recovery-mode`) has no Figma frame of its own, so it reuses the
+exact OOBE split layout, typography, progressive list blur, circular chevron
+navigation, and sequential slide+blur transition engine from `apps/oobe/main.cpp`
+(with no top-left branding header on split pages). It keeps the same one-accent /
 one-neutral rule and never imitates another operating system's recovery chrome.
 
 ## One accent, one neutral

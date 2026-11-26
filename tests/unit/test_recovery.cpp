@@ -214,6 +214,142 @@ void test_disk_ops_and_bls() {
     assert(bls.find("initrd  /initramfs-linux.img") != std::string::npos);
 }
 
+void test_mbr_esp_and_live_usb_protection() {
+    constexpr const char* kMbrJson = R"json({
+      "blockdevices": [
+        {
+          "name": "sdb",
+          "path": "/dev/sdb",
+          "size": 32000000000,
+          "type": "disk",
+          "model": "Live Stick",
+          "tran": "usb",
+          "rm": true,
+          "ro": false,
+          "children": [
+            {
+              "name": "sdb1",
+              "path": "/dev/sdb1",
+              "size": 4000000000,
+              "type": "part",
+              "fstype": "vfat",
+              "parttype": "0xef"
+            }
+          ]
+        },
+        {
+          "name": "sda",
+          "path": "/dev/sda",
+          "size": 250000000000,
+          "type": "disk",
+          "model": "SATA MBR SSD",
+          "tran": "sata",
+          "rm": false,
+          "ro": false,
+          "children": [
+            {
+              "name": "sda1",
+              "path": "/dev/sda1",
+              "size": 536870912,
+              "type": "part",
+              "fstype": "vfat",
+              "parttype": "0xc"
+            },
+            {
+              "name": "sda2",
+              "path": "/dev/sda2",
+              "size": 200000000000,
+              "type": "part",
+              "fstype": "btrfs",
+              "label": "LinuxRoot"
+            }
+          ]
+        },
+        {
+          "name": "sdc",
+          "path": "/dev/sdc",
+          "size": 120000000000,
+          "type": "disk",
+          "model": "MBR 0xef Disk",
+          "tran": "sata",
+          "rm": false,
+          "ro": false,
+          "children": [
+            {
+              "name": "sdc1",
+              "path": "/dev/sdc1",
+              "size": 268435456,
+              "type": "part",
+              "fstype": "vfat",
+              "parttype": "0xef"
+            }
+          ]
+        }
+      ]
+    })json";
+
+    // Explicit live_backing_disk parameter marks /dev/sdb as Live USB even without mountpoint.
+    const auto disks = parse_lsblk_json(kMbrJson, "/dev/sdb");
+    assert(disks.size() == 3);
+    assert(disks[0].is_live_medium);
+    assert(!disks[1].is_live_medium);
+
+    // Small FAT32 partition #1 (<= 2 GiB, MBR 0xc) is recognized as ESP.
+    assert(disks[1].partitions[0].is_esp);
+    assert(disks[1].esp_partition_path == "/dev/sda1");
+
+    // MBR 0xef partition is recognized as ESP.
+    assert(disks[2].partitions[0].is_esp);
+    assert(disks[2].esp_partition_path == "/dev/sdc1");
+
+    // Btrfs dual-boot resize on MBR disk succeeds and preserves /dev/sda1.
+    assert(disks[1].partitions[1].can_shrink);
+    InstallRequest btrfs_db;
+    btrfs_db.mode = InstallMode::DualBootResize;
+    btrfs_db.resize_partition = "/dev/sda2";
+    btrfs_db.resize_new_size_mb = 120000;
+    btrfs_db.confirmed = true;
+    const auto btrfs_plan = plan_install(btrfs_db, disks);
+    assert(btrfs_plan.valid);
+    assert(std::find(btrfs_plan.finn_install_args.begin(),
+                     btrfs_plan.finn_install_args.end(), "/dev/sda1") !=
+           btrfs_plan.finn_install_args.end());
+
+    // Disk Utility command plans MUST refuse Live USB.
+    assert(!plan_disk_wipe_gpt(disks[0]).valid);
+    assert(!plan_disk_create_partition(disks[0], 32, false, "ext4").valid);
+    assert(!plan_disk_delete_partition(disks[0], disks[0].partitions[0]).valid);
+
+    // Disk Utility command plans on writable internal disk succeed with expected tools.
+    const auto wipe = plan_disk_wipe_gpt(disks[1]);
+    assert(wipe.valid && wipe.program == "bash");
+    assert(wipe.args[1].find("wipefs -a") != std::string::npos);
+    assert(wipe.args[1].find("sgdisk --zap-all") != std::string::npos);
+    assert(wipe.args[1].find("sgdisk -o") != std::string::npos);
+    assert(wipe.args[1].find("udevadm settle") != std::string::npos);
+
+    const auto create_all = plan_disk_create_partition(disks[1], 64, true, "ext4");
+    assert(create_all.valid && create_all.program == "bash");
+    assert(create_all.args[4] == "0:0:0");
+    assert(create_all.args[5] == "8300");
+    assert(create_all.args[1].find("mkfs.ext4 -F") != std::string::npos);
+
+    const auto create_fat = plan_disk_create_partition(disks[1], 1, false, "fat32");
+    assert(create_fat.valid && create_fat.args[4] == "0:0:+1G" && create_fat.args[5] == "ef00");
+    assert(create_fat.args[1].find("mkfs.vfat -F32 -n FINNOS_EFI") != std::string::npos);
+
+    const auto create_efi = plan_disk_create_partition(disks[1], 0, false, "efi");
+    assert(create_efi.valid && create_efi.args[4] == "0:0:+512M" && create_efi.args[5] == "ef00");
+    assert(create_efi.args[1].find("mkfs.vfat -F32 -n FINNOS_EFI") != std::string::npos);
+
+    const auto create_btrfs = plan_disk_create_partition(disks[1], 40, false, "btrfs");
+    assert(create_btrfs.valid && create_btrfs.args[1].find("mkfs.btrfs -f") != std::string::npos);
+
+    const auto del = plan_disk_delete_partition(disks[1], disks[1].partitions[1]);
+    assert(del.valid && del.program == "sgdisk" && del.args.size() == 3 &&
+           del.args[0] == "-d" && del.args[1] == "2" && del.args[2] == "/dev/sda");
+}
+
 }  // namespace
 
 int main() {
@@ -221,6 +357,7 @@ int main() {
     test_probe_os_directory();
     test_install_plans_and_no_user_config();
     test_disk_ops_and_bls();
+    test_mbr_esp_and_live_usb_protection();
     std::puts("test_recovery: ok");
     return 0;
 }

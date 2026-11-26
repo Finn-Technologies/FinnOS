@@ -81,7 +81,7 @@ apps/<id>
   store            Finn Store (native/Flatpak/pacman/Wine/.finnapp manager + FinnSDK hub)
   viewer           Finn Viewer (raster + SVG zoom/pan/rotate viewer)
   monitor          Finn Monitor (CPU/RAM telemetry and PID-diffed process manager)
-  installer        finn-installer (GUI wizard invoking finn-install.sh --disk --hostname --timezone)
+  recovery-mode    recovery-mode (FinnOS Recovery Mode: install, dual-boot, disk utility, boot repair, logs, floating PTY terminal)
   oobe             finn-oobe (first-time setup: language, Wi-Fi, real account setup, appearance)
   flourish         optional Arc-inspired QtWebEngine browser
 

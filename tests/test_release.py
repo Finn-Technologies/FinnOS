@@ -250,7 +250,7 @@ class FinnRepoToolingTest(unittest.TestCase):
         self.assertIn("offline/unprovisioned", setup_sh)
 
     def test_gui_installer_fixes_invocation_and_zoneinfo(self):
-        cpp = self.read("apps", "installer", "main.cpp")
+        cpp = self.read("apps", "recovery-mode", "main.cpp")
         self.assertIn("finn::kFinnInstallBin", cpp)
         self.assertIn("plan_install", cpp)
         self.assertNotIn("btrfs + FAT32 ESP", cpp)
@@ -260,6 +260,7 @@ class FinnRepoToolingTest(unittest.TestCase):
         self.assertIn("readyReadStandardError", cpp)
         self.assertIn("QProcess::NormalExit", cpp)
         self.assertIn("PageInstallProgress", cpp)
+        self.assertIn("FinnTerminalWidget", cpp)
         engine = self.read("src", "recovery", "recovery_engine.cpp")
         self.assertIn('"--disk"', engine)
         self.assertIn('"--ab-slots"', engine)
@@ -267,6 +268,10 @@ class FinnRepoToolingTest(unittest.TestCase):
         self.assertIn('"dualboot-resize"', engine)
         self.assertIn('"reinstall"', engine)
         self.assertIn('"repair-boot"', engine)
+        profiledef = self.read("base", "profiledef.sh")
+        self.assertIn('["/usr/local/bin/recovery-mode"]="0:0:755"', profiledef)
+        iso_yml = self.read(".github", "workflows", "iso.yml")
+        self.assertIn("test -x /tmp/live/usr/local/bin/recovery-mode", iso_yml)
 
 
 if __name__ == "__main__":

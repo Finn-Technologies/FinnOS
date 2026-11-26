@@ -388,7 +388,10 @@ ABEOF
 fi
 
 efi=0
-if command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 | tail -5; then
+PT_TYPE="$(blkid -s PTTYPE -o value "$FINN_DISK" 2>/dev/null || true)"
+EFI_TARGET=x86_64-efi
+[ "$(uname -m)" = 'aarch64' ] && EFI_TARGET=arm64-efi
+if [ "$PT_TYPE" != "dos" ] && command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 | tail -5; then
     if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
         install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
         install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
@@ -410,7 +413,7 @@ if command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 |
         "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos-recovery.conf
     efi=1
     echo "BOOTLOADER=systemd-boot"
-elif grub-install --target=x86_64-efi --efi-directory=/boot \
+elif grub-install --target="$EFI_TARGET" --efi-directory=/boot \
         --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
     grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 ||
         { echo "error: grub-mkconfig failed" >&2; exit 1; }
@@ -421,10 +424,11 @@ fi
 # A machine that starts with a BIOS rather than EFI needs the boot code in
 # the MBR as well: the EFI loader on the partition is not enough, and the
 # install would be on the disk with no way to reach it. On a GPT disk GRUB
-# keeps that code in the BIOS boot partition the installer made. The disk is
-# the one the installer was told to write, never a guess.
+# keeps that code in the BIOS boot partition the installer made; on an MBR
+# (dos) disk GRUB writes directly to the MBR gap. The disk is the one the
+# installer was told to write, never a guess.
 bios=0
-if grub-install --target=i386-pc --recheck "$FINN_DISK" 2>&1 | tail -5; then
+if [ "$(uname -m)" = 'x86_64' ] && grub-install --target=i386-pc --recheck "$FINN_DISK" 2>&1 | tail -5; then
     grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 || true
     bios=1
     echo "BOOTLOADER=grub-bios"

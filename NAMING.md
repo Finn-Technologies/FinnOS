@@ -43,7 +43,7 @@
 | `finn-store` | Finn Store (installed apps, Flatpak/pacman browser, Wine PE inspector, FinnSDK hub) |
 | `finn-viewer` | Finn Viewer (raster and SVG image viewer) |
 | `finn-monitor` | Finn Monitor (CPU sparkline, memory, live process manager) |
-| `finn-installer` | Bare-Metal GUI Installer (disk partitioning, bootloader, base system deployment) |
+| `recovery-mode` | FinnOS Recovery Mode (OS installation, dual-boot, disk utility, bootloader repair, system logs, floating Finn Terminal) |
 | `finn-oobe` | First-Time Setup (`hi`, `How do we talk?`, Wi-Fi, account, appearance, and 6-ring ribbon completion) |
 | `finn-open` | Unified CLI target/file/URL opener (`finn-session` client) |
 | `finn-darwin` | Clean-room macOS compatibility runtime (`Mach-O`, `libSystem`, `libobjc`, `Foundation`, `CoreGraphics`/`QuartzCore`, core `Swift` ABI, `AppKit-on-Qt6`, `.dmg`/`.pkg`/`.zip`/`.app` installer) |
@@ -70,7 +70,7 @@
 | `src/ota` | `finn-update` and `finn_ota`: Ed25519 manifest verification, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot switching |
 | `src/common` | Paths shared by two modules, and only that |
 | `repo` | First-party `[finnos]` pacman repository scripts (`gen-signing-key.sh`, `publish.sh`, `finnos-mirrorlist`) |
-| `apps/<id>` | First-party native Qt6 apps (`wallpaper`, `settings`, `files`, `terminal`, `notes`, `store`, `viewer`, `monitor`, `installer`, `oobe`, optional `flourish`) |
+| `apps/<id>` | First-party native Qt6 apps (`wallpaper`, `settings`, `files`, `terminal`, `notes`, `store`, `viewer`, `monitor`, `recovery-mode`, `oobe`, optional `flourish`) |
 | `sdk` | `finn-app.schema.json` manifest schema, `sdk/template/` starter project, and host test suite |
 
 ## First-party apps

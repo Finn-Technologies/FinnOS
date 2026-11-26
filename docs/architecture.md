@@ -12,7 +12,7 @@ The processes and shared libraries that make up FinnOS.
 | `finn-wallpaper` | Background WebP wallpaper surface (`background` layer) | `finn` |
 | `finn-update` | A/B OTA update client (`src/ota/`): Ed25519 manifest check, HTTP Range download, `zstd` delta patching, `systemd-boot`/`GRUB` slot commit/rollback | root (units) / `finn` (read-only status) |
 | `finn-android` | Clean-room Android 17 application runtime (`src/android/`): native APK/ZIP reader, binary AXML manifest/layout parser, `resources.arsc` basics, DEX header verification and opcode decoding, ART-style analysis, per-user installer, Qt6/Wayland view bridge | `finn` |
-| First-party apps | Adaptive Qt 6 `FinnUI` apps: `finn-settings` (1:1 Figma About & Sound + Form Factor switcher), `finn-files`, `finn-terminal` (native PTY + soft-keys), `finn-notes`, `finn-store`, `finn-viewer`, `finn-monitor`, `finn-installer`, `finn-oobe`, optional `flourish` | `finn` |
+| First-party apps | Adaptive Qt 6 `FinnUI` apps: `finn-settings` (1:1 Figma About & Sound + Form Factor switcher), `finn-files`, `finn-terminal` (native PTY + soft-keys), `finn-notes`, `finn-store`, `finn-viewer`, `finn-monitor`, `recovery-mode`, `finn-oobe`, optional `flourish` | `finn` |
 
 `finnd` — a bespoke privileged system daemon — is not written. Instead, FinnOS integrates directly with standard upstream Linux mechanisms (systemd `logind`, `NetworkManager`, `BlueZ`, `PipeWire`/`wpctl`, `UPower`, and sysfs) when present, and marks missing hardware/services honestly disabled when absent.
 
