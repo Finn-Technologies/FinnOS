@@ -1,88 +1,61 @@
-# Writing a native app with FinnSDK
+# Writing Apps for FinnOS
 
-FinnOS applications are standard Qt6 + C++20 GUI programs built against **`FinnSDK::FinnUI`** (`libfinnui`), automatically styled with FinnOS's Figma-matched platform theme and widgets, and launched by `finn-session`.
+FinnOS supports two first-party native Qt 6 / C++20 app paths via `FinnSDK`, plus seamless integration for Linux, Windows, macOS, OpenHarmony, and Android packages.
 
-## Quick start with `finn-sdk`
-
-```sh
-finn-sdk check
-finn-sdk new my-app --name "Finn Hello"
-finn-sdk validate my-app
-finn-sdk build my-app
-finn-sdk run my-app
-finn-sdk simulate --form-factor phone my-app
-```
-
-Package and sign distributable `.finnapp` archives (`finn-app.json` schema in [`sdk/schema/finn-app.schema.json`](../sdk/schema/finn-app.schema.json)):
+## Quickstart with `finn-sdk`
 
 ```sh
-finn-sdk keygen /path/outside/repo/my-key
-finn-sdk package my-app --key /path/outside/repo/my-key.key
-finn-sdk verify my-app.finnapp --pubkey /path/outside/repo/my-key.pub --json
+finn-sdk new hello --name "Hello Finn"
+finn-sdk validate hello/finn-app.json
+finn-sdk build hello
+finn-sdk run hello
+finn-sdk register hello
 ```
 
-Register your built binary in the local user launcher (`~/.local/share/finn/apps/`):
+See [docs/sdk/getting-started.md](sdk/getting-started.md) and [sdk/template](../sdk/template).
 
-```sh
-finn-sdk register my-app/my-app.desktop
+## Option 1: Qt Quick / QML (`FinnSDK::FinnUIQml`, recommended)
+
+Everyday FinnOS apps (Settings, Finn Files, Finn Terminal, Finn Notes, Finn Store, Finn Viewer, Finn Monitor, Finn Calculator, Finn Archive, Finn Capture, Flourish) use `FinnSDK::FinnUIQml` (`import FinnUI 1.0`) with C++20 `QObject` / `QAbstractListModel` controllers:
+
+```cmake
+cmake_minimum_required(VERSION 3.22)
+project(hello-finn LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+
+find_package(FinnSDK REQUIRED)
+
+add_executable(hello-finn main.cpp)
+target_link_libraries(hello-finn PRIVATE FinnSDK::FinnUIQml)
 ```
 
-## Minimal C++20 example
+In QML, `FinnApplicationWindow` adapts automatically across `Desktop`, `Tablet`, `Mobile`, and `TV` (`AdaptiveFormFactor` in `src/ui/finn/form_factor.hpp`) and exposes all 19 AOT-compiled `FinnUI 1.0` controls (`FinnButton`, `FinnCard`, `FinnGlassPanel`, `FinnNavItem`, `FinnSettingRow`, `FinnSearchField`, `FinnSlider`, `FinnToggle`, `FinnStatCard`, `FinnHeroCard`, `FinnBadge`, `FinnEmptyState`, `FinnToast`, etc.) plus `FinnTheme` and `image://finn-icon/<name>`.
+
+## Option 2: C++20 Widgets (`FinnSDK::FinnUI`)
+
+Pure C++20 widget apps (such as `finn-oobe`, `recovery-mode`, and `finn-wallpaper`) link `FinnSDK::FinnUI` and include `<FinnSDK/FinnSDK.hpp>`:
 
 ```cpp
 #include <FinnSDK/FinnSDK.hpp>
 
 int main(int argc, char** argv) {
-    finn::ui::FinnApplication app(
-        argc, argv, QStringLiteral("my-app"), QStringLiteral("Finn Hello"));
-
-    finn::ui::FinnWindow window(
-        QStringLiteral("Finn Hello"), QStringLiteral("app-grid"));
-    window.resize(760, 520);
-
-    auto* empty = new finn::ui::FinnEmptyState(
+    finn::ui::FinnApplication app(argc, argv, QStringLiteral("hello"),
+                                  QStringLiteral("Hello"));
+    finn::ui::FinnWindow win(QStringLiteral("Hello, FinnOS"),
+                             QStringLiteral("app-grid"));
+    win.setContentWidget(new finn::ui::FinnEmptyState(
         QStringLiteral("info"),
-        QStringLiteral("Hello from FinnSDK"),
-        QStringLiteral("Custom frameless window chrome, Fixel Display typography, and live theme switching included."));
-    window.setContentWidget(empty);
-    window.show();
+        QStringLiteral("Hello, FinnOS"),
+        QStringLiteral("Built with FinnSDK (Qt 6 + C++20).")));
+    win.show();
     return app.exec();
 }
 ```
 
-## Building with CMake (`sdk/template`)
+## App catalogue & registration
 
-```cmake
-cmake_minimum_required(VERSION 3.22)
-project(my-finn-app LANGUAGES CXX)
+- **First-party apps** live in `apps/<id>/`, are declared in `assets/apps.registry` (`/usr/share/finn/apps.registry`), and are listed in `/var/lib/finn/installed`.
+- **Third-party `FinnSDK` apps** register in `~/.local/share/finn/apps/` (directly via `finn-sdk register` or by installing a signed `.finnapp` bundle via `Finn Store` or `src/compat/finnapp_installer`).
+- **Foreign ecosystems** are discovered automatically by `finn-session` from Freedesktop `.desktop` files, Flatpak exports, verified AppImages, Wine prefixes/`windows.conf`, `~/.local/share/finn/macos/Applications`, `~/.local/share/finn/ohos/`, and `~/.local/share/finn/android/`.
 
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_AUTOMOC ON)
-
-find_package(FinnSDK REQUIRED)
-
-add_executable(my-finn-app main.cpp)
-target_link_libraries(my-finn-app PRIVATE FinnSDK::FinnUI)
-```
-
-See [`sdk/template`](../sdk/template) for a complete starter with CMake, Makefile (`pkg-config finnsdk`), and Freedesktop `.desktop` manifest.
-
-## Public API highlights (`<FinnSDK/FinnSDK.hpp>`)
-
-| Class / Header | Role |
-|---|---|
-| `finn::ui::FinnApplication` | Configures Wayland display, app id, Fixel Display fonts, FinnOS `QPalette`, and theme polling |
-| `finn::ui::FinnWindow` | Custom frameless CSD Wayland window with traffic-light controls, collapsible sidebar, edge resize, toast overlay, and responsive `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) |
-| `finn::ui::FinnLayerWindow` | `LayerShellQt` panel wrapper with explicit click-through input masking (`setInputRegions`) |
-| `finn::ui::FinnThemeManager` | Live light/dark/accent/scale/reduced-motion state synced with `FINN_SETTINGS_PATH` / `~/.config/finn/settings` |
-| Spring Motion (`<FinnSDK/Spring.hpp>`) | `SpringParams`, `SpringAnimator`, `springs::{kSnappy,kSmooth,kBouncy,kOverscroll}`, `rubber_band`, `reduced_motion()` |
-| Widgets (`Components.hpp`) | `FinnCard`, `FinnGlassPanel`, `FinnLabel`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider`, `FinnSearchField`, `FinnTextField` (`setPasswordMode`), `FinnProgressBar`, `FinnProgressRing`, `FinnSidebar`, `FinnNavItem`, `FinnSettingRow`, `FinnBadge`, `FinnDivider`, `FinnTabBar`, `FinnBreadcrumbs`, `FinnEmptyState`, `FinnToast`, `FinnDialog` (`prompt(..., password_mode)`) |
-| `finn::SessionClient` | Typed client for `finn-session` (`list`, `launch`, `open_target`, `run_windows`, `compat_status`, `power_action`) |
-
-## App contract & honesty rules
-
-- Do not assume elevated privileges or private compositor sockets; communicate with the system via Wayland, XDG portals/DBus, or `SessionClient`.
-- Manifest permissions in `finn-app.json` are declarative metadata in v1 (not enforced by an OS sandbox yet); apps run as user `finn` unless packaged via Flatpak.
-- Never fake hardware or service availability: use `FinnButton::setEnabled(false)` and `FinnBadge` status indicators honestly when a capability is missing.
-- Keep `src/comp` free of application names.
+See [docs/sdk/api-overview.md](sdk/api-overview.md) and [docs/sdk/publishing.md](sdk/publishing.md) for full API and packaging details.

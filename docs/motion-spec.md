@@ -127,22 +127,13 @@ clang++ -std=c++20 -O2 -g -Wall -Wextra -Wpedantic -Werror -fsanitize=address,un
 
 ---
 
-## 7. Integration Points for Later Wiring
+## 7. Current Integration Points
 
-Do not rewrite `finn-comp` or `finn-shell` in this phase; wire `SpringAnimator` / `PressFeedback` / `GestureProgressTracker` at these exact locations:
+`SpringAnimator`, `SpringAnimator2D`, `ReducedCrossfade`, `rubber_band`, and `PressFeedback` (`src/ui/finn/spring.hpp`) are now wired across the Qt 6 codebase:
 
-| Area | Location (`file:function`) | Current behavior | Target Phase 3 wiring |
-|---|---|---|---|
-| **Compositor windows** | `src/comp/window.cpp:Server::ManagedWindow::start_animation` | 150 ms cubic slide via `wl_event_loop` timer (16 ms tick) | Replace with `SpringAnimator2D(springs::kSmooth)` stepped at output refresh interval (`8 ms` / `16 ms`); support retargeting on maximize/restore |
-| **Window snap** | `src/comp/window.cpp:Server::ManagedWindow::snap_half` | Instant `set_position` + `configure_size` | Animate position delta with `SpringAnimator2D(springs::kSnappy)` when `mapped && !reduced_motion` |
-| **Compositor reduced motion** | `src/comp/server.cpp:Server::read_reduced_motion_setting` | Reads `reduced_motion=` on startup and 1 s timer | Keep synced with `kSettingsPath` / user settings; gate `ManagedWindow` spring animations |
-| **Dock icon hover & bounce** | `src/shell/dock.cpp:DockItemButton` (constructor, `triggerBounce`) | `QVariantAnimation` 140 ms `OutCubic` / 260 ms keyframed bounce | `SpringAnimator(springs::kSnappy)` for hover; `SpringAnimator(springs::kBouncy)` impulse for bounce |
-| **Dock active pill** | `src/shell/dock.cpp:StatusPill::setActivePopovers` | `QVariantAnimation` 160 ms `OutCubic` | `SpringAnimator(springs::kSnappy)` for `highlight_x_` so rapid popover switching carries velocity |
-| **Shell popovers** | `src/shell/popovers.cpp:HomeMenuPopover::openMenu`, `SpotlightPopover::openSearch`, `ControlCenterPopover::openDrawer`, `OpenWindowsPopover::openOverview` | `QVariantAnimation` 160 ms `OutCubic` | `SpringAnimator(springs::kSnappy)` (or `ReducedCrossfade` under reduced motion) so open/close mid-flight preserves velocity |
-| **Lock screen auth shake** | `src/shell/popovers.cpp:LockScreenWindow::shakeInput` | `QPropertyAnimation` 280 ms keyframe offsets | `SpringAnimator(springs::kSnappy)` lateral impulse (skipped when `reducedMotion()`) |
-| **Boot / OOBE fade** | `src/shell/popovers.cpp:BootSplashWindow::startBootAnimation` | 320 ms `InOutCubic` `fade_anim_` | `springs::kGentle` or `ReducedCrossfade` when reduced motion active |
-| **Notifications overlay** | `src/shell/notifications.cpp:NotificationOverlay::syncPopups` | Instant card insertion/removal | `SpringAnimator` entrance/re-layout per card + `GestureProgressTracker` swipe-to-dismiss |
-| **Toolkit hover / toggle / slider / toast** | `src/ui/finn/components.cpp:FinnCard`, `FinnButton`, `FinnIconButton`, `FinnToggle`, `FinnSlider`, `FinnNavItem`, `FinnToast` | **Wired** via `FinnSpringDriver` (`springs::kSnappy` / `kBouncy`, `ReducedCrossfade`) | Compiled & verified on target VM/Linux Qt6 build (Qt6 unavailable on macOS host) |
-| **Page stack & overscroll & dialogs** | `src/ui/finn/components.cpp:StackTransitionOverlay`, `OverscrollFilter`, `FinnDialog::showEvent` | **Wired** (`springs::kSmooth`, `rubber_band` + `kOverscroll`, `kSnappy` / `ReducedCrossfade`) | Wire `install_overscroll_physics` onto additional `QScrollArea`s in `apps/` if desired |
-| **CSD window transitions** | `src/ui/finn/window.cpp:FinnWindow::setSidebarCollapsed`, `showEvent` | **Wired** (`springs::kSmooth` sidebar width + window entrance `retargetOrCrossfade`) | Verify on target VM/Linux Qt6 build |
-| **Theme reduced motion bridge** | `src/ui/finn/theme.cpp:FinnThemeManager::reload`, `saveUpdated` | Emits `themeChanged(tokens_)` | Call `finn::ui::set_reduced_motion_override(tokens_.reduced_motion)` so `animation.hpp` / `spring.hpp` stay lockstep with `FinnThemeManager` |
+| Area | Location | Current status |
+|---|---|---|
+| **Compositor windows & workspaces** | `src/comp/core/workspace_model.cpp`, `src/comp/qml/WaylandCompositorScene.qml` | **Wired** — 120 Hz (60 Hz on software backend) analytic spring transitions for snap, maximize, minimize, virtual desktops, and Overview |
+| **QML `FinnUI 1.0` controls** | `src/ui/qml/finn_qml_types.cpp` (`FinnSpringValue`), `src/ui/qml/controls/*.qml` | **Wired** — `FinnSpringValue` drives smooth spring transitions in QML apps and `finn-shell` (`DesktopShell.qml`, `DesktopDock.qml`, popovers, `NotificationStack.qml`) |
+| **C++ widget toolkit** | `src/ui/finn/components.cpp` (`FinnSpringDriver`, `StackTransitionOverlay`, `OverscrollFilter`, `FinnDialog`), `src/ui/finn/window.cpp` (`FinnWindow`) | **Wired** — `springs::kSnappy` / `kSmooth` / `kBouncy` / `kOverscroll` with live `ReducedCrossfade` fallbacks |
+| **Theme reduced motion bridge** | `src/ui/finn/theme.cpp` (`FinnThemeManager`), `src/ui/qml/finn_qml_types.cpp` (`FinnThemeBridge`), `src/qtplugin/finn_platform_theme.cpp` | **Wired** — live `reduced_motion` setting updates without restarting apps |

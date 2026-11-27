@@ -1,41 +1,36 @@
 # Security
 
-## The boundary
+Privilege boundaries, sockets, update trust, and honest gaps in FinnOS.
 
-| Component | Authority |
-|---|---|
-| `finn-comp` | `root`: opens DRM and evdev through `seatd` and owns scanout. |
-| `finn-session` | `finn`: reads registry/installed lists and spawns user apps. |
-| `finn-shell` | `finn`: layer-shell client (`dock`, Home menu, Search, Control Center). |
-| native & foreign apps | `finn`: Wayland / Xwayland / Wine clients with the user's authority. |
-| `finnd` | not implemented yet (planned root control plane). |
+## Authority model
 
-The display socket is `/run/finn/wayland-0`, `0660`, group `finn`. The session
-socket is `$XDG_RUNTIME_DIR/finn/session.sock`, `0600`, validated with
-`SO_PEERCRED`. There is no TCP listener.
+- **`finn-comp` runs as root** for DRM/KMS and input device access (`LIBSEAT_BACKEND=seatd`). Its Wayland display socket lives at `/run/finn/wayland-0` (`0660 root:finn`) and its IPC state directory lives at `/run/finn/state` (`0775 root:finn`). It knows no app IDs (`make lint` enforces this).
+- **`finn-session` runs as `finn`** on `$XDG_RUNTIME_DIR/finn/session.sock` (`0600`), verifies `SO_PEERCRED` (`cred.uid == getuid() || cred.uid == 0`) on Linux, and spawns apps via `posix_spawnp`. It holds no root privileges and exposes no TCP listener.
+- **One-shot OOBE provisioning (`tools/finn-oobe-apply`)**: First-boot setup grants a narrow `/etc/sudoers.d/finn-oobe` rule for `/usr/local/libexec/finn-oobe-apply` only. Upon completion, the helper writes `/var/lib/finn/oobe_complete` and deletes its own sudoers drop-in so it cannot be re-invoked.
+- **Installed root account**: `vm/finn-chroot.sh` locks the `root` password (`passwd -l root`) on installed machines. `base/setup.sh` enables `NOPASSWD` sudo only when `FINN_DEV_VM=1` is set explicitly.
+- **No bespoke `finnd` daemon**: Standard Linux services (`systemd-logind`, `NetworkManager`, `BlueZ`, `PipeWire`, `pkexec`) handle system actions where available.
 
-`finn-comp` exposes `wl_compositor`, `wl_shm`, `wl_subcompositor`,
-`wl_data_device_manager`, `xdg_wm_base`, `wlr-layer-shell`,
-`wlr-foreign-toplevel-management`, `screencopy`, `xdg-output`, and on-demand
-`Xwayland` (`Xwayland` is started lazily for X11 clients inside systemd's shared
-`/tmp/.X11-unix`).
+## Launch environment hygiene
 
-## What an app can do
+`finn::compat::build_linux_launch_env()` (`src/compat/linux_sandbox.cpp`) strips dynamic-linker and toolkit plugin hijack variables (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `QT_PLUGIN_PATH`, `GTK_PATH`, etc.) before spawning child applications. `.desktop` `Exec=` lines and installer commands are tokenized into explicit `argv` vectors without invoking `/bin/sh`.
 
-An app runs as `finn`:
+## Update, package & image integrity
 
-- read and write the user's home directory and session socket;
-- request launches via `finn-session` or `finn-open`;
-- render Qt6, Wayland, or X11 windows inside its surface.
+- **Offline recovery images**: `src/recovery/recovery_engine.cpp` implements FIPS 180-4 SHA-512 verification against `.sha512` sidecars before offline installation.
+- **A/B OTA updates (`src/ota/finn-update`)**: Uses pure-Python RFC 8032 Ed25519 signature verification over canonical JSON manifests and SHA-256 verification of downloaded/patched slot images before switching `systemd-boot` or `GRUB` slots, with automatic rollback after failed boots via `finn-boot-health.service`.
+- **`.finnapp` packages**: `finn-sdk package` / `verify` support Ed25519 signatures over deterministic archives.
+- **First-party `[finnos]` repo (`repo/`)**: Ships out-of-tree Ed25519 GPG keygen and signed `repo-add` publishing scripts.
+- **Windows `winget` downloads**: `apps/store/providers/winget_provider.cpp` verifies installer SHA-256 hashes from `microsoft/winget-pkgs` manifests.
 
 ## Honest gaps
 
-- **No per-app sandbox yet.** Apps are not isolated in transient systemd user
-  units or seccomp namespaces yet.
-- **No `finnd` root authority yet.** Privileged machine controls (poweroff,
-  sysfs brightness) are not elevated behind a separate audited socket.
-- **No package signatures / A/B slots.** System package updates rely on upstream
-  pacman signing and repositories rather than A/B image slots.
-- **Compositor runs as root.** Dropping root from `finn-comp` waits on moving
-  device/power hooks into `finnd` + `seatd`.
-- **No AI.** There is no bundled inference model or external AI telemetry.
+- **No OS-level native app sandbox**: Native apps and unpacked AppImages run directly with user `finn` privileges (`COMPAT.STATUS` honestly reports `linux_sandbox=env-only`). `finn-app.json` permissions are declarative metadata in v1. Optional `bwrap` namespace wrapping is only planned when `bwrap` is installed and explicitly requested; it is not an enforced security boundary. Sandboxed distribution currently relies on `flatpak --user`.
+- **No `ext-session-lock-v1` protocol yet**: `finn-comp` currently coordinates lock requests through `/run/finn/state/lock-request`, and `CompositorServer::session_locked_` is not yet cleared on unlock or gating all compositor input paths.
+- **Direct `libinput` open in `finn-comp`**: `startLibinputGestures()` currently calls `::open()` directly on input devices while running as root rather than opening via `seatd`.
+- **No Secure Boot, `dm-verity`, or TPM2 sealing**: `finn-boot` does not yet perform Shim/SBAT verification or TPM2 PCR measurement, and root partitions are not `dm-verity`-sealed.
+- **Unprovisioned production trust roots**: `base/pkgbuilds/finnos-keyring/finnos.gpg` is currently an empty placeholder, and `ota/finnos-ota-pubkey.pem.example` is an example key; production signing keys and hosted `repo.finnos.org` infrastructure are not yet provisioned.
+- **AppImage & guest runtime signatures**: AppImages are not cryptographically signature-verified, and OpenHarmony (`finn-ohos`) / Android (`finn-android`) runtimes do not enforce upstream platform code-signing chains.
+
+## Reporting security issues
+
+Do not open a public GitHub issue for a privilege-boundary or authentication vulnerability. Report it privately to the maintainers.

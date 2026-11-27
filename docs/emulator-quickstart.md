@@ -6,18 +6,11 @@ host, prints runnable boot commands, and runs a FinnSDK app against Qt's
 offscreen platform. It never claims a capability it cannot exercise, and it
 never starts or changes the running dev VM.
 
-## Install (coordinator action)
+## Install
 
-The tool is intended to be installed by the Makefile `install` target. Add these
-two lines (see the exact placement in the handoff report):
-
-```make
-	install -m755 tools/finn-emulator $(DESTDIR)$(PREFIX)/bin/finn-emulator
-	ln -sf $(PREFIX)/bin/finn-emulator $(DESTDIR)/usr/bin/finn-emulator
-```
-
-Until that lands, run it from the tree as `./tools/finn-emulator` (it is
-executable).
+`tools/finn-emulator` is installed by `make install` to `$(PREFIX)/bin/finn-emulator`
+(and symlinked at `/usr/bin/finn-emulator`). From a source checkout you can also
+run it directly as `./tools/finn-emulator`.
 
 ## Commands
 

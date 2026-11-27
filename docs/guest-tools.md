@@ -88,30 +88,25 @@ the `vmwgfx` driver and the GLES2 renderer reports
 `GL renderer: SVGA3D; build: RELEASE; LLVM;`. VMware's log then shows
 `svga.supports3D bool 1` instead of "No 3D support is available from the host".
 
-If the host has no usable Vulkan device at all, `finn-comp` falls back to the
-pixman software renderer, logging
-`no GPU renderer available; falling back to software (pixman)`. The desktop and
-apps still render; this is an honest software fallback, not a claim of 3D.
+If the host has no usable Vulkan/EGL device at all, `finn-comp` can run on Qt's
+software backend (`QT_QPA_PLATFORM=linuxfb` or `QT_QUICK_BACKEND=software`). The
+desktop and apps still render; this is an honest software fallback, not a claim
+of 3D.
 
 ## Visual verification
 
-An installed x86_64 system was booted in VMware Workstation 26.0.1 with
-`open-vm-tools` active, first with 3D off (pixman fallback) and then with 3D on
-(EGL/GLES2 on `vmwgfx`). Confirmed from live `grim` captures: the desktop at the
-virtual monitor's 1280×800 preferred mode (not a forced 1440×900), **Settings →
-Compatibility → Virtualization & Guest Tools** reporting the host as "VMware,
-Inc. VMware Virtual Platform" with VMware Tools **Active** (`vmtoolsd` running,
-`vmwgfx`/`vmw_vmci`/`vmw_balloon`/`vmw_vsock_vmci_transport` loaded) and
-VirtualBox/QEMU suites **Installed** but inactive on a VMware host, and
-**Settings → About** reporting "VMware Graphics vmwgfx". Host tools reported
-`vmrun checkToolsState` = `running`, `getGuestIPAddress` = `192.168.33.128` and
-a graceful `vmrun stop ... soft`.
+An installed `x86_64` system was verified in VMware Workstation 26.0.1 with
+`open-vm-tools` active (first without 3D acceleration, then with 3D enabled on
+`vmwgfx`), confirming **Settings → Compatibility → Virtualization & Guest Tools**
+reporting the host as "VMware, Inc. VMware Virtual Platform" with VMware Tools
+**Active** (`vmtoolsd` running, `vmwgfx`/`vmw_vmci`/`vmw_balloon`/`vmw_vsock_vmci_transport`
+loaded) and VirtualBox/QEMU suites **Installed** but inactive on a VMware host,
+**Settings → About** reporting "VMware Graphics vmwgfx", and host `vmrun`
+reporting `checkToolsState = running` and graceful `vmrun stop ... soft`.
 
-Known issue with the 3D path: under wlroots 0.20 + `vmwgfx`, layer-shell
-surfaces above the background (dock, lock screen) are not visible in the output
-commit even though they are mapped; toplevel windows and the wallpaper render
-correctly. The compositor's CPU backdrop blur is correctly skipped on GPU
-renderers so it no longer hides those layers.
+*(Note: That earlier VMware visual pass ran on the legacy wlroots 0.20 compositor;
+re-verification of the rewritten Qt 6 `QWaylandQuickCompositor` on VMware SVGA3D
+is tracked in [docs/testing.md](testing.md).)*
 
 ## Honest limits
 

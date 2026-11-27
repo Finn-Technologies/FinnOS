@@ -1,26 +1,13 @@
-# Development milestones
+# Milestones
 
-Each milestone tracks shipped behavior verified on the VM and host suite.
+Short ledger of FinnOS milestones — what has shipped and what remains.
 
-## M0–M5 — Compositor, Session, Shell & First-Party Apps
-- [x] `finn-comp` on wlroots 0.20 with DRM (`seatd`) & headless backends,
-      `xdg-shell`, `wlr-layer-shell`, `wlr-foreign-toplevel-management`,
-      screencopy, and on-demand `Xwayland`.
-- [x] `finn-session` UNIX socket broker (`SO_PEERCRED`), catalogue +
-      `/var/lib/finn/installed`, plus `.desktop` / Flatpak / Wine launch support.
-- [x] `libfinnui` (`FinnSDK::FinnUI`) + Qt6 platform theme (`libfinnplatformtheme.so`)
-      and style plugin (`libfinnstyle.so`), customized to Figma tokens (`ui/_tokens.fui`)
-      and Fixel Display.
-- [x] `finn-shell`: Dock, running indicators, Window Switcher, Home menu,
-      Spotlight Search + evaluator, Control Center (appearance toggle + real
-      UPower/NM/BlueZ/PipeWire state), and floating notifications.
-- [x] 7 Native apps (`Settings`, `Finn Files`, `Finn Terminal`, `Finn Notes`,
-      `Finn Store`, `Finn Viewer`, `Finn Monitor`) + `finn-wallpaper`.
-- [x] Developer SDK (`FinnSDK`, `finn-sdk` CLI, `sdk/template`) and `finn-open`.
-
-## Next Milestones (M6–M7)
-- [ ] `finnd` root control socket for privileged machine controls (power, sysfs
-      backlight) and allowing `finn-comp` to drop root completely via `seatd`.
-- [ ] Per-app transient systemd unit / namespace sandbox isolation.
-- [ ] Compositor-level scene backdrop blur behind translucent surfaces.
-- [ ] Multi-monitor layout/scaling and OTA A/B update slots.
+- [x] **M0 — Base & Silent Boot**: Minimal pacman-based Linux base (`x86_64`, `aarch64`), `base/mkfinniso` live ISO builder, `finnos` Plymouth boot splash (`72×72` mark), and `tools/check-branding.sh`.
+- [x] **M1 — Qt 6 Compositor & Session**: `finn-comp` Qt 6 `QWaylandQuickCompositor` (`xdg-shell`, `xdg-decoration`, `text-input-v3`, `wp_viewporter`, 8-layer scene stack, 4 virtual desktops, CPU backdrop blur + Liquid Glass SDF) and `finn-session` (`SO_PEERCRED` user broker across 7 app sources).
+- [x] **M2 — `FinnUI`, `FinnSDK` & Qt 6 Plugins**: `libfinnui` & `libfinnui_qml` (`SOVERSION 1`), generated tokens (`ui/_tokens.fui`), 120 Hz analytic spring physics, `libfinnplatformtheme.so`, `libfinnstyle.so`, `finn-sdk` CLI, signed `.finnapp` packaging, and `sdk/template/`.
+- [x] **M3 — Desktop Shell & 11 Native Apps**: `finn-shell` (`DesktopShell.qml` 4-pill dock, Home Menu, Spotlight + math, Control Center, Notification stack, Overview, multi-user Lock Screen) + 11 registry apps (`Settings`, `Finn Files`, `Finn Terminal`, `Finn Notes`, `Finn Store`, `Finn Viewer`, `Finn Monitor`, `Finn Calculator`, `Finn Archive`, `Finn Capture`, optional `Flourish`) + `finn-wallpaper`.
+- [x] **M4 — Custom UEFI Bootloader, Offline Recovery Mode & First-Boot OOBE**: `finn-bootx64.efi`/`finn-bootaa64.efi` (BLS/UKI Startup Manager), 100% offline `recovery-mode` (SHA-512, GPT/MBR, UEFI/BIOS, dual-boot resize, Disk Utility, Boot Repair, embedded terminal), and 10-step `finn-oobe` + `finn-oobe-apply`.
+- [x] **M5 — A/B OTA Updates, Repo Tooling & Guest Tools**: `finn-update` (`finn_ota`, Ed25519 manifests, HTTP Range, `zstd` deltas, `systemd-boot`/`GRUB` A/B slots, `finn-boot-health.service`), `repo/` `[finnos]` scripts, and `finn-guest-tools` (VMware, VirtualBox, QEMU).
+- [x] **M6 — Multi-Ecosystem Compatibility**: Native Linux (`.desktop`/Flatpak/AppImage/ELF), Windows (`finn-win`/Wine/Proton/Hangover ARM64 + `wl_clamp.c`), clean-room `finn-darwin` (Mach-O/ObjC/AppKit-on-Qt6), clean-room `finn-ohos` (OpenHarmony 6.1 LTS `.hap`/Panda VM/ArkUI-on-Qt6/NAPI), and clean-room `finn-android` (Android 17 APK/AXML/DEX inspector + Qt 6 layout previewer).
+- [ ] **M7 — Compositor & Shell Completion**: Wire Xwayland startup, GPU Dual-Kawase `ShaderEffect`, compositor global shortcuts, native Wayland shell/lock/screencopy protocols, `TabletShell`/`MobileShell`/`TvShell` QML UIs, `org.freedesktop.Notifications` D-Bus daemon, and `FinnDesktopServices` in `ShellCorona`.
+- [ ] **M8 — Hardening & Production Infrastructure**: `finnd` privileged control plane, enforced native app sandbox, UEFI Secure Boot / `dm-verity` / TPM2 sealing, live `repo.finnos.org` & production OTA signing keys, full accessibility/localization, and expanded macOS/OHOS/Android runtime execution.

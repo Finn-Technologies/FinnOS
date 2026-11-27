@@ -8,8 +8,8 @@ either, because the device has no `ABS_X`/`ABS_Y` axes.
 `uinput-pointer.py` creates a proper virtual mouse instead: `BTN_LEFT`/`RIGHT`/
 `MIDDLE` plus `ABS_X`/`ABS_Y` with the range set to the output size. udev then
 tags the device `ID_INPUT_MOUSE=1`, libinput classifies it as a pointer, and
-`finn-comp` picks it up through its udev hotplug path (no compositor restart is
-needed). wlroots warps the cursor from the normalised absolute axes and sends
+`finn-comp` picks it up through its udev/libinput hotplug path (no compositor restart is
+needed), warps the cursor from the normalised absolute axes, and sends
 the button through the normal seat path, so clicks reach native Wayland clients
 exactly as physical clicks do.
 

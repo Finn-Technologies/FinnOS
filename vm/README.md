@@ -1,34 +1,23 @@
 # The dev VM
 
-The VM is the build machine: it has DRM, the GPU stack, `wayland-scanner`,
-`seatd`, the fonts and a real display. The host can be the editor.
+The Linux VM is the primary build and visual-verification machine: it has DRM/KMS, Mesa, Qt 6 WaylandCompositor, `seatd`, fonts, and a display. Your host machine can be the editor.
 
 ```sh
 vm/deploy.sh              # sync, build, install, restart the session
 vm/deploy.sh --no-restart # build and install only
-vm/shot.sh out.png        # grim against /run/finn/wayland-0
+vm/shot.sh out.png        # capture the VM desktop
 ```
 
-`deploy.sh` sends the tree as a tar stream (the VM has no rsync), installs the
-build dependencies, builds in `~/finnos`, installs to `/usr/local`, installs
-the units, enables linger for `finn` and restarts
-`finn-comp`/`finn-session`/`finn-shell`.
+`deploy.sh` streams the tree over SSH as a tar archive, installs build dependencies, builds in `~/finnos`, runs `sudo make install`, stages `/etc/sudoers.d/finn-oobe`, installs the systemd units, enables linger for `finn`, and restarts `finn-comp`/`finn-session`/`finn-shell`.
 
-## On an Apple Silicon Mac
+## On an Apple Silicon Mac (`aarch64`)
 
 ```sh
 brew install lima qemu
 vm/lima-setup.sh          # create the VM, upgrade it, deploy, start the session
 ```
 
-`vm/lima-setup.sh` creates a Lima instance called `finnos` from
-`vm/lima.yaml` (an upstream `aarch64` cloud image under QEMU, with a window —
-dev-only bootstrap tooling, not shipped in the FinnOS image), brings the 2022
-cloud image up to date, and runs `vm/deploy.sh` against it. The desktop
-appears in the QEMU window. Running it again only redeploys.
-
-It prints the two variables the other scripts need to reach a Lima VM, since
-it has no fixed address:
+`vm/lima-setup.sh` creates a Lima instance named `finnos` from `vm/lima.yaml` (QEMU `aarch64` with display), brings it up to date, and deploys the tree. Export the printed host variables to reuse the other scripts:
 
 ```sh
 export FINN_HOST=lima-finnos FINN_SSH_OPTS="-F $HOME/.lima/finnos/ssh.config"
@@ -36,59 +25,31 @@ vm/deploy.sh
 vm/shot.sh out.png
 ```
 
-What is different about this VM, and why:
-
-- QEMU, not Apple's Virtualization.framework: the upstream ARM64 cloud image
-  stops within a second of starting under `vz`.
-- `/boot` is 200 MB, so the kernel's device trees and `Image.gz` are not
-  extracted (`NoExtract` in `/etc/pacman.conf`); QEMU supplies its own tree.
-- The kernel command line carries `net.ifnames=0`, because the image's
-  network configuration is written for `eth0`.
-- `finn-comp` runs with `WLR_RENDERER=pixman` (a drop-in under
-  `finn-comp.service.d`). With no host GPU wlroots picks GLES2 on llvmpipe,
-  and the QEMU window then shows stale blocks that a `grim` capture does not.
+Notes specific to the Lima `aarch64` VM:
+- Uses QEMU rather than Apple `Virtualization.framework`.
+- `/boot` is small, so kernel device trees and `Image.gz` are excluded via `NoExtract` in `/etc/pacman.conf`.
+- The kernel command line carries `net.ifnames=0` for `eth0`.
+- When running without host GPU acceleration, `finn-comp` can use Qt's software backend (`QT_QUICK_BACKEND=software` / `QT_QPA_PLATFORM=linuxfb`).
 
 ## The session it starts
 
-- `finn-comp` as root on tty1, `WLR_BACKENDS=drm`,
-  `LIBSEAT_BACKEND=seatd`, `XDG_RUNTIME_DIR=/run/finn`.
-- `finn-session` and `finn-shell` as `finn`, with
-  `XDG_RUNTIME_DIR=/run/user/1000` and
-  `WAYLAND_DISPLAY=/run/finn/wayland-0`.
-- The shell's layer surface is the dock, clock and app menu.
+- `finn-comp` as root on `tty1`, `QT_QPA_PLATFORM=eglfs`, `LIBSEAT_BACKEND=seatd`, `XDG_RUNTIME_DIR=/run/finn`, serving `/run/finn/wayland-0`.
+- `finn-session`, `finn-shell`, and `finn-wallpaper` as `finn`, with `XDG_RUNTIME_DIR=/run/user/1000` and `WAYLAND_DISPLAY=/run/finn/wayland-0`.
+- `finn-shell` renders the desktop dock, Home Menu, Spotlight, Control Center, notifications, Overview, and Lock Screen.
 
-The compositor's unit is the only one that needs the device. The session and
-the shell are normal clients and can be restarted without restarting the
-display.
+Only `finn-comp` needs DRM/input access; `finn-session` and `finn-shell` are normal Wayland clients and can be restarted without restarting the display.
 
-## Looking at it
-
-`vm/shot.sh` is the proof. A compositor change that compiles is not a change
-that works. The capture is taken as `finn` with grim against the compositor's
-screencopy and xdg-output globals.
-
-If you need to drive it by hand, the verbs are the session's:
+## Driving & inspecting the VM
 
 ```sh
 sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --list
 sudo -u finn env XDG_RUNTIME_DIR=/run/user/1000 finn-session --launch files
 ```
 
-Input injection is available for verification (`tools/vm-input/`). It creates
-a properly tagged uinput pointer so libinput and `finn-comp` deliver clicks to
-native and compatibility-runtime windows; keyboard input uses `ydotool`.
-Both have been used to drive clicks and typing in macOS and OpenHarmony guest
-apps on the dev VM. This is dev-VM tooling only — it is not shipped in the
-FinnOS image, and it does not replace physical-device testing.
+Pointer and keyboard injection for dev-VM verification live in [tools/vm-input/README.md](../tools/vm-input/README.md) (`uinput-pointer.py` + `ydotool`, dev-only tooling not shipped in the OS image).
 
-## Installing a fresh VM
+## Installing a fresh VM from ISO
 
-The FinnOS ISO is built from `base/` and contains the sources at
-`/opt/finnos`. Boot it, choose **Install FinnOS**, and give the installer the
-disk explicitly; it has no default. `vm/finn-install.sh` partitions and
-pacstraps, and `vm/finn-chroot.sh` installs the assets, builds the session,
-enables the three units and the linger file, and verifies the binaries before
-claiming the install worked.
+The live ISO built by `base/mkfinniso` boots directly into graphical **FinnOS Recovery Mode** (`apps/recovery-mode/`), backed by `src/recovery/recovery_engine.cpp`, `vm/finn-install.sh`, and `vm/finn-chroot.sh`. It installs 100% offline from the live squashfs image (with SHA-512 verification), supports GPT/MBR, UEFI (`finn-boot` / `systemd-boot` / GRUB UEFI) and Legacy BIOS, dual-boot resize, A/B OTA slots (`--ab-slots`), and data-preserving reinstall, then defers personal account/locale/appearance setup to first-boot `finn-oobe`.
 
-There is no `finnd` and no package manager in v1; installing an app means its
-binary, its registry line and its id in `/var/lib/finn/installed`.
+See [emulators.md](emulators.md) and [docs/guest-tools.md](../docs/guest-tools.md) for VMware Workstation, VirtualBox, and QEMU emulator matrices.

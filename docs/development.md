@@ -1,99 +1,81 @@
 # Development
 
-The host can run pure C++20 unit tests and Python checks. Full Wayland, Qt6,
-and compositor builds run on a pacman-based Linux host or the dev VM.
+Building, testing, deploying to the dev VM, and inspecting logs on FinnOS.
 
-## Build and test
+## Build machine & dependencies
 
-```sh
-make              # finn-comp, finn-session, libfinnui, qtplugins, finn-shell, apps, tools
-make test         # host Python tests: base wiring, catalogue, tokens, icons
-make test-unit    # C++20 unit tests under ASan and UBSan
-make lint         # style, generated tokens check, no app ids in src/comp
-make install      # installs binaries, libfinnui, FinnSDK CMake config, Qt6 plugins, assets
-```
-
-Package dependencies (matching `base/packages.*`):
+The full graphical build runs on a pacman-based Linux host (`x86_64` or `aarch64`) or inside the Lima/VMware dev VM. Host Python tests and pure-C++20 unit tests (`make test`, `make test-unit`, `make lint`) also run on macOS.
 
 ```sh
-sudo pacman -S base-devel cmake ninja pkgconf wlroots0.20 libsystemd wayland \
-    wayland-protocols libxkbcommon libdrm libinput seatd grim mesa \
-    qt6-base qt6-wayland qt6-svg qt6-imageformats qt6-tools qt6-declarative layer-shell-qt \
-    xorg-xwayland xdg-desktop-portal xdg-desktop-portal-wlr \
-    desktop-file-utils shared-mime-info upower flatpak \
-    pipewire pipewire-pulse networkmanager bluez
+sudo pacman -S base-devel cmake ninja pkgconf \
+    qt6-base qt6-declarative qt6-wayland qt6-svg qt6-shadertools \
+    qt6-5compat layer-shell-qt \
+    wayland wayland-protocols libxkbcommon libinput libdrm mesa seatd \
+    systemd-libs freetype2 fontconfig zlib zstd
 ```
 
-## Deploy to the VM
+Optional dependencies:
+- `qt6-webengine` — enables building **Flourish** (`apps/flourish`)
+- `clang` + `lld` — builds the freestanding UEFI bootloader (`make boot`)
+
+## Make targets
 
 ```sh
-vm/deploy.sh
-vm/shot.sh /tmp/shot.png
+make                 # session, compositor, Qt6 plugins, FinnUI/FinnUIQml, shell, all apps, tools, compat runtimes
+make boot            # freestanding UEFI bootloader (finn-bootx64.efi, finn-bootaa64.efi)
+make compositor      # finn-comp only
+make shell           # finn-shell only
+make ui              # libfinnui & libfinnui_qml
+make qtplugin        # libfinnplatformtheme & libfinnstyle
+make apps            # all native apps (wallpaper, settings, files, terminal, notes, store,
+                     # viewer, monitor, calculator, archive, capture, recovery-mode, oobe)
+make session         # finn-session (pure C++20)
+make darwin          # finn-darwin standalone (headless)
+make ohos            # finn-ohos standalone (headless)
+make android         # finn-android standalone (headless)
+make test            # host Python test suite
+make test-unit       # C++20 ASan/UBSan unit tests
+make bench           # host blur kernel microbenchmark
+make lint            # diff hygiene, generated tokens check, compositor app-id ban, branding check
+sudo make install    # install binaries, plugins, FinnSDK, assets, systemd units, and sdk/template
 ```
 
-On Apple Silicon using Lima (`vm/lima-setup.sh`), pass the Lima connection
-variables printed by setup:
+## Editing design tokens
+
+`ui/_tokens.fui` is the single source of truth for palette, spacing, radii, blur, motion, and breakpoints. After editing it:
 
 ```sh
-export FINN_HOST=lima-finnos FINN_SSH_OPTS="-F $HOME/.lima/finnos/ssh.config"
-vm/deploy.sh
-vm/shot.sh /tmp/shot.png
+python3 tools/tokens.py ui/_tokens.fui src/ui/generated_tokens.hpp
+make lint
 ```
 
-`vm/deploy.sh` streams the source tree over tar to `~/finnos`, installs any
-missing packages, runs `make` and `sudo make install`, runs `ldconfig`,
-updates `/var/lib/finn/installed`, installs the units, enables linger for
-`finn`, and restarts the session.
-
-## Run it by hand
-
-Headless, in a private runtime directory:
+## Dev VM workflow
 
 ```sh
-export XDG_RUNTIME_DIR=/tmp/finn-dev
-mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
-
-WLR_BACKENDS=headless WLR_RENDERER=pixman src/comp/finn-comp &
-
-XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-WAYLAND_DISPLAY=wayland-0 src/session/finn-session &
-
-XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland \
-QT_QPA_PLATFORMTHEME=finn QT_STYLE_OVERRIDE=finn \
-build/src/shell/finn-shell &
-
-XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-WAYLAND_DISPLAY=wayland-0 src/session/finn-session --launch files
+vm/deploy.sh               # sync tree to VM, build, sudo make install, restart systemd session
+vm/shot.sh out.png         # capture the live VM desktop
+vm/restart-compositor.sh   # restart finn-comp cleanly on the VM
 ```
 
-Capture a frame:
+Override the target host with `FINN_HOST=finn@<ip>` (defaults to `VM ?= finn@10.211.55.6` in `Makefile`). See [vm/README.md](../vm/README.md) for Lima (Apple Silicon) and VMware Workstation (`x86_64`) setup.
+
+## Running `finn-comp` in preview / offscreen mode
+
+On macOS or Linux hosts without DRM/KMS:
 
 ```sh
-XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" WAYLAND_DISPLAY=wayland-0 grim /tmp/shot.png
+QT_QPA_PLATFORM=offscreen ./build/src/comp/finn-comp --preview
 ```
 
-On DRM (`seatd`), `finn-comp` exports `/run/finn/wayland-0` (`0660 root:finn`)
-and clients run as `finn` with `WAYLAND_DISPLAY=/run/finn/wayland-0`.
-See the systemd unit files under `base/` for canonical environments.
-
-## Logs
-
-- `journalctl -u finn-comp -b`
-- `journalctl -u finn-session -b`
-- `journalctl -u finn-shell -b`
-- `journalctl -u finn-wallpaper -b`
-
-## App development with FinnSDK
-
-Check your environment and scaffold an app inside FinnOS:
+On a Linux TTY with DRM/KMS:
 
 ```sh
-finn-sdk check
-finn-sdk new hello --name "Hello FinnOS"
-finn-sdk build hello
-finn-sdk run hello
+LIBSEAT_BACKEND=seatd QT_QPA_PLATFORM=eglfs sudo ./build/src/comp/finn-comp
 ```
 
-Or copy [`sdk/template`](../sdk/template) and link `FinnSDK::FinnUI` in CMake.
-See [sdk.md](sdk.md) and [apps.md](apps.md).
+## Checking logs on the VM
+
+```sh
+journalctl -u finn-comp -u finn-recovery -n 100 --no-pager
+journalctl --user -u finn-session -u finn-shell -u finn-wallpaper -n 100 --no-pager
+```

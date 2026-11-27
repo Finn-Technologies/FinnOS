@@ -1,10 +1,17 @@
 # OOBE flow and mobile/tablet shell — design rationale
 
-This page describes the first-class setup flow and the phone/tablet shell layer
-added in `src/shell/full_oobe_flow.{hpp,cpp}` and
-`src/shell/mobile_shell_layout.{hpp,cpp}`. It records the exact token values,
-the Figma frames consulted, the reference-OS patterns behind each choice, and
-the boundary between what is implemented and what is still only specified.
+This page describes the first-class setup flow in
+`src/shell/full_oobe_flow.{hpp,cpp}` (now wired into the 10-step `apps/oobe/main.cpp`
+and `ShellCorona::maybeLaunchFirstBootOobe()`, backed by `tools/finn-oobe-apply`)
+and records the token-derived mobile/tablet geometry rationale.
+
+> **Current status note:** `src/shell/mobile_shell_layout.{hpp,cpp}` was removed
+> during the QML `finn-shell` migration; its geometry tokens live on in
+> `src/ui/finn/form_factor.hpp` and `FinnApplicationWindow`, while
+> `src/shell/ui/mobile/MobileShell.qml` and `tablet/TabletShell.qml` are
+> currently empty 6-line `Item` stubs awaiting QML implementation. The
+> `full_oobe_flow` state machine and capability-gating contract below remain
+> active and tested under ASan/UBSan (`tests/unit/test_oobe.cpp`).
 
 > **Honesty first.** The flow model reports outcomes handed to it by a caller
 > that has actually performed work. It never invents a Wi-Fi connection, an

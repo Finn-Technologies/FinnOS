@@ -128,7 +128,7 @@ dependencies:
    `gptfdisk`, `arch-install-scripts`.
 3. **Display, Wayland, Mesa & input:** `libdrm`, `libinput`, `seatd`, `mesa`,
    `libglvnd`, `vulkan-intel` (`x86_64`), `wayland`, `wayland-protocols`,
-   `libxkbcommon`, `wlroots0.20` (`x86_64`), `xorg-xwayland`,
+   `libxkbcommon`, `qt6-wayland`, `xorg-xwayland`,
    `xdg-desktop-portal`, `xdg-desktop-portal-wlr`.
 4. **Qt6 UI & media stack:** `qt6-base`, `qt6-wayland`, `qt6-svg`,
    `qt6-imageformats`, `qt6-tools`, `qt6-declarative`, `qt6-webengine`,

@@ -6,8 +6,8 @@ Canonical machine-readable tokens live in [`ui/_tokens.fui`](../ui/_tokens.fui) 
 > **Inspiration & Originality:** FinnOS draws architectural inspiration from **ColorOS 14 / iOS 16** (layered translucency, soft depth blur, continuous rounded geometry) and **HarmonyOS 2** (modular card/widget density and adaptive multi-form-factor surfaces), **without** copying any third-party assets, icons, wallpapers, typography, or trademarks. All FinnOS marks (`boot-mark`), wallpapers (`assets/wallpaper/`), and icon extensions (`assets/icons/`) are FinnOS-authored or MIT-licensed (`assets/icons/LICENSE-hugeicons.md`).
 >
 > **Implementation Status & Figma Scope:**
-> - **Implemented (Desktop):** Desktop `libfinnui`, `finn-shell` (Dock, Home, Spotlight, Control Center, Open Windows, Notifications, Lock Screen), `finn-settings`, and first-party desktop apps (`>= 1025 dp`).
-> - **Specified-Only (Not Yet Implemented):** Phone (`< 600 dp`) and Tablet (`600–1024 dp`) layouts, touch/gesture input in `finn-comp`/`finn-shell` (Audit **B2**), and compositor Gaussian backdrop blur shader (`35 px` / `15 px`). Focus rings on custom-painted `libfinnui` controls are **implemented** via `draw_focus_ring()`; smooth corners (`corner_smoothing = 0.6`) are **implemented** on Qt surfaces via `finn_rounded_path()` in `src/ui/finn/components.cpp`.
+> - **Implemented (Desktop & Adaptive App Chrome):** `libfinnui`, `libfinnui_qml` (`FinnUI 1.0`, 19 QML controls including adaptive `FinnApplicationWindow`), `finn-shell` Desktop (`DesktopShell.qml`: 4-pill dock, Home Menu, Spotlight, Control Center, Notification stack, Overview, Lock Screen), all 11 native registry apps, `finn-oobe`, and `recovery-mode`. Focus rings and smooth corners (`corner_smoothing = 0.6`, `FinnSquircle` / `finn_rounded_path()`) are implemented; backdrop blur and Liquid Glass refraction run on CPU in `finn-comp` (`CompositorBackdropItem` + `src/common/liquid_glass.hpp`).
+> - **Partial / Stubbed:** `AdaptiveFormFactor` (`Desktop`/`Tablet`/`Mobile`/`TV`) is implemented in `src/ui/finn/form_factor.hpp`, `FinnApplicationWindow`, `finn-oobe`, and `recovery-mode`, **but** `finn-shell`'s `TabletShell.qml`, `MobileShell.qml`, and `TvShell.qml` are currently empty 6-line `Item` stubs. `src/comp/shaders/dual_kawase_blur.frag` is compiled but not yet wired to a QML `ShaderEffect`.
 > - **Figma reality:** `FinnOS - Abhi` contains desktop (`1280×832`), OOBE, Notification, and Pointer frames only; **no phone or tablet screens exist in Figma** (see [`docs/figma-audit.md`](figma-audit.md) **FA-B4**).
 
 ---
@@ -16,11 +16,11 @@ Canonical machine-readable tokens live in [`ui/_tokens.fui`](../ui/_tokens.fui) 
 
 | Token | Range (`dp`) | Form Factor | Navigation Shell | Minimum Touch / Pointer Hit Target | Status |
 |---|---|---|---|---|---|
-| `bp_phone_max` | `< 600` (`0–599 dp`) | **Phone** | Bottom bar / gesture pill + full-screen stacked views + bottom sheets | `44×44 dp` min (`48×48 dp` primary actions) | **Specified-Only** |
-| `bp_tablet_min`–`bp_tablet_max` | `600–1024 dp` | **Tablet** | Collapsible sidebar / `FinnNavRail` + 2-pane split view + optional floating windows | `44×44 dp` min | **Specified-Only** |
-| `bp_desktop_min` | `>= 1025 dp` | **Desktop** | Bottom 4-pill glass dock (`DockWindow`) + `FigmaSplit` CSD windows (`FinnWindow`) | `30–36 px` pointer controls (`44 px` dock) | **Implemented** |
+| `bp_phone_max` | `< 600` (`0–599 dp`) | **Phone / Mobile** | Bottom bar / gesture pill + stacked views (`FinnApplicationWindow` adapts; `MobileShell.qml` is a stub) | `44×44 dp` min (`48×48 dp` primary actions) | **App-level implemented; Shell stub** |
+| `bp_tablet_min`–`bp_tablet_max` | `600–1024 dp` | **Tablet** | Collapsible sidebar / `FinnNavRail` + split view (`FinnApplicationWindow` adapts; `TabletShell.qml` is a stub) | `44×44 dp` min | **App-level implemented; Shell stub** |
+| `bp_desktop_min` | `>= 1025 dp` | **Desktop** | Bottom 4-pill glass dock (`DesktopDock.qml`) + `FigmaSplit` CSD windows (`FinnApplicationWindow` / `FinnWindow`) | `30–36 px` pointer controls (`44 px` dock) | **Implemented** |
 
-*(Television scaling from `ui/_tokens.fui`: `tv_type_scale = 1.5`, `min_tv = 32 sp`, reserved/specified-only.)*
+*(Television scaling from `ui/_tokens.fui`: `tv_type_scale = 1.5`, `min_tv = 32 sp`; `FinnApplicationWindow` adapts for TV, while `TvShell.qml` is currently a stub.)*
 
 ---
 

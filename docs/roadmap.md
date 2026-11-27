@@ -1,78 +1,51 @@
 # Roadmap
 
-FinnOS has migrated its UI, shell, native applications, and developer SDK to
-**Qt6 + C++20** (`FinnSDK`, `libfinnplatformtheme`, `libfinnstyle`) on top of
-the `wlroots 0.20` compositor. These milestones track what has shipped vs. what
-remains next.
+What has shipped in FinnOS as of now, and what remains next. Every item below reflects the current tree honestly.
 
-## Shipped in the Qt6 + FinnSDK & Hardenings milestone
+## Shipped
 
-- **Design Tokens, Motion & Adaptive Form Factors**: `ui/_tokens.fui` + `tools/tokens.py` + `generated_tokens.hpp` semantic/spacing/radii/breakpoint tokens (`docs/design-language.md`), analytic spring physics (`src/ui/finn/spring.hpp`, `<FinnSDK/Spring.hpp>`), `FinnFormFactor` (`Desktop`/`Tablet`/`Phone`) adaptation in `FinnWindow`/`FinnSidebar`/`finn-shell`, keyboard focus rings, and `setAccessibleName` labels across `libfinnui` and apps.
-- **Custom Qt6 OS integration**: `libfinnui` (`FinnSDK::FinnUI`), `QT_QPA_PLATFORMTHEME=finn`, and `QT_STYLE_OVERRIDE=finn`, driven by `ui/_tokens.fui` and Fixel Display.
-- **Developer SDK (`FinnSDK`)**: `finn-sdk` CLI (`new`, `build`, `run`, `register`, `check`, `validate`, `keygen`, `package`, `verify`, `simulate`), `finn-app.schema.json`, CMake package (`find_package(FinnSDK)`), headers (`<FinnSDK/FinnSDK.hpp>`, `<FinnSDK/Spring.hpp>`), `sdk/template/`, and `sdk/tests/test_sdk.py`.
-- **FinnUX shell (`finn-shell`)**: Dock, Home menu, Spotlight search + math evaluator, Control Center (appearance switch + async NetworkManager/BlueZ/UPower/PipeWire probes), notifications, adaptive phone/tablet layout (`src/shell/shell_layout.hpp`), and async multi-user Lock Screen.
-- **Settings (`finn-settings`)**: `ChromeMode::FigmaSplit` sidebar, real hardware/system controls, System Update (A/B OTA frontend), High Contrast, Reduced Motion, and Pointer Size. *Note*: Text Scale, Color Filters, Sticky/Filter Keys settings persist to config, while compositor/font/XKB runtime enforcement and packaged `orca` screen reader remain incomplete.
-- **Native Apps + Recovery Mode + OOBE + Wallpaper**: `Settings`, `Finn Files`, `Finn Terminal`, `Finn Notes`, `Finn Store` (with `.finnapp` verification), `Finn Viewer`, `Finn Monitor`, `recovery-mode` (FinnOS Recovery Mode wired to `finn-install.sh` for clean, A/B, dual-boot, reinstall, and boot-repair flows), `finn-oobe` (with real account/password/locale backend), `finn-wallpaper`, and optional QtWebEngine browser `apps/flourish`.
-- **Compositor (`finn-comp`) & Compatibility**: wlroots 0.20 with `ext-session-lock-v1`, WM shortcut gating while locked, `WLR_INPUT_DEVICE_TOUCH` / `TABLET_TOOL` support, fullscreen layer stacking, XKB `kb_layout` loading, `wlr_fractional_scale_manager_v1`, on-demand `Xwayland`, PE inspection + Wine prefix launcher (`wine_runner`), and a clean-room Android 17 probe (`android_runner` / `finn-android`) that replaced the old Waydroid probe.
-- **A/B OTA Updates & Repo Tooling**: `src/ota/finn-update` (Ed25519 manifest signing, `zstd` delta patching, `systemd-boot`/`GRUB` A/B slot switching, `finn-update-check.timer`, `finn-boot-health.service`), `vm/finn-install.sh --ab-slots` (`FINNOS_A`/`FINNOS_B`/`FINNOS_DATA`), and `repo/` signing/publishing scripts (`repo.finnos.org` and `finnos-keyring` ship placeholder trust roots until hosted infrastructure is provisioned).
-- **FinnOS boot chain & Rebrand**: `finnos` Plymouth splash (`quiet splash vt.global_cursor_default=0`), `finn-oobe` first-boot setup, `tools/check-branding.sh` enforced in `make lint`, locked `root` (`passwd -l root`) on installed machines, and non-`NOPASSWD` sudoers unless `FINN_DEV_VM=1`.
+- **Custom Graphical UEFI Bootloader (`src/boot/`)**: Freestanding C `finn-bootx64.efi` and `finn-bootaa64.efi` Startup Manager with GOP framebuffer UI, UAPI BLS Type #1 (`/loader/entries/*.conf` + boot-counting) and Type #2 (UKI `.osrel`/`.cmdline`), auto Windows/macOS/Firmware detection, `EFI_LOAD_FILE2_PROTOCOL` multi-initrd handoff, systemd BLI EFI variables, and `T` text fallback — verified under ASan/UBSan and QEMU + OVMF.
+- **Silent Boot Chain & 100% Offline Recovery Mode (`base/`, `src/recovery/`, `apps/recovery-mode/`)**: `finnos` Plymouth theme (72 × 72 px mark matching `finn::kBootMarkSizePx`), `finn-recovery.service` (`finn.recovery`), pure C++20 recovery planner with FIPS 180-4 SHA-512 image verification, universal GPT/MBR and UEFI/Legacy BIOS support, non-destructive dual-boot resize, A/B slot partitioning, data-preserving reinstall, Disk Utility, Bootloader Repair, World Keyboards, Wi-Fi, System Logs, and embedded PTY terminal.
+- **First-Boot-Only OOBE (`apps/oobe/`, `tools/finn-oobe-apply`)**: 10-step onboarding gated to the first normal boot of an installed machine (`/var/lib/finn/oobe_complete` + `~/.config/finn/oobe_complete`), responsive across Desktop/Tablet/Phone, with interactive 3D pendant lamp and audited one-shot root provisioning.
+- **Qt 6 Wayland Compositor (`src/comp/`, `finn-comp`)**: Migrated off wlroots onto C++20 / Qt 6 `QWaylandQuickCompositor` (`xdg-shell`, `xdg-decoration`, `text-input-v3`, `wp_viewporter`), 8-layer `SceneLayer` stack, 4 virtual desktops (`WorkspaceModel`), `InputRouter`, 120 Hz analytic spring animations, CPU backdrop blur + Liquid Glass SDF refraction (`CompositorBackdropItem`), multi-finger trackpad gestures, `/run/finn/state/` IPC, and zero app IDs (`make lint` enforced).
+- **`FinnUI` & `FinnSDK` (`src/ui/`, `src/qtplugin/`, `sdk/`)**: `libfinnui` (`SOVERSION 1`, 29 C++ widgets) and `libfinnui_qml` (`SOVERSION 1`, 19 AOT-compiled `FinnUI 1.0` QML controls including adaptive `FinnApplicationWindow`), `QT_QPA_PLATFORMTHEME=finn` & `QT_STYLE_OVERRIDE=finn`, generated tokens (`ui/_tokens.fui`), 120 Hz analytic spring physics (`spring.hpp`), `AdaptiveFormFactor` (`Desktop`/`Tablet`/`Mobile`/`TV`), `finn-sdk` CLI (scaffolding, validation, signed `.finnapp` packaging, simulator), and CMake/pkg-config packaging.
+- **Qt Quick Desktop Shell (`src/shell/`, `finn-shell`)**: `ShellCorona` + `DesktopShell.qml` featuring the 4-pill floating dock, Home Menu with folders and recents, Spotlight search with inline arithmetic, Control Center, receding 3-card Notification stack, workspace Overview, multi-user Lock Screen (`unix_chkpwd`/`passwd -S`/`su`/`PrepareForSuspend`), and first-boot OOBE launch.
+- **11 Native Registry Apps + 3 System Surfaces (`apps/`)**: **Settings**, **Finn Files**, **Finn Terminal**, **Finn Notes**, **Finn Store** (Curated, live Flathub API v2, Aurora/Play FDFE + F-Droid, `winget-pkgs` with SHA-256, and local package sideloading), **Finn Viewer**, **Finn Monitor**, **Finn Calculator**, **Finn Archive**, **Finn Capture**, optional **Flourish** (`Qt6::WebEngineQuick`), plus `finn-wallpaper`, `finn-oobe`, and `recovery-mode`.
+- **A/B OTA Updates & First-Party Repo Tooling (`src/ota/`, `ota/`, `repo/`)**: `finn-update` / `finn_ota` with pure-Python RFC 8032 Ed25519 signing/verification, resumable HTTP Range downloads, `zstd --patch-from` deltas, `systemd-boot` and `GRUB` A/B slot backends, `finn-boot-health.service`, `ota/publish`, and `[finnos]` pacman repository scripts.
+- **Multi-Ecosystem Compatibility (`src/compat/`, `src/darwin/`, `src/ohos/`, `src/android/`)**: Native Linux (`.desktop`, Flatpak, AppImage Type 1/2, ELF probe, `.finnapp`), Windows (PE/ICO/MSI/Wine/Proton/Hangover ARM64 WoW64 + `wl_clamp.c`), clean-room macOS partial runtime (`finn-darwin`), clean-room OpenHarmony 6.1 LTS partial runtime (`finn-ohos`), and clean-room Android 17 inspector & AXML layout previewer (`finn-android`).
+- **Virtualization Guest Integration (`finn-guest-tools`, `src/system/guest_tools.*`)**: Honest hypervisor detection and VMware Tools, VirtualBox Guest Additions (`-nox`), and QEMU Guest Agent integration.
 
-## 1. The root authority — `finnd`
+## Next
 
-Machine-level privileged actions that should not live inside user apps or the
-compositor remain future work:
+### 1. Finish wiring the Qt 6 compositor (`finn-comp`)
+- Complete `startXwaylandIfEnabled()` so `Xwayland -rootless -noreset` actually starts and publishes `/run/finn/xdisplay`.
+- Wire `src/comp/shaders/dual_kawase_blur.frag` into a QML `ShaderEffect` to move backdrop blur off CPU onto the GPU when GL/Vulkan is available (retaining CPU fallback for software rendering).
+- Connect `CompositorServer::handleShortcutKey()` to keyboard/event-filter input, handle `SwitchVT2`, and reset `session_locked_` cleanly on unlock.
+- Implement or bind native Wayland protocols (`wlr-layer-shell`, `wlr-screencopy`, `wlr-foreign-toplevel-management`, `ext-session-lock-v1`) so `finn-shell`, `grim`, and `finn-capture` no longer rely on `/run/finn/state/` file IPC.
+- Route `libinput` device opens through `seatd` rather than direct `::open()`, and add multi-monitor arrangement + mixed per-output HiDPI scaling.
 
-- unix control socket `/run/finn/control.sock` (`0660 root:finn-authority`) with `SO_PEERCRED`;
-- audited verbs for sysfs brightness, poweroff/reboot orchestration, system updates, and
-  root-owned network/package actions;
-- no app launching (that stays `finn-session`) and no TCP listener.
+### 2. Complete adaptive `finn-shell` & desktop services integration
+- Implement `TabletShell.qml`, `MobileShell.qml`, and `TvShell.qml` (currently empty 6-line `Item` stubs).
+- Link `FinnDesktopServices` (`src/system/desktop_services.cpp`) into `finn-shell` so Control Center Bluetooth, MPRIS media, and real Wi-Fi SSID display work in the shell (matching `Settings` and `OOBE`).
+- Add an `org.freedesktop.Notifications` D-Bus daemon to `finn-shell` so external apps can post notifications.
+- Forward `pageId` in `openSettings(pageId)` so shell actions open the exact Settings pane.
 
-## 2. App sandbox
+### 3. Privilege boundary (`finnd`) & native app sandbox
+- Introduce a minimal root control daemon (`/run/finn/control.sock`, `0660 root:finn-authority`, `SO_PEERCRED`, no TCP, no app launch) for audited sysfs brightness, power, network, and system update operations.
+- Run native apps in transient systemd user units or enforced user-namespace/seccomp profiles with enforced `finn-app.json` permissions instead of `linux_sandbox=env-only`.
 
-Each app running in a transient systemd user unit (or user namespace/seccomp
-profile) with `NoNewPrivileges`, `ProtectSystem=strict`, scoped state dirs,
-and no direct access to `/run/finn` outside controlled sockets. Once `finnd`
-handles DRM/power/brightness actuators, `finn-comp` can also drop root via `seatd`.
+### 4. Production trust, verified boot & hosted infrastructure
+- Provision real GPG/Ed25519 production keys outside git, replace the empty placeholder keyring in `base/pkgbuilds/finnos-keyring/`, and host `repo.finnos.org` + signed OTA channels.
+- Add UEFI Secure Boot (Shim/SBAT), `dm-verity`, and TPM2 sealing to `finn-boot` and A/B slots, and verify real-disk A/B power-cycle rollback on target hardware.
 
-## 3. Remaining Display, Accessibility & Platform Work
-
-- Compositor GPU shader backdrop blur behind translucent `layer-shell` and glass surfaces.
-- Multi-monitor arrangement editor and mixed per-output fractional/integer scaling.
-- Wayland IME text input (`zwp_text_input_v3`), clipboard history UI, and runtime accessibility enforcement (`text_scale` across fonts, `color_filter` compositor shader, XKB `sticky_keys`/`filter_keys`, packaged `orca`, and `QTranslator` localization).
-- **Verified boot hardening** (Secure Boot, `dm-verity`, TPM2 sealing) and live hosted `repo.finnos.org` + real-hardware/VM A/B slot reboot rollback verification.
-- **Cellular modem/telephony stack** (`ModemManager`) for phone hardware.
-- **Expanded macOS (`finn-darwin`) & OpenHarmony 6.1 LTS (`finn-ohos`) runtime coverage**: `src/darwin/` provides the clean-room 64-bit Mach-O loader, `libSystem`, Objective-C 2.0, Foundation, CoreGraphics/QuartzCore, core Swift ABI, AppKit-on-Qt6 bridge, and HTTP/local `.dmg`/`.pkg`/`.zip`/`.app` installer; `src/ohos/` provides OpenHarmony 6.1 LTS (API 23) `.hap`/`.hsp`/`.app` installation, Panda `modules.abc` VM, `UIAbility`, ArkUI-on-Qt6, and NAPI host bridge. Full Swift stdlib/SwiftUI, Metal-over-Vulkan/OpenGL, WebKit, CoreData, and OpenHarmony hardware/distributed kits (`ArkWeb`, `DistributedDataObject`, Telephony/NFC/Camera/Sensor) remain ongoing iterative work.
+### 5. Accessibility, localization, telephony & deeper compatibility
+- Enforce `text_scale`, `color_filter`, XKB `sticky_keys`/`filter_keys`, `orca` screen reader packaging, `QTranslator` localization bundles, and `ModemManager` telephony for mobile hardware.
+- Expand `finn-darwin` (Swift stdlib/SwiftUI, Metal-over-Vulkan, WebKit, CoreData, Security/Keychain), `finn-ohos` (full ArkTS execution and hardware/distributed kits), and `finn-android` (broader Dalvik/ART/framework execution beyond static inspection and AXML preview).
 
 ## What "done" means
 
 A change is done when:
-
-- `src/comp` contains zero app ids (`make lint`);
+- `src/comp` contains zero app IDs (`make lint`);
 - host tests (`make test`, `make test-unit`, `make lint`, `base/mkfinniso --check`) pass;
-- the VM build installs cleanly and `vm/shot.sh` screenshots are visually verified;
-- docs accurately state both implemented features and remaining gaps.
-
-## Shipped in the full-OS-completion integration pass
-
-- **First-class OOBE across form factors**: `apps/oobe/main.cpp` now derives
-  `Phone`/`Tablet`/`Desktop` from the same breakpoints and `FINN_FORM_FACTOR`
-  override as `finn-shell`. Desktop keeps the Figma `36:53` split exactly;
-  tablet uses a narrow split with a 24 dp gutter; phone stacks the prompt over
-  a full-width 44 dp-touch-target list and moves Back/Next into a bottom
-  safe-area strip. Content columns no longer assume a 1280×832 screen.
-- **Reference research**: [`docs/reference-designs.md`](reference-designs.md)
-  records sourced, specific findings from macOS Setup Assistant, Windows 11
-  OOBE/Mica, HarmonyOS 2 atomic services, iOS 16 Lock Screen, ColorOS 14 and
-  iOS 17 motion, each with what FinnOS adopts, adapts or declines. The four
-  Figma OOBE frames were read with `get_design_context`; they carry no Figma
-  Motion, so no animation is attributed to them.
-- **The headless OOBE flow drives the real app**: `finn-shell` writes a line-oriented capability preflight (`src/shell/oobe_capability_probe.hpp`) from real probes — `nmcli` device list, `pkexec`/`useradd`, an actual config write, `org.a11y.Bus` — and `finn-oobe` uses `FullOobeFlow` gates for all eight steps. Offline/local-only/private-by-default are named explicit states; nothing is marked connected or created on an unmeasured capability. A phone capture caught and fixed a region-catalogue mismatch that had wrongly disabled Next.
-- **Figma drift fixes verified on the VM**: glass weights, dock group width, Control Center height/footer, Home/notification type and tile geometry now follow `docs/figma-live-drift.md`; real captures were read for dock, Home, Control Center, notifications and OOBE at 500/800 dp.
-- **Measured redraw fix**: the layer-shadow blur is now a sliding-window O(w·h)
-  kernel (`src/shell/blur_kernel.hpp`) instead of an O(w·h·r) neighbour scan.
-  `make bench` runs the shipping kernel against the old algorithm on the host:
-  **2.5–3.6× faster, bit-for-bit identical**. See
-  [`docs/performance.md`](performance.md). Shell app-list changes are debounced
-  (200 ms) so one install no longer rebuilds the registry/dock several times.
-  `FINN_SHELL_TIMINGS=1` prints VM startup checkpoints; no unmeasured numbers
-  are published.
+- visual changes are verified with actual captures;
+- documentation accurately states both what works and what remains missing.

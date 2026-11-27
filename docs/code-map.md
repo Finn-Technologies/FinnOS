@@ -1,155 +1,81 @@
 # Code map
 
-Read this after [architecture.md](architecture.md). It is the shortest path
-from "I just opened the repository" to "I know where a window is drawn and
-where a key is handled".
+A ten-minute tour of the FinnOS tree, its IPC flows, and where to change what.
 
-## The ten-minute tour
-
-1. [`src/common/paths.hpp`](../src/common/paths.hpp) — every shared path.
-2. [`src/session/app_registry.cpp`](../src/session/app_registry.cpp) — catalogue and installed list.
-3. [`src/session/main.cpp`](../src/session/main.cpp) — the launch broker.
-4. [`src/ui/FinnSDK/FinnQml.hpp`](../src/ui/FinnSDK/FinnQml.hpp) & [`src/ui/FinnSDK/FinnSDK.hpp`](../src/ui/FinnSDK/FinnSDK.hpp) — public C++20 + Qt 6 SDK headers (`FinnUIQml` & `FinnUI`).
-5. [`src/ui/qml/controls/FinnApplicationWindow.qml`](../src/ui/qml/controls/FinnApplicationWindow.qml) — Kirigami-inspired adaptive Desktop/Tablet/Mobile/TV app window.
-6. [`src/qtplugin/`](../src/qtplugin/) — `finnplatformtheme` + `finnstyle` Qt6 plugins.
-7. [`src/shell/core/shell_corona.cpp`](../src/shell/core/shell_corona.cpp) & [`src/shell/ui/SystemUI.qml`](../src/shell/ui/SystemUI.qml) — unified adaptive System UI (Desktop, Tablet, Mobile, TV).
-8. [`src/comp/server.cpp`](../src/comp/server.cpp) & [`src/comp/core/workspace_model.cpp`](../src/comp/core/workspace_model.cpp) — Qt 6 Wayland compositor (KWin-inspired).
-9. [`src/comp/shaders/dual_kawase_blur.frag`](../src/comp/shaders/dual_kawase_blur.frag) — GPU Dual-Kawase glass backdrop blur shader.
-10. [`docs/motion.md`](motion.md) — durations, easings, and motion tokens.
-
-## Processes and files
+## Tree overview
 
 ```
-finn-comp (src/comp)
-  main.cpp               argument parsing and process entry
-  server.cpp/hpp         Qt 6 Wayland compositor server (with host preview fallback), lock/idle timers, sd_notify
-  core/scene_stack.hpp   strict 8-layer scene stacking contract
-  core/workspace_model.* virtual desktops, focus history, snap/maximize/minimize state, zero app IDs
-  core/input_router.*    Super+L / Alt+Tab / Alt+F4 / TV D-pad spatial focus routing
-  qml/CompositorScene.qml hardware-accelerated Qt Quick compositor scene
-  shaders/dual_kawase_blur.frag GPU Dual-Kawase frosted glass shader
-
-finn-session (src/session)
-  main.cpp         unix socket, request verbs, posix_spawn, CLI
-  client.cpp/hpp   client helper shared with the shell and apps
-  app_registry.*   catalogue + /var/lib/finn/installed merger
-
-libfinnui & libfinnui_qml / FinnSDK (src/ui)
-  FinnSDK/         installed SDK umbrella headers (FinnSDK.hpp, FinnQml.hpp)
-  finn/form_factor.hpp pure C++20 Desktop/Tablet/Mobile/TV form-factor & breakpoint engine
-  finn/theme.*     FinnThemeManager reading settings & FINN_DARK live (including form_factor & sound)
-  finn/tokens.hpp  typed FinnTokens + generated_tokens.hpp bridge
-  finn/spring.hpp  analytic 120 Hz spring solver, SpringAnimator, rubber-band overscroll
-  qml/finn_qml_types.* FinnThemeBridge, FinnSpringValue, FinnSquircle, FinnBootMark, FinnAvatar, FinnIconProvider
-  qml/finn_qml_app.*   FinnQmlApp harness (Fixel Display, CLI form-factor/theme/screenshot)
-  qml/controls/*.qml   19 AOT-compiled FinnUI 1.0 controls (FinnApplicationWindow, FinnGlassPanel, FinnSlider, etc.)
-
-Qt6 platform customization (src/qtplugin)
-  finn_platform_theme.*  libfinnplatformtheme.so (QT_QPA_PLATFORMTHEME=finn)
-  finn_style.*           libfinnstyle.so proxy style (QT_STYLE_OVERRIDE=finn)
-
-Compat & system helpers (src/compat, src/system)
-  desktop_entry.*  XDG .desktop & Flatpak discovery + launch line building
-  wine_runner.*    PE header inspection & per-app Wine prefix execution
-  android_runner.* Clean-room Android 17 (finn-android) probe and launcher helper
-  sys_files.*      settings (incl. form_factor & sound), users, mounts, /proc memory & CPU helpers
-  desktop_services.* real NetworkManager/BlueZ/UPower/PipeWire probes + secure nmcli connect
-
-finn-shell (src/shell)
-  main.cpp                 unified System UI bootstrap
-  core/shell_corona.*      Plasma Corona-inspired ShellCorona, AppCatalogModel, NotificationListModel
-  ui/SystemUI.qml          live adaptive root switching Desktop / Tablet / Mobile / TV containments
-  ui/common/*.qml          WallpaperLayer, NotificationStack (3-card receding stack), LockScreenOverlay
-  ui/desktop/*.qml         DesktopShell, DesktopDock (4-pill), HomeMenuPopover, SpotlightPopover, ControlCenterPopover, OverviewPopover
-  ui/tablet/TabletShell.qml hybrid top status bar + 56dp touch dock + floating popovers
-  ui/mobile/MobileShell.qml Plasma Mobile homescreen, pull-down Action Drawer, horizontal card Task Switcher, 134x4dp gesture pill
-  ui/tv/TvShell.qml        Plasma Bigscreen 10-foot shelves, 1.5x typography, D-pad focus rings, slide-over Quick Settings drawer
-  search.*                 Spotlight search & arithmetic evaluator
-
-finn-update & repo tooling (src/ota, ota, repo)
-  src/ota/finn-update CLI entry for A/B OTA status, check, download, apply, commit, rollback
-  src/ota/finn_ota/*  Ed25519 verify, HTTP Range download, zstd delta, systemd-boot/GRUB backends
-  ota/                keygen, publish, grub-ab.cfg, example public key
-  repo/               [finnos] pacman repo signing/publishing scripts & finnos-mirrorlist
-
-apps/<id>
-  wallpaper        background wlr-layer-shell surface rendering WebP wallpaper
-  settings         system Settings (Appearance, Network, Bluetooth, Sound, Display, System Update, Compat, System)
-  files            Finn Files (sidebar locations, search, preview, safe copy/symlink ops)
-  terminal         Finn Terminal (PTY shell emulator with stateful UTF-8 decode)
-  notes            Finn Notes (multi-tab UTF-8/Markdown editor with Save/Discard/Cancel guard)
-  store            Finn Store (native/Flatpak/pacman/Wine/.finnapp manager + FinnSDK hub)
-  viewer           Finn Viewer (raster + SVG zoom/pan/rotate viewer)
-  monitor          Finn Monitor (CPU/RAM telemetry and PID-diffed process manager)
-  recovery-mode    recovery-mode (FinnOS Recovery Mode: install, dual-boot, disk utility, boot repair, logs, floating PTY terminal)
-  oobe             finn-oobe (first-time setup: language, Wi-Fi, real account setup, appearance)
-  flourish         optional Arc-inspired QtWebEngine browser
-
-tools & sdk
-  tools/finn-sdk       CLI project creator, validator, signed .finnapp packager, simulator, builder
-  tools/finn_open.cpp  URI/file/desktop/.exe launcher (finn-open)
-  tools/finn-display   display geometry helper
-  tools/tokens.py      ui/_tokens.fui -> src/ui/generated_tokens.hpp
-  tools/check-branding.sh distribution branding & os-release lint guard
-  sdk/schema/          finn-app.schema.json app manifest schema
-  sdk/template/        standalone FinnSDK starter app
-  sdk/tests/           host tests for packaging, verification, and simulation
+src/boot/        finn-bootx64.efi & finn-bootaa64.efi (freestanding UEFI GOP bootloader, BLS/UKI)
+src/comp/        finn-comp (Qt 6 QWaylandQuickCompositor, WorkspaceModel, InputRouter, CPU blur/glass)
+src/ui/          libfinnui (29 C++ widgets), libfinnui_qml (19 FinnUI 1.0 QML controls), FinnSDK headers
+src/qtplugin/    libfinnplatformtheme.so (QPlatformTheme) & libfinnstyle.so (QProxyStyle)
+src/session/     finn-session (unified AppRegistry, SO_PEERCRED broker, SessionClient)
+src/shell/       finn-shell (ShellCorona, DesktopShell.qml, LockScreenOverlay.qml, search, OOBE flow)
+src/system/      sys_files (/proc, /sys, settings), desktop_services (D-Bus/NM/BlueZ/PipeWire), guest_tools
+src/recovery/    recovery_engine (pure C++20 offline installer/dual-boot/disk planner + SHA-512)
+src/compat/      Linux (.desktop/Flatpak/AppImage/ELF/sandbox), Windows (PE/ICO/MSI/Wine/wl_clamp), runners
+src/darwin/      finn-darwin (64-bit Mach-O loader, objc_msgSend asm, Foundation/AppKit-on-Qt6)
+src/ohos/        finn-ohos (OpenHarmony 6.1 LTS .hap/.hsp/.app installer, Panda VM, ArkUI-on-Qt6, NAPI)
+src/android/     finn-android (Android 17 APK/AXML/ARSC/DEX inspector, 14-widget Qt 6 previewer)
+src/ota/         finn-update & finn_ota (Ed25519 manifests, HTTP Range, zstd deltas, systemd-boot/GRUB)
+src/common/      paths.hpp (shared paths & kBootMarkSizePx) & liquid_glass.hpp (CPU SDF glass)
+apps/<id>/       11 registry apps (settings, files, terminal, notes, store, viewer, monitor,
+                 calculator, archive, capture, flourish) + wallpaper, oobe, recovery-mode
+ui/_tokens.fui   single source of truth for palette, spacing, radii, motion, breakpoints
+tools/           tokens.py, finn-sdk, finn-win, finn-display, finn-guest-tools, finn-emulator,
+                 finn-oobe-apply, finn-open, finn-cursors, coff2efi.py, check-branding.sh
+sdk/             finn-app.schema.json, sdk/template/, sdk/tests/
+repo/            [finnos] pacman repository signing & publishing scripts
+ota/             OTA keygen, publish, grub-ab.cfg, verify-ab-linux.sh
+base/            mkfinniso, profiledef.sh, systemd units, Plymouth theme, packages, PKGBUILDs, setup.sh
+vm/              deploy.sh, shot.sh, lima.yaml, create-dev-vm.sh, finn-install.sh, finn-chroot.sh
+tests/           host Python suite (tests/test_*.py) and C++20 ASan/UBSan unit tests (tests/unit/)
 ```
 
-## Flows
+## Key runtime flows
 
-### A window is opened
+### 1. App launch (Dock / Home Menu / Spotlight / `finn-open`)
+1. `finn-shell` (`ShellCorona::launchApp`) or `finn-open` connects via `SessionClient` (`src/session/client.cpp`) to `$XDG_RUNTIME_DIR/finn/session.sock`.
+2. `finn-session` (`src/session/main.cpp`) validates `SO_PEERCRED` (`uid == getuid() || uid == 0`) and looks up the id in `RegistryCache` (`src/session/app_registry.cpp`).
+3. `finn-session` builds a clean launch environment via `finn::compat::build_linux_launch_env()` (sets `WAYLAND_DISPLAY=/run/finn/wayland-0`, `QT_QPA_PLATFORMTHEME=finn`, `QT_STYLE_OVERRIDE=finn`, strips `LD_*`/plugin hijack vars) and spawns the target with `posix_spawnp` + `POSIX_SPAWN_SETSID`.
+4. The app connects to `/run/finn/wayland-0`, creates an `xdg_toplevel`, and `finn-comp` (`src/comp/server.cpp` + `core/workspace_model.cpp`) inserts it into `SceneLayer::Toplevel` without ever learning its app id.
+5. `finn-comp` updates `/run/finn/state/windows.tsv`; `finn-shell` watches `/run/finn/state/` and updates the dock's running-window indicators.
 
-```
-dock/menu click or `finn-session --launch <id>` (or finn-open)
-  -> finn-session checks catalogue + installed list (or DesktopEntry / WineRunner)
-  -> posix_spawn / QProcess with WAYLAND_DISPLAY=/run/finn/wayland-0
-  -> app connects as xdg_toplevel (or Xwayland surface)
-  -> finn-comp `on_new_toplevel` places it in `toplevel_tree_`
-  -> `on_toplevel_map` animates the entrance and announces it on `wlr-foreign-toplevel-management`
-  -> finn-shell updates running dots and Window Switcher
-```
+### 2. Window control, blur regions, capture & session lock
+`finn-comp` and `finn-shell` / `finn-capture` coordinate via `/run/finn/state/` (`0775 root:finn`):
+- **Window focus/minimize/close**: `finn-shell` writes a line to `/run/finn/state/window-cmd`; `finn-comp` reads and executes it on `WorkspaceModel`.
+- **Frosted glass & click-through**: `finn-shell` publishes active dock/popover rects to `/run/finn/state/blur-rects.tsv` and sets `QWindow::setMask()` so clicks outside UI pills pass through to apps; `CompositorBackdropItem` (`src/comp/backdrop_item.cpp`) blurs the lower scene and applies `finn::glass::render_liquid_glass()`.
+- **Screenshots**: `finn-capture` writes `/run/finn/state/capture-request`; `finn-comp` captures `output_window_->grabWindow()` to PNG and writes `<png>.done`.
+- **Session lock**: `finn-comp` (on idle) or `finn-shell` (Home Menu / `logind` `PrepareForSuspend`) triggers `LockScreenOverlay.qml`, which authenticates via `unix_chkpwd` / `passwd -S` / `su`.
 
-The compositor never chooses an app; it manages scene rectangles.
+### 3. Live theme & token propagation
+1. Edit `ui/_tokens.fui` → run `python3 tools/tokens.py ui/_tokens.fui src/ui/generated_tokens.hpp` → verify with `make lint`.
+2. At runtime, `Settings` writes `~/.config/finn/settings` (or `/var/lib/finn/settings`).
+3. `FinnThemeManager` (`src/ui/finn/theme.cpp`), `FinnThemeBridge` (`src/ui/qml/finn_qml_types.cpp`), `libfinnplatformtheme` (`src/qtplugin/finn_platform_theme.cpp`), and `finn-comp` watch the settings files and reload dark/light mode, accent colour, high contrast, and reduced motion live without restarting apps.
 
-### The theme changes
+### 4. First-boot OOBE & Offline Recovery Mode
+- **Live ISO / `finn.recovery`**: `finn-recovery.service` launches `recovery-mode` (`apps/recovery-mode/main.cpp`), which uses `src/recovery/recovery_engine.cpp` to probe disks, verify offline images via SHA-512, and execute `vm/finn-install.sh` + `vm/finn-chroot.sh`.
+- **First normal boot**: `ShellCorona::maybeLaunchFirstBootOobe()` checks `finn::should_run_oobe_on_boot()` (`/var/lib/finn/oobe_complete` and `~/.config/finn/oobe_complete` absent, non-live cmdline), writes a capability probe (`src/shell/oobe_capability_probe.hpp`), and spawns `finn-oobe`, which finishes by running `tools/finn-oobe-apply`.
 
-```
-Settings or Control Center writes $HOME/.config/finn/settings
-  -> FinnThemeManager detects file/timer update and emits themeChanged()
-  -> libfinnui widgets, finnplatformtheme/finnstyle apps, and finn-shell restyle live
-  -> finn-comp re-reads settings on its one-second timer and recolours the backdrop
-```
+## Where to change what
 
-No process is restarted.
-
-### The session starts
-
-```
-systemd -> finn-comp (root, seatd, /run/finn/wayland-0)
-        -> finn-session (finn, /run/user/1000/finn/session.sock)
-        -> finn-wallpaper (finn, background layer-shell client)
-        -> finn-shell (finn, top/overlay layer-shell client)
-```
-
-## Where to add things
-
-| I want to… | Edit |
+| Task | Files to touch |
 |---|---|
-| add an app | `apps/<id>/`, `apps/CMakeLists.txt`, `assets/apps.registry`, `base/setup.sh`, `vm/finn-chroot.sh` |
-| add an SDK widget | `src/ui/finn/components.hpp`, `components.cpp`, `src/qtplugin/finn_style.cpp` |
-| change the dock/popovers | `src/shell/dock.cpp`, `src/shell/popovers.cpp` |
-| change window behaviour | `src/comp/server.cpp`, `src/comp/window.cpp` |
-| change launch/compat | `src/session/main.cpp`, `src/compat/{desktop_entry,wine_runner}.cpp` |
-| change the palette | `ui/_tokens.fui`, then `make lint` (regenerates header check) |
-| change motion | `src/ui/finn/animation.hpp`, and document it in [motion.md](motion.md) |
-| add a path | `src/common/paths.hpp`, never a literal in two files |
+| Change palette, radii, spacing, motion, or breakpoints | `ui/_tokens.fui` → regenerate `src/ui/generated_tokens.hpp` with `tools/tokens.py` |
+| Add a shared QML control | `src/ui/qml/controls/Finn*.qml`, `src/ui/CMakeLists.txt` |
+| Add a shared C++ widget | `src/ui/finn/components.{hpp,cpp}`, `src/ui/FinnSDK/` |
+| Adjust stock Qt 6 app styling | `src/qtplugin/finn_platform_theme.{hpp,cpp}`, `src/qtplugin/finn_style.{hpp,cpp}` |
+| Change compositor windowing or workspaces | `src/comp/core/workspace_model.{hpp,cpp}`, `src/comp/server.{hpp,cpp}`, `src/comp/qml/WaylandCompositorScene.qml` |
+| Change desktop dock, popovers, or lock screen | `src/shell/core/shell_corona.{hpp,cpp}`, `src/shell/ui/desktop/*.qml`, `src/shell/ui/common/*.qml` |
+| Add a session protocol verb or app source | `src/session/main.cpp`, `src/session/app_registry.{hpp,cpp}`, `src/session/client.{hpp,cpp}`, `docs/session-protocol.md` |
+| Add a first-party native app | `apps/<id>/`, `apps/CMakeLists.txt`, `Makefile`, `assets/apps.registry`, `assets/icons/apps/<id>.svg`, `NAMING.md` |
+| Change installer / dual-boot planning | `src/recovery/recovery_engine.{hpp,cpp}`, `apps/recovery-mode/main.cpp`, `vm/finn-install.sh`, `vm/finn-chroot.sh`, `tests/unit/test_recovery.cpp` |
+| Change UEFI bootloader | `src/boot/{efi_main,bls_parser,boot_ui}.c`, `tests/unit/test_bootloader.cpp`, `tests/test_uefi_boot_harness.py` |
+| Change OTA update client or publisher | `src/ota/finn_ota/*.py`, `ota/publish`, `tests/test_ota.py` |
+| Change systemd units or base packages | `base/finn-*.service` **and** `base/airootfs/etc/systemd/system/finn-*.service`, `base/packages.{x86_64,aarch64}` → verify with `base/mkfinniso --check` |
 
-## Rules that keep the map true
-
-- The compositor has no app ids. `make lint` checks it.
-- The shell and compositor never fabricate hardware state.
-- A scene surface goes into `layer_trees_[current.layer]` or
-  `toplevel_tree_`; never directly into `scene_->tree`.
-- The only macro trick is `src/comp/wlroots.hpp`.
-- Every listener belongs to a struct with a destructor that detaches it.
+## Hard rules enforced by `make lint`
+- Zero known app IDs under `src/comp/`.
+- `src/ui/generated_tokens.hpp` matches `tools/tokens.py ui/_tokens.fui`.
+- Clean `git diff --check` and Python bytecode compilation of `tools/` and `tests/`.
+- Zero stray upstream distribution branding in user-visible code and docs (`tools/check-branding.sh`).

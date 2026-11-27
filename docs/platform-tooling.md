@@ -21,23 +21,23 @@ may be substituted).
 | Linux x86_64 | install ISO + installer, BIOS and UEFI boot | QEMU (`qemu-system-x86_64`, OVMF), `tests/test_x86_boot.py` | **shipped** | `.github/workflows/iso.yml:63-284`; `vm/create-dev-vm.sh` targets VMware Workstation x86_64 |
 | Linux x86_64 | x86_64 OTA slot image + signed manifest | `ota/publish --arch x86_64` | **shipped (publisher)**; no CI builds the image | `ota/publish:65-66`, `.github/workflows/ota-release.yml:19-26` |
 | Linux x86_64 | aarch64 cross-built image | — | **absent** | no cross toolchain or image job in CI; only `base/mkfinniso --check --arch=aarch64` (`iso.yml:43`) validates the ARM profile tree |
-| Apple Silicon (Darwin arm64) | aarch64 Linux dev VM | Lima + QEMU (HVF), `virtio-gpu` DRM, `WLR_RENDERER=pixman` | **shipped (dev VM only)** | `vm/lima.yaml:8-28`, `vm/README.md:17-49`, `vm/lima-setup.sh`, `vm/deploy.sh` |
-| Apple Silicon / Linux ARM64 | aarch64 install ISO | `base/mkfinniso --arch=aarch64` profile | **partial** | profile and `--check` exist (`base/mkfinniso:7,59,87-91,461,617,628`); no CI image build or boot test |
-| Linux aarch64 | aarch64 OTA slot image + signed manifest | `ota/publish --arch aarch64` | **shipped (publisher)**; no CI image | `ota/verify-ab-linux.sh` executed on Lima aarch64 and recorded in `docs/ota.md:266-303` |
-| macOS host (x86_64 or ARM64) | any FinnOS build | — | **absent** | the host is the editor; the VM is the build machine (`AGENTS.md`, `vm/README.md:1-4`). No pacman/wlroots0.20/Qt6/seatd build host on macOS |
+| Apple Silicon (Darwin arm64) | aarch64 Linux dev VM | Lima + QEMU (HVF), `virtio-gpu` DRM, Qt 6 `finn-comp` | **shipped (dev VM only)** | `vm/lima.yaml:8-28`, `vm/README.md`, `vm/lima-setup.sh`, `vm/deploy.sh` |
+| Apple Silicon / Linux ARM64 | aarch64 install ISO | `base/mkfinniso --arch=aarch64` profile | **partial** | profile and `--check` exist (`base/mkfinniso`); no CI image build or boot test |
+| Linux aarch64 | aarch64 OTA slot image + signed manifest | `ota/publish --arch aarch64` | **shipped (publisher)**; no CI image | `ota/verify-ab-linux.sh` executed on Lima aarch64 and recorded in `docs/ota.md` |
+| macOS host (x86_64 or ARM64) | host unit/Python tests & Qt 6 offscreen preview | CMake/Ninja + Qt 6 (`--preview`) | **partial (host tests & preview)** | full Linux DRM/Wayland build runs in the VM (`AGENTS.md`, `vm/README.md`) |
 | Any host | x86_64 guest under emulation on ARM64 | `qemu-system-x86_64` TCG | **partial** | boots, but slow and no GPU; probed by `tools/finn-emulator check` |
 | Any host | aarch64 userland on x86_64 | `qemu-aarch64-static` | **absent in tree** | may be installed externally; runs userland only, never a kernel/compositor |
 
 ### 1.1 Toolchain that is actually used
 
-Both `base/packages.x86_64` and `base/packages.aarch64` are Arch package lists
+Both `base/packages.x86_64` and `base/packages.aarch64` are pacman package lists
 (`base/packages.x86` and `base/packages.arm` are symlinks checked by
-`.github/workflows/iso.yml:44-49`). The build uses CMake + Ninja + `g++`
-(C++20), `wlroots0.20`, `wayland`, `wayland-protocols`, `libxkbcommon`,
-`libdrm`, `libinput`, `mesa`, `seatd`, Qt6 (`qt6-base`, `qt6-wayland`,
-`qt6-svg`, `qt6-declarative`, `layer-shell-qt`) and `xorg-xwayland`
-(`ci.yml:39-43`). `libfinnui` ships `libfinnui.so.0.2.0` with `SOVERSION 0`
-and the `FinnSDK::FinnUI` CMake target (`docs/sdk/audit.md:12-18`).
+`.github/workflows/iso.yml`). The build uses CMake + Ninja + `g++`
+(C++20), Qt 6 (`qt6-base`, `qt6-declarative`, `qt6-wayland`, `qt6-svg`,
+`qt6-shadertools`, `qt6-5compat`, `layer-shell-qt`), `wayland`,
+`wayland-protocols`, `libxkbcommon`, `libdrm`, `libinput`, `mesa`, and `seatd`
+(`ci.yml`). `libfinnui` and `libfinnui_qml` ship `libfinnui.so.1.0.0` and
+`libfinnui_qml.so.1.0.0` with `SOVERSION 1` (`FinnSDK::FinnUI`, `FinnSDK::FinnUIQml`).
 
 No separate cross-sysroot exists. A genuine ARM64 build today means building
 **on** an aarch64 machine (the Lima VM), not cross-compiling from x86_64.
@@ -115,33 +115,27 @@ support exists.**
 
 ### 2.1 Display panel, touch and tablet input
 
-SHIPPED (protocol level):
+SHIPPED (protocol & toolkit level):
 
-- `finn-comp` (wlroots 0.20) advertises pointer/keyboard,
-  `WLR_INPUT_DEVICE_TOUCH` and `WLR_INPUT_DEVICE_TABLET_TOOL` input, plus
-  `wlr_fractional_scale_v1`, screencopy and Xwayland
-  (`docs/architecture.md:91-93`, `docs/roadmap.md:16`).
-- `FinnFormFactor::{Desktop,Tablet,Phone}` exists in `libfinnui` and
-  `finn-shell` adapts its layout across those breakpoints
-  (`src/shell/shell_layout.hpp`, `docs/sdk/simulator.md:1-13`).
-- The Lima dev VM exercises `virtio-gpu` DRM through seatd with
-  `WLR_RENDERER=pixman` (`docs/hardware.md:4-9`).
+- `finn-comp` (Qt 6 `QWaylandQuickCompositor`) implements `xdg-shell`,
+  `xdg-decoration`, `text-input-v3`, and `wp_viewporter`, plus `InputRouter`
+  gesture/touch handling (`src/comp/core/input_router.cpp`).
+- `AdaptiveFormFactor::{Desktop,Tablet,Mobile,TV}` exists in `src/ui/finn/form_factor.hpp`,
+  and `FinnApplicationWindow` (`FinnUI 1.0`), `finn-oobe`, and `recovery-mode`
+  adapt layouts from `FINN_FORM_FACTOR` and screen breakpoints (`docs/sdk/simulator.md`).
+- The Lima dev VM exercises `virtio-gpu` DRM through `seatd` (`docs/hardware.md`).
 
 ABSENT / required for a real phone:
 
 - **Panel and touch hardware enablement:** DSI/MIPI panel driver, display
   timings, PWM backlight, touchscreen controller via libinput, rotation and
   orientation sensors. None is in `base/packages.*` or verified on hardware.
-- **Gestures and IME:** no `wl_touch` gesture recognizer, pinch/swipe,
-  `QTouchEvent` handling, `zwp_text_input_v3` or on-screen keyboard
-  (`docs/sdk/audit.md:51,65`, `docs/roadmap.md:41`). A phone without these is
-  not operable.
-- **Adaptive app chrome:** `FinnWindow` does not currently read
-  `FINN_FORM_FACTOR` / `FINN_SIM_*` and apps keep their requested desktop size
-  (`docs/sdk/simulator.md:46`). Touch-target minimums (≥44 dp) and edge-to-edge
-  layout are proposals only (`simulator.md:54-63`).
-- **Form-factor constraints:** no safe-area/notch handling, no system status
-  bar or gesture navigation surface, no per-orientation shell reflow on device.
+- **Mobile/tablet/TV shell UIs:** `src/shell/ui/tablet/TabletShell.qml`,
+  `mobile/MobileShell.qml`, and `tv/TvShell.qml` are currently empty 6-line
+  `Item` stubs; only `DesktopShell.qml` is implemented.
+- **On-screen keyboard & hardware touch verification:** While `finn-comp`
+  binds `QWaylandTextInputManagerV3`, there is no on-screen virtual keyboard,
+  no safe-area/notch hardware integration, and no physical touchscreen testing.
 
 ### 2.2 Modem and telephony
 

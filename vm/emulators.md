@@ -17,7 +17,7 @@ and a simulated phone viewport is not a phone.
 |---|---|---|---|---|
 | Linux x86_64 | QEMU system (`qemu-system-x86_64`), KVM if `/dev/kvm`, else TCG | x86_64 FinnOS ISO, BIOS (syslinux) or UEFI (OVMF) install and live shell | **yes** — CI builds and boots the ISO (`iso.yml:63-284`, `tests/test_x86_boot.py`) | no host GPU frame pacing, no USB device realism beyond QEMU |
 | Linux x86_64 / macOS x86_64 | VMware Workstation, `vm/create-dev-vm.sh` | x86_64 FinnOS ISO | **yes (dev)** — creates a `.vmx` with BIOS boot, NAT, 4 GB/2 vCPU (`create-dev-vm.sh:29-58`) | VMware UEFI exposes no usable variables for the ESP, so the VM is deliberately BIOS-only (`:38-43`) |
-| Linux x86_64 | headless compositor (`WLR_BACKENDS=headless WLR_RENDERER=pixman finn-comp`) | Wayland clients, screenshots with `grim` | **yes** — `docs/hardware.md:10-11`, `docs/sdk/simulator.md:45` | no DRM/input device; not a full OS boot |
+| Linux x86_64 | offscreen/preview compositor (`QT_QPA_PLATFORM=offscreen finn-comp --preview`) | Wayland clients & QML scene verification | **yes** — `docs/hardware.md`, `docs/sdk/simulator.md` | no DRM/input device; not a full OS boot |
 | Apple Silicon (arm64) | Lima + QEMU (`vm/lima.yaml`, HVF acceleration) | aarch64 Arch Linux dev VM with `virtio-gpu` DRM, seatd, full session | **yes (dev VM)** — `vm/lima-setup.sh`, `vm/deploy.sh`, `vm/shot.sh` (`vm/README.md:17-49`) | no aarch64 ISO is built or boot-tested in CI; `vz` is avoided because the 2022 cloud image dies under it (`lima.yaml:5-7`) |
 | Apple Silicon / Linux ARM64 | `qemu-system-aarch64 -M virt -cpu cortex-a57` | aarch64 guest with a supplied kernel + initramfs | **partial** — emulator usable, but FinnOS publishes no aarch64 ISO/initramfs pair | no install medium, no boot test in CI |
 | Linux/macOS with Qt6 | Qt `offscreen` platform plugin | FinnSDK widget rendering, theme/tokens, form-factor presets | **yes (app-level)** — see §4 | no compositor, Wayland shell, touch, gestures or IME |
@@ -65,18 +65,15 @@ the boot order, SVGA autodetect, VMCI, time sync, and a 32 GB LSILogic disk
 [`docs/guest-tools.md`](../docs/guest-tools.md) for VMware Tools, VirtualBox
 Guest Additions, and honest limits.
 
-### 2.3 Headless compositor
+### 2.3 Offscreen / preview compositor
 
 ```sh
-WLR_BACKENDS=headless WLR_RENDERER=pixman XDG_RUNTIME_DIR=/run/user/1000 \
-  WAYLAND_DISPLAY=finn-headless-0 finn-comp &
-grim -o <output> shot.png
+QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/run/user/1000 \
+  WAYLAND_DISPLAY=finn-headless-0 finn-comp --preview
 ```
 
-Useful for compositor/shell verification without a DRM device; this is the mode
-`finn-sdk simulate --headless` and `tools/finn-emulator simulate --headless`
-use on an isolated socket (the latter creates a temporary `XDG_RUNTIME_DIR` and
-a `finn-sim-<pid>` socket). It is not a full OS boot and has no physical input.
+Useful for compositor/shell verification without a DRM device. It is not a full
+OS boot and has no physical input.
 
 ---
 
@@ -91,9 +88,8 @@ The supported ARM64 path today is the **Lima dev VM**, not an ARM64 install ISO.
 - `video.display: cocoa`, because Lima only adds `virtio-gpu` (the DRM device
   `finn-comp` drives on tty1) when there is a display — `display: none` gives a
   VM with no `/dev/dri` and a compositor that cannot start (`lima.yaml:18-25`);
-- `WLR_RENDERER=pixman` via a `finn-comp.service.d` drop-in, because QEMU's
-  llvmpipe GLES2 path shows stale blocks that `grim` does not capture
-  (`vm/README.md:46-49`).
+- Qt software rendering (`QT_QUICK_BACKEND=software` / `QT_QPA_PLATFORM=linuxfb`)
+  when running without host GPU acceleration (`vm/README.md`).
 
 ```sh
 brew install lima qemu                 # macOS host
@@ -155,11 +151,12 @@ Wayland client (requires `finn-comp` in `PATH`). Presets come from
 
 **Honest limits:**
 
-- Offscreen mode has no compositor, no layer shell, no Wayland input, no
-  touch/gestures, no IME and no real screen scale; the shell and window chrome
+- Offscreen mode has no compositor, no Wayland input, no
+  touch/gestures, no IME, and no real screen scale; the shell and window chrome
   are not the compositor's.
-- `FinnWindow` does not yet auto-resize from `FINN_FORM_FACTOR`; the simulation
-  only sets the environment — see `docs/sdk/simulator.md:43-48`.
+- While `FinnApplicationWindow` (`FinnUI 1.0`), `finn-oobe`, and `recovery-mode`
+  adapt to `FINN_FORM_FACTOR`, `finn-shell`'s `TabletShell`, `MobileShell`, and
+  `TvShell` are currently empty stubs — see `docs/sdk/simulator.md`.
 - No `FinnTest::Harness` or shipped screenshot helper exists for third-party
   widgets (`docs/sdk/audit.md:68`); capture a widget with Qt's own
   `QWidget::grab()` in the app if you need a frame.

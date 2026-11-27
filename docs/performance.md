@@ -1,10 +1,16 @@
 # Performance: measured changes, not guesses
 
 This page records the hot paths that were identified and changed in the
-shell, how they were measured, and what is still unverified. The host is an
-editor machine, not the build machine (`AGENTS.md`): Qt6 and wlroots cannot be
-built here, so a claim about a full shell frame is **not** made on host
-evidence. Every number below says what it actually measures.
+shell, how they were measured, and what is still unverified.
+
+> **Architecture note:** Since the migration to the Qt 6 `QWaylandQuickCompositor`
+> (`src/comp/`) and Qt Quick `finn-shell` (`src/shell/ui/desktop/*.qml`), the
+> legacy C++ `shell_layout.hpp` / `DockWindow` shadow-cache path was replaced by
+> `CompositorBackdropItem` (quarter-res CPU separable box blur + half-res CPU
+> Liquid Glass SDF in `src/comp/server.cpp` and `src/common/liquid_glass.hpp`).
+> `src/shell/blur_kernel.hpp` and `make bench` remain in the tree as a host-only
+> O(w·h) pixel-kernel microbenchmark; the measurements below are preserved as
+> the baseline from that work.
 
 ## 1. Layer-surface shadow blur (redraw / first popover paint)
 

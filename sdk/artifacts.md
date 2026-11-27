@@ -16,13 +16,13 @@ Status words: **shipped**, **partial**, **absent**.
 
 | Language / runtime | Status | Detail |
 |---|---|---|
-| **C++20 + Qt6 (FinnSDK)** | **shipped** | The one first-class native SDK. `find_package(FinnSDK)`, `FinnSDK::FinnUI`, headers `<FinnSDK/*.hpp>`, `libfinnui.so.0.2.0` (`SOVERSION 0`), CMake package under `${PREFIX}/lib/cmake/FinnSDK`. Requires C++20, AUTOMOC, Qt6 Base/Wayland/Svg (`docs/sdk.md:45-63`, `docs/sdk/audit.md:7-18`). |
-| CMake + Ninja | **shipped** | `finn-sdk build` runs `cmake -G Ninja`; `finn-sdk check` verifies `cmake`, `ninja`, `c++`/`g++`, `pkg-config`, the FinnSDK CMake package, the Qt6 plugins, openssl and zstd (`tools/finn-sdk:640-679`). |
+| **C++20 + Qt 6 / QML (`FinnSDK`)** | **shipped** | The first-class native SDK. `find_package(FinnSDK)`, `FinnSDK::FinnUI` (`libfinnui.so.1.0.0`, `SOVERSION 1`) and `FinnSDK::FinnUIQml` (`libfinnui_qml.so.1.0.0`, `SOVERSION 1`, `FinnUI 1.0`), headers `<FinnSDK/*.hpp>`, CMake package under `${PREFIX}/lib/cmake/FinnSDK`. Requires C++20, AUTOMOC, Qt 6 Base/Declarative/Wayland/Svg (`docs/sdk.md`). |
+| CMake + Ninja | **shipped** | `finn-sdk build` runs `cmake -G Ninja`; `finn-sdk check` verifies `cmake`, `ninja`, `c++`/`g++`, `pkg-config`, the FinnSDK CMake package, the Qt 6 plugins, openssl and zstd. |
 | Rust / Go / Dart / Kotlin native | **absent** | No FinnSDK bindings, no package templates, no sysroot. They are not part of the SDK. |
-| Swift / SwiftUI / Metal | **absent** | No Swift compiler, Apple SDK or Metal in either package list. The `src/darwin` "core Swift ABI" shims are not a toolchain and do not run ordinary compiled Swift binaries (`docs/darwin-framework-coverage.md:105-117`, `docs/platform-tooling.md`). |
-| Linux Wayland/X11/Flatpak apps | **shipped (compatibility tier)** | Discovered from XDG `.desktop` entries by `finn::scan_desktop_dirs`; run with their own toolkits, not built with FinnSDK (`docs/sdk.md:101-103`). |
-| Windows PE (`.exe`) | **partial** | `finn::inspect_pe` inspects headers and launches in per-app Wine prefixes **only when Wine is installed**; absent on aarch64 (`docs/sdk.md:104-105`, `docs/hardware.md:17-20`). |
-| macOS Mach-O, OpenHarmony `.hap` | **partial (compatibility runtimes)** | `finn-darwin` / `finn-ohos` are app runners, not SDKs; framework coverage is deliberately incomplete (`docs/rewrite-assessment.md:61`). |
+| Swift / SwiftUI / Metal | **absent** | No Swift compiler, Apple SDK or Metal in either package list. The `src/darwin` "core Swift ABI" shims are not a toolchain and do not run ordinary compiled Swift binaries (`docs/darwin-framework-coverage.md`, `docs/platform-tooling.md`). |
+| Linux Wayland/X11/Flatpak/AppImage apps | **shipped (compatibility tier)** | Discovered from XDG `.desktop` entries, Flatpak exports, and verified AppImages; run natively with FinnOS Qt 6 theme env (`docs/linux-app-coverage.md`). |
+| Windows PE (`.exe`, `.msi`) | **shipped (via Wine/Proton/Hangover)** | `finn::inspect_pe` inspects headers and extracts icons; `finn-win` launches in per-app Wine/Proton/Hangover prefixes (`docs/windows-app-coverage.md`). |
+| macOS Mach-O (`finn-darwin`), OpenHarmony `.hap` (`finn-ohos`), Android `.apk` (`finn-android`) | **partial / inspector (compatibility runtimes)** | Clean-room runtimes/inspectors, not FinnSDK toolchains; coverage is explicitly bounded (`docs/darwin-framework-coverage.md`, `docs/ohos-kit-coverage.md`, `docs/android-coverage.md`). |
 
 There is no hosted `finnos-sdk` pacman package or binary sysroot: the generated
 CI template clones and builds `src/ui` from source on every run
@@ -140,13 +140,15 @@ finn-sdk simulate --form-factor desktop --dry-run --json .
 ```
 
 It exports `FINN_FORM_FACTOR`, `FINN_SIM_ORIENTATION`, `FINN_SIM_WIDTH`,
-`FINN_SIM_HEIGHT`, `FINN_SIM_SCALE`, `FINN_OUTPUT_*` and the Finn theme
-variables. `--headless` spawns an isolated `finn-comp` with
-`WLR_BACKENDS=headless` on a private socket (`tools/finn-sdk:1186-1241`).
+`FINN_SIM_HEIGHT`, `FINN_SIM_SCALE`, `FINN_OUTPUT_*`, and the Finn theme
+variables. `--headless` runs `finn-comp` in offscreen/headless mode on a
+private socket.
 
-**Honest limits:** `libfinnui` does not yet resize `FinnWindow` from these
-variables, there is no touch/gesture synthesis and no virtual keyboard
-(`docs/sdk/simulator.md:43-48`). A simulator run is not device testing.
+**Honest limits:** While `FinnApplicationWindow` (`FinnUI 1.0`), `finn-oobe`,
+and `recovery-mode` adapt to `FINN_FORM_FACTOR`, `finn-shell`'s `TabletShell`,
+`MobileShell`, and `TvShell` are currently empty stubs, and there is no
+hardware touch/gesture synthesis or virtual keyboard (`docs/sdk/simulator.md`).
+A simulator run is not device testing.
 
 ### 5.2 `tools/finn-emulator` (shipped helper)
 
