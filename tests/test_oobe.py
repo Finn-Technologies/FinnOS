@@ -110,6 +110,38 @@ class OobeApplyHelperTest(unittest.TestCase):
                         os.path.exists(os.path.join(tmp, "var", "lib", "finn", "oobe_complete"))
                     )
 
+    def test_oobe_uses_sudo_probe_and_plain_complete_screen(self):
+        with open(os.path.join(ROOT, "apps", "oobe", "main.cpp"), encoding="utf-8") as f:
+            oobe_src = f.read()
+        with open(os.path.join(ROOT, "apps", "recovery-mode", "main.cpp"), encoding="utf-8") as f:
+            rec_src = f.read()
+        # Never stat() /etc/sudoers.d/finn-oobe directly (fails on 0750 root:root /etc/sudoers.d).
+        self.assertNotIn('QFileInfo::exists(QStringLiteral("/etc/sudoers.d/finn-oobe"))', oobe_src)
+        self.assertIn('QStringLiteral("-l"), helper_path', oobe_src)
+        self.assertIn("kSystemOobeCompletePath", oobe_src)
+        # Spring/Slinky animation removed from both OOBE and Recovery Mode completion pages.
+        self.assertNotIn("SlinkyWave", oobe_src)
+        self.assertNotIn("SlinkyWave", rec_src)
+
+    def test_setup_and_deploy_stage_oobe_sudoers(self):
+        for rel in ("base/setup.sh", "vm/deploy.sh", "vm/finn-chroot.sh"):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
+                text = f.read()
+            self.assertIn("/etc/sudoers.d/finn-oobe", text, rel)
+            self.assertIn("/usr/local/libexec/finn-oobe-apply", text, rel)
+        with open(HELPER, encoding="utf-8") as f:
+            helper_text = f.read()
+        self.assertIn("/etc/sudoers.d/10-wheel", helper_text)
+        self.assertIn("SupplementaryGroups=finn", helper_text)
+        self.assertIn("user-runtime-dir@", helper_text)
+        self.assertIn("finn-oobe-handoff", helper_text)
+        self.assertIn("/var/lib/finn/primary_user", helper_text)
+
+        with open(os.path.join(ROOT, "src", "shell", "core", "shell_corona.cpp"), encoding="utf-8") as f:
+            corona_text = f.read()
+        self.assertIn("kPrimaryUserPath", corona_text)
+        self.assertIn("loadUsers();", corona_text)
+
 
 if __name__ == "__main__":
     unittest.main()

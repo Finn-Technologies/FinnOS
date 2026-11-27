@@ -61,8 +61,10 @@ Window {
         anchors.fill: parent
         radius: root.isEdgeToEdge ? 0 : FinnTheme.radiusLg
         color: root.windowContentColor
-        borderColor: "transparent"
-        borderWidth: 0
+        borderColor: root.isEdgeToEdge
+            ? "transparent"
+            : (FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.11) : "#16000000")
+        borderWidth: root.isEdgeToEdge ? 0 : 0.75
         specularRim: false
         shadow: false
         sidebarWidth: sidebarPane.visible ? sidebarPane.width : root.customSidebarWidth

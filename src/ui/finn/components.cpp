@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <utility>
 
+#include "common/paths.hpp"
 #include "ui/finn/animation.hpp"
 #include "ui/finn/spring.hpp"
 #include "ui/finn/theme.hpp"
@@ -2987,11 +2988,15 @@ void FinnRibbonAnimation::paintHiIntro(QPainter& p, double w, double h, double t
 
         // Phase 0: Finn logo softly scales down & fades out while luminous rings
         // bloom outward from center into the 8 clockwise-orbiting torus rings.
-        const double logo_size = std::min(w, h) * 0.088;
+        // Matches the Plymouth boot splash mark size (kBootMarkSizePx = 72 px)
+        // and vertical center (h * 0.5) so boot -> OOBE has zero jump.
+        const double logo_size = std::min(static_cast<double>(finn::kBootMarkSizePx),
+                                          std::min(w, h) * 0.40);
+        const double logo_cy = h * 0.5;
         {
             const double scale = 1.0 - 0.16 * p_logo_out;
             const double cur_size = logo_size * scale;
-            const QRectF logo_rect(cx - cur_size * 0.5, cy - cur_size * 0.5, cur_size, cur_size);
+            const QRectF logo_rect(cx - cur_size * 0.5, logo_cy - cur_size * 0.5, cur_size, cur_size);
             const double svg_alpha = 1.0 - p_logo_out;
             if (svg_alpha > 0.01) {
                 auto& tm = FinnThemeManager::instance();

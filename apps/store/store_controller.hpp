@@ -148,8 +148,12 @@ private:
 
     void setTaskState(const QString& appId, double progress, const QString& state);
     void clearTaskState(const QString& appId);
+    void downloadFileFast(const QString& appId, const QString& url, const QString& destPath,
+                          double progressStart, double progressSpan,
+                          std::function<void(bool ok, const QString& err)> onDone);
     void runProcessInstall(const QString& appId, const QString& program,
-                           const QStringList& args, const QString& successMsg);
+                           const QStringList& args, const QString& successMsg,
+                           std::function<void()> onSuccess = nullptr);
 
     // Live network providers
     void fetchFlathubCollection(const QString& collection, int page, bool append);
@@ -159,10 +163,18 @@ private:
     void queryAndroidFDroid(const QString& query);
     void ensureAuroraAuth(std::function<void(bool)> callback);
     void queryAuroraPlay(const QString& query);
+    void installFDroidAndroidApp(const finn::store::StoreAppItem& item);
     void installAuroraAndroidApp(const finn::store::StoreAppItem& item);
     void fetchWingetCollection(const QString& collection);
     void queryWinget(const QString& query);
     void installWingetApp(const finn::store::StoreAppItem& item);
+    void fetchWingetYamlForVersion(const QString& appId, const QString& wgid,
+                                   const QString& name, const QString& relDir,
+                                   const QString& version, const QString& runner,
+                                   bool allowGithubFallback = true);
+    void downloadAndRunWingetManifest(const QString& appId, const QString& wgid,
+                                      const QString& name, const QByteArray& yamlBytes,
+                                      const QString& runner);
 
     QNetworkAccessManager* nam_ = nullptr;
     QString active_tab_ = QStringLiteral("discover");

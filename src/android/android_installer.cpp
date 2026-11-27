@@ -631,7 +631,30 @@ AndroidRunReport run_android_package(const std::string& package_or_apk,
     for (const auto& warning : layout_warnings) {
         rep.lifecycle_log.push_back("layout: " + warning);
     }
-    if (!inflated) rep.lifecycle_log.push_back("layout: no inflatable view tree found in APK");
+    if (!inflated) {
+        rep.lifecycle_log.push_back("layout: no inflatable view tree found in APK");
+        if (!headless) {
+            // Build an honest FinnOS app window showing the real APK metadata & activity info
+            // instead of silently exiting with no window when an APK uses Compose/compiled UI.
+            auto esc = [](const std::string& s) {
+                std::string o;
+                for (char c : s) {
+                    if (c == '"' || c == '\\') o.push_back('\\');
+                    if (c != '\n' && c != '\r') o.push_back(c);
+                }
+                return o;
+            };
+            const std::string fallback_json =
+                "{\"type\":\"LinearLayout\",\"orientation\":\"vertical\",\"children\":["
+                "{\"type\":\"TextView\",\"text\":\"" + esc(apk_display_name(apk)) + "\"},"
+                "{\"type\":\"TextView\",\"text\":\"Package: " + esc(apk.manifest.package_name) + " (v" + esc(apk.manifest.version_name) + ")\"},"
+                "{\"type\":\"TextView\",\"text\":\"Activity: " + esc(rep.activity) + "\"},"
+                "{\"type\":\"TextView\",\"text\":\"Target SDK: API " + std::to_string(apk.manifest.target_sdk) + " · Host ABI: " + esc(apk.host_abi) + "\"},"
+                "{\"type\":\"TextView\",\"text\":\"This APK uses compiled/Jetpack Compose UI not inflatable by the lightweight AXML bridge. Initialize Waydroid for full Android Framework rendering.\"}"
+                "]}";
+            ui.inflate_json(fallback_json, nullptr);
+        }
+    }
 
     ui.set_lifecycle_handler([&](const std::string& phase) {
         const auto it = std::find_if(plan.methods.begin(), plan.methods.end(),

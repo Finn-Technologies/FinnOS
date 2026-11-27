@@ -1,6 +1,7 @@
 [Unit]
 Description=FinnOS Compositor (finn-comp)
 Documentation=man:finn-comp(1)
+ConditionKernelCommandLine=!finn.recovery
 # The compositor is the display: it must come up before getty and the shell.
 # It opens DRM and evdev through seatd, so the seat daemon has to be there.
 Wants=seatd.service

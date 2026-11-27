@@ -19,7 +19,7 @@ Item {
 
     FinnSpring {
         id: pressSpring
-        preset: "bouncy"
+        preset: "snappy"
     }
     Component.onCompleted: pressSpring.snap(1.0)
     scale: pressSpring.value
@@ -98,8 +98,8 @@ Item {
         enabled: root.enabled
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onPressed: { pressSpring.preset = "snappy"; pressSpring.target = 0.95 }
-        onReleased: { pressSpring.preset = "bouncy"; pressSpring.target = 1.0 }
+        onPressed: { pressSpring.preset = "snappy"; pressSpring.target = 0.97 }
+        onReleased: { pressSpring.preset = "snappy"; pressSpring.target = 1.0 }
         onCanceled: { pressSpring.preset = "snappy"; pressSpring.target = 1.0 }
         onClicked: root.clicked()
     }

@@ -220,18 +220,18 @@ std::vector<StoreAppItem> build_curated_catalog() {
         out.push_back(std::move(a));
     };
 
-    add_and("org.thoughtcrime.securesms", "Signal", "Private encrypted messaging",
-            "Signal Foundation", "Social", 4.8, "64 MB", "#2563eb",
-            {"Android Runtime (finn-android)", "Network", "Notifications"}, "PRIVACY PICK");
     add_and("org.fdroid.fdroid", "F-Droid", "Free & open-source Android app repository",
-            "F-Droid Limited", "Utilities", 4.7, "11 MB", "#16a34a",
-            {"Android Runtime (finn-android)", "Network", "Package Storage"});
-    add_and("org.videolan.vlc", "VLC for Android", "Mobile & tablet media player",
-            "Videolabs", "Media", 4.7, "38 MB", "#f97316",
-            {"Android Runtime (finn-android)", "Media Storage", "Audio"});
+            "F-Droid Limited", "Utilities", 4.8, "13 MB", "#16a34a",
+            {"Android Runtime (finn-android)", "Network", "Package Storage"}, "ESSENTIAL");
     add_and("app.organicmaps", "Organic Maps", "Offline OpenStreetMap navigation",
             "Organic Maps", "Navigation", 4.9, "72 MB", "#10b981",
             {"Android Runtime (finn-android)", "Offline Maps Storage"});
+    add_and("org.mozilla.fennec_fdroid", "Fennec F-Droid", "Privacy-focused Firefox-based browser",
+            "F-Droid / Mozilla", "Internet", 4.8, "94 MB", "#2563eb",
+            {"Android Runtime (finn-android)", "Network"});
+    add_and("com.termux", "Termux", "Android terminal emulator & Linux environment",
+            "Termux", "Developer", 4.9, "28 MB", "#334155",
+            {"Android Runtime (finn-android)", "Terminal"});
 
     // ── Windows (winget-pkgs -> finn-win) ────────────────────────────────────
     auto add_win = [&](const char* wgid, const char* name, const char* sub, const char* dev,

@@ -67,6 +67,11 @@ class SettingsController : public QObject {
     // Security & Lock
     Q_PROPERTY(int autoLockMinutes READ autoLockMinutes WRITE setAutoLockMinutes NOTIFY securityChanged)
 
+    // Users & Accounts
+    Q_PROPERTY(QVariantList systemUsers READ systemUsers NOTIFY usersChanged)
+    Q_PROPERTY(bool userActionBusy READ userActionBusy NOTIFY usersChanged)
+    Q_PROPERTY(bool sudoPasswordRequired READ sudoPasswordRequired CONSTANT)
+
     // Wallpapers
     Q_PROPERTY(QVariantList availableWallpapers READ availableWallpapers CONSTANT)
     Q_PROPERTY(QString wallpaperPath READ wallpaperPath NOTIFY appearanceChanged)
@@ -162,6 +167,21 @@ public:
     Q_INVOKABLE void applyLockWallpaper(const QString& path);
     Q_INVOKABLE void checkForUpdates();
     Q_INVOKABLE void applyUpdate();
+    QVariantList systemUsers() const { return system_users_; }
+    bool userActionBusy() const { return user_action_busy_; }
+    bool sudoPasswordRequired() const { return sudo_password_required_; }
+
+    Q_INVOKABLE void refreshUsers();
+    Q_INVOKABLE void createUser(const QString& fullName,
+                                const QString& username,
+                                const QString& password,
+                                bool isAdmin,
+                                const QString& adminPassword = QString());
+    Q_INVOKABLE void changeUserPassword(const QString& username,
+                                        const QString& newPassword,
+                                        const QString& adminPassword = QString());
+    Q_INVOKABLE void deleteUser(const QString& username,
+                                const QString& adminPassword = QString());
     Q_INVOKABLE void copySystemSummary();
 
 signals:
@@ -171,6 +191,7 @@ signals:
     void securityChanged();
     void appearanceChanged();
     void updateChanged();
+    void usersChanged();
     void toastRequested(const QString& message, const QString& severity);
 
 private:
@@ -179,6 +200,12 @@ private:
     void probeWallpapers();
     void probeCompatRuntimes();
     void loadPersistedSettings();
+    void probeSystemUsers();
+    void runPrivilegedUserScript(const QString& script,
+                                 const QStringList& args,
+                                 const QString& secretPayload,
+                                 const QString& adminPassword,
+                                 const QString& successMsg);
 
     finn::sys::FinnDesktopServices services_;
 
@@ -210,6 +237,9 @@ private:
 
     QVariantList wallpapers_;
     QVariantList compat_runtimes_;
+    QVariantList system_users_;
+    bool user_action_busy_ = false;
+    bool sudo_password_required_ = true;
     QString update_status_;
     bool update_checking_ = false;
     bool update_available_ = false;

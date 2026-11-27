@@ -13,15 +13,25 @@
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaObject>
+#include <QPointer>
 #include <QQuickWindow>
 #include <QRegion>
 #include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <poll.h>
 #include <pwd.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <thread>
 #include <unistd.h>
 
 #ifdef FINN_HAVE_QT_DBUS
@@ -826,24 +836,72 @@ void ShellCorona::refreshHardwareStatus() {
 void ShellCorona::loadUsers() {
     user_accounts_.clear();
     const struct passwd* cur = ::getpwuid(::getuid());
-    if (cur && cur->pw_name) {
-        selected_user_ = QString::fromLocal8Bit(cur->pw_name);
-        QString gecos = cur->pw_gecos ? QString::fromLocal8Bit(cur->pw_gecos).section(QLatin1Char(','), 0, 0).trimmed()
-                                      : QString();
+    QString current_name = (cur && cur->pw_name)
+        ? QString::fromLocal8Bit(cur->pw_name)
+        : QStringLiteral("finn");
+
+    // If OOBE provisioned a primary user (and we are still running inside the
+    // bootstrap `finn` session before handoff), prefer the provisioned account
+    // so the Lock Screen authenticates against the real user and password.
+    QString preferred_user = current_name;
+    if (current_name == QLatin1String("finn")) {
+        QFile pf(QString::fromLatin1(finn::kPrimaryUserPath));
+        if (pf.open(QIODevice::ReadOnly)) {
+            const QString provisioned = QString::fromUtf8(pf.readAll()).trimmed();
+            if (!provisioned.isEmpty() && ::getpwnam(provisioned.toLocal8Bit().constData()) != nullptr) {
+                preferred_user = provisioned;
+            }
+        }
+    }
+
+    auto append_user = [this](const struct passwd* pw) -> QVariantMap {
+        QString uname = QString::fromLocal8Bit(pw->pw_name);
+        QString gecos = pw->pw_gecos
+            ? QString::fromLocal8Bit(pw->pw_gecos).section(QLatin1Char(','), 0, 0).trimmed()
+            : QString();
         if (gecos.isEmpty()) {
-            gecos = selected_user_;
+            gecos = uname;
             if (!gecos.isEmpty()) gecos[0] = gecos[0].toUpper();
         }
-        selected_display_name_ = gecos;
         QVariantMap u;
-        u.insert(QStringLiteral("username"), selected_user_);
-        u.insert(QStringLiteral("displayName"), selected_display_name_);
-        u.insert(QStringLiteral("uid"), static_cast<int>(cur->pw_uid));
+        u.insert(QStringLiteral("username"), uname);
+        u.insert(QStringLiteral("displayName"), gecos);
+        u.insert(QStringLiteral("uid"), static_cast<int>(pw->pw_uid));
         user_accounts_.append(u);
+        return u;
+    };
+
+    const struct passwd* chosen = ::getpwnam(preferred_user.toLocal8Bit().constData());
+    if (!chosen) chosen = cur;
+    QStringList seen_users;
+    if (chosen && chosen->pw_name) {
+        const QVariantMap m = append_user(chosen);
+        selected_user_ = m.value(QStringLiteral("username")).toString();
+        selected_display_name_ = m.value(QStringLiteral("displayName")).toString();
+        seen_users.append(selected_user_);
     } else {
         selected_user_ = QStringLiteral("finn");
         selected_display_name_ = QStringLiteral("Finn");
     }
+
+    // Also include all other interactive human accounts on the system so users
+    // created in Settings appear on the Lock Screen immediately.
+    ::setpwent();
+    while (const struct passwd* pw = ::getpwent()) {
+        if (!pw->pw_name || !pw->pw_shell) continue;
+        if (pw->pw_uid < 500 || pw->pw_uid >= 65534) continue;
+        const QString uname = QString::fromLocal8Bit(pw->pw_name);
+        if (seen_users.contains(uname)) continue;
+        if (uname == QLatin1String("finn") && selected_user_ != QLatin1String("finn")) continue;
+        const QString sh = QString::fromLocal8Bit(pw->pw_shell);
+        if (sh.isEmpty() || sh.endsWith(QLatin1String("/nologin")) ||
+            sh.endsWith(QLatin1String("/false")) || sh.endsWith(QLatin1String("/sync"))) {
+            continue;
+        }
+        append_user(pw);
+        seen_users.append(uname);
+    }
+    ::endpwent();
     emit userChanged();
 }
 
@@ -1200,6 +1258,7 @@ void ShellCorona::mediaNext() {
 }
 
 void ShellCorona::lockNow() {
+    loadUsers();
     closePanels();
     locked_ = true;
     unlock_error_.clear();
@@ -1223,6 +1282,40 @@ void ShellCorona::attemptUnlock(const QString& password) {
     verifying_unlock_ = true;
     unlock_error_.clear();
     emit lockStateChanged();
+
+    const struct passwd* cur = ::getpwuid(::getuid());
+    const QString current_name = (cur && cur->pw_name)
+        ? QString::fromLocal8Bit(cur->pw_name)
+        : QString();
+
+    // Primary path for the current user: Linux-PAM's setuid unix_chkpwd verifies
+    // both real passwords and empty passwords (nullok) over stdin with zero TTY needed.
+    const QString chkpwd_bin = QFileInfo(QStringLiteral("/usr/bin/unix_chkpwd")).isExecutable()
+        ? QStringLiteral("/usr/bin/unix_chkpwd")
+        : QStandardPaths::findExecutable(QStringLiteral("unix_chkpwd"));
+    if (!chkpwd_bin.isEmpty() && selected_user_ == current_name) {
+        auto* p = new QProcess(this);
+        auth_proc_ = p;
+        const bool empty_pw = password.isEmpty();
+        connect(p, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+                [this, p, empty_pw](int code, QProcess::ExitStatus st) {
+                    p->deleteLater();
+                    if (auth_proc_ == p) auth_proc_ = nullptr;
+                    if (st == QProcess::NormalExit && code == 0) {
+                        finishUnlockSuccess();
+                    } else {
+                        finishUnlockFailure(empty_pw
+                            ? QStringLiteral("Enter your password")
+                            : QStringLiteral("Incorrect password"));
+                    }
+                });
+        p->start(chkpwd_bin, {selected_user_, QStringLiteral("nullok")});
+        QByteArray payload = password.toUtf8();
+        payload.append('\0');
+        p->write(payload);
+        p->closeWriteChannel();
+        return;
+    }
 
     if (password.isEmpty()) {
         startPasswordlessCheck(selected_user_);
@@ -1261,21 +1354,85 @@ void ShellCorona::startSuAuth(const QString& user, const QString& password) {
         finishUnlockFailure(QStringLiteral("Authentication service unavailable"));
         return;
     }
-    auto* p = new QProcess(this);
-    auth_proc_ = p;
-    connect(p, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
-            [this, p](int code, QProcess::ExitStatus st) {
-                p->deleteLater();
-                if (auth_proc_ == p) auth_proc_ = nullptr;
-                if (st == QProcess::NormalExit && code == 0) {
-                    finishUnlockSuccess();
-                } else {
-                    finishUnlockFailure(QStringLiteral("Incorrect password"));
+    // util-linux `su` reads passwords from /dev/tty via PAM, never from a plain stdin pipe.
+    // Allocate a real POSIX PTY so authentication works for any user on the system.
+    const std::string su_path = su_bin.toStdString();
+    const std::string uname = user.toStdString();
+    const std::string pw = password.toStdString();
+    QPointer<ShellCorona> self(this);
+    std::thread([self, su_path, uname, pw]() {
+        bool ok = false;
+        int master_fd = ::posix_openpt(O_RDWR | O_NOCTTY);
+        if (master_fd >= 0 && ::grantpt(master_fd) == 0 && ::unlockpt(master_fd) == 0) {
+            char slave_name[128] = {};
+#ifdef __linux__
+            const bool got_slave = (::ptsname_r(master_fd, slave_name, sizeof(slave_name)) == 0);
+#else
+            const char* sn = ::ptsname(master_fd);
+            const bool got_slave = (sn != nullptr);
+            if (got_slave) std::strncpy(slave_name, sn, sizeof(slave_name) - 1);
+#endif
+            if (got_slave) {
+                const pid_t pid = ::fork();
+                if (pid == 0) {
+                    ::close(master_fd);
+                    ::setsid();
+                    const int slave_fd = ::open(slave_name, O_RDWR);
+                    if (slave_fd >= 0) {
+                        ::ioctl(slave_fd, TIOCSCTTY, 0);
+                        struct termios tio{};
+                        if (::tcgetattr(slave_fd, &tio) == 0) {
+                            tio.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+                            ::tcsetattr(slave_fd, TCSANOW, &tio);
+                        }
+                        ::dup2(slave_fd, STDIN_FILENO);
+                        ::dup2(slave_fd, STDOUT_FILENO);
+                        ::dup2(slave_fd, STDERR_FILENO);
+                        if (slave_fd > 2) ::close(slave_fd);
+                    }
+                    ::setenv("LC_ALL", "C", 1);
+                    ::execl(su_path.c_str(), "su", uname.c_str(), "-c", "true", nullptr);
+                    ::_exit(127);
+                } else if (pid > 0) {
+                    // Wait briefly for PAM's Password prompt on the PTY before writing.
+                    struct pollfd pfd{};
+                    pfd.fd = master_fd;
+                    pfd.events = POLLIN;
+                    char buf[256];
+                    if (::poll(&pfd, 1, 600) > 0 && (pfd.revents & POLLIN)) {
+                        (void)::read(master_fd, buf, sizeof(buf));
+                    }
+                    const std::string line = pw + "\n";
+                    (void)::write(master_fd, line.data(), line.size());
+                    // Drain PTY until child exits (bounded to 4 seconds).
+                    int status = 0;
+                    for (int i = 0; i < 40; ++i) {
+                        if (::poll(&pfd, 1, 100) > 0 && (pfd.revents & POLLIN)) {
+                            if (::read(master_fd, buf, sizeof(buf)) <= 0) break;
+                        }
+                        const pid_t r = ::waitpid(pid, &status, WNOHANG);
+                        if (r == pid) {
+                            ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                            break;
+                        }
+                        if (r < 0) break;
+                    }
+                    if (::waitpid(pid, &status, WNOHANG) == 0) {
+                        ::kill(pid, SIGKILL);
+                        ::waitpid(pid, &status, 0);
+                    } else if (!ok) {
+                        ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+                    }
                 }
-            });
-    p->start(su_bin, {user, QStringLiteral("-c"), QStringLiteral("true")});
-    p->write((password + QLatin1Char('\n')).toUtf8());
-    p->closeWriteChannel();
+            }
+        }
+        if (master_fd >= 0) ::close(master_fd);
+        QMetaObject::invokeMethod(self, [self, ok]() {
+            if (!self) return;
+            if (ok) self->finishUnlockSuccess();
+            else self->finishUnlockFailure(QStringLiteral("Incorrect password"));
+        }, Qt::QueuedConnection);
+    }).detach();
 }
 
 void ShellCorona::finishUnlockSuccess() {

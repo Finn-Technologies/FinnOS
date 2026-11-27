@@ -19,6 +19,7 @@
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -28,6 +29,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -35,6 +37,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <unordered_map>
 
 namespace fs = std::filesystem;
@@ -47,16 +50,27 @@ using finn::store::StoreEcosystem;
 
 QString qstr(const std::string& s) { return QString::fromStdString(s); }
 
-StoreEcosystem map_app_source(finn::AppSource src) {
-    switch (src) {
+StoreEcosystem map_app_source(const finn::App& app) {
+    switch (app.source) {
         case finn::AppSource::kNative:  return StoreEcosystem::Native;
         case finn::AppSource::kFlatpak: return StoreEcosystem::Flatpak;
-        case finn::AppSource::kDesktop: return StoreEcosystem::Flatpak;
         case finn::AppSource::kAndroid: return StoreEcosystem::Android;
         case finn::AppSource::kWindows:
         case finn::AppSource::kWinget:  return StoreEcosystem::Windows;
         case finn::AppSource::kMacos:   return StoreEcosystem::Macos;
         case finn::AppSource::kOhos:    return StoreEcosystem::Ohos;
+        case finn::AppSource::kDesktop: {
+            const std::string& cmd = app.command;
+            if (cmd.find("finn-win") != std::string::npos ||
+                cmd.find("wine") != std::string::npos ||
+                cmd.find(".exe") != std::string::npos) {
+                return StoreEcosystem::Windows;
+            }
+            if (cmd.find("finn-android") != std::string::npos) {
+                return StoreEcosystem::Android;
+            }
+            return StoreEcosystem::Flatpak;
+        }
         default:                        return StoreEcosystem::Native;
     }
 }
@@ -75,6 +89,142 @@ QString accent_for_ecosystem(StoreEcosystem eco) {
         case StoreEcosystem::Ohos:    return QStringLiteral("#f59e0b");
     }
     return QStringLiteral("#3b82f6");
+}
+
+QString format_speed_bps(double bps) {
+    if (bps >= 1024.0 * 1024.0) {
+        return QStringLiteral("%1 MB/s").arg(bps / (1024.0 * 1024.0), 0, 'f', 1);
+    }
+    if (bps >= 1024.0) {
+        return QStringLiteral("%1 KB/s").arg(bps / 1024.0, 0, 'f', 0);
+    }
+    return QStringLiteral("%1 B/s").arg(qRound(bps));
+}
+
+QString mime_for_extension(const QString& rawExt) {
+    const QString e = rawExt.trimmed().toLower().remove(QLatin1Char('.'));
+    if (e == QLatin1String("7z")) return QStringLiteral("application/x-7z-compressed");
+    if (e == QLatin1String("zip")) return QStringLiteral("application/zip");
+    if (e == QLatin1String("rar")) return QStringLiteral("application/vnd.rar");
+    if (e == QLatin1String("tar")) return QStringLiteral("application/x-tar");
+    if (e == QLatin1String("gz") || e == QLatin1String("gzip")) return QStringLiteral("application/gzip");
+    if (e == QLatin1String("xz")) return QStringLiteral("application/x-xz");
+    if (e == QLatin1String("bz2")) return QStringLiteral("application/x-bzip2");
+    if (e == QLatin1String("iso")) return QStringLiteral("application/x-cd-image");
+    if (e == QLatin1String("pdf")) return QStringLiteral("application/pdf");
+    if (e == QLatin1String("epub")) return QStringLiteral("application/epub+zip");
+    if (e == QLatin1String("cbz")) return QStringLiteral("application/vnd.comicbook+zip");
+    if (e == QLatin1String("cbr")) return QStringLiteral("application/vnd.comicbook-rar");
+    if (e == QLatin1String("kdbx")) return QStringLiteral("application/x-keepass2");
+    if (e == QLatin1String("txt") || e == QLatin1String("log") || e == QLatin1String("ini") || e == QLatin1String("cfg")) return QStringLiteral("text/plain");
+    if (e == QLatin1String("md")) return QStringLiteral("text/markdown");
+    if (e == QLatin1String("json")) return QStringLiteral("application/json");
+    if (e == QLatin1String("xml")) return QStringLiteral("application/xml");
+    if (e == QLatin1String("html") || e == QLatin1String("htm")) return QStringLiteral("text/html");
+    if (e == QLatin1String("c") || e == QLatin1String("cpp") || e == QLatin1String("h") || e == QLatin1String("hpp")) return QStringLiteral("text/x-c++src");
+    if (e == QLatin1String("py")) return QStringLiteral("text/x-python");
+    if (e == QLatin1String("js")) return QStringLiteral("application/javascript");
+    if (e == QLatin1String("mp4")) return QStringLiteral("video/mp4");
+    if (e == QLatin1String("mkv")) return QStringLiteral("video/x-matroska");
+    if (e == QLatin1String("mp3")) return QStringLiteral("audio/mpeg");
+    if (e == QLatin1String("flac")) return QStringLiteral("audio/flac");
+    if (e == QLatin1String("png")) return QStringLiteral("image/png");
+    if (e == QLatin1String("jpg") || e == QLatin1String("jpeg")) return QStringLiteral("image/jpeg");
+    return {};
+}
+
+QSet<QString> snapshot_wine_exes(const QString& prefix) {
+    QSet<QString> out;
+    std::error_code ec;
+    for (const char* sub : {"drive_c/Program Files", "drive_c/Program Files (x86)"}) {
+        const fs::path root = fs::path(prefix.toStdString()) / sub;
+        if (!fs::is_directory(root, ec)) continue;
+        for (const auto& entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+            if (!entry.is_regular_file(ec)) continue;
+            const QString p = QString::fromStdString(entry.path().string());
+            if (p.endsWith(QLatin1String(".exe"), Qt::CaseInsensitive)) {
+                out.insert(p);
+            }
+        }
+    }
+    return out;
+}
+
+QString find_best_windows_exe(const QString& prefix, const QSet<QString>& before, const QString& appName) {
+    const QSet<QString> after = snapshot_wine_exes(prefix);
+    QStringList candidates;
+    for (const QString& p : after) {
+        if (!before.contains(p)) candidates.append(p);
+    }
+    // If app was already installed (reinstall), search matching folder in after
+    const QString needle = appName.toLower().remove(QLatin1Char(' ')).remove(QLatin1Char('-'));
+    if (candidates.isEmpty()) {
+        for (const QString& p : after) {
+            QString low = p.toLower();
+            low.remove(QLatin1Char(' ')).remove(QLatin1Char('-'));
+            if (!needle.isEmpty() && low.contains(needle)) candidates.append(p);
+        }
+    }
+    QString best;
+    int best_score = -1000;
+    for (const QString& p : candidates) {
+        const QString base = QFileInfo(p).fileName().toLower();
+        if (base.contains(QLatin1String("unins")) || base.contains(QLatin1String("uninstall")) ||
+            base.contains(QLatin1String("setup")) || base.contains(QLatin1String("update")) ||
+            base.contains(QLatin1String("crash")) || base.contains(QLatin1String("helper"))) {
+            continue;
+        }
+        int score = 0;
+        const auto pe = finn::compat::inspect_pe_file(p.toStdString());
+        if (pe.valid && pe.is_gui) score += 50;
+        if (base.contains(QLatin1String("fm.exe"))) score += 20;  // e.g. 7zFM.exe
+        if (!needle.isEmpty() && base.contains(needle.left(4))) score += 25;
+        if (score > best_score) {
+            best_score = score;
+            best = p;
+        }
+    }
+    return best;
+}
+
+void register_windows_app_and_mimes(const QString& appId, const QString& wgid,
+                                    const QString& name, const QString& exePath,
+                                    const std::vector<std::string>& fileExts) {
+    if (exePath.isEmpty()) return;
+    const QString home = QDir::homePath();
+    const QString conf = home + QStringLiteral("/") + QString::fromLatin1(finn::kUserWindowsConfRel);
+    finn::compat::WindowsAppEntry entry;
+    entry.id = appId.toStdString();
+    entry.name = name.toStdString();
+    entry.exe_path = exePath.toStdString();
+    entry.icon = "windows";
+    finn::compat::save_windows_app(conf.toStdString(), entry, nullptr);
+
+    // Register Freedesktop .desktop entry with MimeType associations for file extensions
+    QStringList mimes;
+    for (const std::string& ext : fileExts) {
+        const QString m = mime_for_extension(qstr(ext));
+        if (!m.isEmpty() && !mimes.contains(m)) mimes.append(m);
+    }
+    QString slug = wgid.toLower();
+    slug.replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")), QStringLiteral("-"));
+    const QString apps_dir = home + QStringLiteral("/.local/share/applications");
+    QDir().mkpath(apps_dir);
+    QFile df(apps_dir + QStringLiteral("/finn-win-") + slug + QStringLiteral(".desktop"));
+    if (df.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        QByteArray content;
+        content.append("[Desktop Entry]\nType=Application\n");
+        content.append("Name=" + name.toUtf8() + "\n");
+        content.append("Exec=/usr/local/bin/finn-win \"" + exePath.toUtf8() + "\" %f\n");
+        content.append("Icon=windows\n");
+        content.append("Categories=Utility;\n");
+        if (!mimes.isEmpty()) {
+            content.append("MimeType=" + mimes.join(QLatin1Char(';')).toUtf8() + ";\n");
+        }
+        df.write(content);
+        df.close();
+        QProcess::startDetached(QStringLiteral("update-desktop-database"), {apps_dir});
+    }
 }
 
 }  // namespace
@@ -265,15 +415,18 @@ void StoreController::rebuildCatalog() {
     std::vector<StoreAppItem> merged;
     std::unordered_map<std::string, std::size_t> by_id;
 
-    // Seed with curated items; when live ecosystem catalogs are loaded, skip
-    // generic-icon placeholders so real apps with real icons lead each tab.
+    // Seed with curated items; for Flathub when live results are loaded, lead with
+    // live Flathub hits (which have official icons). For Android & Windows, keep
+    // curated picks when browsing "popular" so well-known apps are always present.
     const bool have_live_flathub = !remote_flathub_.empty();
     const bool have_live_android = !remote_android_.empty();
     const bool have_live_winget = !remote_winget_.empty();
     for (const auto& c : curated_) {
         if (have_live_flathub && c.ecosystem == StoreEcosystem::Flatpak) continue;
-        if (have_live_android && c.ecosystem == StoreEcosystem::Android) continue;
-        if (have_live_winget && c.ecosystem == StoreEcosystem::Windows) continue;
+        if (have_live_android && c.ecosystem == StoreEcosystem::Android &&
+            android_collection_ != QLatin1String("popular")) continue;
+        if (have_live_winget && c.ecosystem == StoreEcosystem::Windows &&
+            winget_collection_ != QLatin1String("popular")) continue;
         by_id[c.id] = merged.size();
         merged.push_back(c);
     }
@@ -297,7 +450,7 @@ void StoreController::rebuildCatalog() {
 
     // Reconcile with real installed apps from AppRegistry
     for (const auto& inst : reg.apps()) {
-        const StoreEcosystem eco = map_app_source(inst.source);
+        const StoreEcosystem eco = map_app_source(inst);
         bool matched = false;
         for (auto& item : merged) {
             const bool id_match = (item.id == inst.id || item.session_app_id == inst.id ||
@@ -419,9 +572,9 @@ void StoreController::rebuildFiltered() {
 
     std::vector<StoreAppItem> next;
     if (!needle.isEmpty() && active_tab_ == QLatin1String("discover")) {
-        // Global search: check Native FinnOS apps first; if none match, show
-        // Linux, Windows, and Android results (with ecosystem tags in UI).
-        std::vector<StoreAppItem> native_hits, linux_hits, win_hits, android_hits;
+        // Global search: lead with Native FinnOS matches, followed by Linux,
+        // Windows, Android, macOS, and OpenHarmony results (all with accurate tags).
+        std::vector<StoreAppItem> native_hits, linux_hits, win_hits, android_hits, other_hits;
         for (const auto& a : all_items_) {
             if (!matches_query(a)) continue;
             switch (a.ecosystem) {
@@ -429,17 +582,16 @@ void StoreController::rebuildFiltered() {
                 case StoreEcosystem::Flatpak: linux_hits.push_back(a); break;
                 case StoreEcosystem::Windows: win_hits.push_back(a); break;
                 case StoreEcosystem::Android: android_hits.push_back(a); break;
-                default: break;
+                default:                      other_hits.push_back(a); break;
             }
         }
-        if (!native_hits.empty()) {
-            next = std::move(native_hits);
-        } else {
-            next.reserve(linux_hits.size() + win_hits.size() + android_hits.size());
-            next.insert(next.end(), linux_hits.begin(), linux_hits.end());
-            next.insert(next.end(), win_hits.begin(), win_hits.end());
-            next.insert(next.end(), android_hits.begin(), android_hits.end());
-        }
+        next.reserve(native_hits.size() + linux_hits.size() + win_hits.size() +
+                     android_hits.size() + other_hits.size());
+        next.insert(next.end(), native_hits.begin(), native_hits.end());
+        next.insert(next.end(), linux_hits.begin(), linux_hits.end());
+        next.insert(next.end(), win_hits.begin(), win_hits.end());
+        next.insert(next.end(), android_hits.begin(), android_hits.end());
+        next.insert(next.end(), other_hits.begin(), other_hits.end());
     } else {
         for (const auto& a : all_items_) {
             bool tab_ok = true;
@@ -564,31 +716,155 @@ void StoreController::clearTaskState(const QString& appId) {
     if (selected_app_id_ == appId) refreshSelectedDetail();
 }
 
+void StoreController::downloadFileFast(const QString& appId, const QString& url,
+                                       const QString& destPath,
+                                       double progressStart, double progressSpan,
+                                       std::function<void(bool ok, const QString& err)> onDone) {
+    const QFileInfo fi(destPath);
+    QDir().mkpath(fi.absolutePath());
+    QFile::remove(destPath);
+
+    // Prefer 16-connection parallel aria2c for 5x-10x faster downloads + live speed telemetry
+    if (finn::compat::executable_exists("aria2c")) {
+        setTaskState(appId, progressStart, QStringLiteral("Connecting (16x parallel)..."));
+        auto* proc = new QProcess(this);
+        proc->setProcessChannelMode(QProcess::MergedChannels);
+        auto last_err = std::make_shared<QString>();
+        connect(proc, &QProcess::readyReadStandardOutput, this,
+                [this, proc, appId, progressStart, progressSpan, last_err]() {
+                    const QString chunk = QString::fromUtf8(proc->readAllStandardOutput());
+                    static const QRegularExpression pctRe(QStringLiteral("\\((\\d{1,3})%\\)"));
+                    static const QRegularExpression spdRe(QStringLiteral("DL:([0-9.]+[A-Za-z]+)(?:/s)?"));
+                    const auto pm = pctRe.match(chunk);
+                    const auto sm = spdRe.match(chunk);
+                    if (pm.hasMatch() || sm.hasMatch()) {
+                        const int pct = pm.hasMatch() ? pm.captured(1).toInt() : 0;
+                        const double p = progressStart + progressSpan * (std::clamp(pct, 0, 100) / 100.0);
+                        QString st = QStringLiteral("Downloading");
+                        if (sm.hasMatch()) st += QStringLiteral(" · %1/s").arg(sm.captured(1));
+                        if (pm.hasMatch()) st += QStringLiteral(" · %1%").arg(pct);
+                        setTaskState(appId, p, st);
+                    }
+                    if (chunk.contains(QLatin1String("errorCode=")) ||
+                        chunk.contains(QLatin1String("Exception:"))) {
+                        *last_err = chunk.trimmed().section(QLatin1Char('\n'), -1);
+                    }
+                });
+        connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+                [proc, destPath, onDone, last_err](int code, QProcess::ExitStatus status) {
+                    proc->deleteLater();
+                    const bool ok = (status == QProcess::NormalExit && code == 0 &&
+                                     QFileInfo::exists(destPath) && QFileInfo(destPath).size() > 0);
+                    onDone(ok, ok ? QString() : (last_err->isEmpty() ? QStringLiteral("aria2c download failed (code %1)").arg(code) : *last_err));
+                });
+        proc->start(QStringLiteral("aria2c"), {
+            QStringLiteral("-x16"),
+            QStringLiteral("-s16"),
+            QStringLiteral("-k1M"),
+            QStringLiteral("--allow-overwrite=true"),
+            QStringLiteral("--auto-file-renaming=false"),
+            QStringLiteral("--summary-interval=1"),
+            QStringLiteral("--console-log-level=notice"),
+            QStringLiteral("--user-agent=FinnStore/1.0"),
+            QStringLiteral("-d"), fi.absolutePath(),
+            QStringLiteral("-o"), fi.fileName(),
+            url,
+        });
+        if (proc->waitForStarted(3000)) return;
+        proc->deleteLater();
+    }
+
+    // Fallback: QNetworkAccessManager with live MB/s calculation
+    setTaskState(appId, progressStart, QStringLiteral("Downloading..."));
+    QNetworkRequest dlreq{QUrl(url)};
+    dlreq.setRawHeader("User-Agent", "FinnStore/1.0");
+    dlreq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                       QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* dl = nam_->get(dlreq);
+    auto timer = std::make_shared<QElapsedTimer>();
+    timer->start();
+    connect(dl, &QNetworkReply::downloadProgress, this,
+            [this, appId, progressStart, progressSpan, timer](qint64 rec, qint64 tot) {
+                const double secs = std::max(0.1, static_cast<double>(timer->elapsed()) / 1000.0);
+                const QString spd = format_speed_bps(static_cast<double>(rec) / secs);
+                if (tot > 0) {
+                    const int pct = qRound(100.0 * static_cast<double>(rec) / static_cast<double>(tot));
+                    const double p = progressStart + progressSpan * (static_cast<double>(rec) / static_cast<double>(tot));
+                    setTaskState(appId, p, QStringLiteral("Downloading · %1 · %2%").arg(spd).arg(pct));
+                } else {
+                    setTaskState(appId, progressStart + progressSpan * 0.3,
+                                 QStringLiteral("Downloading · %1").arg(spd));
+                }
+            });
+    connect(dl, &QNetworkReply::finished, this, [dl, destPath, onDone]() {
+        const QByteArray bytes = dl->readAll();
+        const bool ok = (dl->error() == QNetworkReply::NoError && !bytes.isEmpty());
+        const QString err = dl->errorString();
+        dl->deleteLater();
+        if (!ok) {
+            onDone(false, err.isEmpty() ? QStringLiteral("Download failed") : err);
+            return;
+        }
+        QFile f(destPath);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            onDone(false, QStringLiteral("Cannot write downloaded file"));
+            return;
+        }
+        f.write(bytes);
+        f.close();
+        onDone(true, {});
+    });
+}
+
 void StoreController::runProcessInstall(const QString& appId, const QString& program,
-                                        const QStringList& args, const QString& successMsg) {
+                                        const QStringList& args, const QString& successMsg,
+                                        std::function<void()> onSuccess) {
     setTaskState(appId, 0.15, QStringLiteral("Installing..."));
     auto* proc = new QProcess(this);
-    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc, appId]() {
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    auto last_output = std::make_shared<QString>();
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc, appId, last_output]() {
         const QString out = QString::fromUtf8(proc->readAllStandardOutput());
+        if (!out.trimmed().isEmpty()) {
+            *last_output = out.trimmed();
+        }
         static const QRegularExpression pctRe(QStringLiteral("(\\d{1,3})%"));
-        const auto m = pctRe.match(out);
-        if (m.hasMatch()) {
-            const double p = std::clamp(m.captured(1).toDouble() / 100.0, 0.05, 0.98);
-            setTaskState(appId, p, QStringLiteral("Installing %1%").arg(m.captured(1)));
+        static const QRegularExpression spdRe(QStringLiteral("([0-9.]+\\s*[kMGT]?B/s)"));
+        static const QRegularExpression stepRe(QStringLiteral("(Installing\\s+\\d+/\\d+)"));
+        const auto pm = pctRe.match(out);
+        const auto sm = spdRe.match(out);
+        const auto stm = stepRe.match(out);
+        if (pm.hasMatch() || sm.hasMatch() || stm.hasMatch()) {
+            const int pct = pm.hasMatch() ? pm.captured(1).toInt() : 25;
+            const double p = std::clamp(static_cast<double>(pct) / 100.0, 0.08, 0.98);
+            QString st = stm.hasMatch() ? stm.captured(1) : QStringLiteral("Installing");
+            if (pm.hasMatch()) st += QStringLiteral(" · %1%").arg(pct);
+            if (sm.hasMatch()) st += QStringLiteral(" · %1").arg(sm.captured(1).simplified());
+            setTaskState(appId, p, st);
         }
     });
     connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, [this, proc, appId, successMsg](int code, QProcess::ExitStatus status) {
-                const QString stderr_text = QString::fromUtf8(proc->readAllStandardError()).trimmed();
+            this, [this, proc, appId, successMsg, onSuccess, last_output](int code, QProcess::ExitStatus status) {
+                const QString tail = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                if (!tail.isEmpty()) *last_output = tail;
                 proc->deleteLater();
                 clearTaskState(appId);
                 if (status == QProcess::NormalExit && code == 0) {
+                    if (onSuccess) onSuccess();
                     emit toastRequested(successMsg, QStringLiteral("success"));
                     reload();
                 } else {
-                    const QString msg = stderr_text.isEmpty()
-                        ? QStringLiteral("Operation failed (exit code %1)").arg(code)
-                        : stderr_text.section(QLatin1Char('\n'), -1);
+                    QString msg;
+                    for (const QString& line : last_output->split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+                        if (line.contains(QLatin1String("error:"), Qt::CaseInsensitive)) {
+                            msg = line.trimmed();
+                        }
+                    }
+                    if (msg.isEmpty()) {
+                        msg = last_output->isEmpty()
+                            ? QStringLiteral("Operation failed (exit code %1)").arg(code)
+                            : last_output->section(QLatin1Char('\n'), -1).trimmed();
+                    }
                     emit toastRequested(msg, QStringLiteral("error"));
                 }
             });
@@ -768,7 +1044,14 @@ void StoreController::queryAndroidFDroid(const QString& query) {
             item.description = item.subtitle;
             item.developer = "F-Droid / Android";
             item.ecosystem = StoreEcosystem::Android;
-            item.category = "Android";
+            if (android_collection_ == QLatin1String("internet")) item.category = "Internet";
+            else if (android_collection_ == QLatin1String("messaging")) item.category = "Messaging";
+            else if (android_collection_ == QLatin1String("media")) item.category = "Media";
+            else if (android_collection_ == QLatin1String("games")) item.category = "Games";
+            else if (android_collection_ == QLatin1String("maps")) item.category = "Navigation";
+            else if (android_collection_ == QLatin1String("office")) item.category = "Office";
+            else if (android_collection_ == QLatin1String("utilities")) item.category = "Utilities";
+            else item.category = "Apps";
             item.icon = is_default_icon ? "android" : icon.toStdString();
             item.verified = true;
             item.verified_source = "F-Droid";
@@ -879,6 +1162,17 @@ void StoreController::queryWinget(const QString& query) {
         if (ok && !raw.isEmpty()) {
             auto parsed = finn::store::parse_winget_search_json(
                 std::string_view(raw.constData(), static_cast<std::size_t>(raw.size())));
+            std::string col_cat = "Apps";
+            if (winget_collection_ == QLatin1String("developer")) col_cat = "Developer";
+            else if (winget_collection_ == QLatin1String("browsers")) col_cat = "Browsers";
+            else if (winget_collection_ == QLatin1String("media")) col_cat = "Media";
+            else if (winget_collection_ == QLatin1String("graphics")) col_cat = "Graphics";
+            else if (winget_collection_ == QLatin1String("gaming")) col_cat = "Gaming";
+            else if (winget_collection_ == QLatin1String("utilities")) col_cat = "Utilities";
+            else if (winget_collection_ == QLatin1String("security")) col_cat = "Security";
+            for (auto& a : parsed) {
+                if (a.category == "Apps" || a.category.empty()) a.category = col_cat;
+            }
             // Sort packages with real brand icons ahead of fallback icons
             std::stable_partition(parsed.begin(), parsed.end(), [](const StoreAppItem& a) {
                 return a.icon.rfind("https://", 0) == 0 || a.icon.rfind("http://", 0) == 0;
@@ -900,16 +1194,22 @@ void StoreController::installApp(const QString& appId) {
             emit toastRequested(QStringLiteral("Flatpak is not installed on this system"), QStringLiteral("warning"));
             return;
         }
+        // Ensure the user's Flathub remote is configured before installing
+        QProcess::execute(QStringLiteral("flatpak"),
+                          {QStringLiteral("remote-add"), QStringLiteral("--if-not-exists"),
+                           QStringLiteral("--user"), QStringLiteral("flathub"),
+                           QStringLiteral("https://dl.flathub.org/repo/flathub.flatpakrepo")});
         const QString fpid = qstr(item->install_ref);
         runProcessInstall(appId, QStringLiteral("flatpak"),
-                          {QStringLiteral("install"), QStringLiteral("-y"), QStringLiteral("--user"),
+                          {QStringLiteral("install"), QStringLiteral("-y"),
+                           QStringLiteral("--noninteractive"), QStringLiteral("--user"),
                            QStringLiteral("flathub"), fpid},
                           QStringLiteral("Installed %1").arg(qstr(item->name)));
         return;
     }
 
     if (item->ecosystem == StoreEcosystem::Android) {
-        installAuroraAndroidApp(*item);
+        installFDroidAndroidApp(*item);
         return;
     }
 
@@ -932,6 +1232,63 @@ void StoreController::installApp(const QString& appId) {
                                 QStringLiteral("info"));
         }
     }
+}
+
+void StoreController::installFDroidAndroidApp(const StoreAppItem& item) {
+    const auto rt = finn::compat::probe_android_runtime();
+    if (!rt.finn_android_installed) {
+        emit toastRequested(qstr(rt.summary), QStringLiteral("warning"));
+        return;
+    }
+    const QString appId = qstr(item.id);
+    const QString pkg = qstr(item.install_ref);
+    const QString name = qstr(item.name);
+    setTaskState(appId, 0.12, QStringLiteral("Resolving Android package..."));
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://f-droid.org/api/v1/packages/") + pkg));
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = nam_->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, item, appId, pkg, name, rt]() {
+        const QByteArray raw = reply->readAll();
+        const bool ok = (reply->error() == QNetworkReply::NoError);
+        reply->deleteLater();
+
+        qint64 ver_code = 0;
+        if (ok && !raw.isEmpty()) {
+            const QJsonObject obj = QJsonDocument::fromJson(raw).object();
+            ver_code = obj.value(QStringLiteral("suggestedVersionCode")).toVariant().toLongLong();
+            if (ver_code <= 0) {
+                const QJsonArray pkgs = obj.value(QStringLiteral("packages")).toArray();
+                if (!pkgs.isEmpty()) {
+                    ver_code = pkgs.first().toObject().value(QStringLiteral("versionCode")).toVariant().toLongLong();
+                }
+            }
+        }
+        if (ver_code <= 0) {
+            // Package is not on F-Droid; fall back to Aurora Play delivery
+            installAuroraAndroidApp(item);
+            return;
+        }
+
+        const QString apk_url = QStringLiteral("https://f-droid.org/repo/%1_%2.apk").arg(pkg).arg(ver_code);
+        const QString stage = QDir::temp().filePath(QStringLiteral("finn-fdroid-") + pkg);
+        QDir().mkpath(stage);
+        const QString apk_path = stage + QStringLiteral("/base.apk");
+        downloadFileFast(appId, apk_url, apk_path, 0.18, 0.65,
+                         [this, appId, apk_path, name, rt](bool dl_ok, const QString& err_str) {
+                             if (!dl_ok) {
+                                 clearTaskState(appId);
+                                 emit toastRequested(QStringLiteral("APK download failed: %1").arg(err_str),
+                                                     QStringLiteral("error"));
+                                 return;
+                             }
+                             setTaskState(appId, 0.88, QStringLiteral("Installing APK..."));
+                             runProcessInstall(appId, qstr(rt.finn_android_bin),
+                                               {QStringLiteral("install"), apk_path},
+                                               QStringLiteral("Installed %1").arg(name));
+                         });
+    });
 }
 
 void StoreController::installAuroraAndroidApp(const StoreAppItem& item) {
@@ -1037,81 +1394,235 @@ void StoreController::installWingetApp(const StoreAppItem& item) {
     const QString appId = qstr(item.id);
     const QString wgid = qstr(item.install_ref);
     const QString name = qstr(item.name);
-    setTaskState(appId, 0.15, QStringLiteral("Fetching winget manifest..."));
+    const QString runner = wine.finn_win_installed
+        ? qstr(wine.finn_win_bin)
+        : qstr(wine.proton_installed ? wine.proton_bin : wine.wine_bin);
 
-    const QString api_url = QString::fromLatin1(finn::store::kWingetRunApiBase) +
-                            QStringLiteral("/packages/") + wgid;
-    QNetworkReply* reply = nam_->get(QNetworkRequest(QUrl(api_url)));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, appId, name, wine]() {
+    const QStringList parts = wgid.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    if (parts.size() < 2) {
+        emit toastRequested(QStringLiteral("Invalid Windows package ID: %1").arg(wgid), QStringLiteral("error"));
+        return;
+    }
+    const QString first_ch = parts.first().left(1).toLower();
+    const QString rel_dir = QStringLiteral("manifests/%1/%2").arg(first_ch, parts.join(QLatin1Char('/')));
+
+    // Primary version lookup: winget.run /v2/packages/<Publisher>/<Rest> (no GitHub 60/hr API rate limit)
+    const QString publisher = parts.first();
+    const QString pkg_rest = parts.mid(1).join(QLatin1Char('.'));
+    const QString wr_url = QString::fromLatin1(finn::store::kWingetRunApiBase) +
+                           QStringLiteral("/packages/") + QUrl::toPercentEncoding(publisher) +
+                           QLatin1Char('/') + QUrl::toPercentEncoding(pkg_rest);
+
+    setTaskState(appId, 0.08, QStringLiteral("Resolving Windows package..."));
+    QNetworkRequest req{QUrl(wr_url)};
+    req.setRawHeader("User-Agent", "FinnStore/1.0");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = nam_->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, appId, wgid, name, rel_dir, runner]() {
         const QByteArray raw = reply->readAll();
         const bool ok = (reply->error() == QNetworkReply::NoError);
         reply->deleteLater();
-        if (!ok || raw.isEmpty()) {
-            clearTaskState(appId);
-            emit toastRequested(QStringLiteral("Could not fetch winget manifest for %1").arg(name),
-                                QStringLiteral("error"));
+        QString latest_ver;
+        if (ok && !raw.isEmpty()) {
+            const QJsonObject pkg = QJsonDocument::fromJson(raw).object().value(QStringLiteral("Package")).toObject();
+            const QJsonArray vers = pkg.value(QStringLiteral("Versions")).toArray();
+            if (!vers.isEmpty()) {
+                latest_ver = vers.first().toString();
+            }
+        }
+        if (!latest_ver.isEmpty()) {
+            fetchWingetYamlForVersion(appId, wgid, name, rel_dir, latest_ver, runner, true);
             return;
         }
-        // Extract first InstallerUrl from JSON payload
-        static const QRegularExpression urlRe(QStringLiteral("\"InstallerUrl\"\\s*:\\s*\"([^\"]+)\""));
-        static const QRegularExpression shaRe(QStringLiteral("\"InstallerSha256\"\\s*:\\s*\"([0-9A-Fa-f]{64})\""));
-        const auto um = urlRe.match(QString::fromUtf8(raw));
-        if (!um.hasMatch()) {
-            clearTaskState(appId);
-            emit toastRequested(QStringLiteral("No downloadable Windows installer URL in winget manifest"),
-                                QStringLiteral("error"));
-            return;
-        }
-        const QString dl_url = um.captured(1);
-        const QString expected_sha = shaRe.match(QString::fromUtf8(raw)).captured(1).toLower();
-        const QString ext = dl_url.endsWith(QStringLiteral(".msi"), Qt::CaseInsensitive)
-                                ? QStringLiteral(".msi")
-                                : QStringLiteral(".exe");
-        const QString dest = QDir::temp().filePath(QStringLiteral("finn-winget-") +
-                                                   QFileInfo(QUrl(dl_url).path()).fileName() + ext);
-        setTaskState(appId, 0.35, QStringLiteral("Downloading Windows installer..."));
-
-        QNetworkRequest dlreq{QUrl(dl_url)};
-        dlreq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                           QNetworkRequest::NoLessSafeRedirectPolicy);
-        QNetworkReply* dl = nam_->get(dlreq);
-        connect(dl, &QNetworkReply::finished, this,
-                [this, dl, appId, dest, expected_sha, name, wine]() {
-                    const QByteArray bytes = dl->readAll();
-                    const bool dl_ok = (dl->error() == QNetworkReply::NoError);
-                    dl->deleteLater();
-                    if (!dl_ok || bytes.isEmpty()) {
-                        clearTaskState(appId);
-                        emit toastRequested(QStringLiteral("Windows installer download failed"),
-                                            QStringLiteral("error"));
-                        return;
-                    }
-                    if (!expected_sha.isEmpty()) {
-                        const QString got = QString::fromLatin1(
-                            QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
-                        if (got != expected_sha) {
-                            clearTaskState(appId);
-                            emit toastRequested(
-                                QStringLiteral("SHA-256 checksum mismatch for %1 — aborted").arg(name),
-                                QStringLiteral("error"));
-                            return;
-                        }
-                    }
-                    QFile f(dest);
-                    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                        clearTaskState(appId);
-                        emit toastRequested(QStringLiteral("Cannot write installer to temp"), QStringLiteral("error"));
-                        return;
-                    }
-                    f.write(bytes);
-                    f.close();
-                    const QString runner = wine.finn_win_installed
-                        ? qstr(wine.finn_win_bin)
-                        : qstr(wine.proton_installed ? wine.proton_bin : wine.wine_bin);
-                    runProcessInstall(appId, runner, {dest},
-                                      QStringLiteral("Installed %1 via finn-win").arg(name));
-                });
+        // Fallback: GitHub contents API for microsoft/winget-pkgs
+        const QString list_url = QStringLiteral("https://api.github.com/repos/microsoft/winget-pkgs/contents/") + rel_dir;
+        QNetworkRequest greq{QUrl(list_url)};
+        greq.setRawHeader("User-Agent", "FinnStore/1.0");
+        QNetworkReply* grep = nam_->get(greq);
+        connect(grep, &QNetworkReply::finished, this, [this, grep, appId, wgid, name, rel_dir, runner]() {
+            const QByteArray graw = grep->readAll();
+            const bool gok = (grep->error() == QNetworkReply::NoError);
+            const QString gerr = grep->errorString();
+            grep->deleteLater();
+            if (!gok || graw.isEmpty()) {
+                clearTaskState(appId);
+                emit toastRequested(QStringLiteral("Could not resolve winget versions for %1 (%2)").arg(name, gerr),
+                                    QStringLiteral("error"));
+                return;
+            }
+            const QJsonArray entries = QJsonDocument::fromJson(graw).array();
+            QString ver_found;
+            for (const QJsonValue& v : entries) {
+                const QJsonObject obj = v.toObject();
+                if (obj.value(QStringLiteral("type")).toString() != QLatin1String("dir")) continue;
+                const QString ver = obj.value(QStringLiteral("name")).toString();
+                if (ver.isEmpty() || ver.startsWith(QLatin1Char('.'))) continue;
+                ver_found = ver;
+            }
+            if (ver_found.isEmpty()) {
+                clearTaskState(appId);
+                emit toastRequested(QStringLiteral("No release version found in winget-pkgs for %1").arg(name),
+                                    QStringLiteral("error"));
+                return;
+            }
+            fetchWingetYamlForVersion(appId, wgid, name, rel_dir, ver_found, runner, false);
+        });
     });
+}
+
+void StoreController::fetchWingetYamlForVersion(const QString& appId, const QString& wgid,
+                                                const QString& name, const QString& relDir,
+                                                const QString& version, const QString& runner,
+                                                bool allowGithubFallback) {
+    const QString yaml_url =
+        QStringLiteral("https://raw.githubusercontent.com/microsoft/winget-pkgs/master/%1/%2/%3.installer.yaml")
+            .arg(relDir, version, wgid);
+    setTaskState(appId, 0.15, QStringLiteral("Fetching manifest (%1)...").arg(version));
+
+    QNetworkRequest yreq{QUrl(yaml_url)};
+    yreq.setRawHeader("User-Agent", "FinnStore/1.0");
+    yreq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                      QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* yrep = nam_->get(yreq);
+    connect(yrep, &QNetworkReply::finished, this,
+            [this, yrep, appId, wgid, name, relDir, version, runner, allowGithubFallback]() {
+                const QByteArray yraw = yrep->readAll();
+                const bool yok = (yrep->error() == QNetworkReply::NoError);
+                yrep->deleteLater();
+                if (yok && !yraw.isEmpty()) {
+                    downloadAndRunWingetManifest(appId, wgid, name, yraw, runner);
+                    return;
+                }
+                const QString single_url =
+                    QStringLiteral("https://raw.githubusercontent.com/microsoft/winget-pkgs/master/%1/%2/%3.yaml")
+                        .arg(relDir, version, wgid);
+                QNetworkRequest sreq{QUrl(single_url)};
+                sreq.setRawHeader("User-Agent", "FinnStore/1.0");
+                QNetworkReply* srep = nam_->get(sreq);
+                connect(srep, &QNetworkReply::finished, this,
+                        [this, srep, appId, wgid, name, relDir, runner, allowGithubFallback]() {
+                            const QByteArray sraw = srep->readAll();
+                            const bool sok = (srep->error() == QNetworkReply::NoError);
+                            srep->deleteLater();
+                            if (sok && !sraw.isEmpty()) {
+                                downloadAndRunWingetManifest(appId, wgid, name, sraw, runner);
+                                return;
+                            }
+                            if (allowGithubFallback) {
+                                // winget.run version may be stale/delisted; query GitHub contents API for current version
+                                const QString list_url = QStringLiteral("https://api.github.com/repos/microsoft/winget-pkgs/contents/") + relDir;
+                                QNetworkRequest greq{QUrl(list_url)};
+                                greq.setRawHeader("User-Agent", "FinnStore/1.0");
+                                QNetworkReply* grep = nam_->get(greq);
+                                connect(grep, &QNetworkReply::finished, this,
+                                        [this, grep, appId, wgid, name, relDir, runner]() {
+                                            const QByteArray graw = grep->readAll();
+                                            const bool gok = (grep->error() == QNetworkReply::NoError);
+                                            grep->deleteLater();
+                                            QString ver_found;
+                                            if (gok && !graw.isEmpty()) {
+                                                for (const QJsonValue& v : QJsonDocument::fromJson(graw).array()) {
+                                                    const QJsonObject obj = v.toObject();
+                                                    if (obj.value(QStringLiteral("type")).toString() != QLatin1String("dir")) continue;
+                                                    const QString ver = obj.value(QStringLiteral("name")).toString();
+                                                    if (!ver.isEmpty() && !ver.startsWith(QLatin1Char('.'))) ver_found = ver;
+                                                }
+                                            }
+                                            if (!ver_found.isEmpty()) {
+                                                fetchWingetYamlForVersion(appId, wgid, name, relDir, ver_found, runner, false);
+                                                return;
+                                            }
+                                            clearTaskState(appId);
+                                            emit toastRequested(QStringLiteral("Could not fetch winget manifest for %1").arg(name),
+                                                                QStringLiteral("error"));
+                                        });
+                                return;
+                            }
+                            clearTaskState(appId);
+                            emit toastRequested(QStringLiteral("Could not fetch winget manifest for %1").arg(name),
+                                                QStringLiteral("error"));
+                        });
+            });
+}
+
+void StoreController::downloadAndRunWingetManifest(const QString& appId, const QString& wgid,
+                                                   const QString& name, const QByteArray& yamlBytes,
+                                                   const QString& runner) {
+    const auto manifest = finn::store::parse_winget_installer_yaml(
+        std::string_view(yamlBytes.constData(), static_cast<std::size_t>(yamlBytes.size())));
+    if (!manifest.valid || manifest.installer_url.empty()) {
+        clearTaskState(appId);
+        emit toastRequested(QStringLiteral("No downloadable Windows installer URL in winget manifest for %1").arg(name),
+                            QStringLiteral("error"));
+        return;
+    }
+
+    const QString dl_url = qstr(manifest.installer_url);
+    const QString expected_sha = qstr(manifest.sha256).toLower();
+    const QString url_fname = QFileInfo(QUrl(dl_url).path()).fileName();
+    const QString ext = dl_url.endsWith(QStringLiteral(".msi"), Qt::CaseInsensitive)
+                            ? QStringLiteral(".msi")
+                            : QStringLiteral(".exe");
+    const QString safe_name = url_fname.isEmpty() ? (QStringLiteral("setup") + ext)
+                                                  : (url_fname.endsWith(ext, Qt::CaseInsensitive) ? url_fname : (url_fname + ext));
+    const QString dest = QDir::temp().filePath(QStringLiteral("finn-winget-") + safe_name);
+    const QString silent = qstr(manifest.silent_switches).trimmed();
+    const QString inst_type = qstr(manifest.installer_type).toLower();
+    const auto file_exts = manifest.file_extensions;
+
+    downloadFileFast(appId, dl_url, dest, 0.20, 0.58,
+                     [this, appId, wgid, dest, expected_sha, name, runner, silent, inst_type, file_exts](
+                         bool dl_ok, const QString& err_str) {
+                         if (!dl_ok) {
+                             clearTaskState(appId);
+                             emit toastRequested(QStringLiteral("Windows installer download failed: %1").arg(err_str),
+                                                 QStringLiteral("error"));
+                             return;
+                         }
+                         if (!expected_sha.isEmpty()) {
+                             setTaskState(appId, 0.80, QStringLiteral("Verifying SHA-256..."));
+                             QFile f(dest);
+                             if (!f.open(QIODevice::ReadOnly)) {
+                                 clearTaskState(appId);
+                                 emit toastRequested(QStringLiteral("Cannot read downloaded installer"), QStringLiteral("error"));
+                                 return;
+                             }
+                             QCryptographicHash hasher(QCryptographicHash::Sha256);
+                             hasher.addData(&f);
+                             const QString got = QString::fromLatin1(hasher.result().toHex());
+                             if (got != expected_sha) {
+                                 clearTaskState(appId);
+                                 emit toastRequested(
+                                     QStringLiteral("SHA-256 checksum mismatch for %1 — aborted").arg(name),
+                                     QStringLiteral("error"));
+                                 return;
+                             }
+                         }
+
+                         const auto wine_rt = finn::compat::probe_wine_runtime();
+                         const QString prefix = qstr(wine_rt.default_prefix);
+                         const QSet<QString> before_exes = snapshot_wine_exes(prefix);
+
+                         QStringList args{dest};
+                         if (!silent.isEmpty()) {
+                             args.append(silent.split(QLatin1Char(' '), Qt::SkipEmptyParts));
+                         } else if (inst_type == QLatin1String("nullsoft") || inst_type == QLatin1String("nsis")) {
+                             args.append(QStringLiteral("/S"));
+                         } else if (inst_type == QLatin1String("inno")) {
+                             args.append({QStringLiteral("/VERYSILENT"), QStringLiteral("/NORESTART")});
+                         }
+                         setTaskState(appId, 0.86, QStringLiteral("Installing via finn-win..."));
+                         runProcessInstall(
+                             appId, runner, args,
+                             QStringLiteral("Installed %1").arg(name),
+                             [appId, wgid, name, prefix, before_exes, file_exts]() {
+                                 const QString exe = find_best_windows_exe(prefix, before_exes, name);
+                                 if (!exe.isEmpty()) {
+                                     register_windows_app_and_mimes(appId, wgid, name, exe, file_exts);
+                                 }
+                             });
+                     });
 }
 
 void StoreController::launchApp(const QString& appId) {
@@ -1137,6 +1648,17 @@ void StoreController::launchApp(const QString& appId) {
         if (rt.finn_android_installed) {
             ok = QProcess::startDetached(qstr(rt.finn_android_bin),
                                          {QStringLiteral("run"), qstr(item->install_ref)});
+        }
+    } else if (item->ecosystem == StoreEcosystem::Windows) {
+        const auto wine = finn::compat::probe_wine_runtime();
+        const QString conf = QDir::homePath() + QStringLiteral("/") + QString::fromLatin1(finn::kUserWindowsConfRel);
+        const auto entries = finn::compat::load_windows_apps(conf.toStdString());
+        for (const auto& e : entries) {
+            if (e.id == item->id || e.id == item->session_app_id) {
+                const QString runner = wine.finn_win_installed ? qstr(wine.finn_win_bin) : qstr(wine.wine_bin);
+                ok = QProcess::startDetached(runner, {qstr(e.exe_path)});
+                break;
+            }
         }
     } else if (item->ecosystem == StoreEcosystem::Macos) {
         const auto rt = finn::compat::probe_macos_runtime();
@@ -1166,7 +1688,8 @@ void StoreController::uninstallApp(const QString& appId) {
 
     if (item->ecosystem == StoreEcosystem::Flatpak) {
         runProcessInstall(appId, QStringLiteral("flatpak"),
-                          {QStringLiteral("uninstall"), QStringLiteral("-y"), QStringLiteral("--user"),
+                          {QStringLiteral("uninstall"), QStringLiteral("-y"),
+                           QStringLiteral("--noninteractive"), QStringLiteral("--user"),
                            qstr(item->install_ref)},
                           QStringLiteral("Removed %1").arg(qstr(item->name)));
         return;
@@ -1253,7 +1776,8 @@ void StoreController::checkForUpdates() {
 void StoreController::updateAll() {
     if (!finn::compat::executable_exists("flatpak")) return;
     runProcessInstall(QStringLiteral("__updates__"), QStringLiteral("flatpak"),
-                      {QStringLiteral("update"), QStringLiteral("-y"), QStringLiteral("--user")},
+                      {QStringLiteral("update"), QStringLiteral("-y"),
+                       QStringLiteral("--noninteractive"), QStringLiteral("--user")},
                       QStringLiteral("All Flatpak apps updated"));
 }
 

@@ -15,6 +15,7 @@ inline constexpr const char* kCataloguePath = "/usr/share/finn/apps.registry";
 inline constexpr const char* kInstalledPath = "/var/lib/finn/installed";
 inline constexpr const char* kSettingsPath = "/var/lib/finn/settings";
 inline constexpr const char* kSystemOobeCompletePath = "/var/lib/finn/oobe_complete";
+inline constexpr const char* kPrimaryUserPath = "/var/lib/finn/primary_user";
 inline constexpr const char* kRecoverySessionMarkerPath = "/run/finn/recovery-session";
 inline constexpr const char* kIconDir = "/usr/share/finn/icons";
 inline constexpr const char* kIconsDir = kIconDir;
@@ -23,6 +24,10 @@ inline constexpr const char* kWallpaperDir = "/usr/share/finn/wallpaper";
 inline constexpr const char* kDefaultWallpaperPath = "/usr/share/finn/wallpaper/default.webp";
 inline constexpr const char* kFontDir = "/usr/share/fonts/OTF";
 inline constexpr const char* kFontPath = "/usr/share/fonts/OTF/FixelDisplay-Regular.otf";
+// Single source of truth for the boot splash mark (base/airootfs/.../mark.png)
+// and OOBE intro logo (FinnRibbonAnimation::paintHiIntro) so the transition from
+// Plymouth boot splash to first-time setup has zero size jump.
+inline constexpr int kBootMarkSizePx = 72;
 
 inline constexpr const char* kWaylandPath = "/run/finn/wayland-0";
 inline constexpr const char* kXwaylandDisplayFile = "/run/finn/xdisplay";

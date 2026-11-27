@@ -56,22 +56,43 @@ Window {
         delegate: Item {
             id: winDelegate
             property bool ready: false
+            property bool syncingFromModel: false
             Component.onCompleted: ready = true
             visible: winOpacity > 0.01 && (desktopIndex < 0 || desktopIndex === FinnComp.currentDesktop)
-            x: fullscreen ? 0 : winX
-            y: fullscreen ? 0 : winY
-            width: fullscreen ? outputWindow.width : winWidth
-            height: fullscreen ? outputWindow.height : winHeight
+            x: fullscreen ? 0 : Math.round(winX)
+            y: fullscreen ? 0 : Math.round(winY)
+            width: fullscreen ? outputWindow.width : Math.round(winWidth)
+            height: fullscreen ? outputWindow.height : Math.round(winHeight)
             z: zIndex
             opacity: winOpacity
             scale: winScale
             transformOrigin: Item.Center
-            onXChanged: if (ready && !maximized && !fullscreen && Math.abs(x - winX) > 1) FinnComp.reportWindowMoved(windowId, Math.round(x), Math.round(y))
-            onYChanged: if (ready && !maximized && !fullscreen && Math.abs(y - winY) > 1) FinnComp.reportWindowMoved(windowId, Math.round(x), Math.round(y))
+            onXChanged: {
+                if (!ready || maximized || fullscreen) return
+                if (Math.abs(x - Math.round(winX)) > 2) {
+                    FinnComp.reportWindowMoved(windowId, Math.round(x), Math.round(y))
+                }
+            }
+            onYChanged: {
+                if (!ready || maximized || fullscreen) return
+                if (Math.abs(y - Math.round(winY)) > 2) {
+                    FinnComp.reportWindowMoved(windowId, Math.round(x), Math.round(y))
+                }
+            }
+
+            // Detect clients that draw their own transparent CSD shadow margins via
+            // xdg_surface.set_window_geometry (e.g. GTK4/libadwaita) so we never
+            // render a frosted backdrop rectangle behind transparent shadow padding.
+            readonly property rect xdgGeom: (surfaceObject && surfaceObject.windowGeometry !== undefined)
+                ? surfaceObject.windowGeometry : Qt.rect(0, 0, 0, 0)
+            readonly property bool hasCsdShadowMargin: xdgGeom.width > 0 && xdgGeom.height > 0 && (
+                xdgGeom.x > 0 || xdgGeom.y > 0 ||
+                (surfaceItem.width > 0 && xdgGeom.width < surfaceItem.width - 1) ||
+                (surfaceItem.height > 0 && xdgGeom.height < surfaceItem.height - 1))
 
             // Real-time behind-window backdrop blur (blurs wallpaper + all lower windows!)
             CompositorBackdrop {
-                visible: !fullscreen
+                visible: !fullscreen && !winDelegate.hasCsdShadowMargin
                 anchors.fill: parent
                 z: -2
                 server: FinnComp

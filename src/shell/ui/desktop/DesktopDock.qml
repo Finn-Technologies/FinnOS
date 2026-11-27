@@ -189,10 +189,11 @@ Row {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onPressed: { scaleSpring.preset = "snappy"; scaleSpring.target = 0.90 }
-                            onReleased: { scaleSpring.preset = "bouncy"; scaleSpring.target = 1.0 }
+                            onEntered: { if (!pressed) { scaleSpring.preset = "snappy"; scaleSpring.target = 1.07 } }
+                            onExited: { if (!pressed) { scaleSpring.preset = "snappy"; scaleSpring.target = 1.0 } }
+                            onPressed: { scaleSpring.preset = "snappy"; scaleSpring.target = 0.92 }
+                            onReleased: { scaleSpring.preset = "snappy"; scaleSpring.target = containsMouse ? 1.07 : 1.0 }
                             onClicked: {
-                                scaleSpring.impulse(3.2, 1.0)
                                 ShellCorona.handleDockAppClick(modelData.appId, modelData.windowId || "")
                             }
                         }

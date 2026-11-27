@@ -2579,7 +2579,12 @@ private:
         fullname_edit_ = new OobeInputField(oobe_tr(QStringLiteral("full_name"), selected_locale_), false, col_host);
         username_edit_ = new OobeInputField(oobe_tr(QStringLiteral("account_name"), selected_locale_), false, col_host);
         const QString default_user = QString::fromLocal8Bit(qgetenv("USER")).trimmed();
-        username_edit_->setText(default_user.isEmpty() ? QStringLiteral("finn") : default_user);
+        const QString safe_default_user =
+            (!default_user.isEmpty() &&
+             finn::shell::oobe::is_valid_posix_username(default_user.toStdString()))
+                ? default_user
+                : QStringLiteral("finn");
+        username_edit_->setText(safe_default_user);
         hostname_edit_ = new OobeInputField(oobe_tr(QStringLiteral("computer_name"), selected_locale_), false, col_host);
         hostname_edit_->setText(QStringLiteral("finnos"));
         pw_edit_ = new OobeInputField(oobe_tr(QStringLiteral("password"), selected_locale_), true, col_host);
@@ -2857,29 +2862,23 @@ private:
                                    host, nullptr, false, &privacy_prompt_lbl_);
     }
 
-    // Step 5: Video-matched Completion / Update Successful Screen with 6-Ring Slinky
+    // Step 9: Plain, calm Completion / Update Successful Screen matching OOBE's minimal design
     QWidget* buildCompletePage() {
         auto* page = new QWidget();
         page->setAutoFillBackground(false);
 
         auto* col = new QVBoxLayout(page);
-        col->setContentsMargins(0, 0, 0, 0);
+        col->setContentsMargins(oobe_gutter(), 0, oobe_gutter(), 0);
         col->setSpacing(0);
 
-        col->addStretch(8);
+        col->addStretch(45);
 
-        auto* branding = new OobeBrandingHeader(page);
-        col->addWidget(branding, 0, Qt::AlignHCenter);
+        complete_icon_lbl_ = new QLabel(page);
+        complete_icon_lbl_->setFixedSize(56, 56);
+        complete_icon_lbl_->setAlignment(Qt::AlignCenter);
+        col->addWidget(complete_icon_lbl_, 0, Qt::AlignHCenter);
 
-        col->addSpacing(12);
-
-        complete_ribbon_ = new FinnRibbonAnimation(
-            FinnRibbonAnimation::Mode::SlinkyWave, page);
-        complete_ribbon_->setFixedHeight(310);
-        if (fixed_phase_ >= 0.0) complete_ribbon_->setPhaseTime(fixed_phase_);
-        col->addWidget(complete_ribbon_);
-
-        col->addSpacing(20);
+        col->addSpacing(28);
 
         complete_title_ = new QLabel(
             update_mode_ ? oobe_tr(QStringLiteral("update_title"), selected_locale_)
@@ -2889,12 +2888,35 @@ private:
         complete_title_->setAlignment(Qt::AlignCenter);
         col->addWidget(complete_title_, 0, Qt::AlignHCenter);
 
-        auto sync_title_col = [this]() {
-            if (!complete_title_) return;
+        col->addSpacing(10);
+
+        complete_sub_lbl_ = new QLabel(
+            update_mode_ ? QStringLiteral("FinnOS is up to date.")
+                         : QStringLiteral("FinnOS is ready for you."),
+            page);
+        complete_sub_lbl_->setFont(oobe_font(14, QFont::Normal));
+        complete_sub_lbl_->setAlignment(Qt::AlignCenter);
+        complete_sub_lbl_->setWordWrap(true);
+        complete_sub_lbl_->setFixedWidth(qMin(360, oobe_content_width()));
+        col->addWidget(complete_sub_lbl_, 0, Qt::AlignHCenter);
+
+        auto sync_complete_colors = [this]() {
             const auto& t = FinnThemeManager::instance().tokens();
-            QPalette pal = complete_title_->palette();
-            pal.setColor(QPalette::WindowText, t.ink);
-            complete_title_->setPalette(pal);
+            if (complete_icon_lbl_) {
+                complete_icon_lbl_->setPixmap(FinnThemeManager::instance().iconPixmap(
+                    QStringLiteral("boot-mark"), QSize(56, 56), t.ink,
+                    complete_icon_lbl_->devicePixelRatioF()));
+            }
+            if (complete_title_) {
+                QPalette pal = complete_title_->palette();
+                pal.setColor(QPalette::WindowText, t.ink);
+                complete_title_->setPalette(pal);
+            }
+            if (complete_sub_lbl_) {
+                QPalette pal = complete_sub_lbl_->palette();
+                pal.setColor(QPalette::WindowText, t.dim);
+                complete_sub_lbl_->setPalette(pal);
+            }
             if (complete_status_lbl_) {
                 QPalette spal = complete_status_lbl_->palette();
                 spal.setColor(QPalette::WindowText,
@@ -2903,9 +2925,9 @@ private:
             }
         };
         connect(&FinnThemeManager::instance(), &FinnThemeManager::themeChanged,
-                page, sync_title_col);
+                page, sync_complete_colors);
 
-        col->addSpacing(28);
+        col->addSpacing(32);
 
         start_btn_ = new OobeGetStartedPill(
             oobe_tr(QStringLiteral("get_started"), selected_locale_), page);
@@ -2913,7 +2935,7 @@ private:
                 &OobeWindow::finishSetup);
         col->addWidget(start_btn_, 0, Qt::AlignHCenter);
 
-        col->addSpacing(12);
+        col->addSpacing(14);
         complete_status_lbl_ = new QLabel(QString(), page);
         complete_status_lbl_->setFont(oobe_font(13, QFont::Normal));
         complete_status_lbl_->setAlignment(Qt::AlignCenter);
@@ -2922,9 +2944,9 @@ private:
         complete_status_lbl_->setVisible(false);
         col->addWidget(complete_status_lbl_, 0, Qt::AlignHCenter);
 
-        sync_title_col();
+        sync_complete_colors();
 
-        col->addStretch(14);
+        col->addStretch(55);
         return page;
     }
 
@@ -3240,9 +3262,6 @@ private:
             if (hi_next_btn_) hi_next_btn_->setRevealOpacity(rev);
             return;
         }
-        if (idx == 9 && complete_ribbon_ && fixed_phase_ < 0.0) {
-            complete_ribbon_->restart();
-        }
         if (do_slide && !old_snap.isNull()) {
             stack_->widget(idx)->resize(stack_->size());
             if (stack_->widget(idx)->layout()) {
@@ -3373,8 +3392,9 @@ private:
         const QString raw_user =
             username_edit_ ? username_edit_->text().trimmed() : env_user;
         const QString target_user = raw_user.isEmpty() ? QStringLiteral("finn") : raw_user;
-        const QString target_host =
-            hostname_edit_ ? hostname_edit_->text().trimmed().toLower() : QStringLiteral("finnos");
+        const QString raw_host =
+            hostname_edit_ ? hostname_edit_->text().trimmed().toLower() : QString();
+        const QString target_host = raw_host.isEmpty() ? QStringLiteral("finnos") : raw_host;
         const QString pw1 = pw_edit_ ? pw_edit_->text() : QString();
         const QString pw2 = pw_verify_edit_ ? pw_verify_edit_->text() : QString();
 
@@ -3429,24 +3449,41 @@ private:
 
         const QString helper_path = QString::fromLatin1(finn::kOobeApplyHelperPath);
         const bool is_installed_os = QFileInfo::exists(QString::fromLatin1(finn::kInstalledPath));
+        const bool system_already_provisioned =
+            QFileInfo::exists(QString::fromLatin1(finn::kSystemOobeCompletePath));
         const bool local_only_env = qEnvironmentVariableIntValue("FINN_OOBE_LOCAL_ONLY") == 1;
 
-        if (!is_installed_os && local_only_env) {
+        if ((!is_installed_os && local_only_env) || system_already_provisioned) {
             writeCompleteMarkerAndClose();
             return;
         }
 
+        // Never use QFileInfo::exists("/etc/sudoers.d/finn-oobe") to decide whether
+        // sudo is allowed: /etc/sudoers.d is 0750 root:root on Linux so unprivileged
+        // stat() always returns false. Probe sudo -n directly instead.
+        auto sudo_can_run_helper = [&helper_path](const QString& sudo_bin) -> bool {
+            if (sudo_bin.isEmpty()) return false;
+            QProcess probe;
+            probe.start(sudo_bin, {QStringLiteral("-n"), QStringLiteral("-l"), helper_path});
+            if (!probe.waitForFinished(2500)) {
+                probe.kill();
+                return false;
+            }
+            return probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
+        };
+
         QString runner_bin;
         QStringList runner_args;
         if (QFileInfo::exists(helper_path)) {
+            const QString sudo_bin = QStandardPaths::findExecutable(QStringLiteral("sudo"));
+            const QString pkexec_bin = QStandardPaths::findExecutable(QStringLiteral("pkexec"));
             if (::geteuid() == 0) {
                 runner_bin = helper_path;
-            } else if (!QStandardPaths::findExecutable(QStringLiteral("sudo")).isEmpty() &&
-                       QFileInfo::exists(QStringLiteral("/etc/sudoers.d/finn-oobe"))) {
-                runner_bin = QStringLiteral("sudo");
+            } else if (sudo_can_run_helper(sudo_bin)) {
+                runner_bin = sudo_bin;
                 runner_args = {QStringLiteral("-n"), helper_path};
-            } else if (!QStandardPaths::findExecutable(QStringLiteral("pkexec")).isEmpty()) {
-                runner_bin = QStringLiteral("pkexec");
+            } else if (!pkexec_bin.isEmpty()) {
+                runner_bin = pkexec_bin;
                 runner_args = {helper_path};
             }
         }
@@ -3458,7 +3495,7 @@ private:
                 return;
             }
             setCompleteStatus(
-                QStringLiteral("First-boot provisioning helper (%1) is missing.").arg(helper_path),
+                QStringLiteral("First-boot provisioning helper (%1) is missing or lacks authorization.").arg(helper_path),
                 true);
             return;
         }
@@ -3552,8 +3589,9 @@ private:
     QLabel* a11y_prompt_lbl_ = nullptr;
     QLabel* privacy_prompt_lbl_ = nullptr;
     QLabel* privacy_info_lbl_ = nullptr;
-    FinnRibbonAnimation* complete_ribbon_ = nullptr;
+    QLabel* complete_icon_lbl_ = nullptr;
     QLabel* complete_title_ = nullptr;
+    QLabel* complete_sub_lbl_ = nullptr;
     QLabel* complete_status_lbl_ = nullptr;
     OobeGetStartedPill* start_btn_ = nullptr;
     bool finish_in_progress_ = false;

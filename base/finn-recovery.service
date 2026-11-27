@@ -1,0 +1,25 @@
+[Unit]
+Description=FinnOS Recovery Mode (recovery-mode)
+ConditionKernelCommandLine=finn.recovery
+After=systemd-user-sessions.service plymouth-quit.service
+Before=getty@tty1.service display-manager.service
+Conflicts=getty@tty1.service finn-comp.service
+
+[Service]
+Type=simple
+User=root
+Environment=QT_LOGGING_RULES=*.debug=false;qt.qpa.*=false
+ExecStartPre=-/usr/bin/plymouth quit --retain-splash
+ExecStart=/bin/sh -c 'if [ -e /dev/fb0 ]; then exec env QT_QPA_PLATFORM=linuxfb /usr/local/bin/recovery-mode; else exec env QT_QPA_PLATFORM=eglfs QT_QPA_EGLFS_INTEGRATION=eglfs_kms QT_QPA_EGLFS_HIDECURSOR=0 /usr/local/bin/recovery-mode; fi'
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

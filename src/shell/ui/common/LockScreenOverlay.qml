@@ -19,6 +19,13 @@ Item {
     visible: opacity > 0.01
     opacity: locked ? 1.0 : 0.0
 
+    onLockedChanged: {
+        if (locked) {
+            passInput.text = ""
+            passInput.forceActiveFocus()
+        }
+    }
+
     Behavior on opacity {
         enabled: !FinnTheme.reducedMotion
         NumberAnimation { duration: FinnTheme.motionSurfaceOpen; easing.type: Easing.OutCubic }
@@ -104,6 +111,48 @@ Item {
                 font.family: FinnTheme.fontFamily
                 font.pixelSize: root.isTv ? 28 : 20
                 font.weight: Font.Normal
+            }
+
+            // Subtle user switcher pills when multiple interactive accounts exist
+            Row {
+                visible: ShellCorona.userAccounts && ShellCorona.userAccounts.length > 1
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 6
+
+                Repeater {
+                    model: ShellCorona.userAccounts
+                    delegate: Rectangle {
+                        readonly property bool active: modelData.username === ShellCorona.currentUser
+                        width: pillTxt.implicitWidth + 20
+                        height: 24
+                        radius: 12
+                        color: active
+                            ? FinnTheme.accent
+                            : (FinnTheme.dark ? FinnTheme.withAlpha("#262B36", 0.65) : "#99FFFFFF")
+                        border.width: active ? 0 : 0.5
+                        border.color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.14) : "#18000000"
+
+                        Text {
+                            id: pillTxt
+                            anchors.centerIn: parent
+                            text: modelData.displayName
+                            color: active ? "#FFFFFF" : (FinnTheme.dark ? "#F2F4F8" : "#000000")
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 12
+                            font.weight: active ? Font.Medium : Font.Normal
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                ShellCorona.selectUser(modelData.username)
+                                passInput.text = ""
+                                passInput.forceActiveFocus()
+                            }
+                        }
+                    }
+                }
             }
         }
 

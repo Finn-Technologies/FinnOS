@@ -27,6 +27,11 @@ Item {
         color: root.selected
             ? FinnTheme.navSel
             : (ma.containsPress ? FinnTheme.surfacePressed : (ma.containsMouse ? FinnTheme.surfaceHover : "transparent"))
+
+        Behavior on color {
+            enabled: !FinnTheme.reducedMotion
+            ColorAnimation { duration: 110; easing.type: Easing.OutCubic }
+        }
     }
 
     // Left accent bar in compact tablet rail mode

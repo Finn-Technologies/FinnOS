@@ -25,6 +25,7 @@ struct WingetInstallerManifest {
     std::string installer_url;
     std::string sha256;
     std::string silent_switches;
+    std::vector<std::string> file_extensions;
     std::string error;
 };
 

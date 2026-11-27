@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QScreen>
 #include <QStandardPaths>
 #include <QStorageInfo>
@@ -24,6 +25,9 @@
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
+#include <grp.h>
+#include <pwd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -74,6 +78,18 @@ SettingsController::SettingsController(QObject* parent)
     probeWallpapers();
     probeCompatRuntimes();
     loadPersistedSettings();
+    probeSystemUsers();
+
+    // Check once whether passwordless sudo is available so the Users UI knows
+    // whether to prompt for an administrator password.
+    if (::geteuid() == 0) {
+        sudo_password_required_ = false;
+    } else {
+        const QString sudo_bin = QStandardPaths::findExecutable(QStringLiteral("sudo"));
+        if (!sudo_bin.isEmpty()) {
+            sudo_password_required_ = (QProcess::execute(sudo_bin, {QStringLiteral("-n"), QStringLiteral("true")}) != 0);
+        }
+    }
 
     connect(&services_, &finn::sys::FinnDesktopServices::stateUpdated,
             this, &SettingsController::hardwareChanged);
@@ -253,8 +269,16 @@ void SettingsController::probeCompatRuntimes() {
 
     add_probe(QStringLiteral("Linux Flatpak"), QStringLiteral("Linux"),
               QStringLiteral("flatpak"), QStringLiteral("Sandboxed Linux desktop apps"));
-    add_probe(QStringLiteral("Windows (Wine)"), QStringLiteral("Windows"),
-              QStringLiteral("wine"), QStringLiteral("Run Win32/Win64 executables and MSI packages"));
+    const auto wine_rt = finn::compat::probe_wine_runtime();
+    {
+        QVariantMap m;
+        m.insert(QStringLiteral("name"), QStringLiteral("Windows (Wine / finn-win)"));
+        m.insert(QStringLiteral("kind"), QStringLiteral("Windows"));
+        m.insert(QStringLiteral("available"), wine_rt.ready);
+        m.insert(QStringLiteral("status"), wine_rt.ready ? QStringLiteral("Installed") : QStringLiteral("Not installed"));
+        m.insert(QStringLiteral("description"), QString::fromStdString(wine_rt.summary));
+        compat_runtimes_.append(m);
+    }
     add_probe(QStringLiteral("Finn Android Runtime"), QStringLiteral("Android"),
               QStringLiteral("finn-android"), QStringLiteral("Native APK / DEX application runner"));
     add_probe(QStringLiteral("Finn Darwin Runtime"), QStringLiteral("macOS"),
@@ -420,8 +444,10 @@ void SettingsController::probeDisplayModes() {
             if (QString::fromUtf8(sf.readAll()).trimmed() != QLatin1String("connected")) continue;
             QFile mf(drm_dir.filePath(entry + QStringLiteral("/modes")));
             if (mf.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                while (!mf.atEnd()) {
-                    const QString mode = QString::fromUtf8(mf.readLine()).trimmed();
+                const QStringList lines =
+                    QString::fromUtf8(mf.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                for (const QString& raw : lines) {
+                    const QString mode = raw.trimmed();
                     if (!mode.isEmpty() && !found.contains(mode)) {
                         found.append(mode);
                     }
@@ -597,6 +623,251 @@ void SettingsController::copySystemSummary() {
         cb->setText(summary);
     }
     emit toastRequested(QStringLiteral("System specification copied to clipboard"), QStringLiteral("success"));
+}
+
+void SettingsController::probeSystemUsers() {
+    system_users_.clear();
+
+    QSet<QString> admin_members;
+    for (const char* grp_name : {"wheel", "sudo"}) {
+        if (const struct group* gr = ::getgrnam(grp_name)) {
+            if (gr->gr_mem) {
+                for (char** m = gr->gr_mem; *m; ++m) {
+                    admin_members.insert(QString::fromLocal8Bit(*m));
+                }
+            }
+        }
+    }
+
+    const struct passwd* cur_pw = ::getpwuid(::getuid());
+    const QString cur_name = (cur_pw && cur_pw->pw_name)
+        ? QString::fromLocal8Bit(cur_pw->pw_name)
+        : current_user_;
+
+    QVariantList others;
+    ::setpwent();
+    while (const struct passwd* pw = ::getpwent()) {
+        if (!pw->pw_name || !pw->pw_shell) continue;
+        if (pw->pw_uid < 500 || pw->pw_uid >= 65534) continue;
+        const QString sh = QString::fromLocal8Bit(pw->pw_shell);
+        if (sh.isEmpty() || sh.endsWith(QLatin1String("/nologin")) ||
+            sh.endsWith(QLatin1String("/false")) || sh.endsWith(QLatin1String("/sync"))) {
+            continue;
+        }
+        const QString uname = QString::fromLocal8Bit(pw->pw_name);
+        QString display = pw->pw_gecos
+            ? QString::fromLocal8Bit(pw->pw_gecos).section(QLatin1Char(','), 0, 0).trimmed()
+            : QString();
+        if (display.isEmpty()) {
+            display = uname;
+            if (!display.isEmpty()) display[0] = display[0].toUpper();
+        }
+        QVariantMap u;
+        u.insert(QStringLiteral("username"), uname);
+        u.insert(QStringLiteral("displayName"), display);
+        u.insert(QStringLiteral("uid"), static_cast<int>(pw->pw_uid));
+        u.insert(QStringLiteral("homeDir"), pw->pw_dir ? QString::fromLocal8Bit(pw->pw_dir) : QString());
+        u.insert(QStringLiteral("isCurrent"), uname == cur_name);
+        u.insert(QStringLiteral("isAdmin"), admin_members.contains(uname));
+        if (uname == cur_name) {
+            system_users_.prepend(u);
+        } else {
+            others.append(u);
+        }
+    }
+    ::endpwent();
+    for (const QVariant& v : others) system_users_.append(v);
+    emit usersChanged();
+}
+
+void SettingsController::refreshUsers() {
+    probeSystemUsers();
+}
+
+void SettingsController::runPrivilegedUserScript(const QString& script,
+                                                 const QStringList& args,
+                                                 const QString& secretPayload,
+                                                 const QString& adminPassword,
+                                                 const QString& successMsg) {
+    if (user_action_busy_) return;
+
+    QString secret_path;
+    if (!secretPayload.isEmpty()) {
+        const QString run_dir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+        const QString base_dir = !run_dir.isEmpty() ? run_dir : QDir::tempPath();
+        secret_path = base_dir + QStringLiteral("/finn-user-secret-%1.tmp").arg(::getpid());
+        QFile sf(secret_path);
+        if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            emit toastRequested(QStringLiteral("Failed to stage credentials"), QStringLiteral("error"));
+            return;
+        }
+        ::chmod(secret_path.toLocal8Bit().constData(), 0600);
+        sf.write(secretPayload.toUtf8());
+        sf.close();
+    }
+
+    QString program;
+    QStringList full_args;
+    bool write_sudo_pw = false;
+
+    if (::geteuid() == 0) {
+        program = QStringLiteral("/bin/bash");
+        full_args << QStringLiteral("-c") << script << QStringLiteral("finn-user-mgmt");
+    } else {
+        const QString sudo_bin = QStandardPaths::findExecutable(QStringLiteral("sudo"));
+        if (sudo_bin.isEmpty()) {
+            if (!secret_path.isEmpty()) QFile::remove(secret_path);
+            emit toastRequested(QStringLiteral("sudo is not available on this system"), QStringLiteral("error"));
+            return;
+        }
+        program = sudo_bin;
+        if (!sudo_password_required_) {
+            full_args << QStringLiteral("-n");
+        } else if (!adminPassword.isEmpty()) {
+            full_args << QStringLiteral("-S") << QStringLiteral("-p") << QString();
+            write_sudo_pw = true;
+        } else {
+            if (!secret_path.isEmpty()) QFile::remove(secret_path);
+            emit toastRequested(QStringLiteral("Enter your administrator password to apply user changes"),
+                                QStringLiteral("warning"));
+            return;
+        }
+        full_args << QStringLiteral("/bin/bash") << QStringLiteral("-c") << script
+                  << QStringLiteral("finn-user-mgmt");
+    }
+    full_args.append(args);
+    if (!secret_path.isEmpty()) full_args.append(secret_path);
+
+    user_action_busy_ = true;
+    emit usersChanged();
+
+    auto* proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    connect(proc, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
+            [this, proc, secret_path, successMsg](int code, QProcess::ExitStatus st) {
+                if (!secret_path.isEmpty()) QFile::remove(secret_path);
+                const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+                proc->deleteLater();
+                user_action_busy_ = false;
+                probeSystemUsers();
+                if (st == QProcess::NormalExit && code == 0) {
+                    emit toastRequested(successMsg, QStringLiteral("success"));
+                } else {
+                    const QString last = out.section(QLatin1Char('\n'), -1).trimmed();
+                    emit toastRequested(last.isEmpty()
+                                            ? QStringLiteral("User operation failed (exit %1)").arg(code)
+                                            : last,
+                                        QStringLiteral("error"));
+                }
+            });
+    proc->start(program, full_args);
+    if (write_sudo_pw) {
+        proc->write((adminPassword + QLatin1Char('\n')).toUtf8());
+        proc->closeWriteChannel();
+    }
+}
+
+void SettingsController::createUser(const QString& fullName,
+                                    const QString& username,
+                                    const QString& password,
+                                    bool isAdmin,
+                                    const QString& adminPassword) {
+    const QString uname = username.trimmed().toLower();
+    static const QRegularExpression kUserRe(QStringLiteral("^[a-z_][a-z0-9_-]{0,31}$"));
+    if (!kUserRe.match(uname).hasMatch() || uname == QLatin1String("root")) {
+        emit toastRequested(QStringLiteral("Username must start with a lowercase letter and use only a-z, 0-9, _, -"),
+                            QStringLiteral("warning"));
+        return;
+    }
+    if (::getpwnam(uname.toLocal8Bit().constData()) != nullptr) {
+        emit toastRequested(QStringLiteral("User '%1' already exists").arg(uname), QStringLiteral("warning"));
+        return;
+    }
+    QString safe_name = fullName.trimmed();
+    safe_name.remove(QRegularExpression(QStringLiteral("[:,;\\r\\n\\t]")));
+    if (safe_name.isEmpty()) {
+        safe_name = uname;
+        safe_name[0] = safe_name[0].toUpper();
+    }
+
+    const QString script = QStringLiteral(
+        "set -e\n"
+        "UNAME=\"$1\"; FNAME=\"$2\"; ADMIN=\"$3\"; PWFILE=\"$4\"\n"
+        "GROUPS_LIST=\"\"\n"
+        "if [ \"$ADMIN\" = \"1\" ]; then GROUPS_LIST=\"wheel\"; fi\n"
+        "for g in input video render seat finn; do\n"
+        "  if getent group \"$g\" >/dev/null 2>&1; then\n"
+        "    GROUPS_LIST=\"${GROUPS_LIST:+${GROUPS_LIST},}${g}\"\n"
+        "  fi\n"
+        "done\n"
+        "if [ -n \"$GROUPS_LIST\" ]; then\n"
+        "  useradd -m -c \"$FNAME\" -G \"$GROUPS_LIST\" -s /bin/bash \"$UNAME\"\n"
+        "else\n"
+        "  useradd -m -c \"$FNAME\" -s /bin/bash \"$UNAME\"\n"
+        "fi\n"
+        "if [ -n \"$PWFILE\" ] && [ -f \"$PWFILE\" ]; then\n"
+        "  PW=$(cat \"$PWFILE\")\n"
+        "  rm -f \"$PWFILE\"\n"
+        "  printf '%s:%s\\n' \"$UNAME\" \"$PW\" | chpasswd\n"
+        "else\n"
+        "  passwd -d \"$UNAME\" >/dev/null 2>&1 || true\n"
+        "fi\n"
+        "UHOME=$(getent passwd \"$UNAME\" | cut -d: -f6)\n"
+        "UGRP=$(id -gn \"$UNAME\" 2>/dev/null || echo \"$UNAME\")\n"
+        "if [ -n \"$UHOME\" ] && [ -d \"$UHOME\" ]; then\n"
+        "  install -d -m 0755 -o \"$UNAME\" -g \"$UGRP\" \"$UHOME/.config/finn\"\n"
+        "  printf 'done\\n' > \"$UHOME/.config/finn/oobe_complete\"\n"
+        "  chown -R \"$UNAME:$UGRP\" \"$UHOME/.config/finn\"\n"
+        "fi\n"
+    );
+
+    runPrivilegedUserScript(script,
+                            {uname, safe_name, isAdmin ? QStringLiteral("1") : QStringLiteral("0")},
+                            password,
+                            adminPassword,
+                            QStringLiteral("Created user %1 (@%2)").arg(safe_name, uname));
+}
+
+void SettingsController::changeUserPassword(const QString& username,
+                                            const QString& newPassword,
+                                            const QString& adminPassword) {
+    const QString uname = username.trimmed();
+    if (uname.isEmpty() || uname == QLatin1String("root") ||
+        ::getpwnam(uname.toLocal8Bit().constData()) == nullptr) {
+        emit toastRequested(QStringLiteral("Invalid user account"), QStringLiteral("error"));
+        return;
+    }
+    if (newPassword.isEmpty()) {
+        emit toastRequested(QStringLiteral("New password cannot be empty"), QStringLiteral("warning"));
+        return;
+    }
+    const QString script = QStringLiteral(
+        "set -e\n"
+        "UNAME=\"$1\"; PWFILE=\"$2\"\n"
+        "PW=$(cat \"$PWFILE\")\n"
+        "rm -f \"$PWFILE\"\n"
+        "printf '%s:%s\\n' \"$UNAME\" \"$PW\" | chpasswd\n"
+    );
+    runPrivilegedUserScript(script, {uname}, newPassword, adminPassword,
+                            QStringLiteral("Updated password for %1").arg(uname));
+}
+
+void SettingsController::deleteUser(const QString& username, const QString& adminPassword) {
+    const QString uname = username.trimmed();
+    const struct passwd* cur_pw = ::getpwuid(::getuid());
+    const QString cur_name = (cur_pw && cur_pw->pw_name)
+        ? QString::fromLocal8Bit(cur_pw->pw_name)
+        : current_user_;
+    if (uname.isEmpty() || uname == QLatin1String("root") || uname == cur_name) {
+        emit toastRequested(QStringLiteral("Cannot remove the active user or root"), QStringLiteral("warning"));
+        return;
+    }
+    const QString script = QStringLiteral(
+        "set -e\n"
+        "userdel -r \"$1\"\n"
+    );
+    runPrivilegedUserScript(script, {uname}, QString(), adminPassword,
+                            QStringLiteral("Removed user %1").arg(uname));
 }
 
 }  // namespace finn::apps

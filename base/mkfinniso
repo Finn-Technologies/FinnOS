@@ -343,6 +343,7 @@ EOF
               "finn-shell.service:etc/systemd/system/finn-shell.service" \
               "finn-wallpaper.service:etc/systemd/system/finn-wallpaper.service" \
               "finn-failure.service:etc/systemd/system/finn-failure.service" \
+              "finn-recovery.service:etc/systemd/system/finn-recovery.service" \
               "finn-update-check.service:etc/systemd/system/finn-update-check.service" \
               "finn-update-check.timer:etc/systemd/system/finn-update-check.timer" \
               "finn-boot-health.service:etc/systemd/system/finn-boot-health.service" \

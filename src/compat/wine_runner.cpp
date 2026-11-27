@@ -189,6 +189,12 @@ WineRuntimeStatus probe_wine_runtime() {
     } else if (executable_exists("wine64")) {
         status.wine_installed = true;
         status.wine_bin = "wine64";
+    } else if (fs::is_regular_file("/opt/hangover/usr/bin/wine", ec)) {
+        status.wine_installed = true;
+        status.wine_bin = "/opt/hangover/usr/bin/wine";
+    } else if (fs::is_regular_file("/usr/local/bin/wine", ec)) {
+        status.wine_installed = true;
+        status.wine_bin = "/usr/local/bin/wine";
     }
 
     status.dxvk_available = fs::is_directory("/usr/share/dxvk/x64", ec) ||
@@ -217,10 +223,13 @@ WineRuntimeStatus probe_wine_runtime() {
     status.default_prefix = default_wine_prefix_path();
     status.prefix_initialized = fs::is_directory(fs::path(status.default_prefix) / "drive_c", ec);
 
+    const bool has_hangover = fs::is_regular_file("/opt/hangover/usr/bin/wine", ec);
     const bool has_engine = status.proton_installed || status.wine_installed;
     if (has_engine) {
         status.ready = true;
-        const std::string engine = status.proton_installed ? "Proton" : ("Wine (" + status.wine_bin + ")");
+        const std::string engine = status.proton_installed
+            ? "Proton"
+            : (has_hangover ? "Hangover Wine (ARM64 WoW64)" : ("Wine (" + status.wine_bin + ")"));
         status.summary = "Windows 11 ready via " + engine +
                          (status.dxvk_available ? " + DXVK" : "") +
                          (status.vkd3d_available ? " + VKD3D" : "") +
@@ -228,8 +237,7 @@ WineRuntimeStatus probe_wine_runtime() {
     } else if (status.host_arch == "aarch64" || status.host_arch == "arm64") {
         status.ready = false;
         status.summary =
-            "Windows (.exe) runtime requires x86_64 Proton/Wine or an x86_64 compatibility "
-            "translator (box64/fex-emu) on aarch64; not installed on this host.";
+            "Windows (.exe) runtime requires Hangover Wine (ARM64) or x86_64 Wine/Proton; not installed on this host.";
     } else {
         status.ready = false;
         status.summary = "Proton/Wine is not installed on this system (install wine or GE-Proton on x86_64).";

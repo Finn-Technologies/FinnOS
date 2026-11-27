@@ -19,6 +19,7 @@ FinnApplicationWindow {
         { id: "bluetooth", label: "Bluetooth", icon: "bluetooth", badgeColor: "#007BFF", section: "network" },
         { id: "network", label: "Network", icon: "globe", badgeColor: "#007BFF", section: "network" },
         { id: "general", label: "General", icon: "cog", badgeColor: "#AEAEAE", section: "system" },
+        { id: "users", label: "Users", icon: "user", badgeColor: "#007BFF", section: "system" },
         { id: "appearance", label: "Appearance", icon: "swatch-book", badgeColor: "#000000", section: "system" },
         { id: "displays", label: "Display", icon: "sun-dim", badgeColor: "#007BFF", section: "system" },
         { id: "sound", label: "Sound", icon: "volume-02", badgeColor: "#FF0000", section: "system" },
@@ -57,7 +58,8 @@ FinnApplicationWindow {
                 if (win.activeNavId === "displays") return displaysCol.implicitHeight
                 if (win.activeNavId === "wifi") return wifiCol.implicitHeight
                 if (win.activeNavId === "bluetooth") return btCol.implicitHeight
-                if (win.activeNavId === "privacy") return privacyCol.implicitHeight
+                if (win.activeNavId === "users") return usersCol.implicitHeight
+                if (win.activeNavId === "privacy" || win.activeNavId === "general") return privacyCol.implicitHeight
                 if (win.activeNavId === "updates") return updatesCol.implicitHeight
                 return compatCol.implicitHeight
             }
@@ -740,7 +742,434 @@ FinnApplicationWindow {
             }
 
             // ================================================================
-            // 7. GENERAL / PRIVACY & LOCK / UPDATES / COMPATIBILITY PAGE
+            // 7. USERS & ACCOUNTS PAGE
+            // ================================================================
+            Column {
+                id: usersCol
+                visible: win.activeNavId === "users"
+                width: parent.width
+                spacing: 14
+
+                property string passwordTargetUser: ""
+                property string newFullName: ""
+                property string newUsername: ""
+                property string newPassword: ""
+                property bool newIsAdmin: true
+                property string adminPasswordInput: ""
+                property string changePwValue: ""
+
+                // Existing accounts list
+                FinnCard {
+                    width: parent.width
+                    implicitHeight: usersListCol.implicitHeight + 12
+
+                    Column {
+                        id: usersListCol
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 0
+
+                        Repeater {
+                            model: SettingsCtrl.systemUsers
+                            delegate: Column {
+                                width: usersListCol.width
+                                spacing: 0
+
+                                FinnDivider {
+                                    visible: index > 0
+                                    width: parent.width
+                                }
+
+                                Item {
+                                    width: parent.width
+                                    height: 58
+
+                                    Row {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 12
+
+                                        Rectangle {
+                                            width: 34
+                                            height: 34
+                                            radius: 17
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            color: modelData.isCurrent ? FinnTheme.accent : FinnTheme.surfaceHover
+
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: modelData.displayName.length > 0 ? modelData.displayName.charAt(0).toUpperCase() : "U"
+                                                color: modelData.isCurrent ? "#FFFFFF" : FinnTheme.ink
+                                                font.family: FinnTheme.fontFamily
+                                                font.pixelSize: 14
+                                                font.weight: Font.DemiBold
+                                            }
+                                        }
+
+                                        Column {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            spacing: 2
+
+                                            Row {
+                                                spacing: 6
+                                                Text {
+                                                    text: modelData.displayName
+                                                    color: FinnTheme.ink
+                                                    font.family: FinnTheme.fontFamily
+                                                    font.pixelSize: 13
+                                                    font.weight: Font.Medium
+                                                }
+                                                FinnBadge {
+                                                    visible: modelData.isCurrent
+                                                    text: "Current"
+                                                    tone: "accent"
+                                                }
+                                                FinnBadge {
+                                                    text: modelData.isAdmin ? "Admin" : "Standard"
+                                                    tone: "neutral"
+                                                }
+                                            }
+
+                                            Text {
+                                                text: "@" + modelData.username
+                                                color: FinnTheme.inkMute
+                                                font.family: FinnTheme.fontFamily
+                                                font.pixelSize: 11
+                                            }
+                                        }
+                                    }
+
+                                    Row {
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 6
+
+                                        FinnButton {
+                                            text: "Password"
+                                            variant: "secondary"
+                                            enabled: !SettingsCtrl.userActionBusy
+                                            onClicked: {
+                                                usersCol.passwordTargetUser = modelData.username
+                                                usersCol.changePwValue = ""
+                                            }
+                                        }
+
+                                        FinnButton {
+                                            visible: !modelData.isCurrent
+                                            text: "Remove"
+                                            variant: "secondary"
+                                            enabled: !SettingsCtrl.userActionBusy
+                                            onClicked: SettingsCtrl.deleteUser(modelData.username, usersCol.adminPasswordInput)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Inline password change card
+                FinnCard {
+                    visible: usersCol.passwordTargetUser.length > 0
+                    width: parent.width
+                    implicitHeight: pwChangeCol.implicitHeight + 28
+
+                    Column {
+                        id: pwChangeCol
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 10
+
+                        Text {
+                            text: "Change password for @" + usersCol.passwordTargetUser
+                            color: FinnTheme.ink
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
+
+                        Rectangle {
+                            width: parent.width
+                            height: 34
+                            radius: 8
+                            color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.06) : "#08000000"
+                            border.width: 1
+                            border.color: pwNewInput.activeFocus ? FinnTheme.accent : FinnTheme.hair
+
+                            TextInput {
+                                id: pwNewInput
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                echoMode: TextInput.Password
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                                text: usersCol.changePwValue
+                                onTextChanged: usersCol.changePwValue = text
+                            }
+
+                            Text {
+                                visible: pwNewInput.text.length === 0
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "New password"
+                                color: FinnTheme.inkMute
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        Row {
+                            spacing: 8
+                            FinnButton {
+                                text: SettingsCtrl.userActionBusy ? "Saving..." : "Update Password"
+                                variant: "primary"
+                                enabled: !SettingsCtrl.userActionBusy && usersCol.changePwValue.length > 0
+                                onClicked: {
+                                    SettingsCtrl.changeUserPassword(
+                                        usersCol.passwordTargetUser,
+                                        usersCol.changePwValue,
+                                        usersCol.adminPasswordInput)
+                                    usersCol.passwordTargetUser = ""
+                                    usersCol.changePwValue = ""
+                                }
+                            }
+                            FinnButton {
+                                text: "Cancel"
+                                variant: "secondary"
+                                onClicked: {
+                                    usersCol.passwordTargetUser = ""
+                                    usersCol.changePwValue = ""
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add New User card
+                FinnCard {
+                    width: parent.width
+                    implicitHeight: addUserCol.implicitHeight + 28
+
+                    Column {
+                        id: addUserCol
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 10
+
+                        Text {
+                            text: "Add New User"
+                            color: FinnTheme.ink
+                            font.family: FinnTheme.fontFamily
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                        }
+
+                        Grid {
+                            width: parent.width
+                            columns: win.isMobile ? 1 : 2
+                            columnSpacing: 10
+                            rowSpacing: 10
+                            readonly property real fieldW: columns === 1 ? width : (width - 10) / 2
+
+                            // Full Name
+                            Rectangle {
+                                width: parent.fieldW
+                                height: 34
+                                radius: 8
+                                color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.06) : "#08000000"
+                                border.width: 1
+                                border.color: fullNameField.activeFocus ? FinnTheme.accent : FinnTheme.hair
+
+                                TextInput {
+                                    id: fullNameField
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    color: FinnTheme.ink
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 13
+                                    text: usersCol.newFullName
+                                    onTextChanged: {
+                                        usersCol.newFullName = text
+                                        if (!userNameField.activeFocus && usersCol.newUsername.length === 0) {
+                                            // keep username editable independently
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    visible: fullNameField.text.length === 0
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Full name"
+                                    color: FinnTheme.inkMute
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 13
+                                }
+                            }
+
+                            // Username
+                            Rectangle {
+                                width: parent.fieldW
+                                height: 34
+                                radius: 8
+                                color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.06) : "#08000000"
+                                border.width: 1
+                                border.color: userNameField.activeFocus ? FinnTheme.accent : FinnTheme.hair
+
+                                TextInput {
+                                    id: userNameField
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    color: FinnTheme.ink
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 13
+                                    text: usersCol.newUsername
+                                    onTextChanged: usersCol.newUsername = text.toLowerCase().replace(/[^a-z0-9_-]/g, "")
+                                }
+
+                                Text {
+                                    visible: userNameField.text.length === 0
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Username (e.g. alex)"
+                                    color: FinnTheme.inkMute
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 13
+                                }
+                            }
+                        }
+
+                        // Password
+                        Rectangle {
+                            width: parent.width
+                            height: 34
+                            radius: 8
+                            color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.06) : "#08000000"
+                            border.width: 1
+                            border.color: newPwField.activeFocus ? FinnTheme.accent : FinnTheme.hair
+
+                            TextInput {
+                                id: newPwField
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                echoMode: TextInput.Password
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                                text: usersCol.newPassword
+                                onTextChanged: usersCol.newPassword = text
+                            }
+
+                            Text {
+                                visible: newPwField.text.length === 0
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Password"
+                                color: FinnTheme.inkMute
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        // Admin password prompt (only shown when sudo requires password)
+                        Rectangle {
+                            visible: SettingsCtrl.sudoPasswordRequired
+                            width: parent.width
+                            height: 34
+                            radius: 8
+                            color: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.06) : "#08000000"
+                            border.width: 1
+                            border.color: adminPwField.activeFocus ? FinnTheme.accent : FinnTheme.hair
+
+                            TextInput {
+                                id: adminPwField
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 10
+                                verticalAlignment: TextInput.AlignVCenter
+                                echoMode: TextInput.Password
+                                color: FinnTheme.ink
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                                text: usersCol.adminPasswordInput
+                                onTextChanged: usersCol.adminPasswordInput = text
+                            }
+
+                            Text {
+                                visible: adminPwField.text.length === 0
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Current administrator password"
+                                color: FinnTheme.inkMute
+                                font.family: FinnTheme.fontFamily
+                                font.pixelSize: 13
+                            }
+                        }
+
+                        Item {
+                            width: parent.width
+                            height: 36
+
+                            Row {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 10
+
+                                FinnToggle {
+                                    checked: usersCol.newIsAdmin
+                                    onToggled: usersCol.newIsAdmin = !usersCol.newIsAdmin
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Administrator privileges"
+                                    color: FinnTheme.ink
+                                    font.family: FinnTheme.fontFamily
+                                    font.pixelSize: 13
+                                }
+                            }
+
+                            FinnButton {
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: SettingsCtrl.userActionBusy ? "Creating..." : "Create User"
+                                variant: "primary"
+                                enabled: !SettingsCtrl.userActionBusy && usersCol.newUsername.length > 0
+                                onClicked: {
+                                    SettingsCtrl.createUser(
+                                        usersCol.newFullName,
+                                        usersCol.newUsername,
+                                        usersCol.newPassword,
+                                        usersCol.newIsAdmin,
+                                        usersCol.adminPasswordInput)
+                                    usersCol.newFullName = ""
+                                    usersCol.newUsername = ""
+                                    usersCol.newPassword = ""
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ================================================================
+            // 8. GENERAL / PRIVACY & LOCK / UPDATES / COMPATIBILITY PAGE
             // ================================================================
             Column {
                 id: privacyCol

@@ -1,36 +1,34 @@
 #!/bin/bash
-# FinnOS chroot config - runs inside /mnt via arch-chroot.
+# FinnOS chroot config — runs inside /mnt via arch-chroot.
 #
-# It lays down the base image: the user, the services, the fonts, the
-# assets and the sources, and then builds the compositor and the control
-# plane from those sources. The build happens here, in the chroot, because
-# the machine the disc is installed on is the one with the DRM headers and
-# the toolchain.
-#
-# The payload comes from /root/finnos-src, which the installer copied off
-# the install disc. If that is not there, it is fetched from the host.
-#
-# Two things are handed in rather than guessed, because inside the chroot
-# there is no kernel to ask:
-#   ROOTUUID   the UUID of the filesystem mounted at /, for every boot entry
-#   FINN_DISK  the whole disk, for the BIOS boot code (grub i386-pc)
-# FINN_PASSWORD is optional; without it the two accounts get a generated
-# password, which is printed once at the end. A supplied password is never
-# echoed into the installation log.
+# Configures the installed system cleanly offline:
+#   - Preserves user accounts, passwords, hostname, timezone, and OOBE completion
+#     when FINN_REINSTALL=1.
+#   - Skips rebuilding FinnOS from source when pre-built binaries already exist
+#     in the offline OS image (rebuilds offline from /opt/finnos otherwise).
+#   - Installs UEFI (finn-boot/systemd-boot when ESP is mounted at /boot on GPT,
+#     or GRUB UEFI when ESP is mounted at /boot/efi for 100 MiB Windows ESPs /
+#     MBR UEFI) and/or Legacy BIOS GRUB (i386-pc on MBR or GPT+BIOS-Boot).
+#   - Enables os-prober AND writes deterministic /etc/grub.d/40_custom dual-boot
+#     entries for detected Windows, macOS, and Linux installations so dual-boot
+#     with ANY OS works reliably out of the box.
 set -euo pipefail
-HOST=http://192.168.44.1:8765
+HOST="${FINN_HOST_URL:-}"
 SRC=/root/finnos-src
+[ -d "$SRC" ] || SRC=/opt/finnos
+OFFLINE="${FINN_OFFLINE:-0}"
+REINSTALL="${FINN_REINSTALL:-0}"
+REPAIR_ONLY="${FINN_REPAIR_ONLY:-0}"
 
-post() { curl -s -X POST --data-binary @/tmp/finn-chroot.log "$HOST/log" -o /dev/null 2>/dev/null || true; }
+post() {
+    [ "$OFFLINE" = 0 ] && [ -n "$HOST" ] || return 0
+    curl -s -X POST --data-binary @/tmp/finn-chroot.log "$HOST/log" -o /dev/null 2>/dev/null || true
+}
 
 STEP="start"
 PW=""
 CREDS_SHOWN=0
 
-# Saying "complete" over a machine with no password is a machine nobody can
-# log in to, so the one secret is printed exactly once - at the end on
-# success, and on failure through the trap, so a half-built machine that
-# still boots to a console is not a lockout.
 credentials() {
     [ -n "$PW" ] || return 0
     [ "$CREDS_SHOWN" = 0 ] || return 0
@@ -67,8 +65,13 @@ step() {
 get() {
     if [ -f "$SRC/$2" ]; then
         install -D -m 644 "$SRC/$2" "$1"
-    else
+    elif [ -f "/opt/finnos/$2" ]; then
+        install -D -m 644 "/opt/finnos/$2" "$1"
+    elif [ "$OFFLINE" = 0 ] && [ -n "$HOST" ]; then
         curl -fsSLo "$1" "$HOST/$2"
+    else
+        echo "error: missing local payload file $2 (offline mode)" >&2
+        exit 1
     fi
 }
 
@@ -77,280 +80,243 @@ get() {
 echo "ROOTUUID=$ROOTUUID"
 echo "FINN_DISK=$FINN_DISK"
 
-step "base config"
-TZ_NAME="${FINN_TIMEZONE:-UTC}"
-if [ ! -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
-    echo "WARN: timezone '$TZ_NAME' not found under /usr/share/zoneinfo; falling back to UTC"
-    TZ_NAME="UTC"
-fi
-ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime
-hwclock --systohc 2>/dev/null || true
-echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
-locale-gen
-echo "LANG=en_US.UTF-8" > /etc/locale.conf
-# What the machine calls itself comes from base/, the same files the disc
-# carries and base/setup.sh installs: one copy of "what this machine is"
-# rather than a second one written here. The pacman configuration is the
-# base's too, so the desktop the base refuses is refused on the machine as
-# well, and not only on the medium it was installed from.
-get /etc/hostname base/airootfs/etc/hostname
-HOST_NAME="${FINN_HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo finnos)}"
-printf '%s\n' "$HOST_NAME" > /etc/hostname
-get /etc/os-release base/airootfs/etc/os-release
-# The live medium's issue and motd describe the medium; the machine gets
-# the installed pair, which does not tell the user to run the installer.
-get /etc/issue base/installed/etc/issue
-get /etc/motd base/installed/etc/motd
-get /etc/pacman.conf base/pacman.conf
-get /etc/pacman.d/finnos-mirrorlist repo/finnos-mirrorlist
-CHROOT_ARCH="$(uname -m)"
-if [ -n "${FINN_REPO_URL:-}" ]; then
-    awk -v url="$FINN_REPO_URL" '
-      /^\[finnos\]/ { in_finnos=1 }
-      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
-      in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
-      { print }
-    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
-elif [ -f "/var/lib/finn/repo/finnos/os/$CHROOT_ARCH/finnos.db" ]; then
-    awk '
-      /^\[finnos\]/ { in_finnos=1 }
-      in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
-      in_finnos && /^Server[[:space:]]*=/ { print "Server = file:///var/lib/finn/repo/$repo/os/$arch"; next }
-      { print }
-    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
-elif ! command -v curl >/dev/null 2>&1 ||
-     ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$CHROOT_ARCH/finnos.db" >/dev/null 2>&1; then
-    echo "note: [finnos] repo (repo.finnos.org) is offline/unprovisioned; disabling [finnos] in /etc/pacman.conf so upstream fallback succeeds"
-    awk '
-      /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
-      in_finnos && /^\[/ { in_finnos=0 }
-      in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
-      { print }
-    ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
-fi
-if [ "$(uname -m)" = 'x86_64' ]; then
-    MULTILIB_CONF="$(mktemp)"
-    get "$MULTILIB_CONF" base/pacman.multilib.conf
-    cat "$MULTILIB_CONF" >> /etc/pacman.conf
-    rm -f "$MULTILIB_CONF"
-    # The section is what makes Wine's 32-bit dependencies resolvable
-    # after the install; a pacman.conf without it is a machine that cannot
-    # update or reinstall what it was built with.
-    grep -Fqx '[multilib]' /etc/pacman.conf ||
-        { echo "error: [multilib] was not applied to /etc/pacman.conf" >&2; exit 1; }
-fi
-printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s.localdomain %s\n' "$HOST_NAME" "$HOST_NAME" > /etc/hosts
+if [ "$REPAIR_ONLY" != 1 ]; then
+    step "base config"
+    if [ "$REINSTALL" != 1 ] || [ ! -e /etc/localtime ]; then
+        TZ_NAME="${FINN_TIMEZONE:-UTC}"
+        if [ ! -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
+            echo "WARN: timezone '$TZ_NAME' not found under /usr/share/zoneinfo; falling back to UTC"
+            TZ_NAME="UTC"
+        fi
+        ln -sf "/usr/share/zoneinfo/$TZ_NAME" /etc/localtime
+        hwclock --systohc 2>/dev/null || true
+    fi
+    if [ "$REINSTALL" != 1 ] || [ ! -s /etc/locale.conf ]; then
+        echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+        locale-gen 2>/dev/null || true
+        echo "LANG=en_US.UTF-8" > /etc/locale.conf
+    fi
+    if [ "$REINSTALL" != 1 ] || [ ! -s /etc/hostname ]; then
+        get /etc/hostname base/airootfs/etc/hostname
+        HOST_NAME="${FINN_HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo finnos)}"
+        printf '%s\n' "$HOST_NAME" > /etc/hostname
+    else
+        HOST_NAME="$(cat /etc/hostname 2>/dev/null || echo finnos)"
+    fi
+    get /etc/os-release base/airootfs/etc/os-release
+    get /etc/issue base/installed/etc/issue
+    get /etc/motd base/installed/etc/motd
+    get /etc/pacman.conf base/pacman.conf
+    get /etc/pacman.d/finnos-mirrorlist repo/finnos-mirrorlist
+    CHROOT_ARCH="$(uname -m)"
+    if [ -n "${FINN_REPO_URL:-}" ]; then
+        awk -v url="$FINN_REPO_URL" '
+          /^\[finnos\]/ { in_finnos=1 }
+          in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+          in_finnos && /^Server[[:space:]]*=/ { print "Server = " url; next }
+          { print }
+        ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+    elif [ -f "/var/lib/finn/repo/finnos/os/$CHROOT_ARCH/finnos.db" ]; then
+        awk '
+          /^\[finnos\]/ { in_finnos=1 }
+          in_finnos && /^\[/ && !/^\[finnos\]/ { in_finnos=0 }
+          in_finnos && /^Server[[:space:]]*=/ { print "Server = file:///var/lib/finn/repo/$repo/os/$arch"; next }
+          { print }
+        ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+    elif [ "$OFFLINE" = 1 ] || ! command -v curl >/dev/null 2>&1 ||
+         ! curl -fsI --connect-timeout 2 --max-time 4 "https://repo.finnos.org/finnos/os/$CHROOT_ARCH/finnos.db" >/dev/null 2>&1; then
+        echo "note: disabling [finnos] placeholder in /etc/pacman.conf (offline install)"
+        awk '
+          /^\[finnos\]/ { in_finnos=1; print "# [finnos] (offline fallback)"; next }
+          in_finnos && /^\[/ { in_finnos=0 }
+          in_finnos && /^(SigLevel|Server)/ { print "# " $0; next }
+          { print }
+        ' /etc/pacman.conf > /etc/pacman.conf.new && mv /etc/pacman.conf.new /etc/pacman.conf
+    fi
+    if [ "$(uname -m)" = 'x86_64' ]; then
+        MULTILIB_CONF="$(mktemp)"
+        get "$MULTILIB_CONF" base/pacman.multilib.conf
+        cat "$MULTILIB_CONF" >> /etc/pacman.conf
+        rm -f "$MULTILIB_CONF"
+        grep -Fqx '[multilib]' /etc/pacman.conf ||
+            { echo "error: [multilib] was not applied to /etc/pacman.conf" >&2; exit 1; }
+    fi
+    printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s.localdomain %s\n' "$HOST_NAME" "$HOST_NAME" > /etc/hosts
 
-step "accounts"
-# There used to be a default here - root:finn, finn:finn, passwordless sudo -
-# and on any network that is remote root after one guess. There is none now:
-# finn gets the operator-supplied or generated password, root is locked, and
-# sudo asks for finn's password.
-id finn >/dev/null 2>&1 || useradd -m -G wheel,input,video,render,seat -s /bin/bash finn
-PW="${FINN_PASSWORD:-}"
-if [ -z "$PW" ]; then
-    PW="$(head -c 12 /dev/urandom | base64 | tr -d '\n')"
-fi
-case "$PW" in
-    *:*|*$'\n'*) echo "error: the password may not contain ':' or a newline" >&2; exit 1 ;;
-esac
-printf 'finn:%s\n' "$PW" | chpasswd
-passwd -l root
-printf 'finn ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
-chmod 0440 /etc/sudoers.d/finn
-if [ ! -f /var/lib/finn/oobe_complete ]; then
-    printf 'finn ALL=(root) NOPASSWD: /usr/local/libexec/finn-oobe-apply\n' > /etc/sudoers.d/finn-oobe
-    chmod 0440 /etc/sudoers.d/finn-oobe
-fi
+    step "accounts"
+    mkdir -p /etc/sudoers.d
+    if [ "$REINSTALL" = 1 ] && id finn >/dev/null 2>&1; then
+        echo "reinstall: preserving existing user accounts and passwords"
+    else
+        id finn >/dev/null 2>&1 || useradd -m -G wheel,input,video,render,seat -s /bin/bash finn
+        PW="${FINN_PASSWORD:-}"
+        if [ -z "$PW" ]; then
+            PW="$(head -c 12 /dev/urandom | base64 | tr -d '\n')"
+        fi
+        case "$PW" in
+            *:*|*$'\n'*) echo "error: the password may not contain ':' or a newline" >&2; exit 1 ;;
+        esac
+        printf 'finn:%s\n' "$PW" | chpasswd
+        passwd -l root
+    fi
+    printf 'finn ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
+    chmod 0440 /etc/sudoers.d/finn
+    if [ ! -f /var/lib/finn/oobe_complete ]; then
+        printf 'finn ALL=(root) NOPASSWD: /usr/local/libexec/finn-oobe-apply\n' > /etc/sudoers.d/finn-oobe
+        chmod 0440 /etc/sudoers.d/finn-oobe
+    fi
 
-step "services"
-systemctl enable NetworkManager 2>/dev/null || true
-systemctl enable seatd 2>/dev/null || true
-systemctl enable systemd-timesyncd 2>/dev/null || true
-# bluetooth.service carries ConditionPathIsDirectory=/sys/class/bluetooth,
-# so enabling it on a machine with no radio starts nothing; with a USB
-# dongle it is what the Control Center's Bluetooth tile drives.
-systemctl enable bluetooth 2>/dev/null ||
-    echo "WARN: bluetooth.service is not installed"
-# Virtualization guest services: each unit carries ConditionVirtualization= so
-# bare-metal installs never start them, while VMware and VirtualBox guests get
-# time sync, shared folders, and graceful host shutdown out of the box.
-systemctl enable vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
-systemctl enable vboxservice.service 2>/dev/null || true
-if getent group vboxsf >/dev/null 2>&1; then
-    usermod -aG vboxsf finn 2>/dev/null || true
-fi
-mkdir -p /mnt/hgfs
-# sshd is installed and disabled: a network login is a decision somebody
-# makes on the machine, not something an install turns on.
-# tty2 is the rescue console. tty1 belongs to the compositor, so the old
-# autologin drop-in there never ran; it is removed rather than replaced.
-rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
-rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
-systemctl enable getty@tty2.service 2>/dev/null ||
-    echo "WARN: getty@tty2 could not be enabled; there is no rescue console"
+    step "services"
+    systemctl enable NetworkManager 2>/dev/null || true
+    systemctl enable seatd 2>/dev/null || true
+    systemctl enable systemd-timesyncd 2>/dev/null || true
+    systemctl enable bluetooth 2>/dev/null ||
+        echo "WARN: bluetooth.service is not installed"
+    systemctl enable vmtoolsd.service vmware-vmblock-fuse.service 2>/dev/null || true
+    systemctl enable vboxservice.service 2>/dev/null || true
+    if getent group vboxsf >/dev/null 2>&1; then
+        usermod -aG vboxsf finn 2>/dev/null || true
+    fi
+    mkdir -p /mnt/hgfs
+    rm -f /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    rmdir /etc/systemd/system/getty@tty1.service.d 2>/dev/null || true
+    systemctl enable getty@tty2.service 2>/dev/null ||
+        echo "WARN: getty@tty2 could not be enabled; there is no rescue console"
 
-step "Fixel Display fonts"
-mkdir -p /usr/share/fonts/OTF
-for f in FixelDisplay-Regular FixelDisplay-Medium FixelDisplay-SemiBold FixelDisplay-Bold; do
-    get "/usr/share/fonts/OTF/$f.otf" "assets/fonts/FixelDisplay/$f.otf"
-done
-ls -la /usr/share/fonts/OTF/
-fc-cache -f >/dev/null 2>&1 || true
-fc-match "Fixel Display" || true
-post
-
-step "the payload: wallpaper, icons, registry"
-mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn /usr/local/bin
-get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
-get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
-get /usr/share/finn/apps.registry assets/apps.registry
-printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\ncalculator\narchive\ncapture\nflourish\n' > /var/lib/finn/installed
-printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
-ldconfig 2>/dev/null || true
-# Every icon, when the payload is the tree. A list of names is a second
-# place to forget one, and an icon the shell cannot find is a tile drawn
-# as an empty square. The list below is only for the host-server flow,
-# where the tree is not on the disc: it is written out to match what is
-# there today, and the tree copy is the one that is complete.
-if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
-    for f in "$SRC"/assets/icons/shell/*.svg "$SRC"/assets/icons/apps/*.svg; do
-        install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
+    step "Fixel Display fonts"
+    mkdir -p /usr/share/fonts/OTF
+    for f in FixelDisplay-Regular FixelDisplay-Medium FixelDisplay-SemiBold FixelDisplay-Bold; do
+        get "/usr/share/fonts/OTF/$f.otf" "assets/fonts/FixelDisplay/$f.otf"
     done
-else
-    for icon in arc avatar battery bluetooth boot-mark chevron-right cursor \
-                display edit-01 expand folder home-09 info internet minus-sign \
-                moon oobe-hi paint-brush power refresh search-01 settings-02 \
-                sidebar-toggle sun-01 sun-03 view-open-windows volume-02 \
-                wifi-02 x; do
-        get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
+    fc-cache -f >/dev/null 2>&1 || true
+    post
+
+    step "the payload: wallpaper, icons, registry"
+    mkdir -p /usr/share/finn/wallpaper /usr/share/finn/icons /var/lib/finn /usr/local/bin /etc/ld.so.conf.d
+    get /usr/share/finn/wallpaper/default.webp assets/wallpaper/default.webp
+    get /usr/share/finn/wallpaper/setup.webp assets/wallpaper/setup.webp
+    get /usr/share/finn/apps.registry assets/apps.registry
+    printf 'settings\nfiles\nterminal\nnotes\nstore\nviewer\nmonitor\ncalculator\narchive\ncapture\nflourish\n' > /var/lib/finn/installed
+    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/finn.conf
+    ldconfig 2>/dev/null || true
+    if compgen -G "$SRC/assets/icons/shell/*.svg" >/dev/null 2>&1; then
+        for f in "$SRC"/assets/icons/shell/*.svg "$SRC"/assets/icons/apps/*.svg; do
+            install -D -m644 "$f" "/usr/share/finn/icons/$(basename "$f")"
+        done
+    else
+        for icon in arc avatar battery bluetooth boot-mark chevron-right cursor \
+                    display edit-01 expand folder home-09 info internet minus-sign \
+                    moon oobe-hi paint-brush power refresh search-01 settings-02 \
+                    sidebar-toggle sun-01 sun-03 view-open-windows volume-02 \
+                    wifi-02 x; do
+            get "/usr/share/finn/icons/$icon.svg" "assets/icons/shell/$icon.svg"
+        done
+        for icon in app-grid browser chevron-left files library monitor \
+                    native-apps notes settings-app store terminal viewer \
+                    windows; do
+            get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
+        done
+    fi
+    chown -R root:finn /usr/share/finn /var/lib/finn 2>/dev/null || true
+
+    step "the boot splash"
+    get /etc/plymouth/plymouthd.conf base/airootfs/etc/plymouth/plymouthd.conf
+    get /etc/mkinitcpio.conf base/installed/etc/mkinitcpio.conf
+    mkdir -p /usr/share/plymouth/themes/finnos
+    for f in finnos.plymouth finnos.script mark.png bar-track.png bar-fill.png bar-cap-l.png bar-cap-r.png; do
+        get "/usr/share/plymouth/themes/finnos/$f" \
+            "base/airootfs/usr/share/plymouth/themes/finnos/$f"
     done
-    for icon in app-grid browser chevron-left files library monitor \
-                native-apps notes settings-app store terminal viewer \
-                windows; do
-        get "/usr/share/finn/icons/$icon.svg" "assets/icons/apps/$icon.svg"
-    done
-fi
-chown -R root:finn /usr/share/finn /var/lib/finn
-ls /usr/share/finn/icons/
+    systemctl enable plymouth-start.service 2>/dev/null ||
+        echo "WARN: plymouth-start.service is not available"
 
-step "the boot splash"
-# The Finn mark is on the framebuffer before the text console can draw its
-# blinking underscore. These are the same files the live disc and
-# base/setup.sh install; mkinitcpio -P below folds them into this machine's
-# initramfs, so the mark survives a reboot of the installed system.
-get /etc/plymouth/plymouthd.conf base/airootfs/etc/plymouth/plymouthd.conf
-get /etc/mkinitcpio.conf base/installed/etc/mkinitcpio.conf
-mkdir -p /usr/share/plymouth/themes/finnos
-for f in finnos.plymouth finnos.script mark.png bar-track.png bar-fill.png bar-cap-l.png bar-cap-r.png; do
-    get "/usr/share/plymouth/themes/finnos/$f" \
-        "base/airootfs/usr/share/plymouth/themes/finnos/$f"
-done
-systemctl enable plymouth-start.service 2>/dev/null ||
-    echo "WARN: plymouth-start.service is not available"
+    step "the system units"
+    get /etc/systemd/system/finn-comp.service base/finn-comp.service
+    get /etc/systemd/system/finn-session.service base/finn-session.service
+    get /etc/systemd/system/finn-shell.service base/finn-shell.service
+    get /etc/systemd/system/finn-wallpaper.service base/finn-wallpaper.service
+    get /etc/systemd/system/finn-failure.service base/finn-failure.service
+    get /etc/systemd/system/finn-recovery.service base/finn-recovery.service
+    get /etc/systemd/system/finn-update-check.service base/finn-update-check.service
+    get /etc/systemd/system/finn-update-check.timer base/finn-update-check.timer
+    get /etc/systemd/system/finn-boot-health.service base/finn-boot-health.service
+    get /usr/share/finn/ota/grub-ab.cfg ota/grub-ab.cfg
+    get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
+    systemctl daemon-reload 2>/dev/null || true
 
-step "the system units"
-get /etc/systemd/system/finn-comp.service base/finn-comp.service
-get /etc/systemd/system/finn-session.service base/finn-session.service
-get /etc/systemd/system/finn-shell.service base/finn-shell.service
-get /etc/systemd/system/finn-wallpaper.service base/finn-wallpaper.service
-get /etc/systemd/system/finn-failure.service base/finn-failure.service
-get /etc/systemd/system/finn-update-check.service base/finn-update-check.service
-get /etc/systemd/system/finn-update-check.timer base/finn-update-check.timer
-get /etc/systemd/system/finn-boot-health.service base/finn-boot-health.service
-get /usr/share/finn/ota/grub-ab.cfg ota/grub-ab.cfg
-get /usr/lib/tmpfiles.d/finn.conf base/finn-tmpfiles.conf
-# A chroot has no systemd of its own to reload, and the target's systemd
-# reads its units at boot; the reload is for the live environment, so it is
-# not a reason to fail an install that is otherwise correct.
-systemctl daemon-reload 2>/dev/null || true
-# Not enabled here: a unit whose binary does not exist yet fails at every
-# boot, and the binary does not exist until the build below has run.
-
-step "the sources, so the machine can build the compositor"
-mkdir -p /opt/finnos
-if [ -d "$SRC" ]; then
-    tar -C "$SRC" -cf - . | tar -C /opt/finnos -xf -
-    chown -R finn:finn /opt/finnos
-    echo "SOURCES=installed"
-else
-    if curl -sfLo /tmp/finnos.tar.gz "$HOST/finnos.tar.gz"; then
+    step "the sources & session binaries"
+    mkdir -p /opt/finnos
+    if [ -d "$SRC" ] && [ "$SRC" != "/opt/finnos" ]; then
+        tar -C "$SRC" -cf - . | tar -C /opt/finnos -xf -
+        chown -R finn:finn /opt/finnos 2>/dev/null || true
+        echo "SOURCES=installed"
+    elif [ -d /opt/finnos/src ]; then
+        echo "SOURCES=present"
+    elif [ "$OFFLINE" = 0 ] && [ -n "$HOST" ] && curl -sfLo /tmp/finnos.tar.gz "$HOST/finnos.tar.gz"; then
         tar -C /opt/finnos -xzf /tmp/finnos.tar.gz
-        chown -R finn:finn /opt/finnos
+        chown -R finn:finn /opt/finnos 2>/dev/null || true
         echo "SOURCES=installed"
     else
-        echo "WARN: the sources were not available; push them with vm/deploy.sh"
-        echo "SOURCES=missing"
+        echo "WARN: sources not copied; using pre-installed binaries if present"
     fi
-fi
 
-step "build the session"
-# The disc carries the sources; the machine they land on is the one that
-# has the DRM headers and the toolchain, so the build happens here. Without
-# it the machine would boot with no compositor to start.
-SHELL_STATE=missing
-if [ -d /opt/finnos ]; then
-    cd /opt/finnos
-    rc=0
-    make -j"$(nproc)" >/tmp/finn-build.log 2>&1 || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        make install >>/tmp/finn-build.log 2>&1 || rc=$?
-    fi
-    if [ "$rc" -eq 0 ] && [ -x /usr/local/bin/finn-comp ] &&
-       [ -x /usr/local/bin/finn-session ] && [ -x /usr/local/bin/finn-shell ] &&
-       [ -x /usr/local/bin/finn-wallpaper ]; then
+    # Fast offline path: if FinnOS session binaries are already pre-built in the
+    # offline image, skip the multi-minute chroot compilation!
+    SHELL_STATE=missing
+    if [ -x /usr/local/bin/finn-comp ] && [ -x /usr/local/bin/finn-session ] &&
+       [ -x /usr/local/bin/finn-shell ] && [ -x /usr/local/bin/finn-wallpaper ]; then
         SHELL_STATE=installed
-        echo "SHELL=installed"
+        echo "SHELL=prebuilt-installed"
+    elif [ -d /opt/finnos ]; then
+        cd /opt/finnos
+        rc=0
+        make -j"$(nproc 2>/dev/null || echo 2)" >/tmp/finn-build.log 2>&1 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            make install >>/tmp/finn-build.log 2>&1 || rc=$?
+        fi
+        if [ "$rc" -eq 0 ] && [ -x /usr/local/bin/finn-comp ] &&
+           [ -x /usr/local/bin/finn-session ] && [ -x /usr/local/bin/finn-shell ] &&
+           [ -x /usr/local/bin/finn-wallpaper ]; then
+            SHELL_STATE=installed
+            echo "SHELL=installed"
+        else
+            echo "WARN: the build or install failed; see /tmp/finn-build.log"
+            tail -30 /tmp/finn-build.log 2>/dev/null || true
+        fi
+    fi
+    chown -R finn:finn /opt/finnos 2>/dev/null || true
+
+    if [ "$SHELL_STATE" = installed ]; then
+        mkdir -p /var/lib/systemd/linger
+        touch /var/lib/systemd/linger/finn
+        systemctl enable finn-comp finn-session finn-shell finn-wallpaper
+        if [ -x /usr/local/bin/recovery-mode ]; then
+            systemctl enable finn-recovery.service 2>/dev/null || true
+        fi
+        if [ -x /usr/local/bin/finn-update ]; then
+            systemctl enable finn-update-check.timer finn-boot-health.service 2>/dev/null || true
+        fi
+        systemctl set-default graphical.target
+        for unit in finn-comp finn-session finn-shell finn-wallpaper; do
+            [ -e "/etc/systemd/system/graphical.target.wants/$unit.service" ] ||
+                { echo "error: $unit was not enabled for graphical.target" >&2; exit 1; }
+        done
+        echo "SESSION=enabled"
     else
-        echo "WARN: the build or the install failed; see /tmp/finn-build.log"
-        tail -30 /tmp/finn-build.log || true
+        echo "SESSION=not-enabled: the session binaries are missing"
     fi
+    post
 else
-    echo "WARN: no sources to build; the shell will not start"
+    SHELL_STATE=installed
 fi
-chown -R finn:finn /opt/finnos
 
-# The session is turned on only now, when there is something to turn on.
-# A machine that reaches this point without a compositor keeps its console:
-# tty2 has a getty either way. The linger file is what makes logind create
-# /run/user/1000 for finn before anyone logs in.
-if [ "$SHELL_STATE" = installed ]; then
-    mkdir -p /var/lib/systemd/linger
-    touch /var/lib/systemd/linger/finn
-    systemctl enable finn-comp finn-session finn-shell finn-wallpaper
-    if [ -x /usr/local/bin/finn-update ]; then
-        systemctl enable finn-update-check.timer finn-boot-health.service 2>/dev/null || true
-    fi
-    systemctl set-default graphical.target
-    # Enabled is a file on disk, so it is checked as one: a session that was
-    # never enabled is a machine that boots to a console after saying the
-    # install worked.
-    for unit in finn-comp finn-session finn-shell finn-wallpaper; do
-        [ -e "/etc/systemd/system/graphical.target.wants/$unit.service" ] ||
-            { echo "error: $unit was not enabled for graphical.target" >&2; exit 1; }
-    done
-    echo "SESSION=enabled"
-else
-    echo "SESSION=not-enabled: the session binaries are missing"
-fi
-post
-
+# ── Initramfs + Universal Dual-Boot Bootloader Setup ─────────────────────────
 step "initramfs + bootloader"
 mkinitcpio -P 2>&1 | tail -5
 [ -f /boot/vmlinuz-linux ] || { echo "error: no kernel in /boot" >&2; exit 1; }
 [ -f /boot/initramfs-linux.img ] || { echo "error: no initramfs in /boot" >&2; exit 1; }
 ls -la /boot/
 
-# The kernel command line is written out here rather than left to whatever
-# the package shipped, so the timeout and the distributor are FinnOS's. The
-# root= is not written here: grub-mkconfig derives it from the filesystem it
-# can see, and the check at the end refuses a menu that does not name the
-# UUID the installer measured.
-#
-# An install driven over a serial console keeps that console on the machine
-# it wrote. Dropping it would leave the person who installed the machine
-# with no way to see the boot that follows. An install from a screen gets
-# no serial console: this is the installer's answer, not a default.
 serial_args=""
 if [ "${FINN_SERIAL:-0}" = 1 ]; then
     serial_args=" console=ttyS0,115200 console=tty0"
@@ -360,13 +326,16 @@ if [ "${FINN_SERIAL:-0}" = 1 ]; then
 else
     echo "SERIAL=none"
 fi
-mkdir -p /etc/default
+
+mkdir -p /etc/default /etc/grub.d
+# Enable os-prober so dual-booting with Windows, macOS, or any Linux distro
+# automatically registers their entries in GRUB as well!
 cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=3
 GRUB_DISTRIBUTOR="FinnOS"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3$serial_args"
-GRUB_DISABLE_OS_PROBER=true
+GRUB_DISABLE_OS_PROBER=false
 EOF
 
 if [ "${FINN_AB_SLOTS:-0}" = 1 ]; then
@@ -387,11 +356,63 @@ ABEOF
     fi
 fi
 
+# Detect where the ESP is mounted (/boot vs /boot/efi) and firmware mode.
+ESP_MOUNT="${FINN_ESP_MOUNT:-}"
+if [ -z "$ESP_MOUNT" ]; then
+    if [ "$(findmnt -no FSTYPE /boot/efi 2>/dev/null || true)" = "vfat" ]; then
+        ESP_MOUNT="/boot/efi"
+    elif [ "$(findmnt -no FSTYPE /boot 2>/dev/null || true)" = "vfat" ]; then
+        ESP_MOUNT="/boot"
+    fi
+fi
+
+# Generate deterministic dual-boot custom GRUB entries (Windows Boot Manager,
+# macOS, and FinnOS Recovery) so dual-boot entries ALWAYS appear even when
+# os-prober cannot run inside a chroot.
+cat > /etc/grub.d/40_finnos_dualboot <<'EOF'
+#!/bin/sh
+exec tail -n +3 $0
+EOF
+chmod 755 /etc/grub.d/40_finnos_dualboot
+cat >> /etc/grub.d/40_finnos_dualboot <<EOF
+menuentry "FinnOS Recovery" {
+    search --no-floppy --fs-uuid --set=root $ROOTUUID
+    linux /boot/vmlinuz-linux root=UUID=$ROOTUUID rw finn.recovery quiet splash vt.global_cursor_default=0 plymouth.ignore-serial-consoles loglevel=3$serial_args
+    initrd /boot/initramfs-linux.img
+}
+EOF
+if [ -n "$ESP_MOUNT" ] && [ -f "${ESP_MOUNT}/EFI/Microsoft/Boot/bootmgfw.efi" ]; then
+    ESP_UUID="$(findmnt -no UUID "$ESP_MOUNT" 2>/dev/null || true)"
+    cat >> /etc/grub.d/40_finnos_dualboot <<EOF
+menuentry "Windows Boot Manager" {
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root ${ESP_UUID}
+    chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+}
+EOF
+fi
+if [ -n "$ESP_MOUNT" ] && { [ -f "${ESP_MOUNT}/System/Library/CoreServices/boot.efi" ] || [ -f "${ESP_MOUNT}/EFI/Apple/Boot/boot.efi" ]; }; then
+    ESP_UUID="$(findmnt -no UUID "$ESP_MOUNT" 2>/dev/null || true)"
+    APPLE_EFI="/EFI/Apple/Boot/boot.efi"
+    [ -f "${ESP_MOUNT}/System/Library/CoreServices/boot.efi" ] && APPLE_EFI="/System/Library/CoreServices/boot.efi"
+    cat >> /etc/grub.d/40_finnos_dualboot <<EOF
+menuentry "macOS" {
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root ${ESP_UUID}
+    chainloader ${APPLE_EFI}
+}
+EOF
+fi
+
 efi=0
 PT_TYPE="$(blkid -s PTTYPE -o value "$FINN_DISK" 2>/dev/null || true)"
 EFI_TARGET=x86_64-efi
 [ "$(uname -m)" = 'aarch64' ] && EFI_TARGET=arm64-efi
-if [ "$PT_TYPE" != "dos" ] && command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 | tail -5; then
+
+if [ "$ESP_MOUNT" = "/boot" ] && [ "$PT_TYPE" != "dos" ] &&
+   command -v bootctl >/dev/null 2>&1 && bootctl --esp-path=/boot install 2>&1 | tail -5; then
     if [ -f /usr/share/finn/boot/finn-bootx64.efi ]; then
         install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI
         install -Dm644 /usr/share/finn/boot/finn-bootx64.efi /boot/EFI/systemd/systemd-bootx64.efi
@@ -413,34 +434,36 @@ if [ "$PT_TYPE" != "dos" ] && command -v bootctl >/dev/null 2>&1 && bootctl --es
         "$ROOTUUID" "$serial_args" > /boot/loader/entries/finnos-recovery.conf
     efi=1
     echo "BOOTLOADER=systemd-boot"
-elif grub-install --target="$EFI_TARGET" --efi-directory=/boot \
-        --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
-    grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 ||
-        { echo "error: grub-mkconfig failed" >&2; exit 1; }
-    efi=1
-    echo "BOOTLOADER=grub-efi"
+elif [ -n "$ESP_MOUNT" ] && command -v grub-install >/dev/null 2>&1; then
+    # Works cleanly for BOTH 100 MiB Windows ESPs (/boot/efi) and MBR UEFI disks!
+    # Try registering NVRAM entry first; fall back to --removable if firmware NVRAM is read-only.
+    if grub-install --target="$EFI_TARGET" --efi-directory="$ESP_MOUNT" \
+            --bootloader-id=FinnOS 2>&1 | tail -5 ||
+       grub-install --target="$EFI_TARGET" --efi-directory="$ESP_MOUNT" \
+            --bootloader-id=FinnOS --removable 2>&1 | tail -5; then
+        mkdir -p /boot/grub
+        grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 ||
+            { echo "error: grub-mkconfig failed" >&2; exit 1; }
+        efi=1
+        echo "BOOTLOADER=grub-efi"
+    fi
 fi
 
-# A machine that starts with a BIOS rather than EFI needs the boot code in
-# the MBR as well: the EFI loader on the partition is not enough, and the
-# install would be on the disk with no way to reach it. On a GPT disk GRUB
-# keeps that code in the BIOS boot partition the installer made; on an MBR
-# (dos) disk GRUB writes directly to the MBR gap. The disk is the one the
-# installer was told to write, never a guess.
+# Legacy BIOS bootloader (MBR gap on dos disks, or 1 MiB BIOS Boot ef02 on GPT disks).
 bios=0
-if [ "$(uname -m)" = 'x86_64' ] && grub-install --target=i386-pc --recheck "$FINN_DISK" 2>&1 | tail -5; then
+if [ "$(uname -m)" = 'x86_64' ] && command -v grub-install >/dev/null 2>&1 &&
+   grub-install --target=i386-pc --recheck "$FINN_DISK" 2>&1 | tail -5; then
+    mkdir -p /boot/grub
     grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tail -5 || true
     bios=1
     echo "BOOTLOADER=grub-bios"
 else
-    echo "WARN: no BIOS boot code on $FINN_DISK; this machine has to start with EFI"
+    echo "WARN: no BIOS boot code on $FINN_DISK; this machine boots via UEFI"
 fi
+
 [ "$efi" = 1 ] || [ "$bios" = 1 ] ||
     { echo "error: no bootloader was installed" >&2; exit 1; }
 
-# A boot menu is the only way into the machine, so an install that produced
-# none is not an install. The test is the UUID, not the presence of a file:
-# a grub.cfg with root=UUID= (empty) boots nothing.
 if [ -f /boot/grub/grub.cfg ] &&
    { grep -q "root=UUID=$ROOTUUID" /boot/grub/grub.cfg || grep -q "root=PARTLABEL=FINNOS_A" /boot/grub/grub.cfg; }; then
     :
@@ -454,9 +477,6 @@ fi
 
 post
 echo
-# The bootloader is in place either way, so the machine boots to a console;
-# but a machine without a shell is not a finished install, and the installer
-# has to hear that from here. This is the only success marker in the script.
 if [ "$SHELL_STATE" != installed ]; then
     echo "FINN_CHROOT_FAILED: the compositor is not installed; the machine boots to a login console"
     exit 1

@@ -99,7 +99,8 @@ std::vector<StoreAppItem> parse_winget_search_json(std::string_view json) {
                     }
                 }
                 item.ecosystem = StoreEcosystem::Windows;
-                item.category = "Windows";
+                const std::string tag0 = json_str(obj, "Tags");
+                item.category = tag0.empty() ? "Apps" : tag0;
                 item.verified = true;
                 item.verified_source = "winget-pkgs (SHA-256)";
                 item.accent_hex = "#6366f1";
@@ -127,20 +128,30 @@ WingetInstallerManifest parse_winget_installer_yaml(std::string_view yaml) {
     std::vector<Candidate> cands;
     Candidate cur;
     bool in_installers = false;
+    bool in_file_exts = false;
 
     while (std::getline(in, line)) {
         const std::size_t first_non_ws = line.find_first_not_of(" \t");
         if (first_non_ws == std::string::npos || line[first_non_ws] == '#') continue;
         const std::string_view sv(line.data() + first_non_ws, line.size() - first_non_ws);
 
+        if (first_non_ws == 0 && sv.rfind("- ", 0) != 0) {
+            in_file_exts = false;
+        }
         if (sv.rfind("PackageIdentifier:", 0) == 0) {
             m.package_id = trim(sv.substr(18));
         } else if (sv.rfind("PackageVersion:", 0) == 0) {
             m.version = trim(sv.substr(15));
         } else if (sv.rfind("InstallerType:", 0) == 0 && !in_installers) {
             m.installer_type = trim(sv.substr(14));
+        } else if (sv.rfind("FileExtensions:", 0) == 0) {
+            in_file_exts = true;
+        } else if (in_file_exts && sv.rfind("- ", 0) == 0) {
+            const std::string ext = trim(sv.substr(2));
+            if (!ext.empty()) m.file_extensions.push_back(ext);
         } else if (sv.rfind("Installers:", 0) == 0) {
             in_installers = true;
+            in_file_exts = false;
         } else if (in_installers) {
             std::string_view kv = sv;
             if (kv.rfind("- ", 0) == 0) {

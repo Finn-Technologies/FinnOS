@@ -68,7 +68,14 @@ rsh "$HOST" "
         base-devel cmake ninja pkgconf wayland wayland-protocols \
         libxkbcommon freetype2 fontconfig libwebp libdrm libinput mesa seatd \
         grim qt6-base qt6-wayland qt6-svg qt6-imageformats qt6-tools qt6-declarative \
-        qt6-shadertools qt6-webengine layer-shell-qt xorg-xwayland ttf-dejavu
+        qt6-shadertools qt6-webengine layer-shell-qt xorg-xwayland ttf-dejavu \
+        flatpak fuse3 aria2
+    if [ \"\$(uname -m)\" = \"x86_64\" ]; then
+        $SUDO pacman -S --needed --noconfirm wine winetricks wine-mono wine-gecko 2>/dev/null || true
+    elif [ \"\$(uname -m)\" = \"aarch64\" ] && [ ! -x /opt/hangover/usr/bin/wine ]; then
+        $SUDO bash $REMOTE/scripts/install-hangover-arm64.sh 2>/dev/null || true
+    fi
+    $SUDO flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 "
 
 echo "==> preparing the dev user"
@@ -84,7 +91,12 @@ rsh "$HOST" "
         echo 'finn ALL=(ALL) NOPASSWD: ALL' | $SUDO tee /etc/sudoers.d/finn >/dev/null
         $SUDO chmod 0440 /etc/sudoers.d/finn
     fi
+    if [ ! -f /var/lib/finn/oobe_complete ]; then
+        printf 'finn ALL=(root) NOPASSWD: /usr/local/libexec/finn-oobe-apply\n' | $SUDO tee /etc/sudoers.d/finn-oobe >/dev/null
+        $SUDO chmod 0440 /etc/sudoers.d/finn-oobe
+    fi
     $SUDO loginctl enable-linger finn 2>/dev/null || true
+    $SUDO -u finn flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 "
 
 echo "==> building"
@@ -92,6 +104,9 @@ rsh "$HOST" "cd $REMOTE && if [ \"${FINN_CLEAN:-0}\" = \"1\" ]; then make clean 
 
 echo "==> installing"
 rsh "$HOST" "cd $REMOTE && $SUDO make install && \
+             if [ -f src/compat/wl_clamp.c ]; then \
+                 $SUDO gcc -shared -fPIC -O2 -o /usr/local/lib/libfinn_wl_clamp.so src/compat/wl_clamp.c -ldl -lwayland-client; \
+             fi && \
              $SUDO QT_QPA_PLATFORM=offscreen /usr/local/bin/finn-cursors /usr/share/finn/pointers /usr/share/icons && \
              $SUDO install -d /var/lib/finn && \
              printf 'settings\\nfiles\\nterminal\\nnotes\\nstore\\nviewer\\nmonitor\\ncalculator\\narchive\\ncapture\\nflourish\\n' | $SUDO tee /var/lib/finn/installed >/dev/null && \

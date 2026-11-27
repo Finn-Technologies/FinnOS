@@ -131,9 +131,35 @@ void CompositorWindowListModel::unbindSurfaceObject(std::uint64_t id) {
     surface_objects_.remove(id);
 }
 
+void CompositorWindowListModel::beginAddWindow() {
+    const int row = rowCount();
+    beginInsertRows(QModelIndex(), row, row);
+}
+
+void CompositorWindowListModel::endAddWindow() {
+    endInsertRows();
+}
+
+void CompositorWindowListModel::beginRemoveWindow(int row) {
+    beginRemoveRows(QModelIndex(), row, row);
+}
+
+void CompositorWindowListModel::endRemoveWindow() {
+    endRemoveRows();
+}
+
 void CompositorWindowListModel::syncAll() {
     beginResetModel();
     endResetModel();
+}
+
+void CompositorWindowListModel::syncWindowRoles() {
+    const int n = rowCount();
+    if (n <= 0) return;
+    emit dataChanged(index(0), index(n - 1),
+                     {TitleRole, XRole, YRole, WidthRole, HeightRole, OpacityRole, ScaleRole,
+                      FocusedRole, MaximizedRole, FullscreenRole, MinimizedRole,
+                      ServerDecoratedRole, ZIndexRole, DesktopIndexRole});
 }
 
 void CompositorWindowListModel::syncGeometryFrames() {
@@ -285,6 +311,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                     const bool start_fullscreen = toplevel->fullscreen();
                     const int init_w = start_fullscreen ? out_rect.width : 800;
                     const int init_h = start_fullscreen ? out_rect.height : 500;
+                    window_model_->beginAddWindow();
                     const std::uint64_t wid =
                         workspace_.add_window(title.toStdString(), init_w, init_h, ssd, false);
                     if (start_fullscreen) {
@@ -292,7 +319,8 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                     }
                     toplevel_map_.insert(wid, toplevel);
                     window_model_->bindSurfaceObject(wid, xdg_surface);
-                    window_model_->syncAll();
+                    window_model_->endAddWindow();
+                    window_model_->syncWindowRoles();
 
                     QList<QWaylandXdgToplevel::State> states;
                     states.append(QWaylandXdgToplevel::ActivatedState);
@@ -320,7 +348,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                                     if (sz.width() <= 0 || sz.height() <= 0) return;
                                     if (toplevel->fullscreen()) {
                                         workspace_.set_fullscreen(wid, true);
-                                        window_model_->syncAll();
+                                        window_model_->syncWindowRoles();
                                         scheduleBackdropRefresh(wid);
                                         return;
                                     }
@@ -337,7 +365,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                                             const int cy = ua.y + std::max(0, (ua.height - sz.height()) / 2);
                                             workspace_.move_window(wid, cx, cy, false);
                                             workspace_.resize_window(wid, sz.width(), sz.height(), false);
-                                            window_model_->syncAll();
+                                            window_model_->syncWindowRoles();
                                             scheduleBackdropRefresh(wid);
                                         }
                                     }
@@ -347,7 +375,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                     connect(toplevel, &QWaylandXdgToplevel::titleChanged, this, [this, wid, toplevel]() {
                         if (auto* w = workspace_.find_window(wid)) {
                             w->title = toplevel->title().toStdString();
-                            window_model_->syncAll();
+                            window_model_->syncWindowRoles();
                             writeWindowStateFile();
                         }
                     });
@@ -368,7 +396,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                             frame_clock_.restart();
                             frame_timer_.start();
                         }
-                        window_model_->syncAll();
+                        window_model_->syncWindowRoles();
                         writeWindowStateFile();
                         scheduleBackdropRefresh(wid);
                     });
@@ -391,7 +419,7 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                             frame_clock_.restart();
                             frame_timer_.start();
                         }
-                        window_model_->syncAll();
+                        window_model_->syncWindowRoles();
                         writeWindowStateFile();
                         scheduleBackdropRefresh(wid);
                     });
@@ -400,8 +428,23 @@ bool CompositorServer::start(QQmlApplicationEngine* engine,
                         surface_thumbs_.remove(wid);
                         dirty_thumbs_.remove(wid);
                         window_model_->unbindSurfaceObject(wid);
-                        workspace_.remove_window(wid);
-                        window_model_->syncAll();
+                        int row = -1;
+                        const auto& wins = workspace_.windows();
+                        for (int i = 0; i < static_cast<int>(wins.size()); ++i) {
+                            if (wins[static_cast<std::size_t>(i)].id == wid) {
+                                row = i;
+                                break;
+                            }
+                        }
+                        if (row >= 0) {
+                            window_model_->beginRemoveWindow(row);
+                            workspace_.remove_window(wid);
+                            window_model_->endRemoveWindow();
+                            window_model_->syncWindowRoles();
+                        } else {
+                            workspace_.remove_window(wid);
+                            window_model_->syncAll();
+                        }
                         writeWindowStateFile();
                         scheduleBackdropRefresh();
                     });
@@ -589,7 +632,7 @@ void CompositorServer::pollWindowCommands() {
         frame_clock_.restart();
         frame_timer_.start();
     }
-    window_model_->syncAll();
+    window_model_->syncWindowRoles();
     writeWindowStateFile();
 }
 
@@ -649,10 +692,15 @@ void CompositorServer::stepFrame() {
     const double dt = std::clamp(static_cast<double>(ns) * 1e-9, 0.001, 0.05);
     if (workspace_.step_animations(dt)) {
         window_model_->syncGeometryFrames();
-        scheduleBackdropRefresh();
+        // Throttle CPU backdrop blur during active window motion so animations stay silky smooth
+        if (!backdrop_timer_.isActive()) {
+            backdrop_timer_.setInterval(48);
+            backdrop_timer_.start();
+        }
     } else {
         frame_timer_.stop();
         writeWindowStateFile();
+        backdrop_timer_.setInterval(16);
         scheduleBackdropRefresh();
     }
 }

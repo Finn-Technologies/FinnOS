@@ -106,6 +106,15 @@ pacman -Syu --noconfirm
 # shellcheck disable=SC2046
 pacman -S --needed --noconfirm $(list "$PKGS")
 
+# 3b. Linux & Windows compatibility layers: initialize Flathub for Flatpak and
+#     install Hangover ARM64 Wine on aarch64 (x86_64 already installs wine from packages.x86_64).
+if command -v flatpak >/dev/null 2>&1; then
+    flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+fi
+if [ "$ARCH" = "aarch64" ] && [ ! -x /opt/hangover/usr/bin/wine ] && [ -x "$ROOT/scripts/install-hangover-arm64.sh" ]; then
+    "$ROOT/scripts/install-hangover-arm64.sh" || echo "WARN: Hangover ARM64 Wine install skipped (offline or unavailable)"
+fi
+
 # 4. the user account: in the groups that own input, video and the seat.
 #    By default wheel members authenticate with their password; set
 #    FINN_DEV_VM=1 only on a local dev VM where vm/deploy.sh drives sudo
@@ -118,6 +127,10 @@ else
     printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/finn
 fi
 chmod 0440 /etc/sudoers.d/finn
+if [ ! -f /var/lib/finn/oobe_complete ]; then
+    printf 'finn ALL=(root) NOPASSWD: /usr/local/libexec/finn-oobe-apply\n' > /etc/sudoers.d/finn-oobe
+    chmod 0440 /etc/sudoers.d/finn-oobe
+fi
 
 # 5. the services the base needs before anything is drawn. sshd is installed
 #    (the package list carries it so a machine can be reached without a
@@ -156,6 +169,7 @@ install -Dm644 "$HERE/finn-session.service" /etc/systemd/system/finn-session.ser
 install -Dm644 "$HERE/finn-shell.service"   /etc/systemd/system/finn-shell.service
 install -Dm644 "$HERE/finn-wallpaper.service" /etc/systemd/system/finn-wallpaper.service
 install -Dm644 "$HERE/finn-failure.service" /etc/systemd/system/finn-failure.service
+install -Dm644 "$HERE/finn-recovery.service" /etc/systemd/system/finn-recovery.service
 install -Dm644 "$HERE/finn-update-check.service" /etc/systemd/system/finn-update-check.service
 install -Dm644 "$HERE/finn-update-check.timer" /etc/systemd/system/finn-update-check.timer
 install -Dm644 "$HERE/finn-boot-health.service" /etc/systemd/system/finn-boot-health.service
@@ -196,6 +210,9 @@ if [ -z "$missing" ]; then
     fi
     if [ -x /usr/local/bin/finn-update ]; then
         systemctl enable finn-update-check.timer finn-boot-health.service 2>/dev/null || true
+    fi
+    if [ -x /usr/local/bin/recovery-mode ]; then
+        systemctl enable finn-recovery.service 2>/dev/null || true
     fi
     systemctl set-default graphical.target
     echo "session enabled: finn-comp on tty1, finn-session and finn-shell behind it"

@@ -2,6 +2,7 @@
 
 import os
 import re
+import struct
 import unittest
 
 
@@ -464,6 +465,23 @@ class BootChainTest(unittest.TestCase):
         self.assertNotIn("BootSplashWindow", shell)
         self.assertNotIn("startBootAnimation", shell)
         self.assertNotIn("FINN_BOOT_SPLASH", shell)
+
+    def test_boot_mark_png_and_oobe_intro_logo_share_exact_size(self):
+        """Plymouth's boot mark.png and OOBE's HiIntro Finn logo share one
+        pixel size constant (kBootMarkSizePx = 72) so boot -> OOBE has zero jump."""
+        mark_path = os.path.join(
+            ROOT, "base", "airootfs", "usr", "share", "plymouth", "themes", "finnos", "mark.png"
+        )
+        with open(mark_path, "rb") as f:
+            hdr = f.read(24)
+        self.assertEqual(hdr[:8], b"\x89PNG\r\n\x1a\n")
+        width, height = struct.unpack(">II", hdr[16:24])
+        self.assertEqual((width, height), (72, 72))
+
+        paths_hpp = self.read("src", "common", "paths.hpp")
+        self.assertIn("kBootMarkSizePx = 72", paths_hpp)
+        components_cpp = self.read("src", "ui", "finn", "components.cpp")
+        self.assertIn("finn::kBootMarkSizePx", components_cpp)
 
     def test_no_distribution_name_in_visible_boot_or_app_copy(self):
         surfaces = [

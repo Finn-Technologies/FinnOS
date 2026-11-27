@@ -87,6 +87,7 @@ networkmanager
 wpa_supplicant
 openssh
 curl
+aria2
 7zip
 
 # Linux desktop apps use Flatpak; setup.sh initializes the system Flathub.
@@ -104,13 +105,18 @@ zstd
 arch-install-scripts
 dosfstools
 e2fsprogs
+btrfs-progs
+ntfs-3g
+ntfsprogs
 parted
 gptfdisk
+squashfs-tools
 
 # GRUB is the bootloader on an ARM board; there is no syslinux and no BIOS
 # boot partition there. The tools the machine that writes the disc needs
 # are not on it: see "Building the medium" in README.md.
 grub
+os-prober
 efibootmgr
 
 # Python for FinnSDK and the shell's tooling; git and the compiler because

@@ -205,12 +205,15 @@ if [ "$DRY_SYSTEM" -eq 0 ]; then
 
     if [ -n "$PASSWORD_VAL" ]; then
         printf '%s:%s\n' "$USERNAME_VAL" "$PASSWORD_VAL" | chpasswd
+    else
+        passwd -d "$USERNAME_VAL" >/dev/null 2>&1 || true
     fi
 
     USER_HOME="$(getent passwd "$USERNAME_VAL" | cut -d: -f6)"
     USER_UID="$(id -u "$USERNAME_VAL")"
+    USER_GRP="$(id -gn "$USERNAME_VAL" 2>/dev/null || printf '%s' "$USERNAME_VAL")"
     if [ -n "$USER_HOME" ] && [ -d "$USER_HOME" ]; then
-        install -d -m 0755 -o "$USERNAME_VAL" -g "$USERNAME_VAL" "$USER_HOME/.config/finn"
+        install -d -m 0755 -o "$USERNAME_VAL" -g "$USER_GRP" "$USER_HOME/.config/finn"
         cp "$SYS_SETTINGS" "$USER_HOME/.config/finn/settings"
         if [ -n "$LOCALE" ]; then
             printf 'LANG=%s\nLC_ALL=%s\n' "$LOCALE" "$LOCALE" > "$USER_HOME/.config/finn/locale.conf"
@@ -219,17 +222,32 @@ if [ "$DRY_SYSTEM" -eq 0 ]; then
             "$USERNAME_VAL" "$SAFE_FULL_NAME" "$HOSTNAME_VAL" "$AVATAR_COLOR" "$LOCALE" \
             > "$USER_HOME/.config/finn/account.conf"
         printf 'done\n' > "$USER_HOME/.config/finn/oobe_complete"
-        chown -R "$USERNAME_VAL:$USERNAME_VAL" "$USER_HOME/.config/finn"
+        chown -R "$USERNAME_VAL:$USER_GRP" "$USER_HOME/.config/finn"
     fi
 
     if [ "$USERNAME_VAL" != "finn" ] && [ -n "$USER_UID" ]; then
+        # Ensure the newly created wheel user has sudo rights after locking finn.
+        # Use 10-wheel so it sorts BEFORE finn / finn-oobe in /etc/sudoers.d/.
+        mkdir -p /etc/sudoers.d
+        rm -f /etc/sudoers.d/wheel
+        if [ ! -f /etc/sudoers.d/10-wheel ]; then
+            printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-wheel
+            chmod 0440 /etc/sudoers.d/10-wheel
+        fi
+        # Ensure XDG_RUNTIME_DIR exists immediately so session handoff works on first try.
+        install -d -m 0700 -o "$USERNAME_VAL" -g "$USER_GRP" "/run/user/${USER_UID}" 2>/dev/null || true
         for svc in finn-session finn-shell finn-wallpaper; do
             drop_dir="/etc/systemd/system/${svc}.service.d"
             mkdir -p "$drop_dir"
             cat > "${drop_dir}/10-oobe-user.conf" <<EOF
+[Unit]
+After=user-runtime-dir@${USER_UID}.service
+Wants=user-runtime-dir@${USER_UID}.service
+
 [Service]
 User=${USERNAME_VAL}
-Group=${USERNAME_VAL}
+Group=${USER_GRP}
+SupplementaryGroups=finn
 WorkingDirectory=${USER_HOME}
 Environment=HOME=${USER_HOME}
 Environment=USER=${USERNAME_VAL}
@@ -237,8 +255,19 @@ Environment=XDG_RUNTIME_DIR=/run/user/${USER_UID}
 EOF
         done
         loginctl enable-linger "$USERNAME_VAL" >/dev/null 2>&1 || true
+        systemctl start "user@${USER_UID}.service" >/dev/null 2>&1 || true
         passwd -l finn >/dev/null 2>&1 || true
         systemctl daemon-reload >/dev/null 2>&1 || true
+        # Hand off the live session from temporary `finn` to the newly created user
+        # right after finn-oobe exits so Lock Screen, apps, and home directory belong
+        # to the real user immediately (not the just-locked `finn` account).
+        if [ "${FINN_OOBE_NO_RESTART:-0}" != "1" ] && command -v systemd-run >/dev/null 2>&1; then
+            systemctl stop finn-oobe-handoff.timer finn-oobe-handoff.service >/dev/null 2>&1 || true
+            systemctl reset-failed finn-oobe-handoff.timer finn-oobe-handoff.service >/dev/null 2>&1 || true
+            systemd-run --unit=finn-oobe-handoff --on-active=1s \
+                systemctl restart finn-session.service finn-shell.service finn-wallpaper.service \
+                >/dev/null 2>&1 || true
+        fi
     fi
 else
     # Test-root recording for deterministic host unit tests.
@@ -247,6 +276,12 @@ else
         "$USERNAME_VAL" "$SAFE_FULL_NAME" "$HOSTNAME_VAL" "$REGION" \
         "$([ -n "$PASSWORD_VAL" ] && echo 1 || echo 0)" > "$USER_REC"
 fi
+
+# Record the provisioned primary user so finn-shell Lock Screen always knows
+# the real interactive account even before any service handoff completes.
+PRIMARY_USER_FILE="$(rpath /var/lib/finn/primary_user)"
+printf '%s\n' "$USERNAME_VAL" > "$PRIMARY_USER_FILE"
+chmod 0644 "$PRIMARY_USER_FILE"
 
 # 7. Seal completion marker and permanently retire first-boot privilege rules.
 printf 'done\n' > "$COMPLETE_MARKER"

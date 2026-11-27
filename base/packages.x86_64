@@ -118,6 +118,7 @@ networkmanager
 wpa_supplicant
 openssh
 curl
+aria2
 7zip
 
 # Virtualization guest tools (VMware Tools, VirtualBox Guest Additions, QEMU
@@ -159,13 +160,16 @@ dosfstools
 e2fsprogs
 btrfs-progs
 ntfs-3g
+ntfsprogs
 parted
 gptfdisk
+squashfs-tools
 
 # The bootloader the installed machine gets. GRUB is installed on the
 # machine by the installer, from the machine's own package set; it is on
 # the medium too, so that a machine can also be installed by hand.
 grub
+os-prober
 efibootmgr
 # syslinux, mtools, squashfs-tools and xorriso are not here: they are what
 # the machine that writes the disc needs, not what the disc needs. See

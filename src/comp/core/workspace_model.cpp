@@ -209,7 +209,7 @@ std::uint64_t WorkspaceModel::add_window(const std::string& title,
     auto& stored = windows_.back();
     apply_form_factor_policy_to_window(stored, true);
 
-    // Clean centered scale entrance: 0.84 -> 1.0 (no vertical slide jump)
+    // Clean centered scale entrance: 0.94 -> 1.0 (subtle, crisp, zero jump)
     if (reduced_motion_) {
         retarget_window_springs(stored, false);
     } else {
@@ -218,7 +218,7 @@ std::uint64_t WorkspaceModel::add_window(const std::string& title,
         stored.spring_w.set(stored.target_geometry.width, 0.0);
         stored.spring_h.set(stored.target_geometry.height, 0.0);
         stored.spring_opacity.set(0.0, 0.0);
-        stored.spring_scale.set(0.84, 0.0);
+        stored.spring_scale.set(0.94, 0.0);
         retarget_window_springs(stored, true);
     }
 
@@ -329,11 +329,9 @@ void WorkspaceModel::set_maximized(std::uint64_t id, bool maximized) {
         w->maximized = true;
         w->snap = SnapEdge::None;
         w->target_geometry = primary_output().usable_area;
-        if (!reduced_motion_) w->spring_scale.set(0.92, 0.0);
     } else {
         w->maximized = false;
         w->target_geometry = w->saved_geometry;
-        if (!reduced_motion_) w->spring_scale.set(1.06, 0.0);
     }
     retarget_window_springs(*w, true);
 }

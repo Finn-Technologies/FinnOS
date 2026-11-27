@@ -139,7 +139,13 @@ def _elf_is_aarch64(path: Optional[str]) -> bool:
         real = os.path.realpath(path)
         with open(real, "rb") as f:
             hdr = f.read(20)
-        return len(hdr) >= 20 and hdr[:4] == b"\x7fELF" and int.from_bytes(hdr[18:20], "little") == 183
+        if len(hdr) >= 20 and hdr[:4] == b"\x7fELF" and int.from_bytes(hdr[18:20], "little") == 183:
+            return True
+        if hdr[:2] == b"#!" and os.path.isfile("/opt/hangover/usr/bin/wine"):
+            with open("/opt/hangover/usr/bin/wine", "rb") as f:
+                hh = f.read(20)
+            return len(hh) >= 20 and hh[:4] == b"\x7fELF" and int.from_bytes(hh[18:20], "little") == 183
+        return False
     except OSError:
         return False
 
@@ -228,6 +234,15 @@ def _build_env(rt: Dict[str, object]) -> Dict[str, str]:
         prev_ld = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = f"{ho_lib}:{prev_ld}" if prev_ld else ho_lib
         env.setdefault("WINEDLLPATH", "/opt/hangover/usr/lib/aarch64-linux-gnu/wine")
+
+    if os.path.isfile("/usr/local/lib/libfinn_wl_clamp.so"):
+        prev_pre = env.get("LD_PRELOAD", "")
+        if "/usr/local/lib/libfinn_wl_clamp.so" not in prev_pre:
+            env["LD_PRELOAD"] = (
+                f"/usr/local/lib/libfinn_wl_clamp.so:{prev_pre}"
+                if prev_pre
+                else "/usr/local/lib/libfinn_wl_clamp.so"
+            )
 
     overrides = []
     if not env.get("FINN_WIN_ALLOW_MONO"):

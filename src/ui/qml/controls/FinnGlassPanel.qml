@@ -4,9 +4,9 @@ import FinnUI 1.0
 Item {
     id: root
     property real radius: FinnTheme.radiusLg
-    property color fillColor: FinnTheme.dark ? "#540E121B" : "#3AFFFFFF"
-    property color borderColor: "transparent"
-    property real borderWidth: 0
+    property color fillColor: FinnTheme.dark ? "#78101520" : "#78FFFFFF"
+    property color borderColor: FinnTheme.dark ? FinnTheme.withAlpha("#FFFFFF", 0.14) : "#18000000"
+    property real borderWidth: 0.75
     property bool specularRim: false
     property bool shadow: false
     property int shadowAlpha: 0

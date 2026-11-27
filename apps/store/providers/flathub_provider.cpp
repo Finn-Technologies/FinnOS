@@ -1,10 +1,34 @@
 #include "flathub_provider.hpp"
 
+#include <sys/utsname.h>
+
 #include <cctype>
 #include <sstream>
 
 namespace finn::store {
 namespace {
+
+std::string host_flatpak_arch() {
+    struct utsname u{};
+    if (::uname(&u) == 0) {
+        std::string m(u.machine);
+        if (m == "arm64") return "aarch64";
+        return m;
+    }
+    return {};
+}
+
+bool arches_supports_host(std::string_view obj, const std::string& host_arch) {
+    if (host_arch.empty()) return true;
+    const std::size_t pos = obj.find("\"arches\"");
+    if (pos == std::string_view::npos) return true;
+    const std::size_t lb = obj.find('[', pos);
+    const std::size_t rb = (lb != std::string_view::npos) ? obj.find(']', lb) : std::string_view::npos;
+    if (lb == std::string_view::npos || rb == std::string_view::npos) return true;
+    const std::string_view arr = obj.substr(lb, rb - lb + 1);
+    if (arr.find('"') == std::string_view::npos) return true;
+    return arr.find("\"" + host_arch + "\"") != std::string_view::npos;
+}
 
 std::string json_str(std::string_view obj, std::string_view key) {
     const std::string needle = "\"" + std::string(key) + "\"";
@@ -87,7 +111,9 @@ std::vector<StoreAppItem> parse_flathub_hits_json(std::string_view json) {
         const std::size_t lb = json.find('[', hits_pos);
         if (lb != std::string_view::npos) slice = json.substr(lb);
     }
+    const std::string host_arch = host_flatpak_arch();
     for (std::string_view obj : split_json_objects(slice)) {
+        if (!arches_supports_host(obj, host_arch)) continue;
         const std::string app_id = json_str(obj, "app_id");
         const std::string name = json_str(obj, "name");
         if (app_id.empty() || name.empty()) continue;
@@ -102,7 +128,25 @@ std::vector<StoreAppItem> parse_flathub_hits_json(std::string_view json) {
         item.icon = json_str(obj, "icon");
         if (item.icon.empty()) item.icon = "linux-app";
         item.ecosystem = StoreEcosystem::Flatpak;
-        item.category = "Linux";
+        const std::string main_cat = json_str(obj, "main_categories");
+        if (!main_cat.empty()) {
+            item.category = main_cat;
+        } else {
+            // Try first string inside "categories": ["Network", ...]
+            const std::size_t cpos = obj.find("\"categories\"");
+            if (cpos != std::string_view::npos) {
+                const std::size_t lb = obj.find('[', cpos);
+                const std::size_t q1 = (lb != std::string_view::npos) ? obj.find('"', lb + 1) : std::string_view::npos;
+                const std::size_t q2 = (q1 != std::string_view::npos) ? obj.find('"', q1 + 1) : std::string_view::npos;
+                if (q2 != std::string_view::npos && q2 > q1 + 1 && q2 - q1 < 40) {
+                    item.category = std::string(obj.substr(q1 + 1, q2 - q1 - 1));
+                } else {
+                    item.category = "Apps";
+                }
+            } else {
+                item.category = "Apps";
+            }
+        }
         item.verified = json_bool(obj, "verification_verified");
         item.verified_source = json_str(obj, "verification_website");
         if (item.verified && item.verified_source.empty()) {

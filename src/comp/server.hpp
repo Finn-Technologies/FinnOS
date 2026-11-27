@@ -77,7 +77,12 @@ public:
 
     void bindSurfaceObject(std::uint64_t id, QObject* surfaceObj);
     void unbindSurfaceObject(std::uint64_t id);
+    void beginAddWindow();
+    void endAddWindow();
+    void beginRemoveWindow(int row);
+    void endRemoveWindow();
     void syncAll();
+    void syncWindowRoles();
     void syncGeometryFrames();
 
 private:
